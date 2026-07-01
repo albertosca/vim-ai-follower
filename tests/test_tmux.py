@@ -84,3 +84,9 @@ def test_session_from_env_returns_none_when_tmux_fails() -> None:
     fake_result = MagicMock(returncode=1, stdout="")
     with patch("vim_ai_follower.tmux.subprocess.run", return_value=fake_result):
         assert TmuxSession.from_env({"TMUX_PANE": "%1"}) is None
+
+
+def test_session_from_env_returns_none_when_session_id_is_empty() -> None:
+    fake_result = MagicMock(returncode=0, stdout="\n")
+    with patch("vim_ai_follower.tmux.subprocess.run", return_value=fake_result):
+        assert TmuxSession.from_env({"TMUX_PANE": "%1"}) is None

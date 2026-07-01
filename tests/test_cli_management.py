@@ -67,6 +67,10 @@ def test_stop_kills_pane_and_clears_state() -> None:
     assert result is None
 
 
+def test_stop_without_tmux_env_fails() -> None:
+    assert cli.cmd_stop({}) == 1
+
+
 def test_stop_without_active_follower_is_a_noop() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
         assert cli.cmd_stop({"TMUX_PANE": "%1"}) == 0

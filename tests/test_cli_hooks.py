@@ -91,6 +91,11 @@ def test_hook_pre_noop_without_file_path() -> None:
         assert cli.cmd_hook_pre({"TMUX_PANE": "%1"}, payload) == 0
 
 
+def test_hook_pre_noop_without_tmux_env() -> None:
+    payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/f.txt"}}
+    assert cli.cmd_hook_pre({}, payload) == 0
+
+
 def test_hook_post_noop_when_no_follower_registered(tmp_path: Path) -> None:
     target = tmp_path / "f.txt"
     target.write_text("content\n")
@@ -99,6 +104,49 @@ def test_hook_post_noop_when_no_follower_registered(tmp_path: Path) -> None:
         "vim_ai_follower.tmux.subprocess.run",
         return_value=MagicMock(returncode=0, stdout="$1\n"),
     ):
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+
+def test_hook_post_edit_noop_without_tmux_env() -> None:
+    payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/f.txt"}}
+    assert cli.cmd_hook_post({}, payload) == 0
+
+
+def test_hook_post_edit_noop_without_file_path() -> None:
+    _register_fake_follower("$1", "%2")
+    payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {}}
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+
+def test_hook_post_edit_logs_and_noops_when_file_unreadable(tmp_path: Path) -> None:
+    target = tmp_path / "gone.txt"
+    _register_fake_follower("$1", "%2")
+    payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+
+def test_hook_post_read_noop_without_tmux_env() -> None:
+    payload: dict[str, object] = {"tool_name": "Read", "tool_input": {"file_path": "/tmp/f.txt"}}
+    assert cli.cmd_hook_post({}, payload) == 0
+
+
+def test_hook_post_read_noop_when_no_follower_registered(tmp_path: Path) -> None:
+    target = tmp_path / "f.txt"
+    target.write_text("a\n")
+    payload: dict[str, object] = {"tool_name": "Read", "tool_input": {"file_path": str(target)}}
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="$1\n"),
+    ):
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+
+def test_hook_post_read_noop_without_file_path() -> None:
+    _register_fake_follower("$1", "%2")
+    payload: dict[str, object] = {"tool_name": "Read", "tool_input": {}}
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
         assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
 
