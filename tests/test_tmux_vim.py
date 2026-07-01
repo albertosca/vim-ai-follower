@@ -61,9 +61,9 @@ def test_apply_edit_unlocks_the_buffer_only_for_the_animation() -> None:
     ):
         follower.apply_edit("a\n", "b\n")
     commands = _sent_commands(run)
-    assert commands[0] == (":setlocal modifiable", True)
+    assert commands[0] == (":setlocal modifiable paste", True)
     assert commands[1] == ("Enter", False)
-    assert commands[-2] == (":setlocal nomodifiable", True)
+    assert commands[-2] == (":setlocal nomodifiable nopaste", True)
     assert commands[-1] == ("Enter", False)
 
 
@@ -91,12 +91,12 @@ def test_show_fresh_wipes_the_buffer_then_types_the_content() -> None:
     ):
         follower.show_fresh("a\nb\n")
     commands = _sent_commands(run)
-    assert commands[0] == (":setlocal modifiable", True)
+    assert commands[0] == (":setlocal modifiable paste", True)
     assert commands[1] == ("Enter", False)
     assert commands[2] == (":%d", True)
     assert commands[3] == ("Enter", False)
     assert commands[4] == ("i", True)
-    assert commands[-2] == (":setlocal nomodifiable", True)
+    assert commands[-2] == (":setlocal nomodifiable nopaste", True)
     assert commands[-1] == ("Enter", False)
     typed = [text for text, literal in commands if literal]
     assert "a" in typed
@@ -109,11 +109,11 @@ def test_show_fresh_with_empty_content_still_wipes_and_relocks() -> None:
         follower.show_fresh("")
     commands = _sent_commands(run)
     assert commands == [
-        (":setlocal modifiable", True),
+        (":setlocal modifiable paste", True),
         ("Enter", False),
         (":%d", True),
         ("Enter", False),
-        (":setlocal nomodifiable", True),
+        (":setlocal nomodifiable nopaste", True),
         ("Enter", False),
     ]
 

@@ -37,15 +37,18 @@ class TmuxVimFollower:
     def apply_edit(self, before: str, after: str) -> None:
         ops = diff_module.compute_edit_script(before, after)
         pane = TmuxPane(pane_id=self.pane_id)
-        pane.send_text(":setlocal modifiable")
+        # 'paste' suppresses autoindent/smartindent/cindent for the duration:
+        # without it, each Enter in insert mode auto-inserts indentation that
+        # then stacks with the leading whitespace already in our own lines.
+        pane.send_text(":setlocal modifiable paste")
         pane.send_key("Enter")
         apply_keystrokes(pane, render_keystrokes(ops), pace_for(ops, self.pace_seconds))
-        pane.send_text(":setlocal nomodifiable")
+        pane.send_text(":setlocal nomodifiable nopaste")
         pane.send_key("Enter")
 
     def show_fresh(self, content: str) -> None:
         pane = TmuxPane(pane_id=self.pane_id)
-        pane.send_text(":setlocal modifiable")
+        pane.send_text(":setlocal modifiable paste")
         pane.send_key("Enter")
         # `:e` already loaded the file's real content, so wipe it down to a
         # single blank line first — Vim can't have zero lines — then type
@@ -58,7 +61,7 @@ class TmuxVimFollower:
             diff_module.EditOp(kind="insert", start_line=1, end_line=0, new_lines=lines)
         ]
         apply_keystrokes(pane, render_full_type(lines), pace_for(synthetic_op, self.pace_seconds))
-        pane.send_text(":setlocal nomodifiable")
+        pane.send_text(":setlocal nomodifiable nopaste")
         pane.send_key("Enter")
 
     def goto_line(self, offset: int) -> None:
