@@ -1,0 +1,63 @@
+from __future__ import annotations
+
+import subprocess
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class TmuxPane:
+    pane_id: str
+
+    def exists(self) -> bool:
+        result = subprocess.run(
+            ["tmux", "list-panes", "-a", "-F", "#{pane_id}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return self.pane_id in result.stdout.splitlines()
+
+    def send_text(self, text: str) -> None:
+        subprocess.run(
+            ["tmux", "send-keys", "-t", self.pane_id, "-l", "--", text],
+            check=True,
+        )
+
+    def send_key(self, key_name: str) -> None:
+        subprocess.run(["tmux", "send-keys", "-t", self.pane_id, key_name], check=True)
+
+    def kill(self) -> None:
+        subprocess.run(["tmux", "kill-pane", "-t", self.pane_id], check=False)
+
+    @classmethod
+    def split_from(cls, target_pane: str, command: str) -> TmuxPane:
+        result = subprocess.run(
+            ["tmux", "split-window", "-h", "-t", target_pane, "-P", "-F", "#{pane_id}", command],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return cls(pane_id=result.stdout.strip())
+
+
+@dataclass(frozen=True)
+class TmuxSession:
+    session_id: str
+
+    @classmethod
+    def from_env(cls, env: dict[str, str]) -> TmuxSession | None:
+        pane_id = env.get("TMUX_PANE")
+        if not pane_id:
+            return None
+        result = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", pane_id, "#{session_id}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        session_id = result.stdout.strip()
+        if not session_id:
+            return None
+        return cls(session_id=session_id)
