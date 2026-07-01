@@ -16,7 +16,7 @@ class TmuxVimFollower:
     pane_id: str
 
     def is_alive(self) -> bool:
-        return TmuxPane(pane_id=self.pane_id).exists()
+        return TmuxPane(pane_id=self.pane_id).running_command() == "vim"
 
     def ensure_showing(self, file_path: str) -> None:
         pane = TmuxPane(pane_id=self.pane_id)

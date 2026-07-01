@@ -5,26 +5,6 @@ from unittest.mock import MagicMock, patch
 from vim_ai_follower.tmux import TmuxPane, TmuxSession
 
 
-def test_pane_exists_true_when_pane_id_in_list() -> None:
-    pane = TmuxPane(pane_id="%3")
-    fake_result = MagicMock(stdout="%1\n%2\n%3\n")
-    with patch("vim_ai_follower.tmux.subprocess.run", return_value=fake_result) as run:
-        assert pane.exists() is True
-    run.assert_called_once_with(
-        ["tmux", "list-panes", "-a", "-F", "#{pane_id}"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-
-def test_pane_exists_false_when_pane_id_missing() -> None:
-    pane = TmuxPane(pane_id="%99")
-    fake_result = MagicMock(stdout="%1\n%2\n")
-    with patch("vim_ai_follower.tmux.subprocess.run", return_value=fake_result):
-        assert pane.exists() is False
-
-
 def test_send_text_calls_tmux_send_keys_literal() -> None:
     pane = TmuxPane(pane_id="%3")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
@@ -47,6 +27,26 @@ def test_kill_calls_tmux_kill_pane() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         pane.kill()
     run.assert_called_once_with(["tmux", "kill-pane", "-t", "%3"], check=False)
+
+
+def test_running_command_returns_command_for_existing_pane() -> None:
+    pane = TmuxPane(pane_id="%3")
+    fake_result = MagicMock(stdout="%1 zsh\n%3 vim\n")
+    with patch("vim_ai_follower.tmux.subprocess.run", return_value=fake_result) as run:
+        assert pane.running_command() == "vim"
+    run.assert_called_once_with(
+        ["tmux", "list-panes", "-a", "-F", "#{pane_id} #{pane_current_command}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_running_command_returns_none_for_missing_pane() -> None:
+    pane = TmuxPane(pane_id="%99")
+    fake_result = MagicMock(stdout="%1 zsh\n%3 vim\n")
+    with patch("vim_ai_follower.tmux.subprocess.run", return_value=fake_result):
+        assert pane.running_command() is None
 
 
 def test_split_from_returns_pane_with_new_id() -> None:

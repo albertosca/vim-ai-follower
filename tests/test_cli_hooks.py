@@ -22,7 +22,7 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[N
 def _register_fake_follower(session_id: str, pane_id: str, current_file: str | None = None) -> None:
     with patch(
         "vim_ai_follower.tmux.subprocess.run",
-        return_value=MagicMock(returncode=0, stdout=f"{pane_id}\n"),
+        return_value=MagicMock(returncode=0, stdout=f"{pane_id} vim\n"),
     ):
         state.FollowerState.set(session_id, "tmux", pane_id, current_file=current_file)
 
@@ -32,7 +32,7 @@ def _mock_tmux_run(session_id: str = "$1", pane_id: str = "%2") -> Callable[...,
         result = MagicMock()
         if cmd[:3] == ["tmux", "list-panes", "-a"]:
             result.returncode = 0
-            result.stdout = f"{pane_id}\n"
+            result.stdout = f"{pane_id} vim\n"
         elif cmd[:2] == ["tmux", "display-message"]:
             result.returncode = 0
             result.stdout = f"{session_id}\n"

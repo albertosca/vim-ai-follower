@@ -8,14 +8,18 @@ from dataclasses import dataclass
 class TmuxPane:
     pane_id: str
 
-    def exists(self) -> bool:
+    def running_command(self) -> str | None:
         result = subprocess.run(
-            ["tmux", "list-panes", "-a", "-F", "#{pane_id}"],
+            ["tmux", "list-panes", "-a", "-F", "#{pane_id} #{pane_current_command}"],
             capture_output=True,
             text=True,
             check=False,
         )
-        return self.pane_id in result.stdout.splitlines()
+        for line in result.stdout.splitlines():
+            pane_id, _, command = line.partition(" ")
+            if pane_id == self.pane_id:
+                return command
+        return None
 
     def send_text(self, text: str) -> None:
         subprocess.run(

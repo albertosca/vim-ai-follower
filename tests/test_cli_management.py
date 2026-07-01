@@ -20,7 +20,7 @@ def _mock_tmux_run(
     def _run(cmd: list[str], **kwargs: object) -> MagicMock:
         result = MagicMock()
         if cmd[:3] == ["tmux", "list-panes", "-a"]:
-            result.stdout = "%1\n%2\n" + (f"{new_pane_id}\n" if pane_exists else "")
+            result.stdout = "%1 zsh\n%2 zsh\n" + (f"{new_pane_id} vim\n" if pane_exists else "")
             result.returncode = 0
         elif cmd[:2] == ["tmux", "display-message"]:
             result.returncode = 0
