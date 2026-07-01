@@ -22,11 +22,20 @@ class TmuxVimFollower:
         pane = TmuxPane(pane_id=self.pane_id)
         pane.send_text(f":e {file_path}")
         pane.send_key("Enter")
+        # Locked by default so a stray keystroke into this pane can't corrupt
+        # the buffer: our own animation is indistinguishable from real
+        # typing at the tty level, so it must explicitly unlock around itself.
+        pane.send_text(":setlocal readonly nomodifiable")
+        pane.send_key("Enter")
 
     def apply_edit(self, before: str, after: str) -> None:
         ops = diff_module.compute_edit_script(before, after)
         pane = TmuxPane(pane_id=self.pane_id)
+        pane.send_text(":setlocal modifiable")
+        pane.send_key("Enter")
         apply_keystrokes(pane, render_keystrokes(ops), pace_for(ops))
+        pane.send_text(":setlocal nomodifiable")
+        pane.send_key("Enter")
 
     def goto_line(self, offset: int) -> None:
         pane = TmuxPane(pane_id=self.pane_id)

@@ -162,7 +162,7 @@ def test_hook_post_first_open_shows_file_without_animating(tmp_path: Path) -> No
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
-    assert _literal_sends(run) == [f":e {target}"]
+    assert _literal_sends(run) == [f":e {target}", ":setlocal readonly nomodifiable"]
 
 
 def test_hook_post_animates_a_text_edit_on_subsequent_change(tmp_path: Path) -> None:
@@ -190,7 +190,7 @@ def test_hook_post_skips_binary_files_on_first_open(tmp_path: Path) -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
-    assert _literal_sends(run) == [f":e {target}"]
+    assert _literal_sends(run) == [f":e {target}", ":setlocal readonly nomodifiable"]
 
 
 def test_hook_post_skips_binary_files_on_subsequent_edit(tmp_path: Path) -> None:
@@ -218,7 +218,11 @@ def test_hook_post_read_navigates_to_file_and_offset(tmp_path: Path) -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
-    assert _literal_sends(run) == [f":e {target}", ":2"]
+    assert _literal_sends(run) == [
+        f":e {target}",
+        ":setlocal readonly nomodifiable",
+        ":2",
+    ]
 
 
 def test_hook_post_skips_e_when_file_already_current(tmp_path: Path) -> None:
