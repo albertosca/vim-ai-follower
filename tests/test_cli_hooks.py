@@ -36,6 +36,9 @@ def _mock_tmux_run(session_id: str = "$1", pane_id: str = "%2") -> Callable[...,
         elif cmd[:2] == ["tmux", "display-message"]:
             result.returncode = 0
             result.stdout = f"{session_id}\n"
+        elif cmd[:2] == ["tmux", "split-window"]:
+            result.returncode = 0
+            result.stdout = f"{pane_id}\n"
         else:
             result.returncode = 0
             result.stdout = ""
@@ -246,15 +249,17 @@ def test_hook_post_ignores_unrelated_tools() -> None:
     assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
 
-def test_main_start_stop_status(monkeypatch: pytest.MonkeyPatch) -> None:
-    with patch(
-        "vim_ai_follower.tmux.subprocess.run",
-        return_value=MagicMock(returncode=0, stdout="%9\n"),
-    ):
+def test_main_start_stop_status(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
         monkeypatch.setenv("TMUX_PANE", "%1")
         assert cli.main(["start"]) == 0
         assert cli.main(["status"]) == 0
+        assert "active, backend tmux (%2)" in capsys.readouterr().out
         assert cli.main(["stop"]) == 0
+        assert cli.main(["status"]) == 0
+        assert "no follower active" in capsys.readouterr().out
 
 
 def test_main_hook_pre_reads_stdin_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

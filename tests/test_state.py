@@ -20,6 +20,48 @@ def test_set_then_get_round_trips(tmp_path: Path) -> None:
     assert result.current_file == "/tmp/a.txt"
 
 
+def test_set_defaults_origin_on_failure_and_speed(tmp_path: Path) -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run", return_value=MagicMock(stdout="%5 vim\n")):
+        FollowerState.set("$1", "tmux", "%5", base_dir=tmp_path)
+        result = FollowerState.get("$1", base_dir=tmp_path)
+    assert result is not None
+    assert result.origin == ""
+    assert result.on_failure == "silent"
+    assert result.speed == "rapido"
+
+
+def test_set_stores_origin_on_failure_and_speed(tmp_path: Path) -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run", return_value=MagicMock(stdout="%5 vim\n")):
+        FollowerState.set(
+            "$1",
+            "tmux",
+            "%5",
+            origin="%1",
+            on_failure="reopen",
+            speed="lento",
+            base_dir=tmp_path,
+        )
+        result = FollowerState.get("$1", base_dir=tmp_path)
+    assert result is not None
+    assert result.origin == "%1"
+    assert result.on_failure == "reopen"
+    assert result.speed == "lento"
+
+
+def test_read_returns_state_even_when_pane_is_dead(tmp_path: Path) -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run", return_value=MagicMock(stdout="%5 vim\n")):
+        FollowerState.set("$1", "tmux", "%5", origin="%1", base_dir=tmp_path)
+    with patch("vim_ai_follower.tmux.subprocess.run", return_value=MagicMock(stdout="")):
+        result = FollowerState.read("$1", base_dir=tmp_path)
+    assert result is not None
+    assert result.target == "%5"
+    assert result.origin == "%1"
+
+
+def test_read_returns_none_without_state_file(tmp_path: Path) -> None:
+    assert FollowerState.read("$1", base_dir=tmp_path) is None
+
+
 def test_get_returns_none_when_pane_is_dead(tmp_path: Path) -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", return_value=MagicMock(stdout="%5 vim\n")):
         FollowerState.set("$1", "tmux", "%5", base_dir=tmp_path)

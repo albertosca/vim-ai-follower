@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+from vim_ai_follower.backends import get_follower
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 
 
@@ -64,3 +65,19 @@ def test_apply_edit_unlocks_the_buffer_only_for_the_animation() -> None:
     assert commands[1] == ("Enter", False)
     assert commands[-2] == (":setlocal nomodifiable", True)
     assert commands[-1] == ("Enter", False)
+
+
+def test_apply_edit_uses_configured_pace_seconds() -> None:
+    follower = TmuxVimFollower(pane_id="%2", pace_seconds=0.15)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run"),
+        patch("vim_ai_follower.animate.time.sleep") as sleep,
+    ):
+        follower.apply_edit("a\n", "b\n")
+    sleep.assert_called_with(0.15)
+
+
+def test_get_follower_forwards_pace_seconds_for_tmux_backend() -> None:
+    follower = get_follower("tmux", "%2", pace_seconds=0.15)
+    assert isinstance(follower, TmuxVimFollower)
+    assert follower.pace_seconds == 0.15

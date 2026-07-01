@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from vim_ai_follower import diff as diff_module
+from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, pace_for, render_keystrokes
 from vim_ai_follower.animate import apply as apply_keystrokes
-from vim_ai_follower.animate import pace_for, render_keystrokes
 from vim_ai_follower.tmux import TmuxPane
 
 
@@ -14,6 +14,7 @@ class TmuxVimFollower:
     simulated keystrokes (tmux send-keys)."""
 
     pane_id: str
+    pace_seconds: float = DEFAULT_PACE_SECONDS
 
     def is_alive(self) -> bool:
         return TmuxPane(pane_id=self.pane_id).running_command() == "vim"
@@ -33,7 +34,7 @@ class TmuxVimFollower:
         pane = TmuxPane(pane_id=self.pane_id)
         pane.send_text(":setlocal modifiable")
         pane.send_key("Enter")
-        apply_keystrokes(pane, render_keystrokes(ops), pace_for(ops))
+        apply_keystrokes(pane, render_keystrokes(ops), pace_for(ops, self.pace_seconds))
         pane.send_text(":setlocal nomodifiable")
         pane.send_key("Enter")
 

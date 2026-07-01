@@ -75,10 +75,21 @@ def test_pace_for_returns_default_below_threshold() -> None:
     assert pace_for(ops) == DEFAULT_PACE_SECONDS
 
 
+def test_pace_for_uses_provided_base_pace_below_threshold() -> None:
+    ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))]
+    assert pace_for(ops, base_pace=0.15) == 0.15
+
+
 def test_pace_for_returns_zero_above_threshold() -> None:
     big_lines = tuple(f"line{i}" for i in range(LARGE_DIFF_LINE_THRESHOLD + 1))
     ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=big_lines)]
     assert pace_for(ops) == 0.0
+
+
+def test_pace_for_ignores_base_pace_above_threshold() -> None:
+    big_lines = tuple(f"line{i}" for i in range(LARGE_DIFF_LINE_THRESHOLD + 1))
+    ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=big_lines)]
+    assert pace_for(ops, base_pace=0.15) == 0.0
 
 
 def test_apply_sends_literal_and_named_keys_in_order() -> None:

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from vim_ai_follower.animate import DEFAULT_PACE_SECONDS
+
 
 class Follower(Protocol):
     """A target that can show and animate file edits, regardless of how."""
@@ -17,11 +19,11 @@ class Follower(Protocol):
     def stop(self) -> None: ...
 
 
-def get_follower(backend: str, target: str) -> Follower:
+def get_follower(backend: str, target: str, pace_seconds: float = DEFAULT_PACE_SECONDS) -> Follower:
     if backend == "tmux":
         from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 
-        return TmuxVimFollower(pane_id=target)
+        return TmuxVimFollower(pane_id=target, pace_seconds=pace_seconds)
     if backend == "nvim_rpc":
         from vim_ai_follower.backends.nvim_rpc import NvimRpcFollower
 

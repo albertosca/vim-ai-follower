@@ -49,10 +49,10 @@ def changed_line_count(ops: list[EditOp]) -> int:
     return total
 
 
-def pace_for(ops: list[EditOp]) -> float:
+def pace_for(ops: list[EditOp], base_pace: float = DEFAULT_PACE_SECONDS) -> float:
     if changed_line_count(ops) > LARGE_DIFF_LINE_THRESHOLD:
         return 0.0
-    return DEFAULT_PACE_SECONDS
+    return base_pace
 
 
 def apply(pane: TmuxPane, sequences: list[KeySequence], pace_seconds: float) -> None:

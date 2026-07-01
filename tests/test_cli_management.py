@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vim_ai_follower import cli, state
+from vim_ai_follower import cli, config, state
 
 
 @pytest.fixture(autouse=True)
@@ -102,6 +102,43 @@ def test_start_nvim_backend_fails_without_socket(capsys: pytest.CaptureFixture[s
         exit_code = cli.cmd_start({"TMUX_PANE": "%1"}, backend="nvim_rpc")
     assert exit_code == 1
     assert "no Neovim RPC socket found" in capsys.readouterr().err
+
+
+def test_start_resolves_on_failure_and_speed_from_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"on_failure": "reopen", "speed": "lento"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        assert cli.cmd_start({"TMUX_PANE": "%1"}) == 0
+        result = state.FollowerState.get("$1")
+    assert result is not None
+    assert result.on_failure == "reopen"
+    assert result.speed == "lento"
+
+
+def test_start_explicit_args_override_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"on_failure": "reopen", "speed": "lento"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        assert cli.cmd_start({"TMUX_PANE": "%1"}, on_failure="silent", speed="instant") == 0
+        result = state.FollowerState.get("$1")
+    assert result is not None
+    assert result.on_failure == "silent"
+    assert result.speed == "instant"
+
+
+def test_status_reports_on_failure_and_speed(capsys: pytest.CaptureFixture[str]) -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        cli.cmd_start({"TMUX_PANE": "%1"}, on_failure="reopen", speed="lento")
+        cli.cmd_status({"TMUX_PANE": "%1"})
+    out = capsys.readouterr().out
+    assert "on_failure=reopen" in out
+    assert "speed=lento" in out
 
 
 def test_start_nvim_backend_registers_when_socket_alive() -> None:
