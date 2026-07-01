@@ -42,6 +42,11 @@ class NvimRpcFollower:
             buf[op.start_line - 1 : op.end_line] = list(op.new_lines)
             time.sleep(PACE_SECONDS)
 
+    def show_fresh(self, content: str) -> None:
+        nvim = self._connect()
+        nvim.current.buffer[:] = []
+        self.apply_edit("", content)
+
     def goto_line(self, offset: int) -> None:
         nvim = self._connect()
         nvim.current.window.cursor = (offset, 0)

@@ -10,6 +10,7 @@ from vim_ai_follower.animate import (
     apply,
     changed_line_count,
     pace_for,
+    render_full_type,
     render_keystrokes,
 )
 from vim_ai_follower.diff import EditOp
@@ -90,6 +91,30 @@ def test_pace_for_ignores_base_pace_above_threshold() -> None:
     big_lines = tuple(f"line{i}" for i in range(LARGE_DIFF_LINE_THRESHOLD + 1))
     ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=big_lines)]
     assert pace_for(ops, base_pace=0.15) == 0.0
+
+
+def test_render_full_type_empty_lines_returns_nothing() -> None:
+    assert render_full_type(()) == []
+
+
+def test_render_full_type_enters_insert_mode_and_types_each_line() -> None:
+    assert render_full_type(("a", "b", "c")) == [
+        KeySequence("i", literal=True),
+        KeySequence("a", literal=True),
+        KeySequence("Enter", literal=False),
+        KeySequence("b", literal=True),
+        KeySequence("Enter", literal=False),
+        KeySequence("c", literal=True),
+        KeySequence("Escape", literal=False),
+    ]
+
+
+def test_render_full_type_single_line() -> None:
+    assert render_full_type(("only",)) == [
+        KeySequence("i", literal=True),
+        KeySequence("only", literal=True),
+        KeySequence("Escape", literal=False),
+    ]
 
 
 def test_apply_sends_literal_and_named_keys_in_order() -> None:

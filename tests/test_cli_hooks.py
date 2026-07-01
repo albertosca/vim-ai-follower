@@ -152,10 +152,12 @@ def test_hook_post_read_noop_without_file_path() -> None:
         assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
 
-def test_hook_post_first_open_shows_file_without_animating(tmp_path: Path) -> None:
+def test_hook_post_first_open_retypes_from_scratch_instead_of_pasting(tmp_path: Path) -> None:
     # PostToolUse fires after the file is already written, so the first
-    # `:e` for a file already loads its final content — animating a
-    # before->after diff on top of that would duplicate/garble it.
+    # `:e` for a file already loads its final content directly — animating
+    # a before->after diff on top of that would duplicate/garble it. Instead
+    # the buffer is wiped and the whole file is retyped from scratch, so the
+    # first view is animated too rather than just appearing pasted.
     target = tmp_path / "f.txt"
     target.write_text("hello\nworld\n")
     snapshot.save("$1", str(target), "hello\n")
@@ -165,7 +167,11 @@ def test_hook_post_first_open_shows_file_without_animating(tmp_path: Path) -> No
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
-    assert _literal_sends(run) == [f":e {target}", ":setlocal readonly nomodifiable"]
+    sends = _literal_sends(run)
+    assert sends[:2] == [f":e {target}", ":setlocal readonly nomodifiable"]
+    assert ":%d" in sends
+    assert "hello" in sends
+    assert "world" in sends
 
 
 def test_hook_post_animates_a_text_edit_on_subsequent_change(tmp_path: Path) -> None:

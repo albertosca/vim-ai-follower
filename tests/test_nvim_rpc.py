@@ -42,6 +42,18 @@ def test_apply_edit_sets_buffer_lines_for_each_op() -> None:
     nvim.current.buffer.__setitem__.assert_any_call(slice(1, 2), ["vim ai follower"])
 
 
+def test_show_fresh_clears_buffer_then_types_content() -> None:
+    follower = NvimRpcFollower(socket_path="/tmp/x.sock")
+    nvim = MagicMock()
+    with (
+        patch("vim_ai_follower.backends.nvim_rpc.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_rpc.time.sleep"),
+    ):
+        follower.show_fresh("hello\nworld\n")
+    nvim.current.buffer.__setitem__.assert_any_call(slice(None, None, None), [])
+    nvim.current.buffer.__setitem__.assert_any_call(slice(0, 0), ["hello", "world"])
+
+
 def test_goto_line_sets_cursor() -> None:
     follower = NvimRpcFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()

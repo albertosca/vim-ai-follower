@@ -211,13 +211,15 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
 
     follower = get_follower(current.backend, current.target, config.pace_seconds_for(current.speed))
     freshly_opened = _ensure_buffer(session.session_id, follower, current, file_path)
-    if freshly_opened:
-        return 0
 
     if diff_module.is_binary(raw_after):
         return 0
 
     after = raw_after.decode("utf-8", errors="replace")
+    if freshly_opened:
+        follower.show_fresh(after)
+        return 0
+
     before = load_snapshot(session.session_id, file_path)
     follower.apply_edit(before, after)
     return 0

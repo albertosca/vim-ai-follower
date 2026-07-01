@@ -81,3 +81,48 @@ def test_get_follower_forwards_pace_seconds_for_tmux_backend() -> None:
     follower = get_follower("tmux", "%2", pace_seconds=0.15)
     assert isinstance(follower, TmuxVimFollower)
     assert follower.pace_seconds == 0.15
+
+
+def test_show_fresh_wipes_the_buffer_then_types_the_content() -> None:
+    follower = TmuxVimFollower(pane_id="%2")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch("vim_ai_follower.animate.time.sleep"),
+    ):
+        follower.show_fresh("a\nb\n")
+    commands = _sent_commands(run)
+    assert commands[0] == (":setlocal modifiable", True)
+    assert commands[1] == ("Enter", False)
+    assert commands[2] == (":%d", True)
+    assert commands[3] == ("Enter", False)
+    assert commands[4] == ("i", True)
+    assert commands[-2] == (":setlocal nomodifiable", True)
+    assert commands[-1] == ("Enter", False)
+    typed = [text for text, literal in commands if literal]
+    assert "a" in typed
+    assert "b" in typed
+
+
+def test_show_fresh_with_empty_content_still_wipes_and_relocks() -> None:
+    follower = TmuxVimFollower(pane_id="%2")
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        follower.show_fresh("")
+    commands = _sent_commands(run)
+    assert commands == [
+        (":setlocal modifiable", True),
+        ("Enter", False),
+        (":%d", True),
+        ("Enter", False),
+        (":setlocal nomodifiable", True),
+        ("Enter", False),
+    ]
+
+
+def test_show_fresh_uses_configured_pace_seconds() -> None:
+    follower = TmuxVimFollower(pane_id="%2", pace_seconds=0.15)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run"),
+        patch("vim_ai_follower.animate.time.sleep") as sleep,
+    ):
+        follower.show_fresh("a\nb\n")
+    sleep.assert_called_with(0.15)

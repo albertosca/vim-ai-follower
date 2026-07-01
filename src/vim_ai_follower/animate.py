@@ -40,6 +40,23 @@ def render_keystrokes(ops: list[EditOp]) -> list[KeySequence]:
     return sequences
 
 
+def render_full_type(lines: tuple[str, ...]) -> list[KeySequence]:
+    """Types lines into the current (already-empty) line via `i`, rather than
+    `render_keystrokes`'s `gg`/`O`-based positioning — used when the buffer
+    was just wiped to a single blank line and the whole file is retyped from
+    scratch, so there's no existing line to navigate around."""
+    if not lines:
+        return []
+    sequences: list[KeySequence] = [KeySequence("i")]
+    last_index = len(lines) - 1
+    for index, line in enumerate(lines):
+        sequences.append(KeySequence(line))
+        if index < last_index:
+            sequences.append(KeySequence("Enter", literal=False))
+    sequences.append(KeySequence("Escape", literal=False))
+    return sequences
+
+
 def changed_line_count(ops: list[EditOp]) -> int:
     total = 0
     for op in ops:

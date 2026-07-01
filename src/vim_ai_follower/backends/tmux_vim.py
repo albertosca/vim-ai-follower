@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from vim_ai_follower import diff as diff_module
-from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, pace_for, render_keystrokes
+from vim_ai_follower.animate import (
+    DEFAULT_PACE_SECONDS,
+    pace_for,
+    render_full_type,
+    render_keystrokes,
+)
 from vim_ai_follower.animate import apply as apply_keystrokes
 from vim_ai_follower.tmux import TmuxPane
 
@@ -35,6 +40,24 @@ class TmuxVimFollower:
         pane.send_text(":setlocal modifiable")
         pane.send_key("Enter")
         apply_keystrokes(pane, render_keystrokes(ops), pace_for(ops, self.pace_seconds))
+        pane.send_text(":setlocal nomodifiable")
+        pane.send_key("Enter")
+
+    def show_fresh(self, content: str) -> None:
+        pane = TmuxPane(pane_id=self.pane_id)
+        pane.send_text(":setlocal modifiable")
+        pane.send_key("Enter")
+        # `:e` already loaded the file's real content, so wipe it down to a
+        # single blank line first — Vim can't have zero lines — then type
+        # everything back in via `i` rather than render_keystrokes's `gg`/`O`,
+        # which would leave that leftover blank line stranded at the end.
+        pane.send_text(":%d")
+        pane.send_key("Enter")
+        lines = tuple(content.splitlines())
+        synthetic_op = [
+            diff_module.EditOp(kind="insert", start_line=1, end_line=0, new_lines=lines)
+        ]
+        apply_keystrokes(pane, render_full_type(lines), pace_for(synthetic_op, self.pace_seconds))
         pane.send_text(":setlocal nomodifiable")
         pane.send_key("Enter")
 
