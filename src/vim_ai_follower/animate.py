@@ -7,7 +7,7 @@ from vim_ai_follower.diff import EditOp
 from vim_ai_follower.tmux import TmuxPane
 
 DEFAULT_PACE_SECONDS = 0.05
-LARGE_DIFF_LINE_THRESHOLD = 5000
+MAX_ANIMATION_SECONDS = 15.0
 
 
 @dataclass(frozen=True)
@@ -67,7 +67,10 @@ def changed_line_count(ops: list[EditOp]) -> int:
 
 
 def pace_for(ops: list[EditOp], base_pace: float = DEFAULT_PACE_SECONDS) -> float:
-    if changed_line_count(ops) > LARGE_DIFF_LINE_THRESHOLD:
+    """Caps by estimated total animation time rather than a flat line count,
+    so a slow speed on a normal-sized file can't run long enough to blow past
+    the Claude Code hook timeout — it just falls back to instant instead."""
+    if changed_line_count(ops) * base_pace > MAX_ANIMATION_SECONDS:
         return 0.0
     return base_pace
 

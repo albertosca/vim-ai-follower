@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from vim_ai_follower.animate import (
     DEFAULT_PACE_SECONDS,
-    LARGE_DIFF_LINE_THRESHOLD,
+    MAX_ANIMATION_SECONDS,
     KeySequence,
     apply,
     changed_line_count,
@@ -71,26 +71,28 @@ def test_changed_line_count_sums_deletions_and_insertions() -> None:
     assert changed_line_count(ops) == 4
 
 
-def test_pace_for_returns_default_below_threshold() -> None:
+def test_pace_for_returns_default_within_time_budget() -> None:
     ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))]
     assert pace_for(ops) == DEFAULT_PACE_SECONDS
 
 
-def test_pace_for_uses_provided_base_pace_below_threshold() -> None:
+def test_pace_for_uses_provided_base_pace_within_time_budget() -> None:
     ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))]
     assert pace_for(ops, base_pace=0.15) == 0.15
 
 
-def test_pace_for_returns_zero_above_threshold() -> None:
-    big_lines = tuple(f"line{i}" for i in range(LARGE_DIFF_LINE_THRESHOLD + 1))
-    ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=big_lines)]
-    assert pace_for(ops) == 0.0
+def test_pace_for_returns_zero_when_estimated_duration_exceeds_budget() -> None:
+    line_count = int(MAX_ANIMATION_SECONDS / 0.1) + 1
+    lines = tuple(f"line{i}" for i in range(line_count))
+    ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=lines)]
+    assert pace_for(ops, base_pace=0.1) == 0.0
 
 
-def test_pace_for_ignores_base_pace_above_threshold() -> None:
-    big_lines = tuple(f"line{i}" for i in range(LARGE_DIFF_LINE_THRESHOLD + 1))
-    ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=big_lines)]
-    assert pace_for(ops, base_pace=0.15) == 0.0
+def test_pace_for_stays_paced_right_at_the_budget_edge() -> None:
+    line_count = int(MAX_ANIMATION_SECONDS / 0.1)
+    lines = tuple(f"line{i}" for i in range(line_count))
+    ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=lines)]
+    assert pace_for(ops, base_pace=0.1) == 0.1
 
 
 def test_render_full_type_empty_lines_returns_nothing() -> None:
