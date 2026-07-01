@@ -4,12 +4,8 @@ from typing import cast
 from unittest.mock import MagicMock, patch
 
 from vim_ai_follower.animate import (
-    DEFAULT_PACE_SECONDS,
-    MAX_ANIMATION_SECONDS,
     KeySequence,
     apply,
-    changed_line_count,
-    pace_for,
     render_full_type,
     render_keystrokes,
 )
@@ -63,38 +59,6 @@ def test_replace_op_deletes_then_inserts() -> None:
     ]
 
 
-def test_changed_line_count_sums_deletions_and_insertions() -> None:
-    ops = [
-        EditOp(kind="delete", start_line=2, end_line=3, new_lines=()),
-        EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b")),
-    ]
-    assert changed_line_count(ops) == 4
-
-
-def test_pace_for_returns_default_within_time_budget() -> None:
-    ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))]
-    assert pace_for(ops) == DEFAULT_PACE_SECONDS
-
-
-def test_pace_for_uses_provided_base_pace_within_time_budget() -> None:
-    ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))]
-    assert pace_for(ops, base_pace=0.15) == 0.15
-
-
-def test_pace_for_returns_zero_when_estimated_duration_exceeds_budget() -> None:
-    line_count = int(MAX_ANIMATION_SECONDS / 0.1) + 1
-    lines = tuple(f"line{i}" for i in range(line_count))
-    ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=lines)]
-    assert pace_for(ops, base_pace=0.1) == 0.0
-
-
-def test_pace_for_stays_paced_right_at_the_budget_edge() -> None:
-    line_count = int(MAX_ANIMATION_SECONDS / 0.1)
-    lines = tuple(f"line{i}" for i in range(line_count))
-    ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=lines)]
-    assert pace_for(ops, base_pace=0.1) == 0.1
-
-
 def test_render_full_type_empty_lines_returns_nothing() -> None:
     assert render_full_type(()) == []
 
@@ -134,3 +98,27 @@ def test_apply_sleeps_between_each_sequence() -> None:
         apply(pane, sequences, pace_seconds=0.05)
     assert sleep.call_count == 2
     sleep.assert_called_with(0.05)
+
+
+def test_apply_stops_sleeping_once_the_deadline_passes() -> None:
+    pane = cast(TmuxPane, MagicMock())
+    sequences = [KeySequence("a"), KeySequence("b"), KeySequence("c")]
+    with (
+        patch("vim_ai_follower.animate.time.sleep") as sleep,
+        patch("vim_ai_follower.animate.time.monotonic", side_effect=[0.0, 0.0, 5.0, 10.0]),
+    ):
+        apply(pane, sequences, pace_seconds=1.0, max_seconds=4.0)
+    assert sleep.call_count == 1
+    assert pane.send_text.call_count == 3  # type: ignore[attr-defined]
+
+
+def test_apply_with_zero_pace_never_checks_the_clock() -> None:
+    pane = cast(TmuxPane, MagicMock())
+    sequences = [KeySequence("a"), KeySequence("b")]
+    with (
+        patch("vim_ai_follower.animate.time.sleep") as sleep,
+        patch("vim_ai_follower.animate.time.monotonic", side_effect=[0.0]) as monotonic,
+    ):
+        apply(pane, sequences, pace_seconds=0.0)
+    sleep.assert_not_called()
+    monotonic.assert_called_once()  # only the initial deadline computation

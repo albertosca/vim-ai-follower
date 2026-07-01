@@ -3,12 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from vim_ai_follower import diff as diff_module
-from vim_ai_follower.animate import (
-    DEFAULT_PACE_SECONDS,
-    pace_for,
-    render_full_type,
-    render_keystrokes,
-)
+from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, render_full_type, render_keystrokes
 from vim_ai_follower.animate import apply as apply_keystrokes
 from vim_ai_follower.tmux import TmuxPane
 
@@ -42,7 +37,7 @@ class TmuxVimFollower:
         # then stacks with the leading whitespace already in our own lines.
         pane.send_text(":setlocal modifiable paste")
         pane.send_key("Enter")
-        apply_keystrokes(pane, render_keystrokes(ops), pace_for(ops, self.pace_seconds))
+        apply_keystrokes(pane, render_keystrokes(ops), self.pace_seconds)
         pane.send_text(":setlocal nomodifiable nopaste")
         pane.send_key("Enter")
 
@@ -57,10 +52,7 @@ class TmuxVimFollower:
         pane.send_text(":%d")
         pane.send_key("Enter")
         lines = tuple(content.splitlines())
-        synthetic_op = [
-            diff_module.EditOp(kind="insert", start_line=1, end_line=0, new_lines=lines)
-        ]
-        apply_keystrokes(pane, render_full_type(lines), pace_for(synthetic_op, self.pace_seconds))
+        apply_keystrokes(pane, render_full_type(lines), self.pace_seconds)
         pane.send_text(":setlocal nomodifiable nopaste")
         pane.send_key("Enter")
 
