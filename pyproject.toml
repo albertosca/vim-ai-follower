@@ -1,9 +1,9 @@
 [project]
 name = "vim-ai-follower"
 version = "0.1.0"
-description = "Watch Claude Code edit files live in a dedicated tmux + Vim pane"
+description = "Watch Claude Code edit files live in a tmux+Vim pane or directly in a running Neovim"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["pynvim>=0.5"]
 
 [project.scripts]
 claude-follow = "vim_ai_follower.cli:main"
@@ -35,6 +35,10 @@ quote-style = "double"
 [tool.mypy]
 strict = true
 files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = "pynvim.*"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

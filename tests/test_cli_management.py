@@ -45,7 +45,7 @@ def test_start_creates_and_registers_a_pane() -> None:
         assert cli.cmd_start({"TMUX_PANE": "%1"}) == 0
         result = state.FollowerState.get("$1")
     assert result is not None
-    assert result.pane.pane_id == "%9"
+    assert result.target == "%9"
 
 
 def test_start_is_idempotent_when_already_running() -> None:
@@ -55,7 +55,7 @@ def test_start_is_idempotent_when_already_running() -> None:
         result = state.FollowerState.get("$1")
     assert exit_code == 0
     assert result is not None
-    assert result.pane.pane_id == "%9"
+    assert result.target == "%9"
 
 
 def test_stop_kills_pane_and_clears_state() -> None:
@@ -92,3 +92,24 @@ def test_status_reports_active_follower(capsys: pytest.CaptureFixture[str]) -> N
 def test_status_without_tmux_env(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.cmd_status({}) == 0
     assert "not running inside tmux" in capsys.readouterr().out
+
+
+def test_start_nvim_backend_fails_without_socket(capsys: pytest.CaptureFixture[str]) -> None:
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("pynvim.attach", side_effect=OSError("no such file")),
+    ):
+        exit_code = cli.cmd_start({"TMUX_PANE": "%1"}, backend="nvim_rpc")
+    assert exit_code == 1
+    assert "no Neovim RPC socket found" in capsys.readouterr().err
+
+
+def test_start_nvim_backend_registers_when_socket_alive() -> None:
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("pynvim.attach", return_value=MagicMock()),
+    ):
+        assert cli.cmd_start({"TMUX_PANE": "%1"}, backend="nvim_rpc") == 0
+        result = state.FollowerState.get("$1")
+    assert result is not None
+    assert result.backend == "nvim_rpc"

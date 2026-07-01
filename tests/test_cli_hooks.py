@@ -8,7 +8,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from vim_ai_follower import cli, snapshot, state
-from vim_ai_follower.tmux import TmuxPane
 
 
 @pytest.fixture(autouse=True)
@@ -25,7 +24,7 @@ def _register_fake_follower(session_id: str, pane_id: str, current_file: str | N
         "vim_ai_follower.tmux.subprocess.run",
         return_value=MagicMock(returncode=0, stdout=f"{pane_id}\n"),
     ):
-        state.FollowerState.set(session_id, TmuxPane(pane_id=pane_id), current_file=current_file)
+        state.FollowerState.set(session_id, "tmux", pane_id, current_file=current_file)
 
 
 def _mock_tmux_run(session_id: str = "$1", pane_id: str = "%2") -> Callable[..., MagicMock]:
@@ -150,11 +149,27 @@ def test_hook_post_read_noop_without_file_path() -> None:
         assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
 
-def test_hook_post_animates_a_text_edit(tmp_path: Path) -> None:
+def test_hook_post_first_open_shows_file_without_animating(tmp_path: Path) -> None:
+    # PostToolUse fires after the file is already written, so the first
+    # `:e` for a file already loads its final content — animating a
+    # before->after diff on top of that would duplicate/garble it.
+    target = tmp_path / "f.txt"
+    target.write_text("hello\nworld\n")
+    snapshot.save("$1", str(target), "hello\n")
+    _register_fake_follower("$1", "%2")
+
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    assert _literal_sends(run) == [f":e {target}"]
+
+
+def test_hook_post_animates_a_text_edit_on_subsequent_change(tmp_path: Path) -> None:
     target = tmp_path / "f.txt"
     target.write_text("hello\nworld\n")
     snapshot.save("$1", str(target), "hello\nworld\n")
-    _register_fake_follower("$1", "%2")
+    _register_fake_follower("$1", "%2", current_file=str(target))
 
     target.write_text("hello\nvim ai follower\n")
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
@@ -165,7 +180,7 @@ def test_hook_post_animates_a_text_edit(tmp_path: Path) -> None:
     assert "vim ai follower" in _literal_sends(run)
 
 
-def test_hook_post_skips_binary_files(tmp_path: Path) -> None:
+def test_hook_post_skips_binary_files_on_first_open(tmp_path: Path) -> None:
     target = tmp_path / "f.bin"
     target.write_bytes(b"\x00\x01\x02")
     snapshot.save("$1", str(target), "")
@@ -176,6 +191,19 @@ def test_hook_post_skips_binary_files(tmp_path: Path) -> None:
         assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert _literal_sends(run) == [f":e {target}"]
+
+
+def test_hook_post_skips_binary_files_on_subsequent_edit(tmp_path: Path) -> None:
+    target = tmp_path / "f.bin"
+    target.write_bytes(b"\x00\x01\x02")
+    snapshot.save("$1", str(target), "")
+    _register_fake_follower("$1", "%2", current_file=str(target))
+
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    assert _literal_sends(run) == []
 
 
 def test_hook_post_read_navigates_to_file_and_offset(tmp_path: Path) -> None:
