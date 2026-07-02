@@ -42,8 +42,14 @@ class NvimRpcFollower:
             buf[op.start_line - 1 : op.end_line] = list(op.new_lines)
             time.sleep(PACE_SECONDS)
 
-    def show_fresh(self, content: str) -> None:
+    def show_fresh(self, file_path: str, content: str) -> None:
+        # No `:edit` here on purpose: it would load the real (already
+        # written) file content and flash it before the wipe+retype. Rename
+        # the current buffer in place instead of ever loading the real one.
         nvim = self._connect()
+        nvim.command(f"silent! bwipeout! {file_path}")
+        nvim.command(f"file {file_path}")
+        nvim.command("filetype detect")
         nvim.current.buffer[:] = []
         self.apply_edit("", content)
 

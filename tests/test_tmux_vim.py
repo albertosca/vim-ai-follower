@@ -83,37 +83,53 @@ def test_get_follower_forwards_pace_seconds_for_tmux_backend() -> None:
     assert follower.pace_seconds == 0.15
 
 
-def test_show_fresh_wipes_the_buffer_then_types_the_content() -> None:
+def test_show_fresh_renames_current_buffer_without_ever_loading_the_real_file() -> None:
+    # No `:e` here on purpose: loading the real file would flash its final
+    # content on screen before the wipe+retype, spoiling the "watch it type"
+    # effect. Instead the current buffer is wiped and renamed in place.
     follower = TmuxVimFollower(pane_id="%2")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
         patch("vim_ai_follower.animate.time.sleep"),
     ):
-        follower.show_fresh("a\nb\n")
+        follower.show_fresh("/tmp/f.txt", "a\nb\n")
     commands = _sent_commands(run)
     assert commands[0] == (":setlocal modifiable paste", True)
     assert commands[1] == ("Enter", False)
-    assert commands[2] == (":%d", True)
+    assert commands[2] == (":silent! bwipeout! /tmp/f.txt", True)
     assert commands[3] == ("Enter", False)
-    assert commands[4] == ("i", True)
-    assert commands[-2] == (":setlocal nomodifiable nopaste", True)
+    assert commands[4] == (":file /tmp/f.txt", True)
+    assert commands[5] == ("Enter", False)
+    assert commands[6] == (":filetype detect", True)
+    assert commands[7] == ("Enter", False)
+    assert commands[8] == (":%d", True)
+    assert commands[9] == ("Enter", False)
+    assert commands[10] == ("i", True)
+    assert commands[-2] == (":setlocal readonly nomodifiable nopaste", True)
     assert commands[-1] == ("Enter", False)
     typed = [text for text, literal in commands if literal]
     assert "a" in typed
     assert "b" in typed
+    assert not any(text.startswith(":e ") for text, _ in commands)
 
 
 def test_show_fresh_with_empty_content_still_wipes_and_relocks() -> None:
     follower = TmuxVimFollower(pane_id="%2")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
-        follower.show_fresh("")
+        follower.show_fresh("/tmp/f.txt", "")
     commands = _sent_commands(run)
     assert commands == [
         (":setlocal modifiable paste", True),
         ("Enter", False),
+        (":silent! bwipeout! /tmp/f.txt", True),
+        ("Enter", False),
+        (":file /tmp/f.txt", True),
+        ("Enter", False),
+        (":filetype detect", True),
+        ("Enter", False),
         (":%d", True),
         ("Enter", False),
-        (":setlocal nomodifiable nopaste", True),
+        (":setlocal readonly nomodifiable nopaste", True),
         ("Enter", False),
     ]
 
@@ -124,5 +140,5 @@ def test_show_fresh_uses_configured_pace_seconds() -> None:
         patch("vim_ai_follower.tmux.subprocess.run"),
         patch("vim_ai_follower.animate.time.sleep") as sleep,
     ):
-        follower.show_fresh("a\nb\n")
+        follower.show_fresh("/tmp/f.txt", "a\nb\n")
     sleep.assert_called_with(0.15)

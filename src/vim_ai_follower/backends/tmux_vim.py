@@ -41,19 +41,30 @@ class TmuxVimFollower:
         pane.send_text(":setlocal nomodifiable nopaste")
         pane.send_key("Enter")
 
-    def show_fresh(self, content: str) -> None:
+    def show_fresh(self, file_path: str, content: str) -> None:
         pane = TmuxPane(pane_id=self.pane_id)
         pane.send_text(":setlocal modifiable paste")
         pane.send_key("Enter")
-        # `:e` already loaded the file's real content, so wipe it down to a
-        # single blank line first — Vim can't have zero lines — then type
-        # everything back in via `i` rather than render_keystrokes's `gg`/`O`,
-        # which would leave that leftover blank line stranded at the end.
+        # Deliberately never `:e file_path` here: that would load the file's
+        # real (already-written) content and flash the finished result on
+        # screen before the wipe+retype, spoiling the "watch it type" effect.
+        # Instead the current buffer is wiped and renamed in place, so the
+        # real content is never displayed before we type it back in.
+        pane.send_text(f":silent! bwipeout! {file_path}")
+        pane.send_key("Enter")
+        pane.send_text(f":file {file_path}")
+        pane.send_key("Enter")
+        pane.send_text(":filetype detect")
+        pane.send_key("Enter")
+        # Wipe down to a single blank line — Vim can't have zero lines — then
+        # type everything back in via `i` rather than render_keystrokes's
+        # `gg`/`O`, which would leave that leftover blank line stranded at
+        # the end.
         pane.send_text(":%d")
         pane.send_key("Enter")
         lines = tuple(content.splitlines())
         apply_keystrokes(pane, render_full_type(lines), self.pace_seconds)
-        pane.send_text(":setlocal nomodifiable nopaste")
+        pane.send_text(":setlocal readonly nomodifiable nopaste")
         pane.send_key("Enter")
 
     def goto_line(self, offset: int) -> None:

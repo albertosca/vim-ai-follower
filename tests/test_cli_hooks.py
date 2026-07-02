@@ -153,11 +153,10 @@ def test_hook_post_read_noop_without_file_path() -> None:
 
 
 def test_hook_post_first_open_retypes_from_scratch_instead_of_pasting(tmp_path: Path) -> None:
-    # PostToolUse fires after the file is already written, so the first
-    # `:e` for a file already loads its final content directly — animating
-    # a before->after diff on top of that would duplicate/garble it. Instead
-    # the buffer is wiped and the whole file is retyped from scratch, so the
-    # first view is animated too rather than just appearing pasted.
+    # PostToolUse fires after the file is already written, so `:e` on the
+    # first view would already show its final content directly, spoiling
+    # the "watch it type" effect. Instead the buffer is renamed in place and
+    # wiped, then the whole file is retyped from scratch — `:e` never runs.
     target = tmp_path / "f.txt"
     target.write_text("hello\nworld\n")
     snapshot.save("$1", str(target), "hello\n")
@@ -168,7 +167,8 @@ def test_hook_post_first_open_retypes_from_scratch_instead_of_pasting(tmp_path: 
         assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = _literal_sends(run)
-    assert sends[:2] == [f":e {target}", ":setlocal readonly nomodifiable"]
+    assert not any(text.startswith(":e ") for text in sends)
+    assert f":file {target}" in sends
     assert ":%d" in sends
     assert "hello" in sends
     assert "world" in sends
@@ -232,6 +232,21 @@ def test_hook_post_read_navigates_to_file_and_offset(tmp_path: Path) -> None:
         ":setlocal readonly nomodifiable",
         ":2",
     ]
+
+
+def test_hook_post_read_skips_e_when_file_already_current(tmp_path: Path) -> None:
+    target = tmp_path / "f.txt"
+    target.write_text("a\nb\nc\n")
+    _register_fake_follower("$1", "%2", current_file=str(target))
+
+    payload: dict[str, object] = {
+        "tool_name": "Read",
+        "tool_input": {"file_path": str(target), "offset": 2},
+    }
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    assert _literal_sends(run) == [":2"]
 
 
 def test_hook_post_skips_e_when_file_already_current(tmp_path: Path) -> None:

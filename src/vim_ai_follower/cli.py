@@ -163,11 +163,11 @@ def _get_active_follower(session_id: str) -> FollowerState | None:
 def _ensure_buffer(
     session_id: str, follower: Follower, current: FollowerState, file_path: str
 ) -> bool:
-    """Switches the follower to file_path if needed. Returns True when a
-    fresh `:e` happened — in that case the buffer now shows the file's
-    current on-disk content directly, which is already the post-edit state
-    (PostToolUse fires after the tool wrote the file), so callers must not
-    also animate a before->after diff on top of it."""
+    """Switches the follower to file_path via `:e` if needed, returning True
+    when a switch happened. Used for Read navigation and binary files, where
+    showing the real on-disk content immediately is exactly what's wanted —
+    unlike a fresh text edit, which goes through show_fresh instead so the
+    finished content is never flashed before it's typed."""
     if current.current_file == file_path:
         return False
     follower.ensure_showing(file_path)
@@ -210,14 +210,19 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         return 0
 
     follower = get_follower(current.backend, current.target, config.pace_seconds_for(current.speed))
-    freshly_opened = _ensure_buffer(session.session_id, follower, current, file_path)
+    is_fresh = current.current_file != file_path
 
     if diff_module.is_binary(raw_after):
+        # Binary files are never animated, so it's safe to just navigate to
+        # them normally (real content shown immediately, nothing to spoil).
+        if is_fresh:
+            _ensure_buffer(session.session_id, follower, current, file_path)
         return 0
 
     after = raw_after.decode("utf-8", errors="replace")
-    if freshly_opened:
-        follower.show_fresh(after)
+    if is_fresh:
+        follower.show_fresh(file_path, after)
+        FollowerState.update_current_file(session.session_id, file_path)
         return 0
 
     before = load_snapshot(session.session_id, file_path)
