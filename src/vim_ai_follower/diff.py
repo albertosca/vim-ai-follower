@@ -42,5 +42,15 @@ def compute_edit_script(before: str, after: str) -> list[EditOp]:
     return ops
 
 
+def apply_ops(before: str, ops: list[EditOp]) -> str:
+    lines = before.splitlines()
+    for op in ops:
+        if op.end_line >= op.start_line:
+            del lines[op.start_line - 1 : op.end_line]
+        insert_at = op.start_line - 1
+        lines[insert_at:insert_at] = list(op.new_lines)
+    return "\n".join(lines)
+
+
 def is_binary(content: bytes) -> bool:
     return b"\x00" in content[:8192]
