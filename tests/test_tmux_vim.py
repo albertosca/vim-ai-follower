@@ -87,6 +87,11 @@ def test_show_fresh_renames_current_buffer_without_ever_loading_the_real_file() 
     # No `:e` here on purpose: loading the real file would flash its final
     # content on screen before the wipe+retype, spoiling the "watch it type"
     # effect. Instead the current buffer is wiped and renamed in place.
+    #
+    # `:filetype detect` must run BEFORE 'paste' is enabled: loading the
+    # filetype's indent/ftplugin scripts can turn cindent/smartindent/
+    # indentexpr back on, and 'paste' only suppresses whatever was active
+    # at the moment it's set — anything enabled afterwards still fires.
     follower = TmuxVimFollower(pane_id="%2")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
@@ -94,13 +99,13 @@ def test_show_fresh_renames_current_buffer_without_ever_loading_the_real_file() 
     ):
         follower.show_fresh("/tmp/f.txt", "a\nb\n")
     commands = _sent_commands(run)
-    assert commands[0] == (":setlocal modifiable paste", True)
+    assert commands[0] == (":silent! bwipeout! /tmp/f.txt", True)
     assert commands[1] == ("Enter", False)
-    assert commands[2] == (":silent! bwipeout! /tmp/f.txt", True)
+    assert commands[2] == (":file /tmp/f.txt", True)
     assert commands[3] == ("Enter", False)
-    assert commands[4] == (":file /tmp/f.txt", True)
+    assert commands[4] == (":filetype detect", True)
     assert commands[5] == ("Enter", False)
-    assert commands[6] == (":filetype detect", True)
+    assert commands[6] == (":setlocal modifiable paste", True)
     assert commands[7] == ("Enter", False)
     assert commands[8] == (":%d", True)
     assert commands[9] == ("Enter", False)
@@ -119,13 +124,13 @@ def test_show_fresh_with_empty_content_still_wipes_and_relocks() -> None:
         follower.show_fresh("/tmp/f.txt", "")
     commands = _sent_commands(run)
     assert commands == [
-        (":setlocal modifiable paste", True),
-        ("Enter", False),
         (":silent! bwipeout! /tmp/f.txt", True),
         ("Enter", False),
         (":file /tmp/f.txt", True),
         ("Enter", False),
         (":filetype detect", True),
+        ("Enter", False),
+        (":setlocal modifiable paste", True),
         ("Enter", False),
         (":%d", True),
         ("Enter", False),

@@ -43,8 +43,6 @@ class TmuxVimFollower:
 
     def show_fresh(self, file_path: str, content: str) -> None:
         pane = TmuxPane(pane_id=self.pane_id)
-        pane.send_text(":setlocal modifiable paste")
-        pane.send_key("Enter")
         # Deliberately never `:e file_path` here: that would load the file's
         # real (already-written) content and flash the finished result on
         # screen before the wipe+retype, spoiling the "watch it type" effect.
@@ -54,7 +52,14 @@ class TmuxVimFollower:
         pane.send_key("Enter")
         pane.send_text(f":file {file_path}")
         pane.send_key("Enter")
+        # `:filetype detect` must run BEFORE 'paste' is enabled below: it
+        # loads the filetype's indent/ftplugin scripts, which can turn
+        # cindent/smartindent/indentexpr back on — 'paste' only suppresses
+        # whatever was active at the moment it's set, not anything enabled
+        # afterwards.
         pane.send_text(":filetype detect")
+        pane.send_key("Enter")
+        pane.send_text(":setlocal modifiable paste")
         pane.send_key("Enter")
         # Wipe down to a single blank line — Vim can't have zero lines — then
         # type everything back in via `i` rather than render_keystrokes's
