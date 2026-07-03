@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal
 
+from vim_ai_follower import control
 from vim_ai_follower.diff import EditOp
 from vim_ai_follower.tmux import TmuxPane
 
@@ -14,6 +17,12 @@ MAX_ANIMATION_SECONDS = 60.0
 class KeySequence:
     text: str
     literal: bool = True
+
+
+@dataclass(frozen=True)
+class ApplyResult:
+    outcome: Literal["completed", "paused", "interrupted"]
+    sent_count: int
 
 
 def _delete_sequences(op: EditOp) -> list[KeySequence]:
@@ -76,17 +85,29 @@ def apply(
     pane: TmuxPane,
     sequences: list[KeySequence],
     pace_seconds: float,
+    session_id: str,
+    *,
     max_seconds: float = MAX_ANIMATION_SECONDS,
-) -> None:
-    """Paces at pace_seconds per sequence, but stops pacing once max_seconds
-    of wall-clock time has elapsed — the remaining sequences still get sent,
-    just back-to-back with no delay, so a long file degrades to "dumped in a
-    block" instead of the hook running long enough to hit its own timeout."""
+    control_base_dir: Path | None = None,
+) -> ApplyResult:
+    """Paces at pace_seconds per sequence, checking for a pause/interrupt
+    signal before each one (see control.check_signal) and stopping
+    immediately — without sending that sequence — if one is found. Also
+    stops pacing (but keeps sending) once max_seconds of wall-clock time has
+    elapsed, so a long file degrades to "dumped in a block" instead of the
+    hook running long enough to hit its own timeout."""
     deadline = time.monotonic() + max_seconds
-    for sequence in sequences:
+    for sent_count, sequence in enumerate(sequences):
+        signal = control.check_signal(session_id, control_base_dir)
+        if signal is not None:
+            outcome: Literal["paused", "interrupted"] = (
+                "interrupted" if signal == "interrupt" else "paused"
+            )
+            return ApplyResult(outcome, sent_count)
         if sequence.literal:
             pane.send_text(sequence.text)
         else:
             pane.send_key(sequence.text)
         if pace_seconds > 0 and time.monotonic() < deadline:
             time.sleep(pace_seconds)
+    return ApplyResult("completed", len(sequences))
