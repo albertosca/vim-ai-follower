@@ -4,7 +4,9 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+from vim_ai_follower import control
 from vim_ai_follower.animate import (
+    AnimationResult,
     ApplyResult,
     KeySequence,
     _delete_sequences,
@@ -13,6 +15,7 @@ from vim_ai_follower.animate import (
     apply,
     render_full_type,
     render_keystrokes,
+    run_ops,
 )
 from vim_ai_follower.diff import EditOp
 from vim_ai_follower.tmux import TmuxPane
@@ -221,3 +224,98 @@ def test_insert_prefix_length_is_3_when_positioned_by_line_number() -> None:
 def test_insert_prefix_length_is_2_when_positioned_at_top() -> None:
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
     assert _insert_prefix_length(op) == 2  # "gg", "O"
+
+
+def test_run_ops_clears_stale_signals_before_starting(tmp_path: Path) -> None:
+    control.request_pause("$1", base_dir=tmp_path)
+    pane = cast(TmuxPane, MagicMock())
+    ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))]
+    result = run_ops(pane, "$1", ops, pace_seconds=0.0, base_dir=tmp_path)
+    # the stale pause from before this call started must not affect it
+    assert result == AnimationResult("completed", 1)
+
+
+def test_run_ops_all_complete() -> None:
+    pane = cast(TmuxPane, MagicMock())
+    ops = [
+        EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",)),
+        EditOp(kind="replace", start_line=3, end_line=3, new_lines=("b",)),
+    ]
+    with (
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+        patch("vim_ai_follower.control.clear_signals"),
+    ):
+        result = run_ops(pane, "$1", ops, pace_seconds=0.0)
+    assert result == AnimationResult("completed", 2)
+
+
+def test_run_ops_interrupted_before_first_op_undoes_nothing() -> None:
+    pane = cast(TmuxPane, MagicMock())
+    ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))]
+    with (
+        patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
+        patch("vim_ai_follower.control.clear_signals"),
+    ):
+        result = run_ops(pane, "$1", ops, pace_seconds=0.0)
+    assert result == AnimationResult("interrupted", 0)
+    pane.send_text.assert_not_called()  # type: ignore[attr-defined]
+    pane.send_key.assert_called_once_with("Escape")  # type: ignore[attr-defined]
+
+
+def test_run_ops_interrupted_mid_insert_undoes_the_insert(tmp_path: Path) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    # pure-insert op, anchor<1 so the sequence is ["gg", "O", "a", "Enter",
+    # "b", "Escape"] (prefix length 2). Two Nones let "gg" and "O" through —
+    # insert mode is now entered — then "interrupt" fires before "a" is sent.
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
+    with patch("vim_ai_follower.control.check_signal", side_effect=[None, None, "interrupt"]):
+        result = run_ops(pane, "$1", [op], pace_seconds=0.0, base_dir=tmp_path)
+    assert result == AnimationResult("interrupted", 0)
+    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    assert sent_texts == ["gg", "O", "u"]
+    pane.send_key.assert_called_once_with("Escape")  # type: ignore[attr-defined]
+
+
+def test_run_ops_interrupted_before_insert_mode_entered_skips_undo(tmp_path: Path) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
+    # signal fires on the very first check inside the insert-half apply()
+    # call — before "gg" is even sent, so insert mode was never entered
+    with patch("vim_ai_follower.control.check_signal", side_effect=["pause"]):
+        result = run_ops(pane, "$1", [op], pace_seconds=0.0, base_dir=tmp_path)
+    assert result == AnimationResult("paused", 0)
+    pane.send_key.assert_called_once_with("Escape")  # type: ignore[attr-defined]
+    pane.send_text.assert_not_called()  # type: ignore[attr-defined]
+
+
+def test_run_ops_interrupted_during_delete_needs_no_undo(tmp_path: Path) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    op = EditOp(kind="delete", start_line=2, end_line=3, new_lines=())
+    # the command text (":2,3d") gets typed, but the signal fires before its
+    # Enter — the ex-command was never executed, so Escape alone is enough
+    with patch("vim_ai_follower.control.check_signal", side_effect=[None, "interrupt"]):
+        result = run_ops(pane, "$1", [op], pace_seconds=0.0, base_dir=tmp_path)
+    assert result == AnimationResult("interrupted", 0)
+    pane.send_text.assert_called_once_with(":2,3d")  # type: ignore[attr-defined]
+    pane.send_key.assert_called_once_with("Escape")  # type: ignore[attr-defined]
+
+
+def test_run_ops_paused_saves_remaining_ops_from_the_interrupted_one(tmp_path: Path) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    ops = [
+        EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",)),
+        EditOp(kind="insert", start_line=5, end_line=4, new_lines=("b",)),
+    ]
+    # op[0]'s insert-half is ["gg", "O", "a", "Escape"] — 4 checks, all None,
+    # so it completes fully. op[1]'s delete-half is empty (pure insert), so
+    # its insert-half's very first check is next — "pause" fires there,
+    # before anything of op[1] is sent.
+    with patch(
+        "vim_ai_follower.control.check_signal", side_effect=[None, None, None, None, "pause"]
+    ):
+        result = run_ops(pane, "$1", ops, pace_seconds=0.1, base_dir=tmp_path)
+    assert result == AnimationResult("paused", 1)
+    pending = control.load_pending_animation("$1", base_dir=tmp_path)
+    assert isinstance(pending, control.PendingApplyEdit)
+    assert pending.ops == [ops[1]]
+    assert pending.pace_seconds == 0.1

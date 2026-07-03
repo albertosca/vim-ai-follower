@@ -64,6 +64,53 @@ def render_keystrokes(ops: list[EditOp]) -> list[KeySequence]:
     return sequences
 
 
+@dataclass(frozen=True)
+class AnimationResult:
+    outcome: Literal["completed", "paused", "interrupted"]
+    completed_count: int
+
+
+def run_ops(
+    pane: TmuxPane,
+    session_id: str,
+    ops: list[EditOp],
+    pace_seconds: float,
+    base_dir: Path | None = None,
+) -> AnimationResult:
+    control.clear_signals(session_id, base_dir)
+    for index, op in enumerate(ops):
+        delete_seq = _delete_sequences(op)
+        if delete_seq:
+            result = apply(pane, delete_seq, pace_seconds, session_id, control_base_dir=base_dir)
+            if result.outcome != "completed":
+                pane.send_key("Escape")
+                return _stop(result.outcome, session_id, ops, index, pace_seconds, base_dir)
+
+        insert_seq = _insert_sequences(op)
+        if insert_seq:
+            result = apply(pane, insert_seq, pace_seconds, session_id, control_base_dir=base_dir)
+            if result.outcome != "completed":
+                pane.send_key("Escape")
+                if result.sent_count >= _insert_prefix_length(op):
+                    pane.send_text("u")
+                return _stop(result.outcome, session_id, ops, index, pace_seconds, base_dir)
+
+    return AnimationResult("completed", len(ops))
+
+
+def _stop(
+    outcome: Literal["paused", "interrupted"],
+    session_id: str,
+    ops: list[EditOp],
+    index: int,
+    pace_seconds: float,
+    base_dir: Path | None,
+) -> AnimationResult:
+    if outcome == "paused":
+        control.save_pending_apply_edit(session_id, ops[index:], pace_seconds, base_dir)
+    return AnimationResult(outcome, index)
+
+
 def render_full_type(lines: tuple[str, ...]) -> list[KeySequence]:
     """Types lines into the current (already-empty) line via `i`, rather than
     `render_keystrokes`'s `gg`/`O`-based positioning — used when the buffer
