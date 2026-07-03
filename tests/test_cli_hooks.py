@@ -215,6 +215,21 @@ def test_hook_post_skips_binary_files_on_subsequent_edit(tmp_path: Path) -> None
     assert _literal_sends(run) == []
 
 
+def test_hook_post_read_without_offset_does_not_navigate(tmp_path: Path) -> None:
+    target = tmp_path / "f.txt"
+    target.write_text("a\nb\nc\n")
+    _register_fake_follower("$1", "%2")
+
+    payload: dict[str, object] = {
+        "tool_name": "Read",
+        "tool_input": {"file_path": str(target)},
+    }
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    assert _literal_sends(run) == [f":e {target}", ":setlocal readonly nomodifiable"]
+
+
 def test_hook_post_read_navigates_to_file_and_offset(tmp_path: Path) -> None:
     target = tmp_path / "f.txt"
     target.write_text("a\nb\nc\n")
@@ -294,3 +309,16 @@ def test_main_hook_pre_reads_stdin_json(monkeypatch: pytest.MonkeyPatch, tmp_pat
     ):
         monkeypatch.setenv("TMUX_PANE", "%1")
         assert cli.main(["hook", "pre"]) == 0
+
+
+def test_main_hook_post_reads_stdin_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    target = tmp_path / "f.txt"
+    target.write_text("x\n")
+    payload = f'{{"tool_name": "Bash", "tool_input": {{"file_path": "{target}"}}}}'
+    monkeypatch.setattr("sys.stdin", io.StringIO(payload))
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="$1\n"),
+    ):
+        monkeypatch.setenv("TMUX_PANE", "%1")
+        assert cli.main(["hook", "post"]) == 0
