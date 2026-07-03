@@ -5,6 +5,9 @@ from unittest.mock import MagicMock, patch
 
 from vim_ai_follower.animate import (
     KeySequence,
+    _delete_sequences,
+    _insert_prefix_length,
+    _insert_sequences,
     apply,
     render_full_type,
     render_keystrokes,
@@ -122,3 +125,56 @@ def test_apply_with_zero_pace_never_checks_the_clock() -> None:
         apply(pane, sequences, pace_seconds=0.0)
     sleep.assert_not_called()
     monotonic.assert_called_once()  # only the initial deadline computation
+
+
+def test_delete_sequences_for_delete_op() -> None:
+    op = EditOp(kind="delete", start_line=2, end_line=3, new_lines=())
+    assert _delete_sequences(op) == [
+        KeySequence(":2,3d", literal=True),
+        KeySequence("Enter", literal=False),
+    ]
+
+
+def test_delete_sequences_empty_for_pure_insert_op() -> None:
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    assert _delete_sequences(op) == []
+
+
+def test_insert_sequences_empty_for_pure_delete_op() -> None:
+    op = EditOp(kind="delete", start_line=2, end_line=3, new_lines=())
+    assert _insert_sequences(op) == []
+
+
+def test_insert_sequences_at_top_uses_gg_open_above() -> None:
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
+    assert _insert_sequences(op) == [
+        KeySequence("gg", literal=True),
+        KeySequence("O", literal=True),
+        KeySequence("a", literal=True),
+        KeySequence("Enter", literal=False),
+        KeySequence("b", literal=True),
+        KeySequence("Escape", literal=False),
+    ]
+
+
+def test_insert_sequences_mid_file_positions_then_opens_below() -> None:
+    op = EditOp(kind="insert", start_line=3, end_line=2, new_lines=("c", "d"))
+    assert _insert_sequences(op) == [
+        KeySequence(":2", literal=True),
+        KeySequence("Enter", literal=False),
+        KeySequence("o", literal=True),
+        KeySequence("c", literal=True),
+        KeySequence("Enter", literal=False),
+        KeySequence("d", literal=True),
+        KeySequence("Escape", literal=False),
+    ]
+
+
+def test_insert_prefix_length_is_3_when_positioned_by_line_number() -> None:
+    op = EditOp(kind="insert", start_line=3, end_line=2, new_lines=("c",))
+    assert _insert_prefix_length(op) == 3  # ":2", Enter, "o"
+
+
+def test_insert_prefix_length_is_2_when_positioned_at_top() -> None:
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    assert _insert_prefix_length(op) == 2  # "gg", "O"

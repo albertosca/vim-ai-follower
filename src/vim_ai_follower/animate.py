@@ -16,27 +16,42 @@ class KeySequence:
     literal: bool = True
 
 
+def _delete_sequences(op: EditOp) -> list[KeySequence]:
+    if op.end_line < op.start_line:
+        return []
+    return [KeySequence(f":{op.start_line},{op.end_line}d"), KeySequence("Enter", literal=False)]
+
+
+def _insert_sequences(op: EditOp) -> list[KeySequence]:
+    if not op.new_lines:
+        return []
+    sequences: list[KeySequence] = []
+    anchor = op.start_line - 1
+    if anchor >= 1:
+        sequences.append(KeySequence(f":{anchor}"))
+        sequences.append(KeySequence("Enter", literal=False))
+        sequences.append(KeySequence("o"))
+    else:
+        sequences.append(KeySequence("gg"))
+        sequences.append(KeySequence("O"))
+    last_index = len(op.new_lines) - 1
+    for index, line in enumerate(op.new_lines):
+        sequences.append(KeySequence(line))
+        if index < last_index:
+            sequences.append(KeySequence("Enter", literal=False))
+    sequences.append(KeySequence("Escape", literal=False))
+    return sequences
+
+
+def _insert_prefix_length(op: EditOp) -> int:
+    return 3 if (op.start_line - 1) >= 1 else 2
+
+
 def render_keystrokes(ops: list[EditOp]) -> list[KeySequence]:
     sequences: list[KeySequence] = []
     for op in ops:
-        if op.end_line >= op.start_line:
-            sequences.append(KeySequence(f":{op.start_line},{op.end_line}d"))
-            sequences.append(KeySequence("Enter", literal=False))
-        if op.new_lines:
-            anchor = op.start_line - 1
-            if anchor >= 1:
-                sequences.append(KeySequence(f":{anchor}"))
-                sequences.append(KeySequence("Enter", literal=False))
-                sequences.append(KeySequence("o"))
-            else:
-                sequences.append(KeySequence("gg"))
-                sequences.append(KeySequence("O"))
-            last_index = len(op.new_lines) - 1
-            for index, line in enumerate(op.new_lines):
-                sequences.append(KeySequence(line))
-                if index < last_index:
-                    sequences.append(KeySequence("Enter", literal=False))
-            sequences.append(KeySequence("Escape", literal=False))
+        sequences.extend(_delete_sequences(op))
+        sequences.extend(_insert_sequences(op))
     return sequences
 
 
