@@ -15,6 +15,7 @@ from vim_ai_follower.animate import (
     apply,
     render_full_type,
     render_keystrokes,
+    run_lines,
     run_ops,
 )
 from vim_ai_follower.diff import EditOp
@@ -319,3 +320,66 @@ def test_run_ops_paused_saves_remaining_ops_from_the_interrupted_one(tmp_path: P
     assert isinstance(pending, control.PendingApplyEdit)
     assert pending.ops == [ops[1]]
     assert pending.pace_seconds == 0.1
+
+
+def test_run_lines_clears_stale_signals_before_starting(tmp_path: Path) -> None:
+    control.request_interrupt("$1", base_dir=tmp_path)
+    pane = cast(TmuxPane, MagicMock())
+    result = run_lines(pane, "$1", ("a",), pace_seconds=0.0, base_dir=tmp_path)
+    # the stale interrupt from before this call started must not affect it
+    assert result == AnimationResult("completed", 1)
+
+
+def test_run_lines_all_complete() -> None:
+    pane = cast(TmuxPane, MagicMock())
+    with (
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+        patch("vim_ai_follower.control.clear_signals"),
+    ):
+        result = run_lines(pane, "$1", ("a", "b"), pace_seconds=0.0)
+    assert result == AnimationResult("completed", 2)
+
+
+def test_run_lines_interrupted_before_any_line_sent() -> None:
+    pane = cast(TmuxPane, MagicMock())
+    with (
+        patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
+        patch("vim_ai_follower.control.clear_signals"),
+    ):
+        result = run_lines(pane, "$1", ("a",), pace_seconds=0.0)
+    assert result == AnimationResult("interrupted", 0)
+    pane.send_text.assert_not_called()  # type: ignore[attr-defined]
+    pane.send_key.assert_called_once_with("Escape")  # type: ignore[attr-defined]
+
+
+def test_run_lines_interrupted_mid_line_undoes_the_insert(tmp_path: Path) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    # first check (before "i") is None so "i" is sent, entering insert mode;
+    # second check (before the line's text) is "interrupt"
+    with patch("vim_ai_follower.control.check_signal", side_effect=[None, "interrupt"]):
+        result = run_lines(pane, "$1", ("a",), pace_seconds=0.0, base_dir=tmp_path)
+    assert result == AnimationResult("interrupted", 0)
+    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    assert sent_texts == ["i", "u"]
+    pane.send_key.assert_called_once_with("Escape")  # type: ignore[attr-defined]
+
+
+def test_run_lines_paused_saves_remaining_lines(tmp_path: Path) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    # line "a" fully completes (3 checks: i, a, Escape); line "b"'s first
+    # check (before its own "i") returns "pause"
+    with patch("vim_ai_follower.control.check_signal", side_effect=[None, None, None, "pause"]):
+        result = run_lines(pane, "$1", ("a", "b", "c"), pace_seconds=0.2, base_dir=tmp_path)
+    assert result == AnimationResult("paused", 1)
+    pending = control.load_pending_animation("$1", base_dir=tmp_path)
+    assert isinstance(pending, control.PendingShowFresh)
+    assert pending.lines == ("b", "c")
+    assert pending.pace_seconds == 0.2
+
+
+def test_run_lines_empty_tuple_completes_immediately(tmp_path: Path) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    with patch("vim_ai_follower.control.check_signal", return_value=None):
+        result = run_lines(pane, "$1", (), pace_seconds=0.0, base_dir=tmp_path)
+    assert result == AnimationResult("completed", 0)
+    pane.send_text.assert_not_called()  # type: ignore[attr-defined]

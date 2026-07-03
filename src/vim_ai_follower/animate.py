@@ -128,6 +128,29 @@ def render_full_type(lines: tuple[str, ...]) -> list[KeySequence]:
     return sequences
 
 
+def run_lines(
+    pane: TmuxPane,
+    session_id: str,
+    lines: tuple[str, ...],
+    pace_seconds: float,
+    base_dir: Path | None = None,
+) -> AnimationResult:
+    control.clear_signals(session_id, base_dir)
+    for index, line in enumerate(lines):
+        result = apply(
+            pane, render_full_type((line,)), pace_seconds, session_id, control_base_dir=base_dir
+        )
+        if result.outcome != "completed":
+            pane.send_key("Escape")
+            if result.sent_count >= 1:
+                pane.send_text("u")
+            if result.outcome == "interrupted":
+                return AnimationResult("interrupted", index)
+            control.save_pending_show_fresh(session_id, lines[index:], pace_seconds, base_dir)
+            return AnimationResult("paused", index)
+    return AnimationResult("completed", len(lines))
+
+
 def apply(
     pane: TmuxPane,
     sequences: list[KeySequence],
