@@ -65,3 +65,12 @@ def test_save_and_load_pending_show_fresh(tmp_path: Path) -> None:
 
 def test_load_pending_animation_returns_none_when_absent(tmp_path: Path) -> None:
     assert control.load_pending_animation("$1", base_dir=tmp_path) is None
+
+
+def test_discard_pending_animation_removes_file_without_erroring_if_absent(
+    tmp_path: Path,
+) -> None:
+    control.discard_pending_animation("$1", base_dir=tmp_path)  # no error
+    control.save_pending_apply_edit("$1", [], 0.0, base_dir=tmp_path)
+    control.discard_pending_animation("$1", base_dir=tmp_path)
+    assert control.has_pending_animation("$1", base_dir=tmp_path) is False

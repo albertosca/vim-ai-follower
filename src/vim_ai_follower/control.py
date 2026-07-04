@@ -129,3 +129,7 @@ def load_pending_animation(
         ]
         return PendingApplyEdit(ops=ops, pace_seconds=data["pace_seconds"])
     return PendingShowFresh(lines=tuple(data["remaining_lines"]), pace_seconds=data["pace_seconds"])
+
+
+def discard_pending_animation(session_id: str, base_dir: Path | None = None) -> None:
+    _pending_path(session_id, base_dir).unlink(missing_ok=True)

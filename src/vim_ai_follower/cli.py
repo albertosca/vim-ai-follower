@@ -25,6 +25,40 @@ logger = logging.getLogger("vim_ai_follower")
 _EDIT_TOOLS = {"Edit", "MultiEdit", "Write"}
 
 
+def _register_keybindings() -> None:
+    subprocess.run(
+        [
+            "tmux",
+            "bind-key",
+            "-T",
+            "prefix",
+            "P",
+            "run-shell",
+            'TMUX_PANE=$(tmux display-message -p "#{pane_id}") claude-follow pause',
+        ],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "tmux",
+            "bind-key",
+            "-T",
+            "prefix",
+            "S",
+            "run-shell",
+            'TMUX_PANE=$(tmux display-message -p "#{pane_id}") claude-follow interrupt',
+        ],
+        check=True,
+    )
+
+
+def _unregister_keybindings() -> None:
+    # check=False: unbinding a key that was never bound (e.g. stop called
+    # after a crash that skipped start's registration) isn't an error.
+    subprocess.run(["tmux", "unbind-key", "-T", "prefix", "P"], check=False)
+    subprocess.run(["tmux", "unbind-key", "-T", "prefix", "S"], check=False)
+
+
 def cmd_start(
     env: dict[str, str],
     backend: str = "tmux",
@@ -43,6 +77,7 @@ def cmd_start(
     resolved_on_failure = on_failure if on_failure is not None else default_on_failure
     resolved_speed = speed if speed is not None else default_speed
     origin = env["TMUX_PANE"]
+    _register_keybindings()
 
     if backend == "nvim_rpc":
         socket_path = nvim_socket_path(session.session_id)
@@ -88,6 +123,9 @@ def cmd_stop(env: dict[str, str]) -> int:
     if existing is not None:
         get_follower(existing.backend, existing.target).stop()
     FollowerState.clear(session.session_id)
+    control.clear_signals(session.session_id)
+    control.discard_pending_animation(session.session_id)
+    _unregister_keybindings()
     print("claude-follow: stopped")
     return 0
 

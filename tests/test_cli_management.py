@@ -6,12 +6,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vim_ai_follower import cli, config, state
+from vim_ai_follower import cli, config, control, state
 
 
 @pytest.fixture(autouse=True)
 def isolated_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(state, "STATE_DIR", tmp_path / "state")
+    monkeypatch.setattr(control, "CONTROL_DIR", tmp_path / "control")
 
 
 def _mock_tmux_run(
@@ -150,3 +151,48 @@ def test_start_nvim_backend_registers_when_socket_alive() -> None:
         result = state.FollowerState.get("$1")
     assert result is not None
     assert result.backend == "nvim_rpc"
+
+
+def _bind_calls(run_mock: MagicMock) -> list[list[str]]:
+    return [c.args[0] for c in run_mock.call_args_list if c.args[0][:2] == ["tmux", "bind-key"]]
+
+
+def _unbind_calls(run_mock: MagicMock) -> list[list[str]]:
+    return [c.args[0] for c in run_mock.call_args_list if c.args[0][:2] == ["tmux", "unbind-key"]]
+
+
+def test_start_registers_pause_and_interrupt_keybindings() -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert cli.cmd_start({"TMUX_PANE": "%1"}) == 0
+    binds = _bind_calls(run)
+    assert [
+        "tmux",
+        "bind-key",
+        "-T",
+        "prefix",
+        "P",
+        "run-shell",
+        'TMUX_PANE=$(tmux display-message -p "#{pane_id}") claude-follow pause',
+    ] in binds
+    assert [
+        "tmux",
+        "bind-key",
+        "-T",
+        "prefix",
+        "S",
+        "run-shell",
+        'TMUX_PANE=$(tmux display-message -p "#{pane_id}") claude-follow interrupt',
+    ] in binds
+
+
+def test_stop_unregisters_keybindings_and_clears_signals() -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        cli.cmd_start({"TMUX_PANE": "%1"})
+        control.request_pause("$1")
+        control.save_pending_apply_edit("$1", [], 0.0)
+        assert cli.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    unbinds = _unbind_calls(run)
+    assert ["tmux", "unbind-key", "-T", "prefix", "P"] in unbinds
+    assert ["tmux", "unbind-key", "-T", "prefix", "S"] in unbinds
+    assert control.check_signal("$1") is None
+    assert control.has_pending_animation("$1") is False
