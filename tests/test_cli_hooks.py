@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -323,3 +324,52 @@ def test_main_hook_post_reads_stdin_json(monkeypatch: pytest.MonkeyPatch, tmp_pa
     ):
         monkeypatch.setenv("TMUX_PANE", "%1")
         assert cli.main(["hook", "post"]) == 0
+
+
+def test_hook_post_edit_interrupted_prints_notification_and_leaves_buffer_unlocked(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "f.txt"
+    target.write_text("hello\nworld\n")
+    snapshot.save("$1", str(target), "hello\nworld\n")
+    _register_fake_follower("$1", "%2", current_file=str(target))
+    target.write_text("hello\nvim ai follower\n")
+
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    # before the single replace op's delete-half's Enter is sent, "interrupt"
+    # fires — the ex-command text gets typed but never committed
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+        patch("vim_ai_follower.control.check_signal", side_effect=[None, "interrupt"]),
+    ):
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    sends = _literal_sends(run)
+    assert not any(text == ":setlocal nomodifiable nopaste" for text in sends)
+    out = json.loads(capsys.readouterr().out)
+    context = out["hookSpecificOutput"]["additionalContext"]
+    assert str(target) in context
+    assert "hello\nworld" in context  # nothing completed yet — still the pre-edit text
+
+
+def test_hook_post_first_open_interrupted_prints_notification_with_partial_lines(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "f.txt"
+    target.write_text("a\nb\nc\n")
+    _register_fake_follower("$1", "%2")
+
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    # line "a" fully types (3 checks: i, a, Escape); "interrupt" fires on the
+    # very first check of line "b"
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+        patch("vim_ai_follower.control.check_signal", side_effect=[None, None, None, "interrupt"]),
+    ):
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    sends = _literal_sends(run)
+    assert not any(text == ":setlocal readonly nomodifiable nopaste" for text in sends)
+    out = json.loads(capsys.readouterr().out)
+    context = out["hookSpecificOutput"]["additionalContext"]
+    assert context.count("\n\na\n\n") == 1  # only the first line had been typed

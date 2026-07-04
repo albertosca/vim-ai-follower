@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from vim_ai_follower import config
+from vim_ai_follower import config, control
 from vim_ai_follower import diff as diff_module
 from vim_ai_follower.backends import Follower, get_follower
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
@@ -109,6 +109,45 @@ def cmd_status(env: dict[str, str]) -> int:
     return 0
 
 
+def cmd_pause(env: dict[str, str]) -> int:
+    session = TmuxSession.from_env(env)
+    if session is None:
+        print("claude-follow: not running inside tmux", file=sys.stderr)
+        return 1
+    if not control.has_pending_animation(session.session_id):
+        control.request_pause(session.session_id)
+        print("claude-follow: pause requested")
+        return 0
+
+    current = FollowerState.get(session.session_id)
+    if current is None:
+        print("claude-follow: no follower registered to resume", file=sys.stderr)
+        return 1
+    pending = control.load_pending_animation(session.session_id)
+    assert pending is not None  # has_pending_animation just confirmed this
+
+    follower = get_follower(
+        current.backend,
+        current.target,
+        config.pace_seconds_for(current.speed),
+        session_id=session.session_id,
+    )
+    assert isinstance(follower, TmuxVimFollower)  # only tmux ever persists pending state
+    result = follower.resume(pending)
+    print(f"claude-follow: resumed ({result.outcome})")
+    return 0
+
+
+def cmd_interrupt(env: dict[str, str]) -> int:
+    session = TmuxSession.from_env(env)
+    if session is None:
+        print("claude-follow: not running inside tmux", file=sys.stderr)
+        return 1
+    control.request_interrupt(session.session_id)
+    print("claude-follow: interrupt requested")
+    return 0
+
+
 def _configure_logging() -> None:
     if logger.handlers:
         return
@@ -175,6 +214,37 @@ def _ensure_buffer(
     return True
 
 
+def _reconstruct_partial_edit(before: str, after: str, completed_count: int) -> str:
+    ops = diff_module.compute_edit_script(before, after)
+    return diff_module.apply_ops(before, ops[:completed_count])
+
+
+def _reconstruct_partial_fresh(content: str, completed_count: int) -> str:
+    return "\n".join(content.splitlines()[:completed_count])
+
+
+def _print_interrupt_notification(file_path: str, partial_content: str) -> None:
+    context = (
+        f"The user interrupted the live preview of {file_path} while it was "
+        "being written and is now editing it directly. Only this much had "
+        f"been shown before they took over:\n\n{partial_content}\n\n"
+        "This reflects neither their edits since nor necessarily the file's "
+        "current state — re-read it from disk before assuming anything "
+        "about its contents, and reconcile your next steps with whatever "
+        "you find there."
+    )
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "PostToolUse",
+                    "additionalContext": context,
+                }
+            }
+        )
+    )
+
+
 def cmd_hook_pre(env: dict[str, str], payload: dict[str, Any]) -> int:
     _configure_logging()
     if payload.get("tool_name") not in _EDIT_TOOLS:
@@ -209,7 +279,12 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         logger.warning("failed to read %s: %s", file_path, exc)
         return 0
 
-    follower = get_follower(current.backend, current.target, config.pace_seconds_for(current.speed))
+    follower = get_follower(
+        current.backend,
+        current.target,
+        config.pace_seconds_for(current.speed),
+        session_id=session.session_id,
+    )
     is_fresh = current.current_file != file_path
 
     if diff_module.is_binary(raw_after):
@@ -221,12 +296,18 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
 
     after = raw_after.decode("utf-8", errors="replace")
     if is_fresh:
-        follower.show_fresh(file_path, after)
+        result = follower.show_fresh(file_path, after)
         FollowerState.update_current_file(session.session_id, file_path)
+        if result.outcome == "interrupted":
+            partial = _reconstruct_partial_fresh(after, result.completed_count)
+            _print_interrupt_notification(file_path, partial)
         return 0
 
     before = load_snapshot(session.session_id, file_path)
-    follower.apply_edit(before, after)
+    result = follower.apply_edit(before, after)
+    if result.outcome == "interrupted":
+        partial = _reconstruct_partial_edit(before, after, result.completed_count)
+        _print_interrupt_notification(file_path, partial)
     return 0
 
 
@@ -275,6 +356,8 @@ def _build_parser() -> argparse.ArgumentParser:
     hook_subparsers = hook_parser.add_subparsers(dest="hook_command", required=True)
     hook_subparsers.add_parser("pre")
     hook_subparsers.add_parser("post")
+    subparsers.add_parser("pause")
+    subparsers.add_parser("interrupt")
     return parser
 
 
@@ -288,6 +371,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_stop(env)
     if args.command == "status":
         return cmd_status(env)
+    if args.command == "pause":
+        return cmd_pause(env)
+    if args.command == "interrupt":
+        return cmd_interrupt(env)
 
     payload: dict[str, Any] = json.loads(sys.stdin.read())
     if args.hook_command == "pre":

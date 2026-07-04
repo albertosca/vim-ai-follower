@@ -3,9 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from vim_ai_follower import control
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends import get_follower
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
+from vim_ai_follower.diff import EditOp
 
 
 def test_is_alive_true_when_vim_is_running_in_pane() -> None:
@@ -209,3 +211,54 @@ def test_show_fresh_skips_relock_when_interrupted(tmp_path: Path) -> None:
     commands = _sent_commands(run)
     assert result.outcome == "interrupted"
     assert not any(text == ":setlocal readonly nomodifiable nopaste" for text, _ in commands)
+
+
+def test_resume_apply_edit_replays_remaining_ops_and_relocks(tmp_path: Path) -> None:
+    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    pending = control.PendingApplyEdit(ops=[op], pace_seconds=0.0)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch("vim_ai_follower.control.CONTROL_DIR", tmp_path),
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+    ):
+        result = follower.resume(pending)
+    commands = _sent_commands(run)
+    assert commands[0] == (":setlocal modifiable paste", True)
+    assert commands[1] == ("Enter", False)
+    assert commands[-2] == (":setlocal nomodifiable nopaste", True)
+    assert commands[-1] == ("Enter", False)
+    assert result == AnimationResult("completed", 1)
+
+
+def test_resume_show_fresh_replays_remaining_lines_and_relocks_with_readonly(
+    tmp_path: Path,
+) -> None:
+    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    pending = control.PendingShowFresh(lines=("b", "c"), pace_seconds=0.0)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch("vim_ai_follower.control.CONTROL_DIR", tmp_path),
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+    ):
+        result = follower.resume(pending)
+    commands = _sent_commands(run)
+    assert commands[0] == (":setlocal modifiable paste", True)
+    assert commands[-2] == (":setlocal readonly nomodifiable nopaste", True)
+    assert commands[-1] == ("Enter", False)
+    assert result == AnimationResult("completed", 2)
+
+
+def test_resume_skips_relock_when_interrupted_again(tmp_path: Path) -> None:
+    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    pending = control.PendingApplyEdit(ops=[op], pace_seconds=0.0)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch("vim_ai_follower.control.CONTROL_DIR", tmp_path),
+        patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
+    ):
+        result = follower.resume(pending)
+    commands = _sent_commands(run)
+    assert result.outcome == "interrupted"
+    assert not any(text == ":setlocal nomodifiable nopaste" for text, _ in commands)

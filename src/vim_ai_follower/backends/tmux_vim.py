@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from vim_ai_follower import diff as diff_module
 from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult, run_lines, run_ops
+from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
 from vim_ai_follower.tmux import TmuxPane
 
 
@@ -74,6 +75,21 @@ class TmuxVimFollower:
         result = run_lines(pane, self.session_id, lines, self.pace_seconds)
         if result.outcome != "interrupted":
             pane.send_text(":setlocal readonly nomodifiable nopaste")
+            pane.send_key("Enter")
+        return result
+
+    def resume(self, pending: PendingApplyEdit | PendingShowFresh) -> AnimationResult:
+        pane = TmuxPane(pane_id=self.pane_id)
+        pane.send_text(":setlocal modifiable paste")
+        pane.send_key("Enter")
+        if isinstance(pending, PendingApplyEdit):
+            result = run_ops(pane, self.session_id, pending.ops, pending.pace_seconds)
+            relock = ":setlocal nomodifiable nopaste"
+        else:
+            result = run_lines(pane, self.session_id, pending.lines, pending.pace_seconds)
+            relock = ":setlocal readonly nomodifiable nopaste"
+        if result.outcome != "interrupted":
+            pane.send_text(relock)
             pane.send_key("Enter")
         return result
 
