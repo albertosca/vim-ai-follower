@@ -250,6 +250,24 @@ def test_run_ops_all_complete() -> None:
     assert result == AnimationResult("completed", 2)
 
 
+def test_run_ops_all_complete_with_a_pure_delete_op_followed_by_more_ops() -> None:
+    # A pure-delete op has no insert half at all — this exercises the branch
+    # where run_ops loops back to the next op without ever entering the
+    # `if insert_seq:` block, as opposed to every other run_ops test, where
+    # each op interrupted or completed has a non-empty insert half.
+    pane = cast(TmuxPane, MagicMock())
+    ops = [
+        EditOp(kind="delete", start_line=2, end_line=3, new_lines=()),
+        EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",)),
+    ]
+    with (
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+        patch("vim_ai_follower.control.clear_signals"),
+    ):
+        result = run_ops(pane, "$1", ops, pace_seconds=0.0)
+    assert result == AnimationResult("completed", 2)
+
+
 def test_run_ops_interrupted_before_first_op_undoes_nothing() -> None:
     pane = cast(TmuxPane, MagicMock())
     ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))]

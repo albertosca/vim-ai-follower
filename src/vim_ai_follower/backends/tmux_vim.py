@@ -3,8 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from vim_ai_follower import diff as diff_module
-from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, render_full_type, render_keystrokes
-from vim_ai_follower.animate import apply as apply_keystrokes
+from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult, run_lines, run_ops
 from vim_ai_follower.tmux import TmuxPane
 
 
@@ -15,6 +14,7 @@ class TmuxVimFollower:
 
     pane_id: str
     pace_seconds: float = DEFAULT_PACE_SECONDS
+    session_id: str = ""
 
     def is_alive(self) -> bool:
         return TmuxPane(pane_id=self.pane_id).running_command() == "vim"
@@ -29,7 +29,7 @@ class TmuxVimFollower:
         pane.send_text(":setlocal readonly nomodifiable")
         pane.send_key("Enter")
 
-    def apply_edit(self, before: str, after: str) -> None:
+    def apply_edit(self, before: str, after: str) -> AnimationResult:
         ops = diff_module.compute_edit_script(before, after)
         pane = TmuxPane(pane_id=self.pane_id)
         # 'paste' suppresses autoindent/smartindent/cindent for the duration:
@@ -37,11 +37,17 @@ class TmuxVimFollower:
         # then stacks with the leading whitespace already in our own lines.
         pane.send_text(":setlocal modifiable paste")
         pane.send_key("Enter")
-        apply_keystrokes(pane, render_keystrokes(ops), self.pace_seconds)
-        pane.send_text(":setlocal nomodifiable nopaste")
-        pane.send_key("Enter")
+        result = run_ops(pane, self.session_id, ops, self.pace_seconds)
+        # An interrupted animation hands the buffer to the user — it stays
+        # modifiable. completed/paused both relock (a paused buffer is
+        # protected, not handed over; see run_ops for why paused always
+        # lands on a clean op boundary rather than a stray mid-typing spot).
+        if result.outcome != "interrupted":
+            pane.send_text(":setlocal nomodifiable nopaste")
+            pane.send_key("Enter")
+        return result
 
-    def show_fresh(self, file_path: str, content: str) -> None:
+    def show_fresh(self, file_path: str, content: str) -> AnimationResult:
         pane = TmuxPane(pane_id=self.pane_id)
         # Deliberately never `:e file_path` here: that would load the file's
         # real (already-written) content and flash the finished result on
@@ -61,16 +67,15 @@ class TmuxVimFollower:
         pane.send_key("Enter")
         pane.send_text(":setlocal modifiable paste")
         pane.send_key("Enter")
-        # Wipe down to a single blank line — Vim can't have zero lines — then
-        # type everything back in via `i` rather than render_keystrokes's
-        # `gg`/`O`, which would leave that leftover blank line stranded at
-        # the end.
+        # Wipe down to a single blank line — Vim can't have zero lines.
         pane.send_text(":%d")
         pane.send_key("Enter")
         lines = tuple(content.splitlines())
-        apply_keystrokes(pane, render_full_type(lines), self.pace_seconds)
-        pane.send_text(":setlocal readonly nomodifiable nopaste")
-        pane.send_key("Enter")
+        result = run_lines(pane, self.session_id, lines, self.pace_seconds)
+        if result.outcome != "interrupted":
+            pane.send_text(":setlocal readonly nomodifiable nopaste")
+            pane.send_key("Enter")
+        return result
 
     def goto_line(self, offset: int) -> None:
         pane = TmuxPane(pane_id=self.pane_id)

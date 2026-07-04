@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import pynvim
 
 from vim_ai_follower import diff as diff_module
+from vim_ai_follower.animate import AnimationResult
 
 PACE_SECONDS = 0.05
 
@@ -32,17 +33,19 @@ class NvimRpcFollower:
         nvim = self._connect()
         nvim.command(f"edit {file_path}")
 
-    def apply_edit(self, before: str, after: str) -> None:
+    def apply_edit(self, before: str, after: str) -> AnimationResult:
         nvim = self._connect()
         buf = nvim.current.buffer
-        for op in diff_module.compute_edit_script(before, after):
+        ops = diff_module.compute_edit_script(before, after)
+        for op in ops:
             # start_line/end_line are already 0-indexed, end-exclusive once
             # shifted by -1/-0 respectively — same convention nvim_buf_set_lines
             # uses, for all three op kinds (replace/delete/insert).
             buf[op.start_line - 1 : op.end_line] = list(op.new_lines)
             time.sleep(PACE_SECONDS)
+        return AnimationResult("completed", len(ops))
 
-    def show_fresh(self, file_path: str, content: str) -> None:
+    def show_fresh(self, file_path: str, content: str) -> AnimationResult:
         # No `:edit` here on purpose: it would load the real (already
         # written) file content and flash it before the wipe+retype. Rename
         # the current buffer in place instead of ever loading the real one.
@@ -51,7 +54,7 @@ class NvimRpcFollower:
         nvim.command(f"file {file_path}")
         nvim.command("filetype detect")
         nvim.current.buffer[:] = []
-        self.apply_edit("", content)
+        return self.apply_edit("", content)
 
     def goto_line(self, offset: int) -> None:
         nvim = self._connect()
