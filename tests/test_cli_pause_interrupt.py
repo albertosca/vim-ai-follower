@@ -43,6 +43,12 @@ def _register_fake_follower(session_id: str, pane_id: str) -> None:
         state.FollowerState.set(session_id, "tmux", pane_id)
 
 
+def _popup_calls(run_mock: MagicMock) -> list[list[str]]:
+    return [
+        c.args[0] for c in run_mock.call_args_list if c.args[0][:2] == ["tmux", "display-popup"]
+    ]
+
+
 def test_pause_without_tmux_env_fails() -> None:
     assert cli.cmd_pause({}) == 1
 
@@ -67,6 +73,51 @@ def test_interrupt_requests_interrupt(capsys: pytest.CaptureFixture[str]) -> Non
     assert "interrupt requested" in capsys.readouterr().out
 
 
+def test_pause_shows_a_popup_on_the_follower_pane_when_requesting_pause() -> None:
+    _register_fake_follower("$1", "%2")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert cli.cmd_pause({"TMUX_PANE": "%1"}) == 0
+    popups = _popup_calls(run)
+    assert len(popups) == 1
+    assert popups[0][:3] == ["tmux", "display-popup", "-t"]
+    assert popups[0][3] == "%2"
+    assert "-E" in popups[0]
+    assert any("Pausado" in arg for arg in popups[0])
+
+
+def test_interrupt_shows_a_popup_on_the_follower_pane() -> None:
+    _register_fake_follower("$1", "%2")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert cli.cmd_interrupt({"TMUX_PANE": "%1"}) == 0
+    popups = _popup_calls(run)
+    assert len(popups) == 1
+    assert popups[0][3] == "%2"
+    assert any("Interrompido" in arg for arg in popups[0])
+
+
+def test_pause_skips_popup_when_no_follower_is_registered() -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert cli.cmd_pause({"TMUX_PANE": "%1"}) == 0
+    assert _popup_calls(run) == []
+
+
+def test_interrupt_skips_popup_when_no_follower_is_registered() -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert cli.cmd_interrupt({"TMUX_PANE": "%1"}) == 0
+    assert _popup_calls(run) == []
+
+
+def test_pause_skips_popup_for_nvim_rpc_backend() -> None:
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="$1\n"),
+    ):
+        state.FollowerState.set("$1", "nvim_rpc", "/tmp/x.sock")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert cli.cmd_pause({"TMUX_PANE": "%1"}) == 0
+    assert _popup_calls(run) == []
+
+
 def test_pause_resumes_pending_apply_edit(capsys: pytest.CaptureFixture[str]) -> None:
     _register_fake_follower("$1", "%2")
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
@@ -83,6 +134,36 @@ def test_pause_resumes_pending_apply_edit(capsys: pytest.CaptureFixture[str]) ->
     assert "resumed" in sends
     assert control.has_pending_animation("$1") is False
     assert "resumed (completed)" in capsys.readouterr().out
+
+
+def test_pause_resume_shows_popup_with_resumed_message() -> None:
+    _register_fake_follower("$1", "%2")
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
+    control.save_pending_apply_edit("$1", [op], 0.0)
+
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert cli.cmd_pause({"TMUX_PANE": "%1"}) == 0
+
+    popups = _popup_calls(run)
+    assert len(popups) == 1
+    assert popups[0][3] == "%2"
+    assert any("Retomado" in arg for arg in popups[0])
+
+
+def test_pause_resume_shows_popup_with_interrupted_message_when_resume_is_interrupted() -> None:
+    _register_fake_follower("$1", "%2")
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
+    control.save_pending_apply_edit("$1", [op], 0.0)
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+        patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
+    ):
+        assert cli.cmd_pause({"TMUX_PANE": "%1"}) == 0
+
+    popups = _popup_calls(run)
+    assert len(popups) == 1
+    assert any("Interrompido" in arg for arg in popups[0])
 
 
 def test_pause_resume_fails_without_registered_follower(

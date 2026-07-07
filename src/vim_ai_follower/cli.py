@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -147,17 +148,50 @@ def cmd_status(env: dict[str, str]) -> int:
     return 0
 
 
+_RESUME_POPUP_MESSAGES = {
+    "completed": "▶ Retomado",
+    "paused": "⏸ Pausado",
+    "interrupted": "⏹ Interrompido",
+}
+
+
+def _show_popup(current: FollowerState | None, message: str) -> None:
+    """Brief, self-dismissing tmux popup on the follower pane confirming a
+    pause/resume/interrupt — feedback for the keybinding press itself, not a
+    guarantee that an animation was actually running to be affected. Only
+    the tmux backend has a pane to target."""
+    if current is None or current.backend != "tmux":
+        return
+    subprocess.run(
+        [
+            "tmux",
+            "display-popup",
+            "-t",
+            current.target,
+            "-E",
+            "-w",
+            "30",
+            "-h",
+            "3",
+            f"echo {shlex.quote(message)}; sleep 1.5",
+        ],
+        check=False,
+    )
+
+
 def cmd_pause(env: dict[str, str]) -> int:
     session = TmuxSession.from_env(env)
     if session is None:
         print("claude-follow: not running inside tmux", file=sys.stderr)
         return 1
+    current = FollowerState.get(session.session_id)
+
     if not control.has_pending_animation(session.session_id):
         control.request_pause(session.session_id)
         print("claude-follow: pause requested")
+        _show_popup(current, "⏸ Pausado")
         return 0
 
-    current = FollowerState.get(session.session_id)
     if current is None:
         print("claude-follow: no follower registered to resume", file=sys.stderr)
         return 1
@@ -173,6 +207,7 @@ def cmd_pause(env: dict[str, str]) -> int:
     assert isinstance(follower, TmuxVimFollower)  # only tmux ever persists pending state
     result = follower.resume(pending)
     print(f"claude-follow: resumed ({result.outcome})")
+    _show_popup(current, _RESUME_POPUP_MESSAGES[result.outcome])
     return 0
 
 
@@ -183,6 +218,7 @@ def cmd_interrupt(env: dict[str, str]) -> int:
         return 1
     control.request_interrupt(session.session_id)
     print("claude-follow: interrupt requested")
+    _show_popup(FollowerState.get(session.session_id), "⏹ Interrompido")
     return 0
 
 
