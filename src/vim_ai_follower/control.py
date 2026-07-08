@@ -71,6 +71,7 @@ class PendingApplyEdit:
 class PendingShowFresh:
     lines: tuple[str, ...]
     pace_seconds: float
+    continuation: bool = False
 
 
 def save_pending_apply_edit(
@@ -98,13 +99,22 @@ def save_pending_apply_edit(
 
 
 def save_pending_show_fresh(
-    session_id: str, lines: tuple[str, ...], pace_seconds: float, base_dir: Path | None = None
+    session_id: str,
+    lines: tuple[str, ...],
+    pace_seconds: float,
+    continuation: bool = False,
+    base_dir: Path | None = None,
 ) -> None:
     path = _pending_path(session_id, base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
-            {"kind": "show_fresh", "remaining_lines": list(lines), "pace_seconds": pace_seconds}
+            {
+                "kind": "show_fresh",
+                "remaining_lines": list(lines),
+                "pace_seconds": pace_seconds,
+                "continuation": continuation,
+            }
         )
     )
 
@@ -128,7 +138,11 @@ def load_pending_animation(
             for op in data["remaining_ops"]
         ]
         return PendingApplyEdit(ops=ops, pace_seconds=data["pace_seconds"])
-    return PendingShowFresh(lines=tuple(data["remaining_lines"]), pace_seconds=data["pace_seconds"])
+    return PendingShowFresh(
+        lines=tuple(data["remaining_lines"]),
+        pace_seconds=data["pace_seconds"],
+        continuation=data.get("continuation", False),
+    )
 
 
 def discard_pending_animation(session_id: str, base_dir: Path | None = None) -> None:

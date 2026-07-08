@@ -111,21 +111,25 @@ def _stop(
     return AnimationResult(outcome, index)
 
 
-def render_full_type(lines: tuple[str, ...]) -> list[KeySequence]:
-    """Types lines into the current (already-empty) line via `i`, rather than
-    `render_keystrokes`'s `gg`/`O`-based positioning — used when the buffer
-    was just wiped to a single blank line and the whole file is retyped from
-    scratch, so there's no existing line to navigate around."""
-    if not lines:
-        return []
-    sequences: list[KeySequence] = [KeySequence("i")]
-    last_index = len(lines) - 1
-    for index, line in enumerate(lines):
-        sequences.append(KeySequence(line))
-        if index < last_index:
-            sequences.append(KeySequence("Enter", literal=False))
-    sequences.append(KeySequence("Escape", literal=False))
-    return sequences
+def _line_sequences(line: str, opener: str) -> tuple[list[KeySequence], int]:
+    """Keystrokes for typing one line during a full retype, plus the undo
+    threshold: on an early stop, send `u` only when sent_count >= threshold,
+    i.e. only when Vim has actually recorded a change. `o` alone already
+    opens a line (a change); `i` alone — or `i` plus an empty text send —
+    never creates one, and undoing then would eat the previous line's
+    change instead."""
+    sequences = [
+        KeySequence(opener),
+        KeySequence(line),
+        KeySequence("Escape", literal=False),
+    ]
+    if opener == "o":
+        threshold = 1
+    elif line:
+        threshold = 2
+    else:
+        threshold = len(sequences) + 1
+    return sequences, threshold
 
 
 def run_lines(
@@ -134,19 +138,30 @@ def run_lines(
     lines: tuple[str, ...],
     pace_seconds: float,
     base_dir: Path | None = None,
+    continuation: bool = False,
 ) -> AnimationResult:
     control.clear_signals(session_id, base_dir)
     for index, line in enumerate(lines):
-        result = apply(
-            pane, render_full_type((line,)), pace_seconds, session_id, control_base_dir=base_dir
-        )
+        # The first line types into the wiped buffer's single blank line via
+        # `i`; every later line — and every line of a resumed run, whose
+        # buffer already holds earlier lines — opens its own line below the
+        # cursor via `o`.
+        opener = "o" if continuation or index > 0 else "i"
+        sequences, undo_threshold = _line_sequences(line, opener)
+        result = apply(pane, sequences, pace_seconds, session_id, control_base_dir=base_dir)
         if result.outcome != "completed":
             pane.send_key("Escape")
-            if result.sent_count >= 1:
+            if result.sent_count >= undo_threshold:
                 pane.send_text("u")
             if result.outcome == "interrupted":
                 return AnimationResult("interrupted", index)
-            control.save_pending_show_fresh(session_id, lines[index:], pace_seconds, base_dir)
+            control.save_pending_show_fresh(
+                session_id,
+                lines[index:],
+                pace_seconds,
+                continuation=continuation or index > 0,
+                base_dir=base_dir,
+            )
             return AnimationResult("paused", index)
     return AnimationResult("completed", len(lines))
 

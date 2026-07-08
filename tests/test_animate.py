@@ -12,8 +12,8 @@ from vim_ai_follower.animate import (
     _delete_sequences,
     _insert_prefix_length,
     _insert_sequences,
+    _line_sequences,
     apply,
-    render_full_type,
     render_keystrokes,
     run_lines,
     run_ops,
@@ -68,28 +68,29 @@ def test_replace_op_deletes_then_inserts() -> None:
     ]
 
 
-def test_render_full_type_empty_lines_returns_nothing() -> None:
-    assert render_full_type(()) == []
-
-
-def test_render_full_type_enters_insert_mode_and_types_each_line() -> None:
-    assert render_full_type(("a", "b", "c")) == [
+def test_line_sequences_first_line_opens_with_i() -> None:
+    sequences, threshold = _line_sequences("alpha", "i")
+    assert sequences == [
         KeySequence("i", literal=True),
-        KeySequence("a", literal=True),
-        KeySequence("Enter", literal=False),
-        KeySequence("b", literal=True),
-        KeySequence("Enter", literal=False),
-        KeySequence("c", literal=True),
+        KeySequence("alpha", literal=True),
         KeySequence("Escape", literal=False),
     ]
+    assert threshold == 2  # only opener+text creates an undoable change
 
 
-def test_render_full_type_single_line() -> None:
-    assert render_full_type(("only",)) == [
-        KeySequence("i", literal=True),
-        KeySequence("only", literal=True),
+def test_line_sequences_later_line_opens_with_o() -> None:
+    sequences, threshold = _line_sequences("beta", "o")
+    assert sequences == [
+        KeySequence("o", literal=True),
+        KeySequence("beta", literal=True),
         KeySequence("Escape", literal=False),
     ]
+    assert threshold == 1  # 'o' alone already opened a line
+
+
+def test_line_sequences_empty_first_line_never_undoes() -> None:
+    sequences, threshold = _line_sequences("", "i")
+    assert threshold == len(sequences) + 1  # 'i' + empty text: no change ever
 
 
 def test_apply_sends_literal_and_named_keys_and_reports_completed() -> None:
@@ -370,22 +371,87 @@ def test_run_lines_interrupted_before_any_line_sent() -> None:
     pane.send_key.assert_called_once_with("Escape")  # type: ignore[attr-defined]
 
 
-def test_run_lines_interrupted_mid_line_undoes_the_insert(tmp_path: Path) -> None:
+def test_run_lines_types_each_line_on_its_own_line() -> None:
     pane = cast(TmuxPane, MagicMock())
-    # first check (before "i") is None so "i" is sent, entering insert mode;
-    # second check (before the line's text) is "interrupt"
+    with (
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+        patch("vim_ai_follower.control.clear_signals"),
+    ):
+        result = run_lines(pane, "$1", ("a", "b"), pace_seconds=0.0)
+    assert result == AnimationResult("completed", 2)
+    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    assert sent_texts == ["i", "a", "o", "b"]  # 'o' gives line 2 its own line
+
+
+def test_run_lines_continuation_opens_even_the_first_line_with_o() -> None:
+    pane = cast(TmuxPane, MagicMock())
+    with (
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+        patch("vim_ai_follower.control.clear_signals"),
+    ):
+        result = run_lines(pane, "$1", ("rest",), pace_seconds=0.0, continuation=True)
+    assert result == AnimationResult("completed", 1)
+    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    assert sent_texts == ["o", "rest"]  # the buffer already has content; 'i' would join lines
+
+
+def test_run_lines_interrupted_after_bare_i_skips_undo(tmp_path: Path) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    # first check (before "i") is None so "i" is sent; second check (before
+    # the line's text) is "interrupt". 'i' + Escape with no text typed never
+    # creates an undo entry — sending 'u' here would undo the PREVIOUS change
     with patch("vim_ai_follower.control.check_signal", side_effect=[None, "interrupt"]):
         result = run_lines(pane, "$1", ("a",), pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("interrupted", 0)
     sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
-    assert sent_texts == ["i", "u"]
+    assert sent_texts == ["i"]
     pane.send_key.assert_called_once_with("Escape")  # type: ignore[attr-defined]
 
 
-def test_run_lines_paused_saves_remaining_lines(tmp_path: Path) -> None:
+def test_run_lines_interrupted_after_text_undoes_the_partial_line(tmp_path: Path) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    # "i" and the text both go through; interrupt fires before Escape — a
+    # real change exists now, so the partial line must be undone
+    with patch("vim_ai_follower.control.check_signal", side_effect=[None, None, "interrupt"]):
+        result = run_lines(pane, "$1", ("a",), pace_seconds=0.0, base_dir=tmp_path)
+    assert result == AnimationResult("interrupted", 0)
+    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    assert sent_texts == ["i", "a", "u"]
+
+
+def test_run_lines_interrupted_after_bare_o_undoes_the_opened_line(tmp_path: Path) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    # line "a" completes (3 checks); line "b"'s opener "o" goes through and
+    # the interrupt fires before its text — 'o' alone already opened a line
+    # (a real change), so it must be undone
+    with patch(
+        "vim_ai_follower.control.check_signal", side_effect=[None, None, None, None, "interrupt"]
+    ):
+        result = run_lines(pane, "$1", ("a", "b"), pace_seconds=0.0, base_dir=tmp_path)
+    assert result == AnimationResult("interrupted", 1)
+    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    assert sent_texts == ["i", "a", "o", "u"]
+
+
+def test_run_lines_paused_mid_first_line_saves_non_continuation(tmp_path: Path) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    # pause lands before line 0's Escape: 'i' + text were sent, the partial
+    # line is undone, and the buffer is back to its virgin blank line — so
+    # the resume must open with 'i' again (continuation=False)
+    with patch("vim_ai_follower.control.check_signal", side_effect=[None, None, "pause"]):
+        result = run_lines(pane, "$1", ("a", "b"), pace_seconds=0.0, base_dir=tmp_path)
+    assert result == AnimationResult("paused", 0)
+    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    assert sent_texts == ["i", "a", "u"]
+    pending = control.load_pending_animation("$1", base_dir=tmp_path)
+    assert pending == control.PendingShowFresh(("a", "b"), 0.0, continuation=False)
+
+
+def test_run_lines_paused_saves_remaining_lines_as_continuation(tmp_path: Path) -> None:
     pane = cast(TmuxPane, MagicMock())
     # line "a" fully completes (3 checks: i, a, Escape); line "b"'s first
-    # check (before its own "i") returns "pause"
+    # check (before its own "o") returns "pause" — the buffer keeps line
+    # "a", so the resume must open with 'o' (continuation=True)
     with patch("vim_ai_follower.control.check_signal", side_effect=[None, None, None, "pause"]):
         result = run_lines(pane, "$1", ("a", "b", "c"), pace_seconds=0.2, base_dir=tmp_path)
     assert result == AnimationResult("paused", 1)
@@ -393,6 +459,20 @@ def test_run_lines_paused_saves_remaining_lines(tmp_path: Path) -> None:
     assert isinstance(pending, control.PendingShowFresh)
     assert pending.lines == ("b", "c")
     assert pending.pace_seconds == 0.2
+    assert pending.continuation is True
+
+
+def test_run_lines_paused_during_a_continuation_run_stays_continuation(tmp_path: Path) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    # a resumed run paused again at its very first line must NOT flip back
+    # to 'i': the buffer still has the previously-typed lines
+    with patch("vim_ai_follower.control.check_signal", side_effect=["pause"]):
+        result = run_lines(
+            pane, "$1", ("x", "y"), pace_seconds=0.0, base_dir=tmp_path, continuation=True
+        )
+    assert result == AnimationResult("paused", 0)
+    pending = control.load_pending_animation("$1", base_dir=tmp_path)
+    assert pending == control.PendingShowFresh(("x", "y"), 0.0, continuation=True)
 
 
 def test_run_lines_empty_tuple_completes_immediately(tmp_path: Path) -> None:

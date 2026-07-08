@@ -109,6 +109,37 @@ def test_hook_pre_and_post_animate_an_edit(
     assert wait_until(lambda: "vim ai follower" in _capture(follower_pane_id), timeout=5.0)
 
 
+def test_show_fresh_renders_each_line_separately(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    # Regression net for the line-joining bug: per-line typing without a
+    # newline between lines used to collapse the whole file into one line
+    # ("hellworldo"). Substring asserts survive that mangling; exact row
+    # comparison does not.
+    origin_pane = _pane_ids(tmux_session)[0]
+    monkeypatch.setenv("TMUX_PANE", origin_pane)
+    assert cli.main(["start"]) == 0
+    assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
+    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+
+    target_file = tmp_path / "fresh.txt"
+    target_file.write_text("alpha\nbeta\ngamma\n")
+    post_payload = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(target_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(post_payload))
+    assert cli.main(["hook", "post"]) == 0
+
+    assert wait_until(lambda: "gamma" in _capture(follower_pane_id), timeout=5.0)
+    rows = [line.rstrip() for line in _capture(follower_pane_id).splitlines()]
+    # Anchor on the first content row instead of row 0: the user's vimrc may
+    # render a tabline above the buffer. A mangled single-line buffer has no
+    # row equal to "alpha", so .index() still fails loudly on the bug.
+    start = rows.index("alpha")
+    assert rows[start : start + 3] == ["alpha", "beta", "gamma"]
+
+
 def test_hook_post_read_navigates_the_follower_pane(
     tmux_session: str,
     monkeypatch: pytest.MonkeyPatch,

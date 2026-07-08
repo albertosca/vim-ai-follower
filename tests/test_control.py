@@ -63,6 +63,18 @@ def test_save_and_load_pending_show_fresh(tmp_path: Path) -> None:
     assert loaded.pace_seconds == 0.1
 
 
+def test_pending_show_fresh_round_trips_continuation(tmp_path: Path) -> None:
+    control.save_pending_show_fresh("$1", ("x",), 0.05, continuation=True, base_dir=tmp_path)
+    pending = control.load_pending_animation("$1", tmp_path)
+    assert pending == control.PendingShowFresh(("x",), 0.05, continuation=True)
+
+
+def test_pending_show_fresh_defaults_continuation_false(tmp_path: Path) -> None:
+    control.save_pending_show_fresh("$1", ("x",), 0.05, base_dir=tmp_path)
+    pending = control.load_pending_animation("$1", tmp_path)
+    assert pending == control.PendingShowFresh(("x",), 0.05, continuation=False)
+
+
 def test_load_pending_animation_returns_none_when_absent(tmp_path: Path) -> None:
     assert control.load_pending_animation("$1", base_dir=tmp_path) is None
 

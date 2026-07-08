@@ -86,7 +86,13 @@ class TmuxVimFollower:
             result = run_ops(pane, self.session_id, pending.ops, pending.pace_seconds)
             relock = ":setlocal nomodifiable nopaste"
         else:
-            result = run_lines(pane, self.session_id, pending.lines, pending.pace_seconds)
+            result = run_lines(
+                pane,
+                self.session_id,
+                pending.lines,
+                pending.pace_seconds,
+                continuation=pending.continuation,
+            )
             relock = ":setlocal readonly nomodifiable nopaste"
         if result.outcome != "interrupted":
             pane.send_text(relock)
