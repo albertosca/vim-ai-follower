@@ -93,6 +93,13 @@ def run_ops(
                 pane.send_key("Escape")
                 if result.sent_count >= _insert_prefix_length(op):
                     pane.send_text("u")
+                if delete_seq:
+                    # The delete half already ran as its own undo unit; roll
+                    # it back too so the buffer sits on a clean op boundary —
+                    # otherwise resuming would re-run the delete against
+                    # lines that have shifted, and the interrupt notification
+                    # would claim less was shown than actually happened.
+                    pane.send_text("u")
                 return _stop(result.outcome, session_id, ops, index, pace_seconds, base_dir)
 
     return AnimationResult("completed", len(ops))

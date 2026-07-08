@@ -320,6 +320,56 @@ def test_run_ops_interrupted_during_delete_needs_no_undo(tmp_path: Path) -> None
     pane.send_key.assert_called_once_with("Escape")  # type: ignore[attr-defined]
 
 
+def test_run_ops_pause_in_insert_half_undoes_both_halves_of_a_replace_op(tmp_path: Path) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    op = EditOp(kind="replace", start_line=2, end_line=3, new_lines=("X", "Y"))
+    # delete half (":2,3d", Enter) passes 2 checks; the insert half's prefix
+    # (":1", Enter, "o") passes 3 more; pause fires before the text "X".
+    # The insert change AND the already-executed delete must both be undone:
+    # a single undo leaves the delete applied, and replaying the saved op
+    # would re-run ":2,3d" against lines that have shifted — destroying them.
+    with patch(
+        "vim_ai_follower.control.check_signal",
+        side_effect=[None, None, None, None, None, "pause"],
+    ):
+        result = run_ops(pane, "$1", [op], pace_seconds=0.0, base_dir=tmp_path)
+    assert result == AnimationResult("paused", 0)
+    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    assert sent_texts.count("u") == 2  # insert undone AND delete undone
+    pending = control.load_pending_animation("$1", base_dir=tmp_path)
+    assert pending == control.PendingApplyEdit([op], 0.0)  # full op valid to replay
+
+
+def test_run_ops_pause_before_insert_prefix_still_undoes_the_delete(tmp_path: Path) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    op = EditOp(kind="replace", start_line=2, end_line=3, new_lines=("X",))
+    # pause at the insert half's FIRST check: nothing of the insert was sent,
+    # but the delete already ran and must be rolled back
+    with patch("vim_ai_follower.control.check_signal", side_effect=[None, None, "pause"]):
+        result = run_ops(pane, "$1", [op], pace_seconds=0.0, base_dir=tmp_path)
+    assert result == AnimationResult("paused", 0)
+    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    assert sent_texts.count("u") == 1  # delete rollback only
+
+
+def test_run_ops_interrupt_in_insert_half_of_replace_restores_the_op_boundary(
+    tmp_path: Path,
+) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    op = EditOp(kind="replace", start_line=2, end_line=3, new_lines=("X",))
+    # interrupt after the insert prefix completed: undo insert, undo delete —
+    # the buffer must equal apply_ops(before, ops[:0]) so the notification
+    # sent to Claude reflects what is actually on screen
+    with patch(
+        "vim_ai_follower.control.check_signal",
+        side_effect=[None, None, None, None, None, "interrupt"],
+    ):
+        result = run_ops(pane, "$1", [op], pace_seconds=0.0, base_dir=tmp_path)
+    assert result == AnimationResult("interrupted", 0)
+    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    assert sent_texts.count("u") == 2
+
+
 def test_run_ops_paused_saves_remaining_ops_from_the_interrupted_one(tmp_path: Path) -> None:
     pane = cast(TmuxPane, MagicMock())
     ops = [
