@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -26,38 +27,46 @@ logger = logging.getLogger("vim_ai_follower")
 _EDIT_TOOLS = {"Edit", "MultiEdit", "Write"}
 
 
+_KEYBINDINGS: tuple[tuple[str, str], ...] = (("P", "pause"), ("S", "interrupt"))
+
+
+def _claude_follow_executable() -> str:
+    """Absolute path to this venv's claude-follow entry point. tmux
+    run-shell commands execute with the tmux SERVER's environment, whose
+    PATH never includes this project's virtualenv — a bare name exits 127
+    there, so the keybinding must embed the resolved path."""
+    candidate = Path(sys.executable).parent / "claude-follow"
+    if candidate.exists():
+        return str(candidate)
+    located = shutil.which("claude-follow")
+    return located if located is not None else "claude-follow"
+
+
 def _register_keybindings() -> None:
-    subprocess.run(
-        [
-            "tmux",
-            "bind-key",
-            "-T",
-            "prefix",
-            "P",
-            "run-shell",
-            'TMUX_PANE=$(tmux display-message -p "#{pane_id}") claude-follow pause',
-        ],
-        check=True,
-    )
-    subprocess.run(
-        [
-            "tmux",
-            "bind-key",
-            "-T",
-            "prefix",
-            "S",
-            "run-shell",
-            'TMUX_PANE=$(tmux display-message -p "#{pane_id}") claude-follow interrupt',
-        ],
-        check=True,
-    )
+    executable = shlex.quote(_claude_follow_executable())
+    for key, subcommand in _KEYBINDINGS:
+        subprocess.run(
+            [
+                "tmux",
+                "bind-key",
+                "-T",
+                "prefix",
+                key,
+                "run-shell",
+                # >/dev/null: any stdout from run-shell throws the active
+                # pane into tmux's view-mode overlay until dismissed.
+                'TMUX_PANE=$(tmux display-message -p "#{pane_id}") '
+                f"{executable} {subcommand} >/dev/null 2>&1",
+            ],
+            check=True,
+        )
 
 
 def _unregister_keybindings() -> None:
     # check=False: unbinding a key that was never bound (e.g. stop called
     # after a crash that skipped start's registration) isn't an error.
-    subprocess.run(["tmux", "unbind-key", "-T", "prefix", "P"], check=False)
-    subprocess.run(["tmux", "unbind-key", "-T", "prefix", "S"], check=False)
+    for key, _ in _KEYBINDINGS:
+        subprocess.run(["tmux", "unbind-key", "-T", "prefix", key], check=False)
 
 
 def cmd_start(
@@ -148,21 +157,16 @@ def cmd_status(env: dict[str, str]) -> int:
     return 0
 
 
-_RESUME_POPUP_MESSAGES = {
-    "completed": "▶ Retomado",
-    "paused": "⏸ Pausado",
-    "interrupted": "⏹ Interrompido",
-}
-
-
 def _show_popup(current: FollowerState | None, message: str) -> None:
     """Brief, self-dismissing tmux popup on the follower pane confirming a
     pause/resume/interrupt — feedback for the keybinding press itself, not a
     guarantee that an animation was actually running to be affected. Only
-    the tmux backend has a pane to target."""
+    the tmux backend has a pane to target. Fire-and-forget via Popen:
+    display-popup -E only exits when the popup closes, and the caller must
+    not stall 1.5s (nor delay a resume replay) waiting for it."""
     if current is None or current.backend != "tmux":
         return
-    subprocess.run(
+    subprocess.Popen(
         [
             "tmux",
             "display-popup",
@@ -174,9 +178,25 @@ def _show_popup(current: FollowerState | None, message: str) -> None:
             "-h",
             "3",
             f"echo {shlex.quote(message)}; sleep 1.5",
-        ],
-        check=False,
+        ]
     )
+
+
+def _resave_pending(
+    session_id: str, pending: control.PendingApplyEdit | control.PendingShowFresh
+) -> None:
+    """Put a loaded-but-unusable pending animation back on disk (loading
+    consumes the file, and e.g. a dead follower shouldn't cost the user
+    their resumable state)."""
+    if isinstance(pending, control.PendingApplyEdit):
+        control.save_pending_apply_edit(session_id, pending.ops, pending.pace_seconds)
+    else:
+        control.save_pending_show_fresh(
+            session_id,
+            pending.lines,
+            pending.pace_seconds,
+            continuation=pending.continuation,
+        )
 
 
 def cmd_pause(env: dict[str, str]) -> int:
@@ -186,17 +206,17 @@ def cmd_pause(env: dict[str, str]) -> int:
         return 1
     current = FollowerState.get(session.session_id)
 
-    if not control.has_pending_animation(session.session_id):
+    pending = control.load_pending_animation(session.session_id)
+    if pending is None:
         control.request_pause(session.session_id)
         print("claude-follow: pause requested")
-        _show_popup(current, "⏸ Pausado")
+        _show_popup(current, "Paused")
         return 0
 
     if current is None:
+        _resave_pending(session.session_id, pending)
         print("claude-follow: no follower registered to resume", file=sys.stderr)
         return 1
-    pending = control.load_pending_animation(session.session_id)
-    assert pending is not None  # has_pending_animation just confirmed this
 
     follower = get_follower(
         current.backend,
@@ -205,9 +225,13 @@ def cmd_pause(env: dict[str, str]) -> int:
         session_id=session.session_id,
     )
     assert isinstance(follower, TmuxVimFollower)  # only tmux ever persists pending state
+    _show_popup(current, "Resuming")
     result = follower.resume(pending)
     print(f"claude-follow: resumed ({result.outcome})")
-    _show_popup(current, _RESUME_POPUP_MESSAGES[result.outcome])
+    if result.outcome == "paused":
+        _show_popup(current, "Paused")
+    elif result.outcome == "interrupted":
+        _show_popup(current, "Interrupted")
     return 0
 
 
@@ -218,7 +242,7 @@ def cmd_interrupt(env: dict[str, str]) -> int:
         return 1
     control.request_interrupt(session.session_id)
     print("claude-follow: interrupt requested")
-    _show_popup(FollowerState.get(session.session_id), "⏹ Interrompido")
+    _show_popup(FollowerState.get(session.session_id), "Interrupted")
     return 0
 
 

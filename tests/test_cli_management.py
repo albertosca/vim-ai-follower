@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -161,28 +162,35 @@ def _unbind_calls(run_mock: MagicMock) -> list[list[str]]:
     return [c.args[0] for c in run_mock.call_args_list if c.args[0][:2] == ["tmux", "unbind-key"]]
 
 
-def test_start_registers_pause_and_interrupt_keybindings() -> None:
+def test_start_registers_keybindings_with_absolute_path_and_silenced_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_bin = tmp_path / "venv-bin"
+    fake_bin.mkdir()
+    (fake_bin / "claude-follow").touch()
+    monkeypatch.setattr(sys, "executable", str(fake_bin / "python"))
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert cli.cmd_start({"TMUX_PANE": "%1"}) == 0
     binds = _bind_calls(run)
-    assert [
-        "tmux",
-        "bind-key",
-        "-T",
-        "prefix",
-        "P",
-        "run-shell",
-        'TMUX_PANE=$(tmux display-message -p "#{pane_id}") claude-follow pause',
-    ] in binds
-    assert [
-        "tmux",
-        "bind-key",
-        "-T",
-        "prefix",
-        "S",
-        "run-shell",
-        'TMUX_PANE=$(tmux display-message -p "#{pane_id}") claude-follow interrupt',
-    ] in binds
+    assert [cmd[4] for cmd in binds] == ["P", "S"]
+    for cmd, subcommand in zip(binds, ("pause", "interrupt"), strict=True):
+        shell_command = cmd[-1]
+        # bare "claude-follow" resolves to nothing under the tmux server's
+        # PATH (exit 127) — the binding must embed the venv's absolute path
+        assert str(fake_bin / "claude-follow") in shell_command
+        # any stdout inside run-shell throws the pane into a view-mode overlay
+        assert f" {subcommand} >/dev/null 2>&1" in shell_command
+        assert shell_command.startswith('TMUX_PANE=$(tmux display-message -p "#{pane_id}") ')
+
+
+def test_claude_follow_executable_falls_back_to_which_then_bare_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "nowhere" / "python"))
+    with patch("vim_ai_follower.cli.shutil.which", return_value="/opt/bin/claude-follow"):
+        assert cli._claude_follow_executable() == "/opt/bin/claude-follow"
+    with patch("vim_ai_follower.cli.shutil.which", return_value=None):
+        assert cli._claude_follow_executable() == "claude-follow"
 
 
 def test_stop_unregisters_keybindings_and_clears_signals() -> None:
