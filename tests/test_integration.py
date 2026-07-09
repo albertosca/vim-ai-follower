@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import shlex
 import subprocess
 import threading
@@ -360,7 +361,10 @@ def test_registered_keybinding_command_pauses_via_run_shell(
     # assert there and clean up in a finally.
     real_cache = Path.home() / ".cache" / "claude-vim-follower"
     signal_path = real_cache / f"{session_id}.pause"
+    marker_path = real_cache / f"{session_id}.animating"
     signal_path.unlink(missing_ok=True)
+    real_cache.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text(str(os.getpid()))  # else pause is an honest no-op
     try:
         subprocess.run(
             ["tmux", "run-shell", "-t", origin_pane, bound_command],
@@ -372,3 +376,4 @@ def test_registered_keybinding_command_pauses_via_run_shell(
         )
     finally:
         signal_path.unlink(missing_ok=True)
+        marker_path.unlink(missing_ok=True)

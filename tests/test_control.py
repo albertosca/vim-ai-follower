@@ -120,3 +120,24 @@ def test_load_pending_returns_none_when_file_vanishes_mid_read(tmp_path: Path) -
         assert control.load_pending_animation("$1", tmp_path) is None
     # the real file is still there for the next, non-racing loader:
     assert control.load_pending_animation("$1", tmp_path) is not None
+
+
+def test_animating_marker_lifecycle(tmp_path: Path) -> None:
+    assert control.is_animating("$1", tmp_path) is False
+    control.mark_animating("$1", tmp_path)
+    assert control.is_animating("$1", tmp_path) is True  # this test process is alive
+    control.clear_animating("$1", tmp_path)
+    assert control.is_animating("$1", tmp_path) is False
+
+
+def test_animating_marker_ignores_dead_process(tmp_path: Path) -> None:
+    control.mark_animating("$1", tmp_path)
+    # overwrite with a PID that cannot be running (max pid + unlikely)
+    (tmp_path / "$1.animating").write_text("99999999")
+    assert control.is_animating("$1", tmp_path) is False
+
+
+def test_animating_marker_ignores_garbage_content(tmp_path: Path) -> None:
+    control.mark_animating("$1", tmp_path)
+    (tmp_path / "$1.animating").write_text("not-a-pid")
+    assert control.is_animating("$1", tmp_path) is False

@@ -526,3 +526,28 @@ def test_run_lines_empty_tuple_completes_immediately(tmp_path: Path) -> None:
         result = run_lines(pane, "$1", (), pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("completed", 0)
     pane.send_text.assert_not_called()  # type: ignore[attr-defined]
+
+
+def test_run_lines_marks_animating_for_the_duration(tmp_path: Path) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    seen: list[bool] = []
+
+    def _check(session_id: str, base_dir: Path | None = None) -> None:
+        seen.append(control.is_animating("$1", tmp_path))
+        return
+
+    with patch("vim_ai_follower.control.check_signal", side_effect=_check):
+        result = run_lines(pane, "$1", ("a", "b"), pace_seconds=0.0, base_dir=tmp_path)
+    assert result == AnimationResult("completed", 2)
+    assert seen and all(seen)  # marker present at every keystroke check
+    assert control.is_animating("$1", tmp_path) is False  # cleared on the way out
+
+
+def test_run_ops_clears_animating_even_when_paused(tmp_path: Path) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    with patch("vim_ai_follower.control.check_signal", side_effect=["pause"]):
+        result = run_ops(pane, "$1", [op], pace_seconds=0.0, base_dir=tmp_path)
+    assert result == AnimationResult("paused", 0)
+    # paused means NOT animating: the pending file owns the state now
+    assert control.is_animating("$1", tmp_path) is False

@@ -254,6 +254,11 @@ def cmd_pause(env: dict[str, str]) -> int:
 
     pending = control.load_pending_animation(session.session_id)
     if pending is None:
+        if not control.is_animating(session.session_id):
+            # After an interrupt — or with nothing running at all — a pause
+            # press must not fake feedback: no signal, no popup.
+            print("claude-follow: nothing to pause")
+            return 0
         control.request_pause(session.session_id)
         print("claude-follow: pause requested")
         _show_popup(current, "Paused")
@@ -298,6 +303,10 @@ def cmd_interrupt(env: dict[str, str]) -> int:
         FollowerState.update_current_file(session.session_id, None)
         print("claude-follow: paused animation discarded, buffer handed over")
         _show_popup(current, "Interrupted")
+        return 0
+
+    if not control.is_animating(session.session_id):
+        print("claude-follow: nothing to interrupt")
         return 0
 
     control.request_interrupt(session.session_id)

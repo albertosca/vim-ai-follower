@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -67,6 +68,36 @@ def request_interrupt(session_id: str, base_dir: Path | None = None) -> None:
 
 def has_pending_animation(session_id: str, base_dir: Path | None = None) -> bool:
     return _pending_path(session_id, base_dir).exists()
+
+
+def _animating_path(session_id: str, base_dir: Path | None) -> Path:
+    return _dir(base_dir) / f"{session_id}.animating"
+
+
+def mark_animating(session_id: str, base_dir: Path | None = None) -> None:
+    """Record that an animation is in flight, tagged with this process's
+    PID so a crashed hook can never leave a convincing stale marker."""
+    path = _animating_path(session_id, base_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(str(os.getpid()))
+
+
+def clear_animating(session_id: str, base_dir: Path | None = None) -> None:
+    _animating_path(session_id, base_dir).unlink(missing_ok=True)
+
+
+def is_animating(session_id: str, base_dir: Path | None = None) -> bool:
+    try:
+        pid = int(_animating_path(session_id, base_dir).read_text())
+    except (FileNotFoundError, ValueError):
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False  # stale marker from a crashed animation
+    except PermissionError:  # pragma: no cover - not ours, but it exists
+        return True
+    return True
 
 
 @dataclass(frozen=True)

@@ -25,16 +25,20 @@ def test_interrupt_without_tmux_env_fails() -> None:
     assert cli.cmd_interrupt({}) == 1
 
 
-def test_pause_requests_pause_when_nothing_pending(
+def test_pause_requests_pause_while_an_animation_is_running(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    control.mark_animating("$1")  # this test process stands in for the hook
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
         assert cli.cmd_pause({"TMUX_PANE": "%1"}) == 0
     assert control.check_signal("$1") == "pause"
     assert "pause requested" in capsys.readouterr().out
 
 
-def test_interrupt_requests_interrupt(capsys: pytest.CaptureFixture[str]) -> None:
+def test_interrupt_requests_interrupt_while_an_animation_is_running(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    control.mark_animating("$1")
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
         assert cli.cmd_interrupt({"TMUX_PANE": "%1"}) == 0
     assert control.check_signal("$1") == "interrupt"
@@ -43,6 +47,7 @@ def test_interrupt_requests_interrupt(capsys: pytest.CaptureFixture[str]) -> Non
 
 def test_pause_shows_a_popup_on_the_follower_pane_when_requesting_pause() -> None:
     _register_fake_follower("$1", "%2")
+    control.mark_animating("$1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
@@ -58,6 +63,7 @@ def test_pause_shows_a_popup_on_the_follower_pane_when_requesting_pause() -> Non
 
 def test_interrupt_shows_a_popup_on_the_follower_pane() -> None:
     _register_fake_follower("$1", "%2")
+    control.mark_animating("$1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
@@ -70,6 +76,7 @@ def test_interrupt_shows_a_popup_on_the_follower_pane() -> None:
 
 
 def test_pause_skips_popup_when_no_follower_is_registered() -> None:
+    control.mark_animating("$1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
@@ -79,6 +86,7 @@ def test_pause_skips_popup_when_no_follower_is_registered() -> None:
 
 
 def test_interrupt_skips_popup_when_no_follower_is_registered() -> None:
+    control.mark_animating("$1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
@@ -93,6 +101,7 @@ def test_pause_skips_popup_for_nvim_rpc_backend() -> None:
         return_value=MagicMock(returncode=0, stdout="$1\n"),
     ):
         state.FollowerState.set("$1", "nvim_rpc", "/tmp/x.sock")
+    control.mark_animating("$1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
@@ -274,3 +283,33 @@ def test_main_dispatches_pause_and_interrupt(monkeypatch: pytest.MonkeyPatch) ->
         monkeypatch.setenv("TMUX_PANE", "%1")
         assert cli.main(["pause"]) == 0
         assert cli.main(["interrupt"]) == 0
+
+
+def test_pause_is_a_quiet_noop_when_nothing_is_running(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # After an interrupt (or before anything ran) there is no animation and
+    # no pending state — a pause press must not pretend something happened
+    _register_fake_follower("$1", "%2")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
+    ):
+        assert cli.cmd_pause({"TMUX_PANE": "%1"}) == 0
+    assert control.check_signal("$1") is None  # no orphan signal file
+    assert _popup_calls(popen) == []  # and no lying popup
+    assert "nothing to pause" in capsys.readouterr().out
+
+
+def test_interrupt_is_a_quiet_noop_when_nothing_is_running(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _register_fake_follower("$1", "%2")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
+    ):
+        assert cli.cmd_interrupt({"TMUX_PANE": "%1"}) == 0
+    assert control.check_signal("$1") is None
+    assert _popup_calls(popen) == []
+    assert "nothing to interrupt" in capsys.readouterr().out

@@ -80,31 +80,42 @@ def run_ops(
     base_dir: Path | None = None,
 ) -> AnimationResult:
     control.clear_signals(session_id, base_dir)
-    for index, op in enumerate(ops):
-        delete_seq = _delete_sequences(op)
-        if delete_seq:
-            result = apply(pane, delete_seq, pace_seconds, session_id, control_base_dir=base_dir)
-            if result.outcome != "completed":
-                pane.send_key("Escape")
-                return _stop(result.outcome, session_id, ops, index, pace_seconds, base_dir)
+    control.mark_animating(session_id, base_dir)
+    try:
+        for index, op in enumerate(ops):
+            delete_seq = _delete_sequences(op)
+            if delete_seq:
+                result = apply(
+                    pane, delete_seq, pace_seconds, session_id, control_base_dir=base_dir
+                )
+                if result.outcome != "completed":
+                    pane.send_key("Escape")
+                    return _stop(result.outcome, session_id, ops, index, pace_seconds, base_dir)
 
-        insert_seq, prefix_len = _insert_sequences(op)
-        if insert_seq:
-            result = apply(pane, insert_seq, pace_seconds, session_id, control_base_dir=base_dir)
-            if result.outcome != "completed":
-                pane.send_key("Escape")
-                if result.sent_count >= prefix_len:
-                    pane.send_text("u")
-                if delete_seq:
-                    # The delete half already ran as its own undo unit; roll
-                    # it back too so the buffer sits on a clean op boundary —
-                    # otherwise resuming would re-run the delete against
-                    # lines that have shifted, and the interrupt notification
-                    # would claim less was shown than actually happened.
-                    pane.send_text("u")
-                return _stop(result.outcome, session_id, ops, index, pace_seconds, base_dir)
+            insert_seq, prefix_len = _insert_sequences(op)
+            if insert_seq:
+                result = apply(
+                    pane, insert_seq, pace_seconds, session_id, control_base_dir=base_dir
+                )
+                if result.outcome != "completed":
+                    pane.send_key("Escape")
+                    if result.sent_count >= prefix_len:
+                        pane.send_text("u")
+                    if delete_seq:
+                        # The delete half already ran as its own undo unit;
+                        # roll it back too so the buffer sits on a clean op
+                        # boundary — otherwise resuming would re-run the
+                        # delete against lines that have shifted, and the
+                        # interrupt notification would claim less was shown
+                        # than actually happened.
+                        pane.send_text("u")
+                    return _stop(result.outcome, session_id, ops, index, pace_seconds, base_dir)
 
-    return AnimationResult("completed", len(ops))
+        return AnimationResult("completed", len(ops))
+    finally:
+        # paused/interrupted/completed alike: nothing is animating anymore
+        # (a paused remainder is owned by the pending file, not the marker)
+        control.clear_animating(session_id, base_dir)
 
 
 def _stop(
@@ -150,29 +161,33 @@ def run_lines(
     continuation: bool = False,
 ) -> AnimationResult:
     control.clear_signals(session_id, base_dir)
-    for index, line in enumerate(lines):
-        # The first line types into the wiped buffer's single blank line via
-        # `i`; every later line — and every line of a resumed run, whose
-        # buffer already holds earlier lines — opens its own line below the
-        # cursor via `o`.
-        opener = "o" if continuation or index > 0 else "i"
-        sequences, undo_threshold = _line_sequences(line, opener)
-        result = apply(pane, sequences, pace_seconds, session_id, control_base_dir=base_dir)
-        if result.outcome != "completed":
-            pane.send_key("Escape")
-            if result.sent_count >= undo_threshold:
-                pane.send_text("u")
-            if result.outcome == "interrupted":
-                return AnimationResult("interrupted", index)
-            control.save_pending_show_fresh(
-                session_id,
-                lines[index:],
-                pace_seconds,
-                continuation=continuation or index > 0,
-                base_dir=base_dir,
-            )
-            return AnimationResult("paused", index)
-    return AnimationResult("completed", len(lines))
+    control.mark_animating(session_id, base_dir)
+    try:
+        for index, line in enumerate(lines):
+            # The first line types into the wiped buffer's single blank line
+            # via `i`; every later line — and every line of a resumed run,
+            # whose buffer already holds earlier lines — opens its own line
+            # below the cursor via `o`.
+            opener = "o" if continuation or index > 0 else "i"
+            sequences, undo_threshold = _line_sequences(line, opener)
+            result = apply(pane, sequences, pace_seconds, session_id, control_base_dir=base_dir)
+            if result.outcome != "completed":
+                pane.send_key("Escape")
+                if result.sent_count >= undo_threshold:
+                    pane.send_text("u")
+                if result.outcome == "interrupted":
+                    return AnimationResult("interrupted", index)
+                control.save_pending_show_fresh(
+                    session_id,
+                    lines[index:],
+                    pace_seconds,
+                    continuation=continuation or index > 0,
+                    base_dir=base_dir,
+                )
+                return AnimationResult("paused", index)
+        return AnimationResult("completed", len(lines))
+    finally:
+        control.clear_animating(session_id, base_dir)
 
 
 def apply(
