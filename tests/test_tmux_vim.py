@@ -148,11 +148,15 @@ def test_show_fresh_renames_current_buffer_without_ever_loading_the_real_file(
     assert commands[3] == ("Enter", False)
     assert commands[4] == (":filetype detect", True)
     assert commands[5] == ("Enter", False)
-    assert commands[6] == (":setlocal modifiable paste", True)
+    # the renamed-over buffer may be a plugin scratch screen with
+    # buftype=nofile — inherited, it makes the user's :w fail with E382
+    assert commands[6] == (":setlocal buftype=", True)
     assert commands[7] == ("Enter", False)
-    assert commands[8] == (":%d", True)
+    assert commands[8] == (":setlocal modifiable paste", True)
     assert commands[9] == ("Enter", False)
-    assert commands[10] == ("i", True)
+    assert commands[10] == (":%d", True)
+    assert commands[11] == ("Enter", False)
+    assert commands[12] == ("i", True)
     assert commands[-2] == (":setlocal readonly nomodifiable nopaste", True)
     assert commands[-1] == ("Enter", False)
     typed = [text for text, literal in commands if literal]
@@ -177,6 +181,8 @@ def test_show_fresh_with_empty_content_still_wipes_and_relocks(tmp_path: Path) -
         (":file /tmp/f.txt", True),
         ("Enter", False),
         (":filetype detect", True),
+        ("Enter", False),
+        (":setlocal buftype=", True),
         ("Enter", False),
         (":setlocal modifiable paste", True),
         ("Enter", False),

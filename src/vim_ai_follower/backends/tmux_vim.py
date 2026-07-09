@@ -75,6 +75,12 @@ class TmuxVimFollower:
         # afterwards.
         pane.send_text(":filetype detect")
         pane.send_key("Enter")
+        # The renamed-over buffer may be a plugin scratch screen (start
+        # screens set buftype=nofile); the rename inherits that and the
+        # user's :w after an interrupt would fail with E382. Make it a
+        # regular file buffer.
+        pane.send_text(":setlocal buftype=")
+        pane.send_key("Enter")
         lines = tuple(content.splitlines())
 
         def run(inner: TmuxPane) -> AnimationResult:
