@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import shlex
 import subprocess
 import threading
 import time
@@ -312,3 +313,62 @@ def test_pause_persists_state_and_resume_finishes_the_edit(
         return rows[anchor : anchor + len(after_lines)] == after_lines
 
     assert wait_until(_buffer_matches, timeout=10.0)
+
+
+def test_registered_keybinding_command_pauses_via_run_shell(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    wait_until: Callable[..., bool],
+) -> None:
+    # Executes the EXACT command string cmd_start registered, through
+    # `tmux run-shell -t <pane>` — the same expansion context a real
+    # keypress gets (formats pre-expanded against the triggering pane).
+    # This is the test that catches double-expansion bugs: nesting
+    # display-message around the pre-expanded "%N" eats the "%" and
+    # resolves the wrong target, so claude-follow exits 1 and no signal
+    # file ever appears.
+    #
+    # Burn a few global pane ids first, so the pane's numeric id has no
+    # matching window index — on a pristine server "%0" eaten down to "0"
+    # accidentally resolves as window 0 and masks the bug.
+    for _ in range(6):
+        subprocess.run(["tmux", "new-window", "-t", tmux_session], check=True)
+    window_ids = subprocess.run(
+        ["tmux", "list-windows", "-t", tmux_session, "-F", "#{window_id}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    for window_id in window_ids[1:]:  # by @id: immune to base-index settings
+        subprocess.run(["tmux", "kill-window", "-t", window_id], check=True)
+    origin_pane = _pane_ids(tmux_session)[0]
+    monkeypatch.setenv("TMUX_PANE", origin_pane)
+    assert cli.main(["start"]) == 0
+    assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
+    session_id = _session_id(origin_pane)
+
+    listing = subprocess.run(
+        ["tmux", "list-keys", "-T", "prefix", "P"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    bound_command = shlex.split(listing)[-1]
+
+    # The spawned claude-follow is a separate process using the REAL home
+    # cache dir (the in-process cache.CACHE_DIR patch can't reach it), so
+    # assert there and clean up in a finally.
+    real_cache = Path.home() / ".cache" / "claude-vim-follower"
+    signal_path = real_cache / f"{session_id}.pause"
+    signal_path.unlink(missing_ok=True)
+    try:
+        subprocess.run(
+            ["tmux", "run-shell", "-t", origin_pane, bound_command],
+            check=True,
+        )
+        assert wait_until(signal_path.exists, timeout=5.0), (
+            "the registered binding's command did not produce a pause signal "
+            f"for its own session ({session_id})"
+        )
+    finally:
+        signal_path.unlink(missing_ok=True)

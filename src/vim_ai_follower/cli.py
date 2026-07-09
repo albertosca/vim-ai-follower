@@ -76,10 +76,14 @@ def _register_keybindings() -> None:
                 "prefix",
                 key,
                 "run-shell",
+                # tmux pre-expands #{pane_id} against the pane that triggered
+                # the binding, so assign it directly. Nesting a
+                # $(tmux display-message -p ...) around the pre-expanded
+                # "%N" would format-expand it AGAIN, eating the "%" and
+                # producing an invalid pane target.
                 # >/dev/null: any stdout from run-shell throws the active
                 # pane into tmux's view-mode overlay until dismissed.
-                'TMUX_PANE=$(tmux display-message -p "#{pane_id}") '
-                f"{executable} {subcommand} >/dev/null 2>&1",
+                f"TMUX_PANE=#{{pane_id}} {executable} {subcommand} >/dev/null 2>&1",
             ],
             check=True,
         )

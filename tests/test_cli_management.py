@@ -155,7 +155,12 @@ def test_start_registers_keybindings_with_absolute_path_and_silenced_output(
         assert str(fake_bin / "claude-follow") in shell_command
         # any stdout inside run-shell throws the pane into a view-mode overlay
         assert f" {subcommand} >/dev/null 2>&1" in shell_command
-        assert shell_command.startswith('TMUX_PANE=$(tmux display-message -p "#{pane_id}") ')
+        # tmux pre-expands #{pane_id} in the run-shell string at keypress
+        # time; nesting $(tmux display-message -p "%N") double-expands and
+        # display-message EATS the % (formats again), yielding an invalid
+        # pane target — TMUX_PANE must take the pre-expanded id directly
+        assert shell_command.startswith("TMUX_PANE=#{pane_id} ")
+        assert "display-message" not in shell_command
 
 
 def test_claude_follow_executable_falls_back_to_which_then_bare_name(
