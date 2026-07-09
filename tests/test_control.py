@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 from vim_ai_follower import control
 from vim_ai_follower.diff import EditOp
@@ -86,3 +87,36 @@ def test_discard_pending_animation_removes_file_without_erroring_if_absent(
     control.save_pending_apply_edit("$1", [], 0.0, base_dir=tmp_path)
     control.discard_pending_animation("$1", base_dir=tmp_path)
     assert control.has_pending_animation("$1", base_dir=tmp_path) is False
+
+
+def test_check_signal_survives_losing_the_unlink_race(tmp_path: Path) -> None:
+    control.request_interrupt("$1", tmp_path)
+    real_unlink = Path.unlink
+
+    def racing_unlink(self: Path, missing_ok: bool = False) -> None:
+        real_unlink(self, missing_ok=True)  # another process got there first...
+        real_unlink(self, missing_ok=missing_ok)  # ...then ours runs on a gone file
+
+    with patch.object(Path, "unlink", racing_unlink):
+        # losing the race means the signal was not ours to act on — and the
+        # animation process must NOT crash mid-animation over it
+        assert control.check_signal("$1", tmp_path) is None
+
+
+def test_pending_write_is_atomic_no_partial_file_visible(tmp_path: Path) -> None:
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("x",))
+    control.save_pending_apply_edit("$1", [op], 0.1, tmp_path)
+    leftovers = sorted(p.name for p in tmp_path.iterdir())
+    assert leftovers == ["$1.pending_animation.json"]  # no .tmp residue
+    # and the write goes through an atomic rename, not a direct write:
+    with patch.object(Path, "replace", autospec=True, side_effect=Path.replace) as replace:
+        control.save_pending_show_fresh("$1", ("y",), 0.1, base_dir=tmp_path)
+    assert replace.called
+
+
+def test_load_pending_returns_none_when_file_vanishes_mid_read(tmp_path: Path) -> None:
+    control.save_pending_show_fresh("$1", ("y",), 0.1, base_dir=tmp_path)
+    with patch.object(Path, "read_text", side_effect=FileNotFoundError):
+        assert control.load_pending_animation("$1", tmp_path) is None
+    # the real file is still there for the next, non-racing loader:
+    assert control.load_pending_animation("$1", tmp_path) is not None
