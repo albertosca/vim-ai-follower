@@ -40,6 +40,14 @@ def tmux_session(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     monkeypatch.delenv("TMUX", raising=False)
     socket_dir = tempfile.mkdtemp(prefix="cf-tmux-")
     monkeypatch.setenv("TMUX_TMPDIR", socket_dir)
+    # Keep the integration vims hermetic: VIMINIT replaces the user's vimrc,
+    # so no Copilot/CoC/LSP plugins boot inside every test vim. Plugins react
+    # to the animated keystrokes nondeterministically (completion popups can
+    # swallow keys, ESC timing shifts), and copilot-language-server triggers
+    # macOS keychain password prompts on every suite run.
+    # noloadplugins also blocks native packages (~/.vim/pack/*/start/*),
+    # which load even when the vimrc is skipped.
+    monkeypatch.setenv("VIMINIT", "set nocompatible noloadplugins")
     session_name = f"pytest-{uuid.uuid4().hex[:8]}"
     subprocess.run(
         ["tmux", "new-session", "-d", "-s", session_name, "-x", "100", "-y", "30"],

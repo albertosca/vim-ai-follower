@@ -132,6 +132,44 @@ def test_show_fresh_renders_each_line_separately(
     assert rows[start : start + 3] == ["alpha", "beta", "gamma"]
 
 
+def test_apply_edit_produces_exact_final_content(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    origin_pane = _pane_ids(tmux_session)[0]
+    monkeypatch.setenv("TMUX_PANE", origin_pane)
+    assert cli.main(["start"]) == 0
+    assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
+    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+
+    target_file = tmp_path / "edit.txt"
+    before_lines = ["line 1", "line 2", "line 3", "line 4"]
+    target_file.write_text("\n".join(before_lines) + "\n")
+    first_payload = json.dumps(
+        {"tool_name": "Write", "tool_input": {"file_path": str(target_file)}}
+    )
+    monkeypatch.setattr("sys.stdin", io.StringIO(first_payload))
+    assert cli.main(["hook", "post"]) == 0
+    assert wait_until(lambda: "line 4" in _capture(follower_pane_id), timeout=10.0)
+
+    pre_payload = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(target_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(pre_payload))
+    assert cli.main(["hook", "pre"]) == 0
+
+    after_lines = ["line 1", "replacement A", "replacement B", "line 4"]
+    target_file.write_text("\n".join(after_lines) + "\n")
+    post_payload = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(target_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(post_payload))
+    assert cli.main(["hook", "post"]) == 0
+
+    assert wait_until(lambda: "replacement B" in _capture(follower_pane_id), timeout=10.0)
+    rows = [line.rstrip() for line in _capture(follower_pane_id).splitlines()]
+    anchor = rows.index("line 1")
+    assert rows[anchor : anchor + 4] == after_lines
+
+
 def test_hook_post_read_navigates_the_follower_pane(
     tmux_session: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -191,15 +229,26 @@ def test_interrupt_mid_animation_leaves_buffer_unlocked_with_partial_content(
     assert wait_until(lambda: "hand-edited" in _capture(follower_pane_id), timeout=5.0)
 
 
+# The edit under test produces two replace ops (lines 3 and 16); each op's
+# keystroke stream is [":N,Nd", Enter] then [":N-1", Enter, "o", text,
+# Escape], with a signal check before every sequence. Pausing before check
+# 2 lands inside the delete half (typed but not executed — cancel path),
+# before check 4 inside the insert's positioning prefix (delete already ran
+# and must be rolled back alone), and before check 6 inside the insert text
+# (both halves applied — the double-undo path). These are exactly the spots
+# where a pause used to leave the delete half applied so the resume
+# re-deleted shifted lines.
+@pytest.mark.parametrize("pause_at_check", [2, 4, 6])
 def test_pause_persists_state_and_resume_finishes_the_edit(
     tmux_session: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     wait_until: Callable[..., bool],
+    pause_at_check: int,
 ) -> None:
     origin_pane = _pane_ids(tmux_session)[0]
     monkeypatch.setenv("TMUX_PANE", origin_pane)
-    assert cli.main(["start", "--speed", "lento"]) == 0
+    assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
     follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
     session_id = _session_id(origin_pane)
@@ -231,16 +280,35 @@ def test_pause_persists_state_and_resume_finishes_the_edit(
     post_payload = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(target_file)}})
     monkeypatch.setattr("sys.stdin", io.StringIO(post_payload))
 
-    thread = threading.Thread(target=lambda: cli.main(["hook", "post"]))
-    thread.start()
-    time.sleep(0.5)
-    control.request_pause(session_id)
-    thread.join(timeout=10.0)
-    assert not thread.is_alive()
+    # Deterministic pause: fire it right before the Nth keystroke sequence
+    # instead of racing a signal file against wall-clock timing — the exact
+    # landing point is what decides which undo-compensation path runs.
+    calls = {"count": 0}
 
+    def _pause_once(session_id_arg: str, base_dir: Path | None = None) -> str | None:
+        calls["count"] += 1
+        return "pause" if calls["count"] == pause_at_check else None
+
+    monkeypatch.setattr(control, "check_signal", _pause_once)
+    assert cli.main(["hook", "post"]) == 0
     assert control.has_pending_animation(session_id) is True
 
     assert cli.main(["pause"]) == 0
     assert control.has_pending_animation(session_id) is False
-    assert wait_until(lambda: "CHANGED TWO" in _capture(follower_pane_id), timeout=10.0)
     assert wait_until(lambda: "CHANGED FIFTEEN" in _capture(follower_pane_id), timeout=10.0)
+
+    # Exact-content check, not substrings: a pause landing inside a replace
+    # op used to leave its delete half applied, and the resume re-ran the
+    # delete against shifted lines — the changed lines still appeared, but
+    # NEIGHBORING lines were silently destroyed. Only comparing the whole
+    # buffer catches that. Polled: right after the last keystroke Vim may
+    # still render a transient "^[" placeholder at the cursor while its
+    # ttimeout disambiguates ESC — a real stray character never settles.
+    def _buffer_matches() -> bool:
+        rows = [line.rstrip() for line in _capture(follower_pane_id).splitlines()]
+        if "line 0" not in rows:
+            return False
+        anchor = rows.index("line 0")
+        return rows[anchor : anchor + len(after_lines)] == after_lines
+
+    assert wait_until(_buffer_matches, timeout=10.0)
