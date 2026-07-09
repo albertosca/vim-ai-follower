@@ -204,3 +204,81 @@ def test_stop_unregisters_keybindings_and_clears_signals() -> None:
     assert ["tmux", "unbind-key", "-T", "prefix", "S"] in unbinds
     assert control.check_signal("$1") is None
     assert control.has_pending_animation("$1") is False
+
+
+def test_stop_restores_a_pre_existing_binding() -> None:
+    previous = "bind-key -T prefix P paste-buffer"
+
+    def _run_with_existing_binding(cmd: list[str], **kwargs: object) -> MagicMock:
+        if cmd[:3] == ["tmux", "list-keys", "-T"] and cmd[4] == "P":
+            return MagicMock(returncode=0, stdout=previous + "\n")
+        if cmd[:3] == ["tmux", "list-keys", "-T"]:
+            return MagicMock(returncode=1, stdout="")
+        return _mock_tmux_run()(cmd, **kwargs)
+
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run", side_effect=_run_with_existing_binding
+    ) as run:
+        assert cli.cmd_start({"TMUX_PANE": "%1"}) == 0
+        assert cli.cmd_stop({"TMUX_PANE": "%1"}) == 0
+
+    rebinds = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "bind-key"]]
+    assert ["tmux", "bind-key", "-T", "prefix", "P", "paste-buffer"] in rebinds
+    unbinds = _unbind_calls(run)
+    assert ["tmux", "unbind-key", "-T", "prefix", "S"] in unbinds  # S had no previous binding
+    assert not (control.CONTROL_DIR / "saved-keybindings.json").exists()
+
+
+def test_stop_unbinds_instead_of_restoring_a_stale_claude_follow_binding() -> None:
+    stale = 'bind-key -T prefix P run-shell "/old/venv/claude-follow pause >/dev/null 2>&1"'
+
+    def _run_with_stale(cmd: list[str], **kwargs: object) -> MagicMock:
+        if cmd[:3] == ["tmux", "list-keys", "-T"] and cmd[4] == "P":
+            return MagicMock(returncode=0, stdout=stale + "\n")
+        if cmd[:3] == ["tmux", "list-keys", "-T"]:
+            return MagicMock(returncode=1, stdout="")
+        return _mock_tmux_run()(cmd, **kwargs)
+
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_run_with_stale) as run:
+        assert cli.cmd_start({"TMUX_PANE": "%1"}) == 0
+        assert cli.cmd_stop({"TMUX_PANE": "%1"}) == 0
+
+    # "restoring" our own leftover binding from a crashed run would resurrect
+    # a possibly-broken path — unbind is the correct cleanup
+    assert ["tmux", "unbind-key", "-T", "prefix", "P"] in _unbind_calls(run)
+
+
+def test_restart_after_crash_does_not_overwrite_the_saved_original_binding() -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        assert cli.cmd_start({"TMUX_PANE": "%1"}) == 0
+    saved_path = control.CONTROL_DIR / "saved-keybindings.json"
+    first = saved_path.read_text()
+
+    # simulate a crash: follower state lost, tmux bindings (ours) still live
+    state.FollowerState.clear("$1")
+
+    def _run_with_our_binding(cmd: list[str], **kwargs: object) -> MagicMock:
+        if cmd[:3] == ["tmux", "list-keys", "-T"]:
+            return MagicMock(
+                returncode=0,
+                stdout='bind-key -T prefix P run-shell "/x/claude-follow pause"\n',
+            )
+        return _mock_tmux_run()(cmd, **kwargs)
+
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_run_with_our_binding):
+        assert cli.cmd_start({"TMUX_PANE": "%1"}) == 0
+
+    # the re-registration must NOT record our own still-bound key as the
+    # user's "previous" binding — the original record wins
+    assert saved_path.read_text() == first
+
+
+def test_stop_with_corrupt_saved_bindings_falls_back_to_unbind() -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        assert cli.cmd_start({"TMUX_PANE": "%1"}) == 0
+    (control.CONTROL_DIR / "saved-keybindings.json").write_text("{broken")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert cli.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    unbinds = _unbind_calls(run)
+    assert ["tmux", "unbind-key", "-T", "prefix", "P"] in unbinds
+    assert ["tmux", "unbind-key", "-T", "prefix", "S"] in unbinds

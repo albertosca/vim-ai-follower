@@ -43,7 +43,29 @@ def _claude_follow_executable() -> str:
     return located if located is not None else "claude-follow"
 
 
+def _saved_bindings_path() -> Path:
+    return control.CONTROL_DIR / "saved-keybindings.json"
+
+
+def _existing_binding(key: str) -> str | None:
+    result = subprocess.run(
+        ["tmux", "list-keys", "-T", "prefix", key],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    line = result.stdout.strip()
+    return line if result.returncode == 0 and line else None
+
+
 def _register_keybindings() -> None:
+    saved_path = _saved_bindings_path()
+    if not saved_path.exists():
+        # Only the FIRST registration records "previous": re-registering
+        # after a crash would otherwise save our own still-bound key as the
+        # user's original binding.
+        saved_path.parent.mkdir(parents=True, exist_ok=True)
+        saved_path.write_text(json.dumps({key: _existing_binding(key) for key, _ in _KEYBINDINGS}))
     executable = shlex.quote(_claude_follow_executable())
     for key, subcommand in _KEYBINDINGS:
         subprocess.run(
@@ -64,10 +86,23 @@ def _register_keybindings() -> None:
 
 
 def _unregister_keybindings() -> None:
-    # check=False: unbinding a key that was never bound (e.g. stop called
-    # after a crash that skipped start's registration) isn't an error.
+    # check=False everywhere: stop after a crash that skipped registration
+    # must still clean up without erroring. Keybindings are SERVER-global
+    # while follower state is per-session: running two followers in two
+    # tmux sessions at once is unsupported (the first stop takes the keys
+    # down for both).
+    saved_path = _saved_bindings_path()
+    try:
+        saved: dict[str, str | None] = json.loads(saved_path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        saved = {}
     for key, _ in _KEYBINDINGS:
-        subprocess.run(["tmux", "unbind-key", "-T", "prefix", key], check=False)
+        previous = saved.get(key)
+        if previous and "claude-follow" not in previous:
+            subprocess.run(["tmux", *shlex.split(previous)], check=False)
+        else:
+            subprocess.run(["tmux", "unbind-key", "-T", "prefix", key], check=False)
+    saved_path.unlink(missing_ok=True)
 
 
 def cmd_start(
