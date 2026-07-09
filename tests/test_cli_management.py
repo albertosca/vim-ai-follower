@@ -149,6 +149,9 @@ def test_start_registers_keybindings_with_absolute_path_and_silenced_output(
     binds = _bind_calls(run)
     assert [cmd[4] for cmd in binds] == ["P", "S"]
     for cmd, subcommand in zip(binds, ("pause", "interrupt"), strict=True):
+        # run-shell without -b blocks ALL tmux input until the command
+        # exits — a resume replay lasts tens of seconds, freezing the user
+        assert cmd[6] == "-b"
         shell_command = cmd[-1]
         # bare "claude-follow" resolves to nothing under the tmux server's
         # PATH (exit 127) — the binding must embed the venv's absolute path

@@ -76,6 +76,12 @@ def _register_keybindings() -> None:
                 "prefix",
                 key,
                 "run-shell",
+                # -b: run in background — a plain run-shell blocks ALL tmux
+                # input until the command exits, and a resume replay lasts
+                # tens of seconds. Backgrounding also makes the toggle
+                # honest: a second press DURING the replay delivers a pause
+                # signal the replay actually consumes.
+                "-b",
                 # tmux pre-expands #{pane_id} against the pane that triggered
                 # the binding, so assign it directly. Nesting a
                 # $(tmux display-message -p ...) around the pre-expanded
