@@ -10,18 +10,10 @@ from pathlib import Path
 
 import pytest
 
-from vim_ai_follower import cli, control, snapshot, state
+from vim_ai_follower import cli, control
 from vim_ai_follower.tmux import TmuxPane
 
 pytestmark = pytest.mark.integration
-
-
-@pytest.fixture(autouse=True)
-def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(state, "STATE_DIR", tmp_path / "state")
-    monkeypatch.setattr(snapshot, "SNAPSHOT_DIR", tmp_path / "snapshots")
-    monkeypatch.setattr(control, "CONTROL_DIR", tmp_path / "control")
-    monkeypatch.setattr(cli, "LOG_PATH", tmp_path / "hook.log")
 
 
 def _session_id(pane_id: str) -> str:

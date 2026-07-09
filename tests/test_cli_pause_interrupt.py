@@ -1,46 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from helpers import make_mock_tmux_run as _mock_tmux_run
+from helpers import register_fake_follower as _register_fake_follower
 
-from vim_ai_follower import cli, control, snapshot, state
+from vim_ai_follower import cli, control, state
 from vim_ai_follower.diff import EditOp
-
-
-@pytest.fixture(autouse=True)
-def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(state, "STATE_DIR", tmp_path / "state")
-    monkeypatch.setattr(snapshot, "SNAPSHOT_DIR", tmp_path / "snapshots")
-    monkeypatch.setattr(control, "CONTROL_DIR", tmp_path / "control")
-    monkeypatch.setattr(cli, "LOG_PATH", tmp_path / "hook.log")
-
-
-def _mock_tmux_run(session_id: str = "$1", pane_id: str = "%2") -> Callable[..., MagicMock]:
-    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
-        result = MagicMock()
-        if cmd[:3] == ["tmux", "list-panes", "-a"]:
-            result.returncode = 0
-            result.stdout = f"{pane_id} vim\n"
-        elif cmd[:2] == ["tmux", "display-message"]:
-            result.returncode = 0
-            result.stdout = f"{session_id}\n"
-        else:
-            result.returncode = 0
-            result.stdout = ""
-        return result
-
-    return _run
-
-
-def _register_fake_follower(session_id: str, pane_id: str) -> None:
-    with patch(
-        "vim_ai_follower.tmux.subprocess.run",
-        return_value=MagicMock(returncode=0, stdout=f"{pane_id} vim\n"),
-    ):
-        state.FollowerState.set(session_id, "tmux", pane_id)
 
 
 def _popup_calls(popen_mock: MagicMock) -> list[list[str]]:

@@ -10,7 +10,6 @@ from vim_ai_follower.animate import (
     ApplyResult,
     KeySequence,
     _delete_sequences,
-    _insert_prefix_length,
     _insert_sequences,
     _line_sequences,
     apply,
@@ -190,12 +189,13 @@ def test_delete_sequences_empty_for_pure_insert_op() -> None:
 
 def test_insert_sequences_empty_for_pure_delete_op() -> None:
     op = EditOp(kind="delete", start_line=2, end_line=3, new_lines=())
-    assert _insert_sequences(op) == []
+    assert _insert_sequences(op) == ([], 0)
 
 
 def test_insert_sequences_at_top_uses_gg_open_above() -> None:
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
-    assert _insert_sequences(op) == [
+    sequences, prefix_len = _insert_sequences(op)
+    assert sequences == [
         KeySequence("gg", literal=True),
         KeySequence("O", literal=True),
         KeySequence("a", literal=True),
@@ -203,11 +203,13 @@ def test_insert_sequences_at_top_uses_gg_open_above() -> None:
         KeySequence("b", literal=True),
         KeySequence("Escape", literal=False),
     ]
+    assert prefix_len == 2  # "gg", "O"
 
 
 def test_insert_sequences_mid_file_positions_then_opens_below() -> None:
     op = EditOp(kind="insert", start_line=3, end_line=2, new_lines=("c", "d"))
-    assert _insert_sequences(op) == [
+    sequences, prefix_len = _insert_sequences(op)
+    assert sequences == [
         KeySequence(":2", literal=True),
         KeySequence("Enter", literal=False),
         KeySequence("o", literal=True),
@@ -216,16 +218,9 @@ def test_insert_sequences_mid_file_positions_then_opens_below() -> None:
         KeySequence("d", literal=True),
         KeySequence("Escape", literal=False),
     ]
-
-
-def test_insert_prefix_length_is_3_when_positioned_by_line_number() -> None:
-    op = EditOp(kind="insert", start_line=3, end_line=2, new_lines=("c",))
-    assert _insert_prefix_length(op) == 3  # ":2", Enter, "o"
-
-
-def test_insert_prefix_length_is_2_when_positioned_at_top() -> None:
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
-    assert _insert_prefix_length(op) == 2  # "gg", "O"
+    # the prefix is derived from the same list it describes — it can't desync
+    assert prefix_len == 3
+    assert [s.text for s in sequences[:prefix_len]] == [":2", "Enter", "o"]
 
 
 def test_run_ops_clears_stale_signals_before_starting(tmp_path: Path) -> None:

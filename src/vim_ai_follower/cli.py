@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from vim_ai_follower import config, control
+from vim_ai_follower import cache, config, control
 from vim_ai_follower import diff as diff_module
 from vim_ai_follower.backends import Follower, get_follower
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
@@ -21,7 +21,7 @@ from vim_ai_follower.snapshot import save as save_snapshot
 from vim_ai_follower.state import FollowerState, nvim_socket_path
 from vim_ai_follower.tmux import TmuxSession
 
-LOG_PATH = Path.home() / ".cache" / "claude-vim-follower" / "hook.log"
+LOG_PATH = cache.CACHE_DIR / "hook.log"
 
 logger = logging.getLogger("vim_ai_follower")
 
@@ -44,7 +44,7 @@ def _claude_follow_executable() -> str:
 
 
 def _saved_bindings_path() -> Path:
-    return control.CONTROL_DIR / "saved-keybindings.json"
+    return cache.CACHE_DIR / "saved-keybindings.json"
 
 
 def _existing_binding(key: str) -> str | None:
@@ -362,11 +362,6 @@ def _ensure_buffer(
     return True
 
 
-def _reconstruct_partial_edit(before: str, after: str, completed_count: int) -> str:
-    ops = diff_module.compute_edit_script(before, after)
-    return diff_module.apply_ops(before, ops[:completed_count])
-
-
 def _reconstruct_partial_fresh(content: str, completed_count: int) -> str:
     return "\n".join(content.splitlines()[:completed_count])
 
@@ -467,10 +462,13 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         return 0
 
     before = load_snapshot(session.session_id, file_path)
-    result = follower.apply_edit(before, after)
+    ops = diff_module.compute_edit_script(before, after)
+    result = follower.apply_edit(ops)
     if result.outcome == "interrupted":
         FollowerState.update_current_file(session.session_id, None)
-        partial = _reconstruct_partial_edit(before, after, result.completed_count)
+        # completed_count indexes the very ops list the animation walked —
+        # computing the script once keeps this reconstruction truthful.
+        partial = diff_module.apply_ops(before, ops[: result.completed_count])
         _print_interrupt_notification(file_path, partial)
     return 0
 

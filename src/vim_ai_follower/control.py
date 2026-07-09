@@ -5,13 +5,14 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from vim_ai_follower import cache
 from vim_ai_follower.diff import EditOp
-
-CONTROL_DIR = Path.home() / ".cache" / "claude-vim-follower"
 
 
 def _dir(base_dir: Path | None) -> Path:
-    return base_dir if base_dir is not None else CONTROL_DIR
+    # cache.CACHE_DIR is read at call time (not bound at import) so one
+    # monkeypatch of the cache module isolates every consumer in tests.
+    return base_dir if base_dir is not None else cache.CACHE_DIR
 
 
 def _pause_path(session_id: str, base_dir: Path | None) -> Path:

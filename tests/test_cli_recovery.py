@@ -1,43 +1,15 @@
 from __future__ import annotations
 
+import functools
 import subprocess
-from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
+from helpers import make_mock_tmux_run
 
-from vim_ai_follower import cli, control, snapshot, state
+from vim_ai_follower import cli, state
 
-
-@pytest.fixture(autouse=True)
-def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(state, "STATE_DIR", tmp_path / "state")
-    monkeypatch.setattr(snapshot, "SNAPSHOT_DIR", tmp_path / "snapshots")
-    monkeypatch.setattr(control, "CONTROL_DIR", tmp_path / "control")
-    monkeypatch.setattr(cli, "LOG_PATH", tmp_path / "hook.log")
-
-
-def _mock_tmux_run(
-    session_id: str = "$1", origin_pane: str = "%1", new_pane_id: str = "%9"
-) -> Callable[..., MagicMock]:
-    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
-        result = MagicMock()
-        if cmd[:3] == ["tmux", "list-panes", "-a"]:
-            result.returncode = 0
-            result.stdout = f"{origin_pane} zsh\n{new_pane_id} vim\n"
-        elif cmd[:2] == ["tmux", "display-message"]:
-            result.returncode = 0
-            result.stdout = f"{session_id}\n"
-        elif cmd[:2] == ["tmux", "split-window"]:
-            result.returncode = 0
-            result.stdout = f"{new_pane_id}\n"
-        else:
-            result.returncode = 0
-            result.stdout = ""
-        return result
-
-    return _run
+_mock_tmux_run = functools.partial(make_mock_tmux_run, pane_id="%9", other_panes=("%1",))
 
 
 def _split_calls(run_mock: MagicMock) -> list[list[str]]:

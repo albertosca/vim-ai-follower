@@ -4,9 +4,8 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
+from vim_ai_follower import cache
 from vim_ai_follower.backends import get_follower
-
-STATE_DIR = Path.home() / ".cache" / "claude-vim-follower"
 
 _DEFAULT_ORIGIN = ""
 _DEFAULT_ON_FAILURE = "silent"
@@ -14,14 +13,14 @@ _DEFAULT_SPEED = "rapido"
 
 
 def _state_path(session_id: str, base_dir: Path | None) -> Path:
-    directory = base_dir if base_dir is not None else STATE_DIR
+    directory = base_dir if base_dir is not None else cache.CACHE_DIR
     return directory / f"{session_id}.pane"
 
 
 def nvim_socket_path(session_id: str, base_dir: Path | None = None) -> Path:
     """Deterministic per-tmux-session RPC socket path. The Neovim side must
     call vim.fn.serverstart() at this exact path (see integração no README)."""
-    directory = base_dir if base_dir is not None else STATE_DIR
+    directory = base_dir if base_dir is not None else cache.CACHE_DIR
     return directory / f"nvim-{session_id}.sock"
 
 

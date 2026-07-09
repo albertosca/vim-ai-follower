@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
-from vim_ai_follower import diff as diff_module
 from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult, run_lines, run_ops
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
+from vim_ai_follower.diff import EditOp
 from vim_ai_follower.tmux import TmuxPane
 
 
@@ -30,23 +31,31 @@ class TmuxVimFollower:
         pane.send_text(":setlocal readonly nomodifiable")
         pane.send_key("Enter")
 
-    def apply_edit(self, before: str, after: str) -> AnimationResult:
-        ops = diff_module.compute_edit_script(before, after)
+    def _with_unlocked(
+        self, relock: str, run: Callable[[TmuxPane], AnimationResult]
+    ) -> AnimationResult:
+        """Owns the lock protocol shared by every animation entry point.
+        'paste' suppresses autoindent/smartindent/cindent for the duration:
+        without it, each Enter in insert mode auto-inserts indentation that
+        then stacks with the leading whitespace already in our own lines.
+        An interrupted animation hands the buffer to the user — it stays
+        modifiable. completed/paused both relock (a paused buffer is
+        protected, not handed over; run_ops/run_lines always stop on a
+        clean boundary rather than a stray mid-typing spot)."""
         pane = TmuxPane(pane_id=self.pane_id)
-        # 'paste' suppresses autoindent/smartindent/cindent for the duration:
-        # without it, each Enter in insert mode auto-inserts indentation that
-        # then stacks with the leading whitespace already in our own lines.
         pane.send_text(":setlocal modifiable paste")
         pane.send_key("Enter")
-        result = run_ops(pane, self.session_id, ops, self.pace_seconds)
-        # An interrupted animation hands the buffer to the user — it stays
-        # modifiable. completed/paused both relock (a paused buffer is
-        # protected, not handed over; see run_ops for why paused always
-        # lands on a clean op boundary rather than a stray mid-typing spot).
+        result = run(pane)
         if result.outcome != "interrupted":
-            pane.send_text(":setlocal nomodifiable nopaste")
+            pane.send_text(relock)
             pane.send_key("Enter")
         return result
+
+    def apply_edit(self, ops: list[EditOp]) -> AnimationResult:
+        return self._with_unlocked(
+            ":setlocal nomodifiable nopaste",
+            lambda pane: run_ops(pane, self.session_id, ops, self.pace_seconds),
+        )
 
     def show_fresh(self, file_path: str, content: str) -> AnimationResult:
         pane = TmuxPane(pane_id=self.pane_id)
@@ -66,38 +75,32 @@ class TmuxVimFollower:
         # afterwards.
         pane.send_text(":filetype detect")
         pane.send_key("Enter")
-        pane.send_text(":setlocal modifiable paste")
-        pane.send_key("Enter")
-        # Wipe down to a single blank line — Vim can't have zero lines.
-        pane.send_text(":%d")
-        pane.send_key("Enter")
         lines = tuple(content.splitlines())
-        result = run_lines(pane, self.session_id, lines, self.pace_seconds)
-        if result.outcome != "interrupted":
-            pane.send_text(":setlocal readonly nomodifiable nopaste")
-            pane.send_key("Enter")
-        return result
+
+        def run(inner: TmuxPane) -> AnimationResult:
+            # Wipe down to a single blank line — Vim can't have zero lines.
+            inner.send_text(":%d")
+            inner.send_key("Enter")
+            return run_lines(inner, self.session_id, lines, self.pace_seconds)
+
+        return self._with_unlocked(":setlocal readonly nomodifiable nopaste", run)
 
     def resume(self, pending: PendingApplyEdit | PendingShowFresh) -> AnimationResult:
-        pane = TmuxPane(pane_id=self.pane_id)
-        pane.send_text(":setlocal modifiable paste")
-        pane.send_key("Enter")
         if isinstance(pending, PendingApplyEdit):
-            result = run_ops(pane, self.session_id, pending.ops, pending.pace_seconds)
-            relock = ":setlocal nomodifiable nopaste"
-        else:
-            result = run_lines(
+            return self._with_unlocked(
+                ":setlocal nomodifiable nopaste",
+                lambda pane: run_ops(pane, self.session_id, pending.ops, pending.pace_seconds),
+            )
+        return self._with_unlocked(
+            ":setlocal readonly nomodifiable nopaste",
+            lambda pane: run_lines(
                 pane,
                 self.session_id,
                 pending.lines,
                 pending.pace_seconds,
                 continuation=pending.continuation,
-            )
-            relock = ":setlocal readonly nomodifiable nopaste"
-        if result.outcome != "interrupted":
-            pane.send_text(relock)
-            pane.send_key("Enter")
-        return result
+            ),
+        )
 
     def hand_over(self) -> None:
         """Unlock the buffer for direct user editing (interrupt semantics)."""

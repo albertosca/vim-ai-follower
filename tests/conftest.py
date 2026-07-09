@@ -6,8 +6,24 @@ import tempfile
 import time
 import uuid
 from collections.abc import Callable, Iterator
+from pathlib import Path
 
 import pytest
+
+from vim_ai_follower import cache, cli, snapshot
+
+
+@pytest.fixture(autouse=True)
+def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Redirect every on-disk location (cache dir shared by state, signals,
+    pending files and saved keybindings; snapshots; hook log) to a per-test
+    tmp dir. cache.CACHE_DIR is read at call time by its consumers, so this
+    single setattr isolates all of them."""
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(snapshot, "SNAPSHOT_DIR", tmp_path / "snapshots")
+    monkeypatch.setattr(cli, "LOG_PATH", tmp_path / "hook.log")
+    yield
+    cli.logger.handlers.clear()
 
 
 @pytest.fixture

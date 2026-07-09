@@ -31,36 +31,38 @@ def _delete_sequences(op: EditOp) -> list[KeySequence]:
     return [KeySequence(f":{op.start_line},{op.end_line}d"), KeySequence("Enter", literal=False)]
 
 
-def _insert_sequences(op: EditOp) -> list[KeySequence]:
+def _insert_sequences(op: EditOp) -> tuple[list[KeySequence], int]:
+    """Keystrokes for an op's insert half, plus the length of its cursor-
+    positioning prefix (the sequences before any text lands — once the last
+    prefix key is sent, Vim has opened a line, i.e. recorded a change). The
+    length is derived from the prefix list itself so the two can't desync."""
     if not op.new_lines:
-        return []
-    sequences: list[KeySequence] = []
+        return [], 0
+    prefix: list[KeySequence] = []
     anchor = op.start_line - 1
     if anchor >= 1:
-        sequences.append(KeySequence(f":{anchor}"))
-        sequences.append(KeySequence("Enter", literal=False))
-        sequences.append(KeySequence("o"))
+        prefix.append(KeySequence(f":{anchor}"))
+        prefix.append(KeySequence("Enter", literal=False))
+        prefix.append(KeySequence("o"))
     else:
-        sequences.append(KeySequence("gg"))
-        sequences.append(KeySequence("O"))
+        prefix.append(KeySequence("gg"))
+        prefix.append(KeySequence("O"))
+    sequences = list(prefix)
     last_index = len(op.new_lines) - 1
     for index, line in enumerate(op.new_lines):
         sequences.append(KeySequence(line))
         if index < last_index:
             sequences.append(KeySequence("Enter", literal=False))
     sequences.append(KeySequence("Escape", literal=False))
-    return sequences
-
-
-def _insert_prefix_length(op: EditOp) -> int:
-    return 3 if (op.start_line - 1) >= 1 else 2
+    return sequences, len(prefix)
 
 
 def render_keystrokes(ops: list[EditOp]) -> list[KeySequence]:
     sequences: list[KeySequence] = []
     for op in ops:
         sequences.extend(_delete_sequences(op))
-        sequences.extend(_insert_sequences(op))
+        insert_seq, _ = _insert_sequences(op)
+        sequences.extend(insert_seq)
     return sequences
 
 
@@ -86,12 +88,12 @@ def run_ops(
                 pane.send_key("Escape")
                 return _stop(result.outcome, session_id, ops, index, pace_seconds, base_dir)
 
-        insert_seq = _insert_sequences(op)
+        insert_seq, prefix_len = _insert_sequences(op)
         if insert_seq:
             result = apply(pane, insert_seq, pace_seconds, session_id, control_base_dir=base_dir)
             if result.outcome != "completed":
                 pane.send_key("Escape")
-                if result.sent_count >= _insert_prefix_length(op):
+                if result.sent_count >= prefix_len:
                     pane.send_text("u")
                 if delete_seq:
                     # The delete half already ran as its own undo unit; roll

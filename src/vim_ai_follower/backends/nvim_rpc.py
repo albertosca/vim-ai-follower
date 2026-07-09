@@ -7,6 +7,7 @@ import pynvim
 
 from vim_ai_follower import diff as diff_module
 from vim_ai_follower.animate import AnimationResult
+from vim_ai_follower.diff import EditOp
 
 PACE_SECONDS = 0.05
 
@@ -33,10 +34,9 @@ class NvimRpcFollower:
         nvim = self._connect()
         nvim.command(f"edit {file_path}")
 
-    def apply_edit(self, before: str, after: str) -> AnimationResult:
+    def apply_edit(self, ops: list[EditOp]) -> AnimationResult:
         nvim = self._connect()
         buf = nvim.current.buffer
-        ops = diff_module.compute_edit_script(before, after)
         for op in ops:
             # start_line/end_line are already 0-indexed, end-exclusive once
             # shifted by -1/-0 respectively — same convention nvim_buf_set_lines
@@ -54,7 +54,7 @@ class NvimRpcFollower:
         nvim.command(f"file {file_path}")
         nvim.command("filetype detect")
         nvim.current.buffer[:] = []
-        return self.apply_edit("", content)
+        return self.apply_edit(diff_module.compute_edit_script("", content))
 
     def goto_line(self, offset: int) -> None:
         nvim = self._connect()

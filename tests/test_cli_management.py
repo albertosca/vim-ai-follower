@@ -1,41 +1,16 @@
 from __future__ import annotations
 
+import functools
 import sys
-from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from helpers import make_mock_tmux_run
 
 from vim_ai_follower import cli, config, control, state
 
-
-@pytest.fixture(autouse=True)
-def isolated_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(state, "STATE_DIR", tmp_path / "state")
-    monkeypatch.setattr(control, "CONTROL_DIR", tmp_path / "control")
-
-
-def _mock_tmux_run(
-    pane_exists: bool = True, session_id: str = "$1", new_pane_id: str = "%9"
-) -> Callable[..., MagicMock]:
-    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
-        result = MagicMock()
-        if cmd[:3] == ["tmux", "list-panes", "-a"]:
-            result.stdout = "%1 zsh\n%2 zsh\n" + (f"{new_pane_id} vim\n" if pane_exists else "")
-            result.returncode = 0
-        elif cmd[:2] == ["tmux", "display-message"]:
-            result.returncode = 0
-            result.stdout = f"{session_id}\n"
-        elif cmd[:2] == ["tmux", "split-window"]:
-            result.returncode = 0
-            result.stdout = f"{new_pane_id}\n"
-        else:
-            result.returncode = 0
-            result.stdout = ""
-        return result
-
-    return _run
+_mock_tmux_run = functools.partial(make_mock_tmux_run, pane_id="%9", other_panes=("%1", "%2"))
 
 
 def test_start_without_tmux_env_fails() -> None:
@@ -226,7 +201,7 @@ def test_stop_restores_a_pre_existing_binding() -> None:
     assert ["tmux", "bind-key", "-T", "prefix", "P", "paste-buffer"] in rebinds
     unbinds = _unbind_calls(run)
     assert ["tmux", "unbind-key", "-T", "prefix", "S"] in unbinds  # S had no previous binding
-    assert not (control.CONTROL_DIR / "saved-keybindings.json").exists()
+    assert not cli._saved_bindings_path().exists()
 
 
 def test_stop_unbinds_instead_of_restoring_a_stale_claude_follow_binding() -> None:
@@ -251,7 +226,7 @@ def test_stop_unbinds_instead_of_restoring_a_stale_claude_follow_binding() -> No
 def test_restart_after_crash_does_not_overwrite_the_saved_original_binding() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
         assert cli.cmd_start({"TMUX_PANE": "%1"}) == 0
-    saved_path = control.CONTROL_DIR / "saved-keybindings.json"
+    saved_path = cli._saved_bindings_path()
     first = saved_path.read_text()
 
     # simulate a crash: follower state lost, tmux bindings (ours) still live
@@ -276,7 +251,7 @@ def test_restart_after_crash_does_not_overwrite_the_saved_original_binding() -> 
 def test_stop_with_corrupt_saved_bindings_falls_back_to_unbind() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
         assert cli.cmd_start({"TMUX_PANE": "%1"}) == 0
-    (control.CONTROL_DIR / "saved-keybindings.json").write_text("{broken")
+    cli._saved_bindings_path().write_text("{broken")
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert cli.cmd_stop({"TMUX_PANE": "%1"}) == 0
     unbinds = _unbind_calls(run)

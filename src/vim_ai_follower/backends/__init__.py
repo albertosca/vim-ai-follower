@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult
+from vim_ai_follower.diff import EditOp
 
 
 class Follower(Protocol):
@@ -12,7 +13,7 @@ class Follower(Protocol):
 
     def ensure_showing(self, file_path: str) -> None: ...
 
-    def apply_edit(self, before: str, after: str) -> AnimationResult: ...
+    def apply_edit(self, ops: list[EditOp]) -> AnimationResult: ...
 
     def show_fresh(self, file_path: str, content: str) -> AnimationResult: ...
 

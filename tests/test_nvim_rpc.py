@@ -7,6 +7,7 @@ import pytest
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends import get_follower
 from vim_ai_follower.backends.nvim_rpc import NvimRpcFollower
+from vim_ai_follower.diff import compute_edit_script
 
 
 def test_is_alive_true_when_connection_succeeds() -> None:
@@ -39,7 +40,9 @@ def test_apply_edit_sets_buffer_lines_for_each_op_and_reports_completed() -> Non
         patch("vim_ai_follower.backends.nvim_rpc.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.backends.nvim_rpc.time.sleep"),
     ):
-        result = follower.apply_edit("hello\nworld\n", "hello\nvim ai follower\n")
+        result = follower.apply_edit(
+            compute_edit_script("hello\nworld\n", "hello\nvim ai follower\n")
+        )
     nvim.current.buffer.__setitem__.assert_any_call(slice(1, 2), ["vim ai follower"])
     assert result == AnimationResult("completed", 1)
 
