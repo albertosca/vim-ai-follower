@@ -242,6 +242,65 @@ def test_pause_resume_without_follower_preserves_pending_apply_edit(
     assert pending == control.PendingApplyEdit([op], 0.2)
 
 
+def test_interrupt_with_pending_discards_it_and_hands_the_buffer_over() -> None:
+    _register_fake_follower("$1", "%2")
+    control.save_pending_show_fresh("$1", ("leftover",), 0.15, continuation=True)
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
+    ):
+        assert cli.cmd_interrupt({"TMUX_PANE": "%1"}) == 0
+
+    assert control.has_pending_animation("$1") is False
+    assert control.check_signal("$1") is None  # no orphan signal file left behind
+    sends = [
+        c.args[0][6]
+        for c in run.call_args_list
+        if c.args[0][:4] == ["tmux", "send-keys", "-t", "%2"] and "-l" in c.args[0]
+    ]
+    assert ":setlocal modifiable nopaste" in sends  # buffer unlocked for the user
+    popups = _popup_calls(popen)
+    assert len(popups) == 1
+    assert any("Interrupted" in arg for arg in popups[0])
+
+
+def test_interrupt_with_pending_but_dead_follower_still_discards_it(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # no follower registered (e.g. the pane died while paused): there is no
+    # buffer to hand over, but the stale pending state must still die
+    control.save_pending_show_fresh("$1", ("leftover",), 0.15, continuation=True)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
+    ):
+        assert cli.cmd_interrupt({"TMUX_PANE": "%1"}) == 0
+    assert control.has_pending_animation("$1") is False
+    assert control.check_signal("$1") is None
+    assert _popup_calls(popen) == []  # no follower pane to show it on
+    assert "discarded" in capsys.readouterr().out
+
+
+def test_interrupt_with_pending_resets_current_file_for_resync() -> None:
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="%2 vim\n"),
+    ):
+        state.FollowerState.set("$1", "tmux", "%2", current_file="/tmp/f.txt")
+    control.save_pending_show_fresh("$1", ("leftover",), 0.15, continuation=True)
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()),
+    ):
+        assert cli.cmd_interrupt({"TMUX_PANE": "%1"}) == 0
+
+    refreshed = state.FollowerState.read("$1")
+    assert refreshed is not None
+    assert refreshed.current_file is None
+
+
 def test_main_dispatches_pause_and_interrupt(monkeypatch: pytest.MonkeyPatch) -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
         monkeypatch.setenv("TMUX_PANE", "%1")

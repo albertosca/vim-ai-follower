@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import logging
 import os
@@ -240,9 +241,23 @@ def cmd_interrupt(env: dict[str, str]) -> int:
     if session is None:
         print("claude-follow: not running inside tmux", file=sys.stderr)
         return 1
+    current = FollowerState.get(session.session_id)
+
+    pending = control.load_pending_animation(session.session_id)
+    if pending is not None:
+        # A pending file only exists while no animation is running, so there
+        # is nothing to signal — discard the paused remainder and hand the
+        # buffer to the user, exactly like a live interrupt would.
+        if current is not None and current.backend == "tmux":
+            TmuxVimFollower(pane_id=current.target, session_id=session.session_id).hand_over()
+        FollowerState.update_current_file(session.session_id, None)
+        print("claude-follow: paused animation discarded, buffer handed over")
+        _show_popup(current, "Interrupted")
+        return 0
+
     control.request_interrupt(session.session_id)
     print("claude-follow: interrupt requested")
-    _show_popup(FollowerState.get(session.session_id), "Interrupted")
+    _show_popup(current, "Interrupted")
     return 0
 
 
@@ -384,8 +399,19 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         session_id=session.session_id,
     )
     is_fresh = current.current_file != file_path
+    binary = diff_module.is_binary(raw_after)
 
-    if diff_module.is_binary(raw_after):
+    # Consume any paused animation BEFORE animating: replaying it at pace 0
+    # brings the buffer to the state the new edit's ops were computed
+    # against. When the new edit targets another file (or a binary), the
+    # buffer gets wiped/replaced anyway — consuming without replaying is
+    # the correct discard.
+    pending = control.load_pending_animation(session.session_id)
+    if pending is not None and not is_fresh and not binary:
+        assert isinstance(follower, TmuxVimFollower)  # only tmux ever persists pending state
+        follower.resume(dataclasses.replace(pending, pace_seconds=0.0))
+
+    if binary:
         # Binary files are never animated, so it's safe to just navigate to
         # them normally (real content shown immediately, nothing to spoil).
         if is_fresh:
@@ -395,15 +421,20 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
     after = raw_after.decode("utf-8", errors="replace")
     if is_fresh:
         result = follower.show_fresh(file_path, after)
-        FollowerState.update_current_file(session.session_id, file_path)
         if result.outcome == "interrupted":
+            # Forget the file so the next edit resyncs via a full retype —
+            # the user owns the buffer now and may change it under us.
+            FollowerState.update_current_file(session.session_id, None)
             partial = _reconstruct_partial_fresh(after, result.completed_count)
             _print_interrupt_notification(file_path, partial)
+        else:
+            FollowerState.update_current_file(session.session_id, file_path)
         return 0
 
     before = load_snapshot(session.session_id, file_path)
     result = follower.apply_edit(before, after)
     if result.outcome == "interrupted":
+        FollowerState.update_current_file(session.session_id, None)
         partial = _reconstruct_partial_edit(before, after, result.completed_count)
         _print_interrupt_notification(file_path, partial)
     return 0

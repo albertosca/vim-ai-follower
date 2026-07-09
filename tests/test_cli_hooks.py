@@ -373,3 +373,89 @@ def test_hook_post_first_open_interrupted_prints_notification_with_partial_lines
     out = json.loads(capsys.readouterr().out)
     context = out["hookSpecificOutput"]["additionalContext"]
     assert context.count("\n\na\n\n") == 1  # only the first line had been typed
+
+
+def test_hook_post_fast_forwards_pending_before_animating_same_file(tmp_path: Path) -> None:
+    from vim_ai_follower.diff import EditOp
+
+    target = tmp_path / "f.txt"
+    target.write_text("new content\n")
+    _register_fake_follower("$1", "%2", current_file=str(target))
+    snapshot.save("$1", str(target), "old content\n")
+    control.save_pending_apply_edit(
+        "$1", [EditOp(kind="insert", start_line=1, end_line=0, new_lines=("leftover",))], 0.15
+    )
+
+    payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    sends = _literal_sends(run)
+    assert "leftover" in sends  # the paused remainder replayed...
+    assert sends.index("leftover") < sends.index("new content")  # ...BEFORE the new edit
+    assert control.has_pending_animation("$1") is False
+
+
+def test_hook_post_discards_pending_when_switching_files(tmp_path: Path) -> None:
+    old = tmp_path / "old.txt"
+    new = tmp_path / "new.txt"
+    new.write_text("fresh\n")
+    _register_fake_follower("$1", "%2", current_file=str(old))
+    control.save_pending_show_fresh("$1", ("leftover",), 0.15, continuation=True)
+
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(new)}}
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    # show_fresh wipes the buffer anyway — replaying into it would be garbage
+    assert "leftover" not in _literal_sends(run)
+    assert control.has_pending_animation("$1") is False
+
+
+def test_hook_post_discards_pending_on_binary_files_too(tmp_path: Path) -> None:
+    target = tmp_path / "blob.bin"
+    target.write_bytes(b"\x00\x01\x02")
+    _register_fake_follower("$1", "%2", current_file=str(target))
+    control.save_pending_show_fresh("$1", ("leftover",), 0.15, continuation=True)
+
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    assert "leftover" not in _literal_sends(run)
+    assert control.has_pending_animation("$1") is False
+
+
+def test_hook_post_interrupt_resets_current_file_for_resync(tmp_path: Path) -> None:
+    target = tmp_path / "f.txt"
+    target.write_text("line one\nline two\n")
+    _register_fake_follower("$1", "%2", current_file=str(target))
+    snapshot.save("$1", str(target), "")
+
+    payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
+    ):
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    refreshed = state.FollowerState.read("$1")
+    assert refreshed is not None
+    assert refreshed.current_file is None  # next edit resyncs via a full retype
+
+
+def test_hook_post_fresh_interrupt_also_resets_current_file(tmp_path: Path) -> None:
+    target = tmp_path / "f.txt"
+    target.write_text("a\nb\n")
+    _register_fake_follower("$1", "%2")
+
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
+    ):
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    refreshed = state.FollowerState.read("$1")
+    assert refreshed is not None
+    assert refreshed.current_file is None

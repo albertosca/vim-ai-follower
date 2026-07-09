@@ -262,3 +262,13 @@ def test_resume_skips_relock_when_interrupted_again(tmp_path: Path) -> None:
     commands = _sent_commands(run)
     assert result.outcome == "interrupted"
     assert not any(text == ":setlocal nomodifiable nopaste" for text, _ in commands)
+
+
+def test_hand_over_unlocks_the_buffer() -> None:
+    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        follower.hand_over()
+    assert _sent_commands(run) == [
+        (":setlocal modifiable nopaste", True),
+        ("Enter", False),
+    ]

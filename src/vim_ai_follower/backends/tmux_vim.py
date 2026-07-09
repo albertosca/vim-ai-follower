@@ -99,6 +99,12 @@ class TmuxVimFollower:
             pane.send_key("Enter")
         return result
 
+    def hand_over(self) -> None:
+        """Unlock the buffer for direct user editing (interrupt semantics)."""
+        pane = TmuxPane(pane_id=self.pane_id)
+        pane.send_text(":setlocal modifiable nopaste")
+        pane.send_key("Enter")
+
     def goto_line(self, offset: int) -> None:
         pane = TmuxPane(pane_id=self.pane_id)
         pane.send_text(f":{offset}")

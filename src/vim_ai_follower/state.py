@@ -90,7 +90,7 @@ class FollowerState:
 
     @classmethod
     def update_current_file(
-        cls, session_id: str, file_path: str, base_dir: Path | None = None
+        cls, session_id: str, file_path: str | None, base_dir: Path | None = None
     ) -> None:
         current = cls.get(session_id, base_dir)
         if current is None:
