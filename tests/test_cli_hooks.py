@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -289,6 +290,25 @@ def test_main_hook_post_reads_stdin_json(monkeypatch: pytest.MonkeyPatch, tmp_pa
         assert cli.main(["hook", "post"]) == 0
 
 
+def _interrupt_then_user_saves(
+    target: Path, at_check: int, saved_content: str = "user version\n"
+) -> Callable[..., str | None]:
+    """check_signal stand-in: fire the interrupt at the Nth check, then —
+    from inside the hand-off wait loop — simulate the user's :w! by
+    rewriting the file, which releases the hook with the notification."""
+    calls = {"n": 0}
+
+    def _check(session_id: str, base_dir: Path | None = None) -> str | None:
+        calls["n"] += 1
+        if calls["n"] == at_check:
+            return "interrupt"
+        if calls["n"] > at_check:
+            target.write_text(saved_content)
+        return None
+
+    return _check
+
+
 def test_hook_post_edit_interrupted_prints_notification_and_leaves_buffer_unlocked(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -303,7 +323,11 @@ def test_hook_post_edit_interrupted_prints_notification_and_leaves_buffer_unlock
     # fires — the ex-command text gets typed but never committed
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
-        patch("vim_ai_follower.control.check_signal", side_effect=[None, "interrupt"]),
+        patch(
+            "vim_ai_follower.control.check_signal",
+            side_effect=_interrupt_then_user_saves(target, at_check=2),
+        ),
+        patch("vim_ai_follower.cli.time.sleep"),
     ):
         assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
@@ -327,7 +351,11 @@ def test_hook_post_first_open_interrupted_prints_notification_with_partial_lines
     # very first check of line "b"
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
-        patch("vim_ai_follower.control.check_signal", side_effect=[None, None, None, "interrupt"]),
+        patch(
+            "vim_ai_follower.control.check_signal",
+            side_effect=_interrupt_then_user_saves(target, at_check=4),
+        ),
+        patch("vim_ai_follower.cli.time.sleep"),
     ):
         assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
@@ -398,7 +426,11 @@ def test_hook_post_interrupt_resets_current_file_for_resync(tmp_path: Path) -> N
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
-        patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
+        patch(
+            "vim_ai_follower.control.check_signal",
+            side_effect=_interrupt_then_user_saves(target, at_check=1),
+        ),
+        patch("vim_ai_follower.cli.time.sleep"),
     ):
         assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
@@ -415,7 +447,11 @@ def test_hook_post_fresh_interrupt_also_resets_current_file(tmp_path: Path) -> N
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
-        patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
+        patch(
+            "vim_ai_follower.control.check_signal",
+            side_effect=_interrupt_then_user_saves(target, at_check=1),
+        ),
+        patch("vim_ai_follower.cli.time.sleep"),
     ):
         assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
@@ -429,3 +465,60 @@ def test_configure_logging_is_idempotent() -> None:
     handler = cli.logger.handlers[0]
     cli._configure_logging()  # a second hook in the same process must not stack handlers
     assert cli.logger.handlers == [handler]
+
+
+def test_hook_post_des_interrupt_reverts_and_resumes_following(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "f.txt"
+    target.write_text("a\nb\n")
+    _register_fake_follower("$1", "%2")
+
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    # interrupt fires at the first check; a second S during the hand-off
+    # wait means "discard my unsaved typing and put the show back on"
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+        patch("vim_ai_follower.control.check_signal", side_effect=["interrupt", "interrupt"]),
+        patch("vim_ai_follower.cli.time.sleep"),
+    ):
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    sends = _literal_sends(run)
+    assert ":e!" in sends  # unsaved user edits discarded, real file loaded
+    assert ":setlocal readonly nomodifiable" in sends  # relocked
+    refreshed = state.FollowerState.read("$1")
+    assert refreshed is not None
+    assert refreshed.current_file == str(target)  # following resumes in place
+    assert capsys.readouterr().out == ""  # nothing changed for Claude: no notification
+
+
+def test_hook_post_handoff_keeps_polling_through_unreadable_reads(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target = tmp_path / "f.txt"
+    target.write_text("a\n")
+    _register_fake_follower("$1", "%2")
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    calls = {"n": 0}
+
+    def _check(session_id: str, base_dir: Path | None = None) -> str | None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "interrupt"
+        if calls["n"] == 3:
+            target.unlink()  # mid-save: file momentarily unreadable → poll again
+        if calls["n"] == 4:
+            target.write_text("user version\n")  # the actual save lands
+        return None  # calls 2: file readable and unchanged → keep waiting
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.control.check_signal", side_effect=_check),
+        patch("vim_ai_follower.cli.time.sleep") as sleep,
+    ):
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    assert sleep.called  # at least one idle handoff poll happened
+    out = json.loads(capsys.readouterr().out)
+    assert "SAVED their own version" in out["hookSpecificOutput"]["additionalContext"]

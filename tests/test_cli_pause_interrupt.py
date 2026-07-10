@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -177,24 +176,6 @@ def test_pause_resume_shows_popup_with_interrupted_message_when_resume_is_interr
     assert any("Interrupted" in arg for arg in popups[1])
 
 
-def test_pause_resume_repaused_shows_paused_popup(tmp_path: Path) -> None:
-    _register_fake_follower("$1", "%2")
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
-    control.save_pending_apply_edit("$1", [op], 0.0)
-
-    with (
-        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
-        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
-        patch("vim_ai_follower.control.check_signal", return_value="pause"),
-    ):
-        assert cli.cmd_pause({"TMUX_PANE": "%1"}) == 0
-
-    popups = _popup_calls(popen)
-    assert len(popups) == 2
-    assert any("Resuming" in arg for arg in popups[0])
-    assert any("Paused" in arg for arg in popups[1])
-
-
 def test_pause_resume_fails_without_registered_follower(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -313,3 +294,52 @@ def test_interrupt_is_a_quiet_noop_when_nothing_is_running(
     assert control.check_signal("$1") is None
     assert _popup_calls(popen) == []
     assert "nothing to interrupt" in capsys.readouterr().out
+
+
+def test_pause_over_a_paused_hook_requests_resume_with_resuming_popup(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _register_fake_follower("$1", "%2")
+    control.mark_animating("$1", state="paused")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
+    ):
+        assert cli.cmd_pause({"TMUX_PANE": "%1"}) == 0
+    assert control.check_signal("$1") == "pause"  # the waiting hook consumes it as resume
+    assert "resume requested" in capsys.readouterr().out
+    popups = _popup_calls(popen)
+    assert len(popups) == 1
+    assert any("Resuming" in arg for arg in popups[0])
+
+
+def test_pause_during_handoff_only_prints_guidance(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _register_fake_follower("$1", "%2")
+    control.mark_animating("$1", state="handoff")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
+    ):
+        assert cli.cmd_pause({"TMUX_PANE": "%1"}) == 0
+    assert control.check_signal("$1") is None  # no signal: P has no meaning here
+    assert _popup_calls(popen) == []
+    assert "save (:w!)" in capsys.readouterr().out
+
+
+def test_interrupt_during_handoff_signals_discard(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _register_fake_follower("$1", "%2")
+    control.mark_animating("$1", state="handoff")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
+    ):
+        assert cli.cmd_interrupt({"TMUX_PANE": "%1"}) == 0
+    assert control.check_signal("$1") == "interrupt"  # the waiting hook des-interrupts
+    assert "unsaved changes discarded" in capsys.readouterr().out
+    popups = _popup_calls(popen)
+    assert len(popups) == 1
+    assert any("Discarded" in arg for arg in popups[0])

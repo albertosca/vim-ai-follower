@@ -98,16 +98,22 @@ def test_apply_edit_skips_relock_when_interrupted(tmp_path: Path) -> None:
     assert not any(text == ":setlocal nomodifiable nopaste" for text, _ in commands)
 
 
-def test_apply_edit_relocks_when_paused(tmp_path: Path) -> None:
+def test_apply_edit_relocks_after_pause_and_resume(tmp_path: Path) -> None:
     follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    calls = {"n": 0}
+
+    def _pause_then_resume(session_id: str, base_dir: Path | None = None) -> str | None:
+        calls["n"] += 1
+        return "pause" if calls["n"] in (1, 2) else None
+
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
-        patch("vim_ai_follower.control.check_signal", return_value="pause"),
+        patch("vim_ai_follower.control.check_signal", side_effect=_pause_then_resume),
     ):
         result = follower.apply_edit(compute_edit_script("a\n", "b\n"))
     commands = _sent_commands(run)
-    assert result.outcome == "paused"
+    assert result.outcome == "completed"
     assert commands[-2] == (":setlocal nomodifiable nopaste", True)
 
 

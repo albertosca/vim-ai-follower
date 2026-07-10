@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -68,8 +69,36 @@ def render_keystrokes(ops: list[EditOp]) -> list[KeySequence]:
 
 @dataclass(frozen=True)
 class AnimationResult:
-    outcome: Literal["completed", "paused", "interrupted"]
+    outcome: Literal["completed", "interrupted"]
     completed_count: int
+
+
+PAUSE_POLL_SECONDS = 0.2
+
+
+def _wait_while_paused(
+    session_id: str,
+    save_pending: Callable[[], None],
+    base_dir: Path | None,
+) -> bool:
+    """Block in place until the user resumes (True) or interrupts (False).
+    Pausing no longer exits the hook — Claude's turn stays held until the
+    animation truly finishes. The pending file is still written for the
+    duration purely as a crash fallback: if this process dies (e.g. hook
+    timeout), the keyboard can still finish the animation visually."""
+    save_pending()
+    control.mark_animating(session_id, base_dir, state="paused")
+    try:
+        while True:
+            signal = control.check_signal(session_id, base_dir)
+            if signal == "interrupt":
+                return False
+            if signal == "pause":  # the P toggle: a second press resumes
+                return True
+            time.sleep(PAUSE_POLL_SECONDS)
+    finally:
+        control.discard_pending_animation(session_id, base_dir)
+        control.mark_animating(session_id, base_dir, state="running")
 
 
 def run_ops(
@@ -82,7 +111,13 @@ def run_ops(
     control.clear_signals(session_id, base_dir)
     control.mark_animating(session_id, base_dir)
     try:
-        for index, op in enumerate(ops):
+        index = 0
+        while index < len(ops):
+            op = ops[index]
+
+            def save_pending(index: int = index) -> None:
+                control.save_pending_apply_edit(session_id, ops[index:], pace_seconds, base_dir)
+
             delete_seq = _delete_sequences(op)
             if delete_seq:
                 result = apply(
@@ -90,7 +125,11 @@ def run_ops(
                 )
                 if result.outcome != "completed":
                     pane.send_key("Escape")
-                    return _stop(result.outcome, session_id, ops, index, pace_seconds, base_dir)
+                    if result.outcome == "interrupted":
+                        return AnimationResult("interrupted", index)
+                    if not _wait_while_paused(session_id, save_pending, base_dir):
+                        return AnimationResult("interrupted", index)
+                    continue  # resumed: retry this op from its clean boundary
 
             insert_seq, prefix_len = _insert_sequences(op)
             if insert_seq:
@@ -104,31 +143,23 @@ def run_ops(
                     if delete_seq:
                         # The delete half already ran as its own undo unit;
                         # roll it back too so the buffer sits on a clean op
-                        # boundary — otherwise resuming would re-run the
+                        # boundary — otherwise retrying would re-run the
                         # delete against lines that have shifted, and the
                         # interrupt notification would claim less was shown
                         # than actually happened.
                         pane.send_text("u")
-                    return _stop(result.outcome, session_id, ops, index, pace_seconds, base_dir)
+                    if result.outcome == "interrupted":
+                        return AnimationResult("interrupted", index)
+                    if not _wait_while_paused(session_id, save_pending, base_dir):
+                        return AnimationResult("interrupted", index)
+                    continue
 
+            index += 1
         return AnimationResult("completed", len(ops))
     finally:
-        # paused/interrupted/completed alike: nothing is animating anymore
-        # (a paused remainder is owned by the pending file, not the marker)
+        # interrupted/completed alike: nothing is animating anymore (a
+        # crash-orphaned remainder is owned by the pending file instead)
         control.clear_animating(session_id, base_dir)
-
-
-def _stop(
-    outcome: Literal["paused", "interrupted"],
-    session_id: str,
-    ops: list[EditOp],
-    index: int,
-    pace_seconds: float,
-    base_dir: Path | None,
-) -> AnimationResult:
-    if outcome == "paused":
-        control.save_pending_apply_edit(session_id, ops[index:], pace_seconds, base_dir)
-    return AnimationResult(outcome, index)
 
 
 def _line_sequences(line: str, opener: str) -> tuple[list[KeySequence], int]:
@@ -163,7 +194,9 @@ def run_lines(
     control.clear_signals(session_id, base_dir)
     control.mark_animating(session_id, base_dir)
     try:
-        for index, line in enumerate(lines):
+        index = 0
+        while index < len(lines):
+            line = lines[index]
             # The first line types into the wiped buffer's single blank line
             # via `i`; every later line — and every line of a resumed run,
             # whose buffer already holds earlier lines — opens its own line
@@ -177,14 +210,20 @@ def run_lines(
                     pane.send_text("u")
                 if result.outcome == "interrupted":
                     return AnimationResult("interrupted", index)
-                control.save_pending_show_fresh(
-                    session_id,
-                    lines[index:],
-                    pace_seconds,
-                    continuation=continuation or index > 0,
-                    base_dir=base_dir,
-                )
-                return AnimationResult("paused", index)
+
+                def save_pending(index: int = index) -> None:
+                    control.save_pending_show_fresh(
+                        session_id,
+                        lines[index:],
+                        pace_seconds,
+                        continuation=continuation or index > 0,
+                        base_dir=base_dir,
+                    )
+
+                if not _wait_while_paused(session_id, save_pending, base_dir):
+                    return AnimationResult("interrupted", index)
+                continue  # resumed: retry this line (same opener, clean boundary)
+            index += 1
         return AnimationResult("completed", len(lines))
     finally:
         control.clear_animating(session_id, base_dir)

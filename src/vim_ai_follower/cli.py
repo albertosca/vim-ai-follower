@@ -9,6 +9,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,7 @@ from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.snapshot import load as load_snapshot
 from vim_ai_follower.snapshot import save as save_snapshot
 from vim_ai_follower.state import FollowerState, nvim_socket_path
-from vim_ai_follower.tmux import TmuxSession
+from vim_ai_follower.tmux import TmuxPane, TmuxSession
 
 LOG_PATH = cache.CACHE_DIR / "hook.log"
 
@@ -252,16 +253,26 @@ def cmd_pause(env: dict[str, str]) -> int:
         return 1
     current = FollowerState.get(session.session_id)
 
-    pending = control.load_pending_animation(session.session_id)
-    if pending is None:
-        if not control.is_animating(session.session_id):
-            # After an interrupt — or with nothing running at all — a pause
-            # press must not fake feedback: no signal, no popup.
-            print("claude-follow: nothing to pause")
-            return 0
+    state = control.animating_state(session.session_id)
+    if state == "running":
         control.request_pause(session.session_id)
         print("claude-follow: pause requested")
         _show_popup(current, "Paused")
+        return 0
+    if state == "paused":
+        control.request_pause(session.session_id)  # the toggle: resumes the waiting hook
+        print("claude-follow: resume requested")
+        _show_popup(current, "Resuming")
+        return 0
+    if state == "handoff":
+        print("claude-follow: interrupted — save (:w!) to release Claude, or press S again")
+        return 0
+
+    pending = control.load_pending_animation(session.session_id)
+    if pending is None:
+        # Nothing running and nothing recoverable — a pause press must not
+        # fake feedback: no signal, no popup.
+        print("claude-follow: nothing to pause")
         return 0
 
     if current is None:
@@ -279,9 +290,7 @@ def cmd_pause(env: dict[str, str]) -> int:
     _show_popup(current, "Resuming")
     result = follower.resume(pending)
     print(f"claude-follow: resumed ({result.outcome})")
-    if result.outcome == "paused":
-        _show_popup(current, "Paused")
-    elif result.outcome == "interrupted":
+    if result.outcome == "interrupted":
         _show_popup(current, "Interrupted")
     return 0
 
@@ -293,11 +302,24 @@ def cmd_interrupt(env: dict[str, str]) -> int:
         return 1
     current = FollowerState.get(session.session_id)
 
+    state = control.animating_state(session.session_id)
+    if state in ("running", "paused"):
+        control.request_interrupt(session.session_id)
+        print("claude-follow: interrupt requested")
+        _show_popup(current, "Interrupted")
+        return 0
+    if state == "handoff":
+        # the des-interrupt: discard the user's unsaved typing and release
+        # Claude as if the interrupt had not happened
+        control.request_interrupt(session.session_id)
+        print("claude-follow: hand-off cancelled, unsaved changes discarded")
+        _show_popup(current, "Discarded")
+        return 0
+
     pending = control.load_pending_animation(session.session_id)
     if pending is not None:
-        # A pending file only exists while no animation is running, so there
-        # is nothing to signal — discard the paused remainder and hand the
-        # buffer to the user, exactly like a live interrupt would.
+        # A crash-orphaned remainder (its hook died): nothing to signal —
+        # discard it and hand the buffer to the user, like a live interrupt.
         if current is not None and current.backend == "tmux":
             TmuxVimFollower(pane_id=current.target, session_id=session.session_id).hand_over()
         FollowerState.update_current_file(session.session_id, None)
@@ -305,13 +327,7 @@ def cmd_interrupt(env: dict[str, str]) -> int:
         _show_popup(current, "Interrupted")
         return 0
 
-    if not control.is_animating(session.session_id):
-        print("claude-follow: nothing to interrupt")
-        return 0
-
-    control.request_interrupt(session.session_id)
-    print("claude-follow: interrupt requested")
-    _show_popup(current, "Interrupted")
+    print("claude-follow: nothing to interrupt")
     return 0
 
 
@@ -388,12 +404,11 @@ def _reconstruct_partial_fresh(content: str, completed_count: int) -> str:
 def _print_interrupt_notification(file_path: str, partial_content: str) -> None:
     context = (
         f"The user interrupted the live preview of {file_path} while it was "
-        "being written and is now editing it directly. Only this much had "
-        f"been shown before they took over:\n\n{partial_content}\n\n"
-        "This reflects neither their edits since nor necessarily the file's "
-        "current state — re-read it from disk before assuming anything "
-        "about its contents, and reconcile your next steps with whatever "
-        "you find there."
+        "being written, edited it themselves, and SAVED their own version — "
+        "it is now the file's content on disk. Only this much of your "
+        f"version had been shown before they took over:\n\n{partial_content}\n\n"
+        "Re-read the file from disk and build on the user's version; do not "
+        "restore yours without asking."
     )
     print(
         json.dumps(
@@ -405,6 +420,43 @@ def _print_interrupt_notification(file_path: str, partial_content: str) -> None:
             }
         )
     )
+
+
+_HANDOFF_POLL_SECONDS = 0.2
+
+
+def _await_user_handoff(
+    current: FollowerState, session_id: str, file_path: str, after: str, partial_content: str
+) -> None:
+    """The user interrupted and owns the buffer: hold Claude's turn until
+    they save their version (release Claude with it, via the notification)
+    or press S again (discard their unsaved typing and resume following the
+    file Claude wrote). A hook-timeout kill releases Claude without a
+    notification — degraded but harmless."""
+    control.mark_animating(session_id, state="handoff")
+    try:
+        while True:
+            signal = control.check_signal(session_id)
+            if signal == "interrupt":
+                # the des-interrupt: :e! reloads the file Claude wrote,
+                # discarding unsaved edits (and turning the renamed buffer
+                # into a real file buffer); relock and resume following.
+                pane = TmuxPane(pane_id=current.target)
+                pane.send_text(":e!")
+                pane.send_key("Enter")
+                pane.send_text(":setlocal readonly nomodifiable")
+                pane.send_key("Enter")
+                FollowerState.update_current_file(session_id, file_path)
+                return
+            try:
+                if Path(file_path).read_text() != after:
+                    _print_interrupt_notification(file_path, partial_content)
+                    return
+            except OSError:
+                pass  # mid-save or momentarily unreadable: check again
+            time.sleep(_HANDOFF_POLL_SECONDS)
+    finally:
+        control.clear_animating(session_id)
 
 
 def cmd_hook_pre(env: dict[str, str], payload: dict[str, Any]) -> int:
@@ -473,9 +525,10 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         if result.outcome == "interrupted":
             # Forget the file so the next edit resyncs via a full retype —
             # the user owns the buffer now and may change it under us.
+            # (_await_user_handoff restores tracking on a des-interrupt.)
             FollowerState.update_current_file(session.session_id, None)
             partial = _reconstruct_partial_fresh(after, result.completed_count)
-            _print_interrupt_notification(file_path, partial)
+            _await_user_handoff(current, session.session_id, file_path, after, partial)
         else:
             FollowerState.update_current_file(session.session_id, file_path)
         return 0
@@ -488,7 +541,7 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         # completed_count indexes the very ops list the animation walked —
         # computing the script once keeps this reconstruction truthful.
         partial = diff_module.apply_ops(before, ops[: result.completed_count])
-        _print_interrupt_notification(file_path, partial)
+        _await_user_handoff(current, session.session_id, file_path, after, partial)
     return 0
 
 

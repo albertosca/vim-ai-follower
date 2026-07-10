@@ -217,12 +217,19 @@ def test_interrupt_mid_animation_leaves_buffer_unlocked_with_partial_content(
     thread.start()
     time.sleep(1.0)  # let a handful of lines type at "lento" (0.15s/keystroke)
     control.request_interrupt(session_id)
+
+    # the hook now HOLDS Claude's turn waiting for the user's save
+    time.sleep(1.0)
+    assert thread.is_alive()
+
+    target_file.write_text("the user's own version\n")  # simulate :w!
     thread.join(timeout=10.0)
     assert not thread.is_alive()
 
     out = capsys.readouterr().out
     assert '"hookSpecificOutput"' in out
     assert str(target_file) in out
+    assert "SAVED their own version" in out
 
     # buffer must be left modifiable — prove it by typing into it for real
     follower = TmuxPane(pane_id=follower_pane_id)
@@ -284,19 +291,20 @@ def test_pause_persists_state_and_resume_finishes_the_edit(
 
     # Deterministic pause: fire it right before the Nth keystroke sequence
     # instead of racing a signal file against wall-clock timing — the exact
-    # landing point is what decides which undo-compensation path runs.
+    # landing point is what decides which undo-compensation path runs. The
+    # hook now WAITS while paused, so the next check (the wait loop's first
+    # poll) delivers the resume; the hook only returns once fully done.
     calls = {"count": 0}
 
-    def _pause_once(session_id_arg: str, base_dir: Path | None = None) -> str | None:
+    def _pause_then_resume(session_id_arg: str, base_dir: Path | None = None) -> str | None:
         calls["count"] += 1
-        return "pause" if calls["count"] == pause_at_check else None
+        if calls["count"] in (pause_at_check, pause_at_check + 1):
+            return "pause"
+        return None
 
-    monkeypatch.setattr(control, "check_signal", _pause_once)
+    monkeypatch.setattr(control, "check_signal", _pause_then_resume)
     assert cli.main(["hook", "post"]) == 0
-    assert control.has_pending_animation(session_id) is True
-
-    assert cli.main(["pause"]) == 0
-    assert control.has_pending_animation(session_id) is False
+    assert control.has_pending_animation(session_id) is False  # fallback disarmed on resume
     assert wait_until(lambda: "CHANGED FIFTEEN" in _capture(follower_pane_id), timeout=10.0)
 
     # Exact-content check, not substrings: a pause landing inside a replace

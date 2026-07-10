@@ -74,30 +74,38 @@ def _animating_path(session_id: str, base_dir: Path | None) -> Path:
     return _dir(base_dir) / f"{session_id}.animating"
 
 
-def mark_animating(session_id: str, base_dir: Path | None = None) -> None:
-    """Record that an animation is in flight, tagged with this process's
-    PID so a crashed hook can never leave a convincing stale marker."""
+def mark_animating(session_id: str, base_dir: Path | None = None, state: str = "running") -> None:
+    """Record that an animation is in flight ("running"), waiting while
+    paused ("paused"), or waiting for the user's save after an interrupt
+    ("handoff") — tagged with this process's PID so a crashed hook can
+    never leave a convincing stale marker."""
     path = _animating_path(session_id, base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(str(os.getpid()))
+    path.write_text(f"{os.getpid()} {state}")
 
 
 def clear_animating(session_id: str, base_dir: Path | None = None) -> None:
     _animating_path(session_id, base_dir).unlink(missing_ok=True)
 
 
-def is_animating(session_id: str, base_dir: Path | None = None) -> bool:
+def animating_state(session_id: str, base_dir: Path | None = None) -> str | None:
+    """The live animation's state, or None when no live process owns one."""
     try:
-        pid = int(_animating_path(session_id, base_dir).read_text())
-    except (FileNotFoundError, ValueError):
-        return False
+        content = _animating_path(session_id, base_dir).read_text().split()
+        pid = int(content[0])
+    except (FileNotFoundError, ValueError, IndexError):
+        return None
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
-        return False  # stale marker from a crashed animation
+        return None  # stale marker from a crashed animation
     except PermissionError:  # pragma: no cover - not ours, but it exists
-        return True
-    return True
+        pass
+    return content[1] if len(content) > 1 else "running"
+
+
+def is_animating(session_id: str, base_dir: Path | None = None) -> bool:
+    return animating_state(session_id, base_dir) is not None
 
 
 @dataclass(frozen=True)

@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from vim_ai_follower import control
 from vim_ai_follower.animate import (
+    PAUSE_POLL_SECONDS,
     AnimationResult,
     ApplyResult,
     KeySequence,
@@ -296,9 +297,9 @@ def test_run_ops_interrupted_before_insert_mode_entered_skips_undo(tmp_path: Pat
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
     # signal fires on the very first check inside the insert-half apply()
     # call — before "gg" is even sent, so insert mode was never entered
-    with patch("vim_ai_follower.control.check_signal", side_effect=["pause"]):
+    with patch("vim_ai_follower.control.check_signal", side_effect=["interrupt"]):
         result = run_ops(pane, "$1", [op], pace_seconds=0.0, base_dir=tmp_path)
-    assert result == AnimationResult("paused", 0)
+    assert result == AnimationResult("interrupted", 0)
     pane.send_key.assert_called_once_with("Escape")  # type: ignore[attr-defined]
     pane.send_text.assert_not_called()  # type: ignore[attr-defined]
 
@@ -315,36 +316,51 @@ def test_run_ops_interrupted_during_delete_needs_no_undo(tmp_path: Path) -> None
     pane.send_key.assert_called_once_with("Escape")  # type: ignore[attr-defined]
 
 
-def test_run_ops_pause_in_insert_half_undoes_both_halves_of_a_replace_op(tmp_path: Path) -> None:
+def test_run_ops_pause_in_insert_half_rolls_back_both_halves_then_resumes(
+    tmp_path: Path,
+) -> None:
     pane = cast(TmuxPane, MagicMock())
     op = EditOp(kind="replace", start_line=2, end_line=3, new_lines=("X", "Y"))
-    # delete half (":2,3d", Enter) passes 2 checks; the insert half's prefix
-    # (":1", Enter, "o") passes 3 more; pause fires before the text "X".
-    # The insert change AND the already-executed delete must both be undone:
-    # a single undo leaves the delete applied, and replaying the saved op
-    # would re-run ":2,3d" against lines that have shifted — destroying them.
-    with patch(
-        "vim_ai_follower.control.check_signal",
-        side_effect=[None, None, None, None, None, "pause"],
-    ):
+    pending_seen: list[object] = []
+    calls = {"n": 0}
+
+    def _check(session_id: str, base_dir: Path | None = None) -> str | None:
+        calls["n"] += 1
+        if calls["n"] == 6:  # delete (2 checks) + insert prefix (3) → before "X"
+            return "pause"
+        if calls["n"] == 7:  # the wait loop's first poll: snapshot, then resume
+            loaded = control.load_pending_animation("$1", tmp_path)
+            pending_seen.append(loaded)
+            assert isinstance(loaded, control.PendingApplyEdit)
+            control.save_pending_apply_edit("$1", loaded.ops, 0.0, tmp_path)
+            return "pause"
+        return None
+
+    with patch("vim_ai_follower.control.check_signal", side_effect=_check):
         result = run_ops(pane, "$1", [op], pace_seconds=0.0, base_dir=tmp_path)
-    assert result == AnimationResult("paused", 0)
+    assert result == AnimationResult("completed", 1)
     sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
-    assert sent_texts.count("u") == 2  # insert undone AND delete undone
-    pending = control.load_pending_animation("$1", base_dir=tmp_path)
-    assert pending == control.PendingApplyEdit([op], 0.0)  # full op valid to replay
+    assert sent_texts.count("u") == 2  # insert undone AND delete undone before waiting
+    assert pending_seen == [control.PendingApplyEdit([op], 0.0)]  # crash fallback was armed
+    assert control.has_pending_animation("$1", tmp_path) is False  # and disarmed on resume
 
 
-def test_run_ops_pause_before_insert_prefix_still_undoes_the_delete(tmp_path: Path) -> None:
+def test_run_ops_pause_before_insert_prefix_still_rolls_back_the_delete(
+    tmp_path: Path,
+) -> None:
     pane = cast(TmuxPane, MagicMock())
     op = EditOp(kind="replace", start_line=2, end_line=3, new_lines=("X",))
-    # pause at the insert half's FIRST check: nothing of the insert was sent,
-    # but the delete already ran and must be rolled back
-    with patch("vim_ai_follower.control.check_signal", side_effect=[None, None, "pause"]):
+    calls = {"n": 0}
+
+    def _check(session_id: str, base_dir: Path | None = None) -> str | None:
+        calls["n"] += 1
+        return "pause" if calls["n"] in (3, 4) else None  # pause at insert's 1st check, resume
+
+    with patch("vim_ai_follower.control.check_signal", side_effect=_check):
         result = run_ops(pane, "$1", [op], pace_seconds=0.0, base_dir=tmp_path)
-    assert result == AnimationResult("paused", 0)
+    assert result == AnimationResult("completed", 1)
     sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
-    assert sent_texts.count("u") == 1  # delete rollback only
+    assert sent_texts.count("u") == 1  # only the delete needed rolling back
 
 
 def test_run_ops_interrupt_in_insert_half_of_replace_restores_the_op_boundary(
@@ -365,25 +381,27 @@ def test_run_ops_interrupt_in_insert_half_of_replace_restores_the_op_boundary(
     assert sent_texts.count("u") == 2
 
 
-def test_run_ops_paused_saves_remaining_ops_from_the_interrupted_one(tmp_path: Path) -> None:
+def test_run_ops_interrupt_during_pause_wait_discards_pending(tmp_path: Path) -> None:
     pane = cast(TmuxPane, MagicMock())
     ops = [
         EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",)),
         EditOp(kind="insert", start_line=5, end_line=4, new_lines=("b",)),
     ]
-    # op[0]'s insert-half is ["gg", "O", "a", "Escape"] — 4 checks, all None,
-    # so it completes fully. op[1]'s delete-half is empty (pure insert), so
-    # its insert-half's very first check is next — "pause" fires there,
-    # before anything of op[1] is sent.
-    with patch(
-        "vim_ai_follower.control.check_signal", side_effect=[None, None, None, None, "pause"]
-    ):
+    calls = {"n": 0}
+
+    def _check(session_id: str, base_dir: Path | None = None) -> str | None:
+        calls["n"] += 1
+        if calls["n"] == 5:  # op0 completes (4 checks); pause before op1
+            return "pause"
+        if calls["n"] == 6:  # interrupt lands while the hook is waiting
+            assert control.has_pending_animation("$1", tmp_path) is True
+            return "interrupt"
+        return None
+
+    with patch("vim_ai_follower.control.check_signal", side_effect=_check):
         result = run_ops(pane, "$1", ops, pace_seconds=0.1, base_dir=tmp_path)
-    assert result == AnimationResult("paused", 1)
-    pending = control.load_pending_animation("$1", base_dir=tmp_path)
-    assert isinstance(pending, control.PendingApplyEdit)
-    assert pending.ops == [ops[1]]
-    assert pending.pace_seconds == 0.1
+    assert result == AnimationResult("interrupted", 1)
+    assert control.has_pending_animation("$1", tmp_path) is False  # wait discards on wake
 
 
 def test_run_lines_clears_stale_signals_before_starting(tmp_path: Path) -> None:
@@ -478,46 +496,57 @@ def test_run_lines_interrupted_after_bare_o_undoes_the_opened_line(tmp_path: Pat
     assert sent_texts == ["i", "a", "o", "u"]
 
 
-def test_run_lines_paused_mid_first_line_saves_non_continuation(tmp_path: Path) -> None:
+def test_run_lines_pause_mid_first_line_waits_then_retries_with_i(tmp_path: Path) -> None:
     pane = cast(TmuxPane, MagicMock())
-    # pause lands before line 0's Escape: 'i' + text were sent, the partial
-    # line is undone, and the buffer is back to its virgin blank line — so
-    # the resume must open with 'i' again (continuation=False)
-    with patch("vim_ai_follower.control.check_signal", side_effect=[None, None, "pause"]):
+    pending_seen: list[object] = []
+    calls = {"n": 0}
+
+    def _check(session_id: str, base_dir: Path | None = None) -> str | None:
+        calls["n"] += 1
+        if calls["n"] == 3:  # 'i' + text sent; pause before line 0's Escape
+            return "pause"
+        if calls["n"] == 4:  # wait poll: snapshot fallback state, resume
+            pending_seen.append(control.load_pending_animation("$1", tmp_path))
+            return "pause"
+        return None
+
+    with patch("vim_ai_follower.control.check_signal", side_effect=_check):
         result = run_lines(pane, "$1", ("a", "b"), pace_seconds=0.0, base_dir=tmp_path)
-    assert result == AnimationResult("paused", 0)
+    assert result == AnimationResult("completed", 2)
     sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
-    assert sent_texts == ["i", "a", "u"]
-    pending = control.load_pending_animation("$1", base_dir=tmp_path)
-    assert pending == control.PendingShowFresh(("a", "b"), 0.0, continuation=False)
+    # rollback undid the partial line; the retry re-opens with 'i' (virgin buffer)
+    assert sent_texts == ["i", "a", "u", "i", "a", "o", "b"]
+    assert pending_seen == [control.PendingShowFresh(("a", "b"), 0.0, continuation=False)]
 
 
-def test_run_lines_paused_saves_remaining_lines_as_continuation(tmp_path: Path) -> None:
+def test_run_lines_pause_on_later_line_arms_continuation_fallback(tmp_path: Path) -> None:
     pane = cast(TmuxPane, MagicMock())
-    # line "a" fully completes (3 checks: i, a, Escape); line "b"'s first
-    # check (before its own "o") returns "pause" — the buffer keeps line
-    # "a", so the resume must open with 'o' (continuation=True)
-    with patch("vim_ai_follower.control.check_signal", side_effect=[None, None, None, "pause"]):
+    pending_seen: list[object] = []
+    calls = {"n": 0}
+
+    def _check(session_id: str, base_dir: Path | None = None) -> str | None:
+        calls["n"] += 1
+        if calls["n"] == 4:  # line "a" completed (3 checks); pause before line "b"
+            return "pause"
+        if calls["n"] == 5:
+            pending_seen.append(control.load_pending_animation("$1", tmp_path))
+            return "pause"
+        return None
+
+    with patch("vim_ai_follower.control.check_signal", side_effect=_check):
         result = run_lines(pane, "$1", ("a", "b", "c"), pace_seconds=0.2, base_dir=tmp_path)
-    assert result == AnimationResult("paused", 1)
-    pending = control.load_pending_animation("$1", base_dir=tmp_path)
-    assert isinstance(pending, control.PendingShowFresh)
-    assert pending.lines == ("b", "c")
-    assert pending.pace_seconds == 0.2
-    assert pending.continuation is True
+    assert result == AnimationResult("completed", 3)
+    assert pending_seen == [control.PendingShowFresh(("b", "c"), 0.2, continuation=True)]
 
 
-def test_run_lines_paused_during_a_continuation_run_stays_continuation(tmp_path: Path) -> None:
+def test_run_lines_interrupt_during_pause_wait_of_continuation_run(tmp_path: Path) -> None:
     pane = cast(TmuxPane, MagicMock())
-    # a resumed run paused again at its very first line must NOT flip back
-    # to 'i': the buffer still has the previously-typed lines
-    with patch("vim_ai_follower.control.check_signal", side_effect=["pause"]):
+    with patch("vim_ai_follower.control.check_signal", side_effect=["pause", "interrupt"]):
         result = run_lines(
             pane, "$1", ("x", "y"), pace_seconds=0.0, base_dir=tmp_path, continuation=True
         )
-    assert result == AnimationResult("paused", 0)
-    pending = control.load_pending_animation("$1", base_dir=tmp_path)
-    assert pending == control.PendingShowFresh(("x", "y"), 0.0, continuation=True)
+    assert result == AnimationResult("interrupted", 0)
+    assert control.has_pending_animation("$1", tmp_path) is False
 
 
 def test_run_lines_empty_tuple_completes_immediately(tmp_path: Path) -> None:
@@ -543,11 +572,42 @@ def test_run_lines_marks_animating_for_the_duration(tmp_path: Path) -> None:
     assert control.is_animating("$1", tmp_path) is False  # cleared on the way out
 
 
-def test_run_ops_clears_animating_even_when_paused(tmp_path: Path) -> None:
+def test_run_ops_clears_animating_after_interrupt_during_wait(tmp_path: Path) -> None:
     pane = cast(TmuxPane, MagicMock())
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
-    with patch("vim_ai_follower.control.check_signal", side_effect=["pause"]):
+    with patch("vim_ai_follower.control.check_signal", side_effect=["pause", "interrupt"]):
         result = run_ops(pane, "$1", [op], pace_seconds=0.0, base_dir=tmp_path)
-    assert result == AnimationResult("paused", 0)
-    # paused means NOT animating: the pending file owns the state now
+    assert result == AnimationResult("interrupted", 0)
     assert control.is_animating("$1", tmp_path) is False
+
+
+def test_run_ops_pause_wait_polls_until_the_resume_arrives(tmp_path: Path) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    calls = {"n": 0}
+
+    def _check(session_id: str, base_dir: Path | None = None) -> str | None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return "pause"
+        if calls["n"] == 3:  # second wait poll: one idle poll (and sleep) happened
+            return "pause"
+        return None
+
+    with (
+        patch("vim_ai_follower.control.check_signal", side_effect=_check),
+        patch("vim_ai_follower.animate.time.sleep") as sleep,
+    ):
+        result = run_ops(pane, "$1", [op], pace_seconds=0.0, base_dir=tmp_path)
+    assert result == AnimationResult("completed", 1)
+    sleep.assert_any_call(PAUSE_POLL_SECONDS)
+
+
+def test_run_ops_interrupt_during_delete_half_pause_wait(tmp_path: Path) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    op = EditOp(kind="replace", start_line=2, end_line=3, new_lines=("X",))
+    # pause before the delete's Enter (check 2); interrupt lands in the wait
+    with patch("vim_ai_follower.control.check_signal", side_effect=[None, "pause", "interrupt"]):
+        result = run_ops(pane, "$1", [op], pace_seconds=0.0, base_dir=tmp_path)
+    assert result == AnimationResult("interrupted", 0)
+    assert control.has_pending_animation("$1", tmp_path) is False
