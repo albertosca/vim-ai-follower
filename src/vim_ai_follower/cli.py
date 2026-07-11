@@ -130,9 +130,9 @@ def cmd_start(
         print("claude-follow: follower already running for this session")
         return 0
 
-    default_on_failure, default_speed = config.load_defaults()
-    resolved_on_failure = on_failure if on_failure is not None else default_on_failure
-    resolved_speed = speed if speed is not None else default_speed
+    defaults = config.load()
+    resolved_on_failure = on_failure if on_failure is not None else defaults.on_failure
+    resolved_speed = speed if speed is not None else defaults.speed
     origin = env["TMUX_PANE"]
     _register_keybindings()
 
