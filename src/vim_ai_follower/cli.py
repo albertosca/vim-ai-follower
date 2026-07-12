@@ -20,7 +20,7 @@ from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.snapshot import load as load_snapshot
 from vim_ai_follower.snapshot import save as save_snapshot
 from vim_ai_follower.state import FollowerState, nvim_socket_path, touch_open_files
-from vim_ai_follower.tmux import TmuxPane, TmuxSession
+from vim_ai_follower.tmux import TmuxSession
 
 LOG_PATH = cache.CACHE_DIR / "hook.log"
 
@@ -451,14 +451,12 @@ def _await_user_handoff(
         while True:
             signal = control.check_signal(session_id)
             if signal == "interrupt":
-                # the des-interrupt: :e! reloads the file Claude wrote,
-                # discarding unsaved edits (and turning the renamed buffer
-                # into a real file buffer); relock and resume following.
-                pane = TmuxPane(pane_id=current.target)
-                pane.send_text(":e!")
-                pane.send_key("Enter")
-                pane.send_text(":setlocal readonly nomodifiable")
-                pane.send_key("Enter")
+                # the des-interrupt: reload the file Claude wrote, discarding
+                # unsaved edits (and turning the renamed buffer into a real
+                # file buffer); relock and resume following.
+                TmuxVimFollower(pane_id=current.target, session_id=session_id).reload_and_relock(
+                    file_path
+                )
                 FollowerState.update_current_file(session_id, file_path)
                 return
             try:

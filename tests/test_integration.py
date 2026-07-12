@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from vim_ai_follower import cli, control
+from vim_ai_follower.diff import compute_edit_script
 from vim_ai_follower.tmux import TmuxPane
 
 pytestmark = pytest.mark.integration
@@ -285,6 +286,64 @@ def test_interrupt_mid_animation_leaves_buffer_unlocked_with_partial_content(
     follower.send_text("ohand-edited")
     follower.send_key("Escape")
     assert wait_until(lambda: "hand-edited" in _capture(follower_pane_id), timeout=5.0)
+
+
+def test_resuming_a_crashed_animation_lands_back_on_its_own_tab_first(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    # A hook that dies mid-animation (killed, hook-timeout, ...) leaves its
+    # remaining ops on disk with no live owner — `pause` recovers exactly
+    # that state. If the user flipped to a DIFFERENT tab in the meantime
+    # (as they naturally would, with nothing animating to hold their
+    # attention), a resume that forgot to navigate back would type the
+    # rest of b.py's edit straight into a.py's buffer instead.
+    origin_pane = _pane_ids(tmux_session)[0]
+    monkeypatch.setenv("TMUX_PANE", origin_pane)
+    assert cli.main(["start"]) == 0
+    assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
+    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    session_id = _session_id(origin_pane)
+
+    a_file = tmp_path / "a.py"
+    b_file = tmp_path / "b.py"
+    a_file.write_text("print('a')\n")
+    b_file.write_text("print('b')\n")
+
+    write_a = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(a_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(write_a))
+    assert cli.main(["hook", "post"]) == 0
+    assert wait_until(lambda: "print('a')" in _capture(follower_pane_id), timeout=10.0)
+
+    write_b = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(b_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(write_b))
+    assert cli.main(["hook", "post"]) == 0
+    assert wait_until(lambda: "print('b')" in _capture(follower_pane_id), timeout=10.0)
+    # b.py's tab is active now — exactly where a real crash mid-edit of it
+    # would have left things.
+
+    ops = compute_edit_script("print('b')\n", "print('b')\nresumed line\n")
+    control.save_pending_apply_edit(session_id, ops, 0.0, file_path=str(b_file))
+    assert control.animating_state(session_id) is None  # no live owner: a true crash
+
+    # The user, unaware anything is pending, flips over to a.py's tab.
+    follower_pane = TmuxPane(pane_id=follower_pane_id)
+    follower_pane.send_key("C-\\")
+    follower_pane.send_key("C-n")
+    follower_pane.send_text("gt")
+
+    assert cli.main(["pause"]) == 0  # the recovery path: navigates then replays
+
+    assert wait_until(lambda: "resumed line" in _capture(follower_pane_id), timeout=10.0)
+    rows = [line.rstrip() for line in _capture(follower_pane_id).splitlines()]
+    anchor = rows.index("print('b')")
+    assert rows[anchor : anchor + 2] == ["print('b')", "resumed line"]
+    assert control.has_pending_animation(session_id) is False
+
+    # a.py's on-disk content, never touched by the resumed edit, is intact.
+    assert a_file.read_text() == "print('a')\n"
 
 
 # The edit under test produces two replace ops (lines 3 and 16); each op's

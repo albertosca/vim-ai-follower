@@ -585,6 +585,10 @@ def test_hook_post_des_interrupt_reverts_and_resumes_following(
     sends = _literal_sends(run)
     assert ":e!" in sends  # unsaved user edits discarded, real file loaded
     assert ":setlocal readonly nomodifiable" in sends  # relocked
+    # the defensive `:tab drop` preamble lands on the file's tab (immune to
+    # the user having closed/reordered tabs) before it's reloaded
+    drop_index = sends.index(f":tab drop {target}")
+    assert drop_index < sends.index(":e!")
     refreshed = state.FollowerState.read("$1")
     assert refreshed is not None
     assert refreshed.current_file == str(target)  # following resumes in place

@@ -345,6 +345,23 @@ def test_ensure_showing_navigates_by_tab_drop_and_locks() -> None:
     assert (":e /tmp/a.py", True) not in commands
 
 
+def test_reload_and_relock_navigates_then_reloads_and_relocks() -> None:
+    follower = TmuxVimFollower(pane_id="%2")
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        follower.reload_and_relock("/tmp/a.py")
+    commands = _sent_commands(run)
+    assert commands == [
+        ("C-\\", False),
+        ("C-n", False),
+        (":tab drop /tmp/a.py", True),
+        ("Enter", False),
+        (":e!", True),
+        ("Enter", False),
+        (":setlocal readonly nomodifiable", True),
+        ("Enter", False),
+    ]
+
+
 def test_close_tab_drops_then_closes() -> None:
     follower = TmuxVimFollower(pane_id="%2")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:

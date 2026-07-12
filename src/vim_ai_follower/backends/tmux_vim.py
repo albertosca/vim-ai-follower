@@ -37,6 +37,16 @@ class TmuxVimFollower:
         pane.send_text(f":tab drop {file_path}")
         pane.send_key("Enter")
 
+    def reload_and_relock(self, file_path: str) -> None:
+        """Des-interrupt: discard the user's unsaved typing by reloading the
+        file Claude wrote, then resume following it."""
+        self.goto_file(file_path)
+        pane = TmuxPane(pane_id=self.pane_id)
+        pane.send_text(":e!")
+        pane.send_key("Enter")
+        pane.send_text(":setlocal readonly nomodifiable")
+        pane.send_key("Enter")
+
     def close_tab(self, file_path: str) -> None:
         pane = TmuxPane(pane_id=self.pane_id)
         self.goto_file(file_path)
