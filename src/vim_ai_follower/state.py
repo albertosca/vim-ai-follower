@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from vim_ai_follower import cache
 from vim_ai_follower.backends import get_follower
@@ -32,6 +34,10 @@ class FollowerState:
     origin: str
     on_failure: str
     speed: str
+    open_files: tuple[str, ...] = ()
+    enabled: bool = True
+    adopted: bool = False
+    shown_any: bool = False
 
     @classmethod
     def read(cls, session_id: str, base_dir: Path | None = None) -> FollowerState | None:
@@ -49,6 +55,10 @@ class FollowerState:
             origin=data.get("origin", _DEFAULT_ORIGIN),
             on_failure=data.get("on_failure", _DEFAULT_ON_FAILURE),
             speed=data.get("speed", _DEFAULT_SPEED),
+            open_files=tuple(data.get("open_files", [])),
+            enabled=data.get("enabled", True),
+            adopted=data.get("adopted", False),
+            shown_any=data.get("shown_any", False),
         )
 
     @classmethod
@@ -70,6 +80,10 @@ class FollowerState:
         origin: str = _DEFAULT_ORIGIN,
         on_failure: str = _DEFAULT_ON_FAILURE,
         speed: str = _DEFAULT_SPEED,
+        open_files: tuple[str, ...] = (),
+        enabled: bool = True,
+        adopted: bool = False,
+        shown_any: bool = False,
         base_dir: Path | None = None,
     ) -> None:
         path = _state_path(session_id, base_dir)
@@ -83,8 +97,35 @@ class FollowerState:
                     "origin": origin,
                     "on_failure": on_failure,
                     "speed": speed,
+                    "open_files": open_files,
+                    "enabled": enabled,
+                    "adopted": adopted,
+                    "shown_any": shown_any,
                 }
             )
+        )
+
+    @classmethod
+    def update(cls, session_id: str, base_dir: Path | None = None, **changes: Any) -> None:
+        """Persist a partial change on top of the stored state, alive or not
+        (a toggle must be able to re-enable a follower whose pane died)."""
+        current = cls.read(session_id, base_dir)
+        if current is None:
+            return
+        updated = dataclasses.replace(current, **changes)
+        cls.set(
+            session_id,
+            updated.backend,
+            updated.target,
+            current_file=updated.current_file,
+            origin=updated.origin,
+            on_failure=updated.on_failure,
+            speed=updated.speed,
+            open_files=updated.open_files,
+            enabled=updated.enabled,
+            adopted=updated.adopted,
+            shown_any=updated.shown_any,
+            base_dir=base_dir,
         )
 
     @classmethod
@@ -94,17 +135,19 @@ class FollowerState:
         current = cls.get(session_id, base_dir)
         if current is None:
             return
-        cls.set(
-            session_id,
-            current.backend,
-            current.target,
-            current_file=file_path,
-            origin=current.origin,
-            on_failure=current.on_failure,
-            speed=current.speed,
-            base_dir=base_dir,
-        )
+        cls.update(session_id, base_dir=base_dir, current_file=file_path)
 
     @classmethod
     def clear(cls, session_id: str, base_dir: Path | None = None) -> None:
         _state_path(session_id, base_dir).unlink(missing_ok=True)
+
+
+def touch_open_files(
+    open_files: tuple[str, ...], file_path: str, max_tabs: int
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Recency bump: file_path becomes most recent; anything past max_tabs
+    falls off the old end. The touched file is by construction never in the
+    evicted slice, which is what keeps eviction away from the animating or
+    handed-over file."""
+    files = (*(f for f in open_files if f != file_path), file_path)
+    return files[-max_tabs:], files[:-max_tabs]

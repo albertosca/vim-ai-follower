@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from vim_ai_follower.state import FollowerState
+from vim_ai_follower.state import FollowerState, touch_open_files
 
 
 def test_get_returns_none_when_no_state_file(tmp_path: Path) -> None:
@@ -93,3 +93,50 @@ def test_clear_removes_state(tmp_path: Path) -> None:
 
 def test_clear_without_existing_state_does_not_raise(tmp_path: Path) -> None:
     FollowerState.clear("$1", base_dir=tmp_path)
+
+
+def test_state_round_trips_new_fields(tmp_path: Path) -> None:
+    FollowerState.set(
+        "$9",
+        "tmux",
+        "%5",
+        base_dir=tmp_path,
+        open_files=("/a.py", "/b.py"),
+        enabled=False,
+        adopted=True,
+        shown_any=True,
+    )
+    raw = FollowerState.read("$9", base_dir=tmp_path)
+    assert raw is not None
+    assert raw.open_files == ("/a.py", "/b.py")
+    assert (raw.enabled, raw.adopted, raw.shown_any) == (False, True, True)
+
+
+def test_read_defaults_new_fields_for_old_state_files(tmp_path: Path) -> None:
+    (tmp_path / "$9.pane").write_text('{"backend": "tmux", "target": "%5"}')
+    raw = FollowerState.read("$9", base_dir=tmp_path)
+    assert raw is not None
+    assert (raw.open_files, raw.enabled, raw.adopted, raw.shown_any) == ((), True, False, False)
+
+
+def test_update_replaces_only_given_fields(tmp_path: Path) -> None:
+    FollowerState.set("$9", "tmux", "%5", speed="normal", base_dir=tmp_path)
+    FollowerState.update("$9", base_dir=tmp_path, speed="lento", enabled=False)
+    raw = FollowerState.read("$9", base_dir=tmp_path)
+    assert raw is not None
+    assert (raw.speed, raw.enabled, raw.target) == ("lento", False, "%5")
+
+
+def test_update_without_state_is_a_no_op(tmp_path: Path) -> None:
+    FollowerState.update("$9", base_dir=tmp_path, speed="lento")
+    assert FollowerState.read("$9", base_dir=tmp_path) is None
+
+
+def test_touch_open_files_recency_and_eviction() -> None:
+    assert touch_open_files((), "/a.py", 5) == (("/a.py",), ())
+    assert touch_open_files(("/a.py", "/b.py"), "/a.py", 5) == (("/b.py", "/a.py"), ())
+    assert touch_open_files(("/a.py", "/b.py", "/c.py"), "/d.py", 3) == (
+        ("/b.py", "/c.py", "/d.py"),
+        ("/a.py",),
+    )
+    assert touch_open_files(("/a.py",), "/b.py", 1) == (("/b.py",), ("/a.py",))
