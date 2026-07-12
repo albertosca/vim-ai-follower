@@ -3,9 +3,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from vim_ai_follower import config
 from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult, run_lines, run_ops
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
 from vim_ai_follower.diff import EditOp
+from vim_ai_follower.state import FollowerState
 from vim_ai_follower.tmux import TmuxPane
 
 
@@ -20,6 +22,19 @@ class TmuxVimFollower:
 
     def is_alive(self) -> bool:
         return TmuxPane(pane_id=self.pane_id).running_command() == "vim"
+
+    def _live_pace(self) -> float:
+        """Re-read the current speed from FollowerState so a running
+        animation reacts to Ctrl+a +/- at its next line boundary, instead
+        of only on the animation started after the toggle. Falls back to
+        the pace this follower was constructed with when there's no
+        session to read state for (or no state was ever written)."""
+        if not self.session_id:
+            return self.pace_seconds
+        state = FollowerState.read(self.session_id)
+        if state is None:
+            return self.pace_seconds
+        return config.pace_seconds_for(state.speed)
 
     def _normal_mode(self, pane: TmuxPane) -> None:
         # Ctrl-\ Ctrl-N returns to Normal mode from ANY mode (insert, visual,
@@ -94,7 +109,7 @@ class TmuxVimFollower:
                 pane,
                 self.session_id,
                 ops,
-                self.pace_seconds,
+                self._live_pace,
                 file_path=file_path,
                 on_resume=lambda: self.goto_file(file_path),
             ),
@@ -138,7 +153,7 @@ class TmuxVimFollower:
                 inner,
                 self.session_id,
                 lines,
-                self.pace_seconds,
+                self._live_pace,
                 file_path=file_path,
                 on_resume=lambda: self.goto_file(file_path),
             )
@@ -149,6 +164,10 @@ class TmuxVimFollower:
         if pending.file_path:
             self.goto_file(pending.file_path)
         on_resume = (lambda: self.goto_file(pending.file_path)) if pending.file_path else None
+        # The pace-0 catch-up (cmd_pause / _handle_hook_post_edit replaying
+        # with pace_seconds=0.0) must stay silent forever — it must never
+        # re-read live state and start pacing again mid-catch-up.
+        provider = (lambda: 0.0) if pending.pace_seconds == 0.0 else self._live_pace
         if isinstance(pending, PendingApplyEdit):
             return self._with_unlocked(
                 ":setlocal nomodifiable nopaste",
@@ -156,7 +175,7 @@ class TmuxVimFollower:
                     pane,
                     self.session_id,
                     pending.ops,
-                    pending.pace_seconds,
+                    provider,
                     file_path=pending.file_path,
                     on_resume=on_resume,
                 ),
@@ -167,7 +186,7 @@ class TmuxVimFollower:
                 pane,
                 self.session_id,
                 pending.lines,
-                pending.pace_seconds,
+                provider,
                 continuation=pending.continuation,
                 file_path=pending.file_path,
                 on_resume=on_resume,

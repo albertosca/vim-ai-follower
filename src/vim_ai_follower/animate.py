@@ -105,27 +105,34 @@ def run_ops(
     pane: TmuxPane,
     session_id: str,
     ops: list[EditOp],
-    pace_seconds: float,
+    pace_seconds: float | Callable[[], float],
     base_dir: Path | None = None,
     file_path: str = "",
     on_resume: Callable[[], None] | None = None,
 ) -> AnimationResult:
+    provider: Callable[[], float] = (
+        pace_seconds if callable(pace_seconds) else (lambda: pace_seconds)
+    )
     control.clear_signals(session_id, base_dir)
     control.mark_animating(session_id, base_dir)
     try:
         index = 0
         while index < len(ops):
             op = ops[index]
+            # One evaluation per op — the line-boundary cadence — shared by
+            # its delete and insert halves, so the two halves can't end up
+            # pacing at different speeds.
+            current_pace = provider()
 
-            def save_pending(index: int = index) -> None:
+            def save_pending(index: int = index, current_pace: float = current_pace) -> None:
                 control.save_pending_apply_edit(
-                    session_id, ops[index:], pace_seconds, base_dir, file_path=file_path
+                    session_id, ops[index:], current_pace, base_dir, file_path=file_path
                 )
 
             delete_seq = _delete_sequences(op)
             if delete_seq:
                 result = apply(
-                    pane, delete_seq, pace_seconds, session_id, control_base_dir=base_dir
+                    pane, delete_seq, current_pace, session_id, control_base_dir=base_dir
                 )
                 if result.outcome != "completed":
                     pane.send_key("Escape")
@@ -140,7 +147,7 @@ def run_ops(
             insert_seq, prefix_len = _insert_sequences(op)
             if insert_seq:
                 result = apply(
-                    pane, insert_seq, pace_seconds, session_id, control_base_dir=base_dir
+                    pane, insert_seq, current_pace, session_id, control_base_dir=base_dir
                 )
                 if result.outcome != "completed":
                     pane.send_key("Escape")
@@ -195,25 +202,30 @@ def run_lines(
     pane: TmuxPane,
     session_id: str,
     lines: tuple[str, ...],
-    pace_seconds: float,
+    pace_seconds: float | Callable[[], float],
     base_dir: Path | None = None,
     continuation: bool = False,
     file_path: str = "",
     on_resume: Callable[[], None] | None = None,
 ) -> AnimationResult:
+    provider: Callable[[], float] = (
+        pace_seconds if callable(pace_seconds) else (lambda: pace_seconds)
+    )
     control.clear_signals(session_id, base_dir)
     control.mark_animating(session_id, base_dir)
     try:
         index = 0
         while index < len(lines):
             line = lines[index]
+            # One evaluation per line — the line-boundary cadence.
+            current_pace = provider()
             # The first line types into the wiped buffer's single blank line
             # via `i`; every later line — and every line of a resumed run,
             # whose buffer already holds earlier lines — opens its own line
             # below the cursor via `o`.
             opener = "o" if continuation or index > 0 else "i"
             sequences, undo_threshold = _line_sequences(line, opener)
-            result = apply(pane, sequences, pace_seconds, session_id, control_base_dir=base_dir)
+            result = apply(pane, sequences, current_pace, session_id, control_base_dir=base_dir)
             if result.outcome != "completed":
                 pane.send_key("Escape")
                 if result.sent_count >= undo_threshold:
@@ -221,11 +233,11 @@ def run_lines(
                 if result.outcome == "interrupted":
                     return AnimationResult("interrupted", index)
 
-                def save_pending(index: int = index) -> None:
+                def save_pending(index: int = index, current_pace: float = current_pace) -> None:
                     control.save_pending_show_fresh(
                         session_id,
                         lines[index:],
-                        pace_seconds,
+                        current_pace,
                         continuation=continuation or index > 0,
                         base_dir=base_dir,
                         file_path=file_path,

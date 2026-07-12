@@ -658,3 +658,46 @@ def test_run_lines_calls_on_resume_exactly_once_when_resumed_from_a_pause(
         )
     assert result == AnimationResult("completed", 1)
     on_resume.assert_called_once_with()
+
+
+def test_run_lines_re_reads_pace_from_provider_each_line(tmp_path: Path) -> None:
+    # pace_seconds accepts a zero-arg callable too — evaluated once per line
+    # (a "line boundary"), not once for the whole run, so a mid-run speed
+    # change (Ctrl+a +/-) takes effect on the very next line.
+    pane = cast(TmuxPane, MagicMock())
+    calls: list[int] = []
+
+    def provider() -> float:
+        calls.append(1)
+        return 0.0
+
+    with (
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+        patch("vim_ai_follower.control.clear_signals"),
+    ):
+        result = run_lines(pane, "$1", ("a", "b"), provider, base_dir=tmp_path)
+    assert result == AnimationResult("completed", 2)
+    assert len(calls) >= 2  # one evaluation per line, not one per run
+
+
+def test_run_ops_re_reads_pace_from_provider_once_per_op(tmp_path: Path) -> None:
+    # Same cadence for run_ops: one evaluation per op (shared by its delete
+    # and insert halves), not once for the whole batch of ops.
+    pane = cast(TmuxPane, MagicMock())
+    ops = [
+        EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",)),
+        EditOp(kind="insert", start_line=2, end_line=0, new_lines=("b",)),
+    ]
+    calls: list[int] = []
+
+    def provider() -> float:
+        calls.append(1)
+        return 0.0
+
+    with (
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+        patch("vim_ai_follower.control.clear_signals"),
+    ):
+        result = run_ops(pane, "$1", ops, provider, base_dir=tmp_path)
+    assert result == AnimationResult("completed", 2)
+    assert len(calls) >= 2  # one evaluation per op, not one per run

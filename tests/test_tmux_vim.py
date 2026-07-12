@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from vim_ai_follower import control
+from helpers import register_fake_follower as _register_fake_follower
+
+from vim_ai_follower import config, control, state
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends import get_follower
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
@@ -248,6 +250,45 @@ def test_show_fresh_skips_relock_when_interrupted(tmp_path: Path) -> None:
     commands = _sent_commands(run)
     assert result.outcome == "interrupted"
     assert not any(text == ":setlocal readonly nomodifiable nopaste" for text, _ in commands)
+
+
+def test_live_pace_reads_current_state_speed() -> None:
+    _register_fake_follower("$1", "%2")
+    state.FollowerState.update("$1", speed="lento")
+    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    assert follower._live_pace() == config.SPEED_PACE_SECONDS["lento"]
+    state.FollowerState.update("$1", speed="instant")
+    assert follower._live_pace() == 0.0
+
+
+def test_live_pace_falls_back_to_pace_seconds_when_state_is_missing() -> None:
+    follower = TmuxVimFollower(pane_id="%2", pace_seconds=0.42, session_id="$1")
+    assert follower._live_pace() == 0.42
+
+
+def test_live_pace_falls_back_to_pace_seconds_when_session_id_is_empty() -> None:
+    _register_fake_follower("$1", "%2")
+    state.FollowerState.update("$1", speed="lento")
+    follower = TmuxVimFollower(pane_id="%2", pace_seconds=0.42, session_id="")
+    assert follower._live_pace() == 0.42
+
+
+def test_resume_at_pace_zero_stays_zero_even_when_state_says_lento(tmp_path: Path) -> None:
+    # The pace-0 catch-up (cmd_pause / _handle_hook_post_edit replaying with
+    # pace_seconds=0.0) must never re-read live state — otherwise a user who
+    # slowed down mid-pause would see the catch-up crawl instead of dumping.
+    _register_fake_follower("$1", "%2")
+    state.FollowerState.update("$1", speed="lento")
+    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    pending = control.PendingShowFresh(lines=("a", "b"), pace_seconds=0.0)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run"),
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+        patch("vim_ai_follower.animate.time.sleep") as sleep,
+    ):
+        result = follower.resume(pending)
+    assert result == AnimationResult("completed", 2)
+    sleep.assert_not_called()
 
 
 def test_resume_apply_edit_replays_remaining_ops_and_relocks(tmp_path: Path) -> None:
