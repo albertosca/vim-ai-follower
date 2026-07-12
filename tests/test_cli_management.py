@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from helpers import make_mock_tmux_run
+from helpers import register_fake_follower as _register_fake_follower
 
 from vim_ai_follower import cli, config, control, state
 
@@ -147,8 +148,10 @@ def test_start_registers_keybindings_with_absolute_path_and_silenced_output(
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert cli.cmd_start({"TMUX_PANE": "%1"}) == 0
     binds = _bind_calls(run)
-    assert [cmd[4] for cmd in binds] == ["P", "S"]
-    for cmd, subcommand in zip(binds, ("pause", "interrupt"), strict=True):
+    assert [cmd[4] for cmd in binds] == ["P", "S", "+", "_"]
+    for cmd, subcommand in zip(
+        binds, ("pause", "interrupt", "speed-up", "speed-down"), strict=True
+    ):
         # run-shell without -b blocks ALL tmux input until the command
         # exits — a resume replay lasts tens of seconds, freezing the user
         assert cmd[6] == "-b"
@@ -263,3 +266,44 @@ def test_stop_with_corrupt_saved_bindings_falls_back_to_unbind() -> None:
     unbinds = _unbind_calls(run)
     assert ["tmux", "unbind-key", "-T", "prefix", "P"] in unbinds
     assert ["tmux", "unbind-key", "-T", "prefix", "S"] in unbinds
+
+
+def test_speed_up_steps_state_and_reports(capsys: pytest.CaptureFixture[str]) -> None:
+    _register_fake_follower("$1", "%2")
+    state.FollowerState.update("$1", speed="rapido")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
+    ):
+        assert cli.cmd_speed({"TMUX_PANE": "%1"}, "up") == 0
+    result = state.FollowerState.read("$1")
+    assert result is not None
+    assert result.speed == "muito_rapido"
+    assert "speed muito_rapido" in capsys.readouterr().out
+    popups = [c.args[0] for c in popen.call_args_list if c.args[0][:2] == ["tmux", "display-popup"]]
+    assert any("Speed: muito_rapido" in arg for arg in popups[0])
+
+
+def test_speed_wraps_round_robin(capsys: pytest.CaptureFixture[str]) -> None:
+    _register_fake_follower("$1", "%2")
+    state.FollowerState.update("$1", speed="instant")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()),
+    ):
+        assert cli.cmd_speed({"TMUX_PANE": "%1"}, "up") == 0
+    result = state.FollowerState.read("$1")
+    assert result is not None
+    assert result.speed == "lento"
+    assert "speed lento" in capsys.readouterr().out
+
+
+def test_speed_without_follower_is_honest_noop(capsys: pytest.CaptureFixture[str]) -> None:
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
+    ):
+        assert cli.cmd_speed({"TMUX_PANE": "%1"}, "down") == 0
+    out = capsys.readouterr().out
+    assert "no follower active" in out
+    assert popen.call_args_list == []

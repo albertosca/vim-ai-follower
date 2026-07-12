@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from vim_ai_follower import cache, config, control
 from vim_ai_follower import diff as diff_module
@@ -29,7 +29,12 @@ logger = logging.getLogger("vim_ai_follower")
 _EDIT_TOOLS = {"Edit", "MultiEdit", "Write"}
 
 
-_KEYBINDINGS: tuple[tuple[str, str], ...] = (("P", "pause"), ("S", "interrupt"))
+_KEYBINDINGS: tuple[tuple[str, str], ...] = (
+    ("P", "pause"),
+    ("S", "interrupt"),
+    ("+", "speed-up"),
+    ("_", "speed-down"),
+)
 
 
 def _claude_follow_executable() -> str:
@@ -347,6 +352,22 @@ def cmd_interrupt(env: dict[str, str]) -> int:
     return 0
 
 
+def cmd_speed(env: dict[str, str], direction: Literal["up", "down"]) -> int:
+    session = TmuxSession.from_env(env)
+    if session is None:
+        print("claude-follow: not running inside tmux", file=sys.stderr)
+        return 1
+    current = FollowerState.get(session.session_id)
+    if current is None:
+        print("claude-follow: no follower active")
+        return 0
+    new_speed = config.next_speed(current.speed, direction)
+    FollowerState.update(session.session_id, speed=new_speed)
+    print(f"claude-follow: speed {new_speed}")
+    _show_popup(current, f"Speed: {new_speed}")
+    return 0
+
+
 def _configure_logging() -> None:
     if logger.handlers:
         return
@@ -632,6 +653,8 @@ def _build_parser() -> argparse.ArgumentParser:
     hook_subparsers.add_parser("post")
     subparsers.add_parser("pause")
     subparsers.add_parser("interrupt")
+    subparsers.add_parser("speed-up")
+    subparsers.add_parser("speed-down")
     return parser
 
 
@@ -649,6 +672,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_pause(env)
     if args.command == "interrupt":
         return cmd_interrupt(env)
+    if args.command == "speed-up":
+        return cmd_speed(env, "up")
+    if args.command == "speed-down":
+        return cmd_speed(env, "down")
 
     payload: dict[str, Any] = json.loads(sys.stdin.read())
     if args.hook_command == "pre":
