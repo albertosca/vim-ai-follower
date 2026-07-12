@@ -26,11 +26,38 @@ SPEED_PACE_SECONDS: dict[str, float] = {
 
 SPEED_ORDER: tuple[str, ...] = ("lento", "normal", "rapido", "muito_rapido", "instant")
 
-CODE_EXTENSIONS: frozenset[str] = frozenset({
-    "c", "cc", "cpp", "css", "ex", "exs", "go", "h", "hpp", "html", "java",
-    "js", "jsx", "lua", "mjs", "php", "py", "rb", "rs", "scss", "sh", "sql",
-    "swift", "ts", "tsx", "vim", "vue", "zsh",
-})
+CODE_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        "c",
+        "cc",
+        "cpp",
+        "css",
+        "ex",
+        "exs",
+        "go",
+        "h",
+        "hpp",
+        "html",
+        "java",
+        "js",
+        "jsx",
+        "lua",
+        "mjs",
+        "php",
+        "py",
+        "rb",
+        "rs",
+        "scss",
+        "sh",
+        "sql",
+        "swift",
+        "ts",
+        "tsx",
+        "vim",
+        "vue",
+        "zsh",
+    }
+)
 
 
 @dataclass(frozen=True)

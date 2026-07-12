@@ -8,16 +8,17 @@ from vim_ai_follower import config
 def test_load_returns_defaults_when_no_file(tmp_path: Path) -> None:
     cfg = config.load(tmp_path / "missing.json")
     assert cfg == config.Config(
-        on_failure="silent", speed="rapido", open_policy="manual",
-        adopt_existing=False, max_tabs=5,
+        on_failure="silent",
+        speed="rapido",
+        open_policy="manual",
+        adopt_existing=False,
+        max_tabs=5,
     )
 
 
 def test_load_reads_new_keys(tmp_path: Path) -> None:
     path = tmp_path / "config.json"
-    path.write_text(
-        '{"open_policy": "code", "adopt_existing": true, "max_tabs": 3}'
-    )
+    path.write_text('{"open_policy": "code", "adopt_existing": true, "max_tabs": 3}')
     cfg = config.load(path)
     assert (cfg.open_policy, cfg.adopt_existing, cfg.max_tabs) == ("code", True, 3)
 
