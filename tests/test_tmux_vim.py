@@ -136,21 +136,24 @@ def test_show_fresh_renames_current_buffer_without_ever_loading_the_real_file(
     ):
         result = follower.show_fresh("/tmp/f.txt", "a\nb\n")
     commands = _sent_commands(run)
-    assert commands[0] == (":silent! bwipeout! /tmp/f.txt", True)
-    assert commands[1] == ("Enter", False)
-    assert commands[2] == (":file /tmp/f.txt", True)
+    # _normal_mode sends C-\ and C-n first
+    assert commands[0] == ("C-\\", False)
+    assert commands[1] == ("C-n", False)
+    assert commands[2] == (":silent! bwipeout! /tmp/f.txt", True)
     assert commands[3] == ("Enter", False)
-    assert commands[4] == (":filetype detect", True)
+    assert commands[4] == (":file /tmp/f.txt", True)
     assert commands[5] == ("Enter", False)
+    assert commands[6] == (":filetype detect", True)
+    assert commands[7] == ("Enter", False)
     # the renamed-over buffer may be a plugin scratch screen with
     # buftype=nofile — inherited, it makes the user's :w fail with E382
-    assert commands[6] == (":setlocal buftype=", True)
-    assert commands[7] == ("Enter", False)
-    assert commands[8] == (":setlocal modifiable paste", True)
+    assert commands[8] == (":setlocal buftype=", True)
     assert commands[9] == ("Enter", False)
-    assert commands[10] == (":%d", True)
+    assert commands[10] == (":setlocal modifiable paste", True)
     assert commands[11] == ("Enter", False)
-    assert commands[12] == ("i", True)
+    assert commands[12] == (":%d", True)
+    assert commands[13] == ("Enter", False)
+    assert commands[14] == ("i", True)
     assert commands[-2] == (":setlocal readonly nomodifiable nopaste", True)
     assert commands[-1] == ("Enter", False)
     typed = [text for text, literal in commands if literal]
@@ -170,6 +173,8 @@ def test_show_fresh_with_empty_content_still_wipes_and_relocks(tmp_path: Path) -
         result = follower.show_fresh("/tmp/f.txt", "")
     commands = _sent_commands(run)
     assert commands == [
+        ("C-\\", False),
+        ("C-n", False),
         (":silent! bwipeout! /tmp/f.txt", True),
         ("Enter", False),
         (":file /tmp/f.txt", True),
@@ -310,3 +315,18 @@ def test_close_tab_drops_then_closes() -> None:
     drop_index = commands.index((":tab drop /tmp/old.py", True))
     texts_after_drop = [text for text, _ in commands[drop_index:]]
     assert ":silent! tabclose" in texts_after_drop
+
+
+def test_show_fresh_in_new_tab_opens_tab_before_renaming(
+    sent: list[str], follower: TmuxVimFollower
+) -> None:
+    follower.show_fresh("/tmp/new.py", "line1\n", in_new_tab=True)
+    wipe = sent.index("text:::silent! bwipeout! /tmp/new.py")
+    tabnew = sent.index("text:::tabnew")
+    rename = sent.index("text:::file /tmp/new.py")
+    assert wipe < tabnew < rename
+
+
+def test_show_fresh_default_renames_in_place(sent: list[str], follower: TmuxVimFollower) -> None:
+    follower.show_fresh("/tmp/new.py", "line1\n")
+    assert "text::tabnew" not in sent

@@ -49,10 +49,11 @@ class NvimRpcFollower:
             time.sleep(PACE_SECONDS)
         return AnimationResult("completed", len(ops))
 
-    def show_fresh(self, file_path: str, content: str) -> AnimationResult:
+    def show_fresh(self, file_path: str, content: str, in_new_tab: bool = False) -> AnimationResult:
         # No `:edit` here on purpose: it would load the real (already
         # written) file content and flash it before the wipe+retype. Rename
         # the current buffer in place instead of ever loading the real one.
+        # in_new_tab is ignored in this backend (no tab support).
         nvim = self._connect()
         nvim.command(f"silent! bwipeout! {file_path}")
         nvim.command(f"file {file_path}")

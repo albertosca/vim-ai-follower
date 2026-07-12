@@ -82,15 +82,19 @@ class TmuxVimFollower:
             lambda pane: run_ops(pane, self.session_id, ops, self.pace_seconds),
         )
 
-    def show_fresh(self, file_path: str, content: str) -> AnimationResult:
+    def show_fresh(self, file_path: str, content: str, in_new_tab: bool = False) -> AnimationResult:
         pane = TmuxPane(pane_id=self.pane_id)
         # Deliberately never `:e file_path` here: that would load the file's
         # real (already-written) content and flash the finished result on
         # screen before the wipe+retype, spoiling the "watch it type" effect.
         # Instead the current buffer is wiped and renamed in place, so the
         # real content is never displayed before we type it back in.
+        self._normal_mode(pane)
         pane.send_text(f":silent! bwipeout! {file_path}")
         pane.send_key("Enter")
+        if in_new_tab:
+            pane.send_text(":tabnew")
+            pane.send_key("Enter")
         pane.send_text(f":file {file_path}")
         pane.send_key("Enter")
         # `:filetype detect` must run BEFORE 'paste' is enabled below: it

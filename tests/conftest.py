@@ -7,10 +7,12 @@ import time
 import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from vim_ai_follower import cache, cli, snapshot
+from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 
 
 @pytest.fixture(autouse=True)
@@ -72,3 +74,45 @@ def wait_until() -> Callable[..., bool]:
         return False
 
     return _wait
+
+
+@pytest.fixture
+def sent() -> list[str]:
+    """List of sent commands in format 'text::...' or 'key:...'"""
+    return []
+
+
+@pytest.fixture
+def follower(sent: list[str], tmp_path: Path) -> Iterator[TmuxVimFollower]:
+    """TmuxVimFollower with mocked subprocess to capture sent commands."""
+    follower_instance = TmuxVimFollower(pane_id="%2", session_id="$1")
+
+    def capture_run(cmd: list[str], **kwargs: str) -> MagicMock:
+        """Mock subprocess.run that captures tmux send-keys commands."""
+        if cmd[:4] == ["tmux", "send-keys", "-t", "%2"]:
+            if "-l" in cmd:
+                # send_text: ["tmux", "send-keys", "-t", "%2", "-l", "--", text]
+                sent.append(f"text::{cmd[6]}")
+            else:
+                # send_key: ["tmux", "send-keys", "-t", "%2", key_name]
+                sent.append(f"key::{cmd[4]}")
+        mock = MagicMock()
+        mock.stdout = "%1 zsh\n%2 vim\n"
+        return mock
+
+    run_patcher = patch("vim_ai_follower.tmux.subprocess.run", side_effect=capture_run)
+    run_patcher.start()
+
+    # Also patch cache.CACHE_DIR which is used by the follower
+    cache_patcher = patch("vim_ai_follower.cache.CACHE_DIR", tmp_path / "cache")
+    cache_patcher.start()
+
+    # Patch control.check_signal to return None (no interruptions)
+    signal_patcher = patch("vim_ai_follower.control.check_signal", return_value=None)
+    signal_patcher.start()
+
+    yield follower_instance
+
+    run_patcher.stop()
+    cache_patcher.stop()
+    signal_patcher.stop()

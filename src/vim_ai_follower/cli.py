@@ -534,7 +534,7 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
 
     after = raw_after.decode("utf-8", errors="replace")
     if is_fresh:
-        result = follower.show_fresh(file_path, after)
+        result = follower.show_fresh(file_path, after, in_new_tab=current.shown_any)
         if result.outcome == "interrupted":
             # Forget the file so the next edit resyncs via a full retype —
             # the user owns the buffer now and may change it under us.
