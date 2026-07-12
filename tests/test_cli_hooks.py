@@ -10,7 +10,7 @@ import pytest
 from helpers import make_mock_tmux_run as _mock_tmux_run
 from helpers import register_fake_follower as _register_fake_follower
 
-from vim_ai_follower import cli, control, snapshot, state
+from vim_ai_follower import cli, config, control, snapshot, state
 
 
 def _literal_sends(run_mock: MagicMock) -> list[str]:
@@ -144,7 +144,9 @@ def test_hook_post_animates_a_text_edit_on_subsequent_change(tmp_path: Path) -> 
     target = tmp_path / "f.txt"
     target.write_text("hello\nworld\n")
     snapshot.save("$1", str(target), "hello\nworld\n")
-    _register_fake_follower("$1", "%2", current_file=str(target))
+    _register_fake_follower(
+        "$1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
+    )
 
     target.write_text("hello\nvim ai follower\n")
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
@@ -172,7 +174,9 @@ def test_hook_post_skips_binary_files_on_subsequent_edit(tmp_path: Path) -> None
     target = tmp_path / "f.bin"
     target.write_bytes(b"\x00\x01\x02")
     snapshot.save("$1", str(target), "")
-    _register_fake_follower("$1", "%2", current_file=str(target))
+    _register_fake_follower(
+        "$1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
+    )
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
@@ -215,7 +219,10 @@ def test_hook_post_read_navigates_to_file_and_offset(tmp_path: Path) -> None:
     ]
 
 
-def test_hook_post_read_skips_e_when_file_already_current(tmp_path: Path) -> None:
+def test_hook_post_read_navigates_even_when_file_already_current(tmp_path: Path) -> None:
+    # The preamble always runs now — it's cheap and self-healing, immune to
+    # the user having closed or reordered tabs since the last time this file
+    # was current, so there's no early-return to skip it.
     target = tmp_path / "f.txt"
     target.write_text("a\nb\nc\n")
     _register_fake_follower("$1", "%2", current_file=str(target))
@@ -227,13 +234,19 @@ def test_hook_post_read_skips_e_when_file_already_current(tmp_path: Path) -> Non
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
-    assert _literal_sends(run) == [":2"]
+    assert _literal_sends(run) == [
+        f":tab drop {target}",
+        ":setlocal readonly nomodifiable",
+        ":2",
+    ]
 
 
 def test_hook_post_skips_e_when_file_already_current(tmp_path: Path) -> None:
     target = tmp_path / "f.txt"
     target.write_text("a\nb\n")
-    _register_fake_follower("$1", "%2", current_file=str(target))
+    _register_fake_follower(
+        "$1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
+    )
     snapshot.save("$1", str(target), "a\nb\n")
 
     target.write_text("a\nX\n")
@@ -244,6 +257,84 @@ def test_hook_post_skips_e_when_file_already_current(tmp_path: Path) -> None:
     sends = _literal_sends(run)
     assert not any(text.startswith(":e ") for text in sends)
     assert "X" in sends
+
+
+def test_edit_of_untracked_file_is_fresh_and_updates_open_files(tmp_path: Path) -> None:
+    a = tmp_path / "a.py"
+    b = tmp_path / "b.py"
+    b.write_text("print('b')\n")
+    # b was never shown before (open_files only tracks a) — freshness is
+    # driven by open_files membership, not current_file.
+    _register_fake_follower("$1", "%2", current_file=str(a), open_files=(str(a),), shown_any=True)
+
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(b)}}
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    sends = _literal_sends(run)
+    assert ":tabnew" in sends  # show_fresh's in_new_tab, since shown_any was already True
+    assert f":file {b}" in sends  # renamed in place — the show_fresh path, not apply_edit
+
+    refreshed = state.FollowerState.read("$1")
+    assert refreshed is not None
+    assert refreshed.open_files == (str(a), str(b))
+    assert refreshed.shown_any is True
+
+
+def test_edit_of_tracked_file_uses_apply_edit_even_when_not_current(tmp_path: Path) -> None:
+    a = tmp_path / "a.py"
+    b = tmp_path / "b.py"
+    a.write_text("print('a')\n")
+    snapshot.save("$1", str(a), "print('a')\n")
+    a.write_text("print('a changed')\n")
+    # b is the current tab, but the edit targets a — already tracked, so it's
+    # not fresh even though it's not the current file.
+    _register_fake_follower(
+        "$1", "%2", current_file=str(b), open_files=(str(a), str(b)), shown_any=True
+    )
+
+    payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(a)}}
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    sends = _literal_sends(run)
+    # apply_edit's goto_file preamble navigates to a's tab — the backend's
+    # job, not cli.py's — then the diff is applied in place; show_fresh's
+    # rename-in-place (":file <path>") never runs.
+    assert f":tab drop {a}" in sends
+    assert not any(text.startswith(":file ") for text in sends)
+    assert "print('a changed')" in sends
+
+
+def test_eviction_closes_oldest_tab_before_animating(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"max_tabs": 2}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+
+    a = tmp_path / "a.py"
+    b = tmp_path / "b.py"
+    c = tmp_path / "c.py"
+    c.write_text("print('c')\n")
+    _register_fake_follower(
+        "$1", "%2", current_file=str(b), open_files=(str(a), str(b)), shown_any=True
+    )
+
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(c)}}
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    sends = _literal_sends(run)
+    # a's tab is closed (close_tab: drop, bwipeout, tabclose) BEFORE c's
+    # content starts animating (show_fresh's rename-in-place for c).
+    close_index = sends.index(":silent! tabclose")
+    rename_index = sends.index(f":file {c}")
+    assert close_index < rename_index
+
+    refreshed = state.FollowerState.read("$1")
+    assert refreshed is not None
+    assert refreshed.open_files == (str(b), str(c))
 
 
 def test_hook_post_ignores_unrelated_tools() -> None:
@@ -315,7 +406,9 @@ def test_hook_post_edit_interrupted_prints_notification_and_leaves_buffer_unlock
     target = tmp_path / "f.txt"
     target.write_text("hello\nworld\n")
     snapshot.save("$1", str(target), "hello\nworld\n")
-    _register_fake_follower("$1", "%2", current_file=str(target))
+    _register_fake_follower(
+        "$1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
+    )
     target.write_text("hello\nvim ai follower\n")
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
@@ -371,10 +464,15 @@ def test_hook_post_fast_forwards_pending_before_animating_same_file(tmp_path: Pa
 
     target = tmp_path / "f.txt"
     target.write_text("new content\n")
-    _register_fake_follower("$1", "%2", current_file=str(target))
+    _register_fake_follower(
+        "$1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
+    )
     snapshot.save("$1", str(target), "old content\n")
     control.save_pending_apply_edit(
-        "$1", [EditOp(kind="insert", start_line=1, end_line=0, new_lines=("leftover",))], 0.15
+        "$1",
+        [EditOp(kind="insert", start_line=1, end_line=0, new_lines=("leftover",))],
+        0.15,
+        file_path=str(target),
     )
 
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}

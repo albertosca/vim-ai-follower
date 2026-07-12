@@ -112,6 +112,7 @@ def is_animating(session_id: str, base_dir: Path | None = None) -> bool:
 class PendingApplyEdit:
     ops: list[EditOp]
     pace_seconds: float
+    file_path: str = ""
 
 
 @dataclass(frozen=True)
@@ -119,6 +120,7 @@ class PendingShowFresh:
     lines: tuple[str, ...]
     pace_seconds: float
     continuation: bool = False
+    file_path: str = ""
 
 
 def _write_pending(session_id: str, payload: dict[str, Any], base_dir: Path | None) -> None:
@@ -130,7 +132,11 @@ def _write_pending(session_id: str, payload: dict[str, Any], base_dir: Path | No
 
 
 def save_pending_apply_edit(
-    session_id: str, ops: list[EditOp], pace_seconds: float, base_dir: Path | None = None
+    session_id: str,
+    ops: list[EditOp],
+    pace_seconds: float,
+    base_dir: Path | None = None,
+    file_path: str = "",
 ) -> None:
     _write_pending(
         session_id,
@@ -138,6 +144,7 @@ def save_pending_apply_edit(
             "kind": "apply_edit",
             "remaining_ops": [asdict(op) for op in ops],
             "pace_seconds": pace_seconds,
+            "file_path": file_path,
         },
         base_dir,
     )
@@ -149,6 +156,7 @@ def save_pending_show_fresh(
     pace_seconds: float,
     continuation: bool = False,
     base_dir: Path | None = None,
+    file_path: str = "",
 ) -> None:
     _write_pending(
         session_id,
@@ -157,6 +165,7 @@ def save_pending_show_fresh(
             "remaining_lines": list(lines),
             "pace_seconds": pace_seconds,
             "continuation": continuation,
+            "file_path": file_path,
         },
         base_dir,
     )
@@ -181,11 +190,16 @@ def load_pending_animation(
             )
             for op in data["remaining_ops"]
         ]
-        return PendingApplyEdit(ops=ops, pace_seconds=data["pace_seconds"])
+        return PendingApplyEdit(
+            ops=ops,
+            pace_seconds=data["pace_seconds"],
+            file_path=data.get("file_path", ""),
+        )
     return PendingShowFresh(
         lines=tuple(data["remaining_lines"]),
         pace_seconds=data["pace_seconds"],
         continuation=data.get("continuation", False),
+        file_path=data.get("file_path", ""),
     )
 
 

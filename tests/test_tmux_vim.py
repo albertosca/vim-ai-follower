@@ -52,10 +52,15 @@ def test_apply_edit_unlocks_the_buffer_only_for_the_animation(tmp_path: Path) ->
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
-        result = follower.apply_edit(compute_edit_script("a\n", "b\n"))
+        result = follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
     commands = _sent_commands(run)
-    assert commands[0] == (":setlocal modifiable paste", True)
-    assert commands[1] == ("Enter", False)
+    # goto_file's defensive preamble runs first
+    assert commands[0] == ("C-\\", False)
+    assert commands[1] == ("C-n", False)
+    assert commands[2] == (":tab drop /tmp/f.txt", True)
+    assert commands[3] == ("Enter", False)
+    assert commands[4] == (":setlocal modifiable paste", True)
+    assert commands[5] == ("Enter", False)
     assert commands[-2] == (":setlocal nomodifiable nopaste", True)
     assert commands[-1] == ("Enter", False)
     assert result == AnimationResult("completed", 1)
@@ -69,7 +74,7 @@ def test_apply_edit_uses_configured_pace_seconds(tmp_path: Path) -> None:
         patch("vim_ai_follower.control.check_signal", return_value=None),
         patch("vim_ai_follower.animate.time.sleep") as sleep,
     ):
-        follower.apply_edit(compute_edit_script("a\n", "b\n"))
+        follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
     sleep.assert_called_with(0.15)
 
 
@@ -80,7 +85,7 @@ def test_apply_edit_skips_relock_when_interrupted(tmp_path: Path) -> None:
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
     ):
-        result = follower.apply_edit(compute_edit_script("a\n", "b\n"))
+        result = follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
     commands = _sent_commands(run)
     assert result.outcome == "interrupted"
     assert not any(text == ":setlocal nomodifiable nopaste" for text, _ in commands)
@@ -99,7 +104,7 @@ def test_apply_edit_relocks_after_pause_and_resume(tmp_path: Path) -> None:
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
         patch("vim_ai_follower.control.check_signal", side_effect=_pause_then_resume),
     ):
-        result = follower.apply_edit(compute_edit_script("a\n", "b\n"))
+        result = follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
     commands = _sent_commands(run)
     assert result.outcome == "completed"
     assert commands[-2] == (":setlocal nomodifiable nopaste", True)
@@ -252,6 +257,39 @@ def test_resume_show_fresh_replays_remaining_lines_and_relocks_with_readonly(
     assert commands[-2] == (":setlocal readonly nomodifiable nopaste", True)
     assert commands[-1] == ("Enter", False)
     assert result == AnimationResult("completed", 2)
+
+
+def test_resume_navigates_to_the_pending_files_tab_first(tmp_path: Path) -> None:
+    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    pending = control.PendingApplyEdit(ops=[op], pace_seconds=0.0, file_path="/tmp/f.py")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+    ):
+        follower.resume(pending)
+    commands = _sent_commands(run)
+    assert commands[:4] == [
+        ("C-\\", False),
+        ("C-n", False),
+        (":tab drop /tmp/f.py", True),
+        ("Enter", False),
+    ]
+
+
+def test_resume_skips_navigation_when_pending_has_no_file_path(tmp_path: Path) -> None:
+    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    pending = control.PendingApplyEdit(ops=[op], pace_seconds=0.0)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+    ):
+        follower.resume(pending)
+    commands = _sent_commands(run)
+    assert not any(text.startswith(":tab drop") for text, _ in commands)
 
 
 def test_resume_skips_relock_when_interrupted_again(tmp_path: Path) -> None:

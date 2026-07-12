@@ -38,7 +38,8 @@ class NvimRpcFollower:
         # No tabs in this backend — just navigate to the buffer.
         self.ensure_showing(file_path)
 
-    def apply_edit(self, ops: list[EditOp]) -> AnimationResult:
+    def apply_edit(self, file_path: str, ops: list[EditOp]) -> AnimationResult:
+        # No tab navigation here — this backend has no tabs (see goto_file).
         nvim = self._connect()
         buf = nvim.current.buffer
         for op in ops:
@@ -59,7 +60,7 @@ class NvimRpcFollower:
         nvim.command(f"file {file_path}")
         nvim.command("filetype detect")
         nvim.current.buffer[:] = []
-        return self.apply_edit(diff_module.compute_edit_script("", content))
+        return self.apply_edit(file_path, diff_module.compute_edit_script("", content))
 
     def goto_line(self, offset: int) -> None:
         nvim = self._connect()

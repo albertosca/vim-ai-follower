@@ -41,7 +41,7 @@ def test_apply_edit_sets_buffer_lines_for_each_op_and_reports_completed() -> Non
         patch("vim_ai_follower.backends.nvim_rpc.time.sleep"),
     ):
         result = follower.apply_edit(
-            compute_edit_script("hello\nworld\n", "hello\nvim ai follower\n")
+            "/tmp/f.txt", compute_edit_script("hello\nworld\n", "hello\nvim ai follower\n")
         )
     nvim.current.buffer.__setitem__.assert_any_call(slice(1, 2), ["vim ai follower"])
     assert result == AnimationResult("completed", 1)

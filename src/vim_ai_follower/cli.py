@@ -19,7 +19,7 @@ from vim_ai_follower.backends import Follower, get_follower
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.snapshot import load as load_snapshot
 from vim_ai_follower.snapshot import save as save_snapshot
-from vim_ai_follower.state import FollowerState, nvim_socket_path
+from vim_ai_follower.state import FollowerState, nvim_socket_path, touch_open_files
 from vim_ai_follower.tmux import TmuxPane, TmuxSession
 
 LOG_PATH = cache.CACHE_DIR / "hook.log"
@@ -249,13 +249,16 @@ def _resave_pending(
     consumes the file, and e.g. a dead follower shouldn't cost the user
     their resumable state)."""
     if isinstance(pending, control.PendingApplyEdit):
-        control.save_pending_apply_edit(session_id, pending.ops, pending.pace_seconds)
+        control.save_pending_apply_edit(
+            session_id, pending.ops, pending.pace_seconds, file_path=pending.file_path
+        )
     else:
         control.save_pending_show_fresh(
             session_id,
             pending.lines,
             pending.pace_seconds,
             continuation=pending.continuation,
+            file_path=pending.file_path,
         )
 
 
@@ -395,19 +398,16 @@ def _get_active_follower(session_id: str) -> FollowerState | None:
     return FollowerState.get(session_id)
 
 
-def _ensure_buffer(
-    session_id: str, follower: Follower, current: FollowerState, file_path: str
-) -> bool:
-    """Switches the follower to file_path via `:e` if needed, returning True
-    when a switch happened. Used for Read navigation and binary files, where
-    showing the real on-disk content immediately is exactly what's wanted —
-    unlike a fresh text edit, which goes through show_fresh instead so the
-    finished content is never flashed before it's typed."""
-    if current.current_file == file_path:
-        return False
+def _ensure_buffer(session_id: str, follower: Follower, file_path: str) -> None:
+    """Switches the follower to file_path's tab (`:tab drop`). Used for Read
+    navigation and binary files, where showing the real on-disk content
+    immediately is exactly what's wanted — unlike a fresh text edit, which
+    goes through show_fresh instead so the finished content is never flashed
+    before it's typed. Always runs the preamble — it's cheap and
+    self-healing, immune to the user having closed or reordered tabs since
+    the last time this file was current."""
     follower.ensure_showing(file_path)
     FollowerState.update_current_file(session_id, file_path)
-    return True
 
 
 def _reconstruct_partial_fresh(content: str, completed_count: int) -> str:
@@ -512,16 +512,23 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         config.pace_seconds_for(current.speed),
         session_id=session.session_id,
     )
-    is_fresh = current.current_file != file_path
+    cfg = config.load()
+    is_fresh = file_path not in current.open_files
     binary = diff_module.is_binary(raw_after)
 
     # Consume any paused animation BEFORE animating: replaying it at pace 0
     # brings the buffer to the state the new edit's ops were computed
-    # against. When the new edit targets another file (or a binary), the
-    # buffer gets wiped/replaced anyway — consuming without replaying is
-    # the correct discard.
+    # against. When the new edit targets another file, a different pending
+    # file (a stale one this hook didn't leave behind), or a binary, the
+    # buffer gets wiped/replaced (or isn't animated at all) anyway —
+    # consuming without replaying is the correct discard.
     pending = control.load_pending_animation(session.session_id)
-    if pending is not None and not is_fresh and not binary:
+    if (
+        pending is not None
+        and (pending.file_path == file_path or pending.file_path == "")
+        and not is_fresh
+        and not binary
+    ):
         assert isinstance(follower, TmuxVimFollower)  # only tmux ever persists pending state
         follower.resume(dataclasses.replace(pending, pace_seconds=0.0))
 
@@ -529,10 +536,26 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         # Binary files are never animated, so it's safe to just navigate to
         # them normally (real content shown immediately, nothing to spoil).
         if is_fresh:
-            _ensure_buffer(session.session_id, follower, current, file_path)
+            _ensure_buffer(session.session_id, follower, file_path)
+        new_open, evicted = touch_open_files(current.open_files, file_path, cfg.max_tabs)
+        for old in evicted:
+            assert isinstance(follower, TmuxVimFollower)  # only tmux ever tracks tabs
+            follower.close_tab(old)
+        FollowerState.update(session.session_id, open_files=new_open, shown_any=True)
         return 0
 
     after = raw_after.decode("utf-8", errors="replace")
+
+    # Evict/persist BEFORE animating so the tab shuffle never lands
+    # mid-typing — touch_open_files never puts the just-touched file_path in
+    # the evicted slice, so the file about to be animated can never be the
+    # one just closed.
+    new_open, evicted = touch_open_files(current.open_files, file_path, cfg.max_tabs)
+    for old in evicted:
+        assert isinstance(follower, TmuxVimFollower)  # only tmux ever tracks tabs
+        follower.close_tab(old)
+    FollowerState.update(session.session_id, open_files=new_open, shown_any=True)
+
     if is_fresh:
         result = follower.show_fresh(file_path, after, in_new_tab=current.shown_any)
         if result.outcome == "interrupted":
@@ -548,7 +571,7 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
 
     before = load_snapshot(session.session_id, file_path)
     ops = diff_module.compute_edit_script(before, after)
-    result = follower.apply_edit(ops)
+    result = follower.apply_edit(file_path, ops)
     if result.outcome == "interrupted":
         FollowerState.update_current_file(session.session_id, None)
         # completed_count indexes the very ops list the animation walked —
@@ -569,7 +592,13 @@ def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
     if file_path is None:
         return 0
     follower = get_follower(current.backend, current.target)
-    _ensure_buffer(session.session_id, follower, current, file_path)
+    cfg = config.load()
+    _ensure_buffer(session.session_id, follower, file_path)
+    new_open, evicted = touch_open_files(current.open_files, file_path, cfg.max_tabs)
+    for old in evicted:
+        assert isinstance(follower, TmuxVimFollower)  # only tmux ever tracks tabs
+        follower.close_tab(old)
+    FollowerState.update(session.session_id, open_files=new_open, shown_any=True)
     offset = _tool_input(payload).get("offset")
     if isinstance(offset, int) and offset > 0:
         follower.goto_line(offset)

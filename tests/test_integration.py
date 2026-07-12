@@ -134,6 +134,55 @@ def test_show_fresh_renders_each_line_separately(
     assert rows[start : start + 3] == ["alpha", "beta", "gamma"]
 
 
+def test_two_files_get_two_tabs_and_edits_return_to_the_right_tab(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    origin_pane = _pane_ids(tmux_session)[0]
+    monkeypatch.setenv("TMUX_PANE", origin_pane)
+    assert cli.main(["start"]) == 0
+    assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
+    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+
+    a_file = tmp_path / "a.py"
+    b_file = tmp_path / "b.py"
+
+    # First file: fresh, renames the start screen in place (no new tab yet).
+    a_file.write_text("print('a')\n")
+    write_a = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(a_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(write_a))
+    assert cli.main(["hook", "post"]) == 0
+    assert wait_until(lambda: "print('a')" in _capture(follower_pane_id), timeout=10.0)
+
+    # Second file: also fresh, but now shown_any is True — gets its own tab.
+    b_file.write_text("print('b')\n")
+    write_b = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(b_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(write_b))
+    assert cli.main(["hook", "post"]) == 0
+    assert wait_until(lambda: "print('b')" in _capture(follower_pane_id), timeout=10.0)
+
+    # Edit a.py again — already tracked, so it's not fresh: apply_edit
+    # navigates back to a's own tab (the backend's goto_file preamble) and
+    # animates the diff there, not into b's currently-active tab.
+    pre_a = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(a_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(pre_a))
+    assert cli.main(["hook", "pre"]) == 0
+
+    a_file.write_text("print('a updated')\n")
+    post_a = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(a_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(post_a))
+    assert cli.main(["hook", "post"]) == 0
+
+    assert wait_until(lambda: "print('a updated')" in _capture(follower_pane_id), timeout=10.0)
+
+    # The tabline (top row of the pane capture) lists both files' tabs.
+    top_row = _capture(follower_pane_id).splitlines()[0]
+    assert "a.py" in top_row
+    assert "b.py" in top_row
+
+
 def test_apply_edit_produces_exact_final_content(
     tmux_session: str,
     monkeypatch: pytest.MonkeyPatch,

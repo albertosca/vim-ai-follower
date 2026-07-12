@@ -76,10 +76,13 @@ class TmuxVimFollower:
             pane.send_key("Enter")
         return result
 
-    def apply_edit(self, ops: list[EditOp]) -> AnimationResult:
+    def apply_edit(self, file_path: str, ops: list[EditOp]) -> AnimationResult:
+        self.goto_file(file_path)
         return self._with_unlocked(
             ":setlocal nomodifiable nopaste",
-            lambda pane: run_ops(pane, self.session_id, ops, self.pace_seconds),
+            lambda pane: run_ops(
+                pane, self.session_id, ops, self.pace_seconds, file_path=file_path
+            ),
         )
 
     def show_fresh(self, file_path: str, content: str, in_new_tab: bool = False) -> AnimationResult:
@@ -116,15 +119,23 @@ class TmuxVimFollower:
             # Wipe down to a single blank line — Vim can't have zero lines.
             inner.send_text(":%d")
             inner.send_key("Enter")
-            return run_lines(inner, self.session_id, lines, self.pace_seconds)
+            return run_lines(inner, self.session_id, lines, self.pace_seconds, file_path=file_path)
 
         return self._with_unlocked(":setlocal readonly nomodifiable nopaste", run)
 
     def resume(self, pending: PendingApplyEdit | PendingShowFresh) -> AnimationResult:
+        if pending.file_path:
+            self.goto_file(pending.file_path)
         if isinstance(pending, PendingApplyEdit):
             return self._with_unlocked(
                 ":setlocal nomodifiable nopaste",
-                lambda pane: run_ops(pane, self.session_id, pending.ops, pending.pace_seconds),
+                lambda pane: run_ops(
+                    pane,
+                    self.session_id,
+                    pending.ops,
+                    pending.pace_seconds,
+                    file_path=pending.file_path,
+                ),
             )
         return self._with_unlocked(
             ":setlocal readonly nomodifiable nopaste",
@@ -134,6 +145,7 @@ class TmuxVimFollower:
                 pending.lines,
                 pending.pace_seconds,
                 continuation=pending.continuation,
+                file_path=pending.file_path,
             ),
         )
 

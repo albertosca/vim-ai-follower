@@ -39,9 +39,22 @@ def make_mock_tmux_run(
     return _run
 
 
-def register_fake_follower(session_id: str, pane_id: str, current_file: str | None = None) -> None:
+def register_fake_follower(
+    session_id: str,
+    pane_id: str,
+    current_file: str | None = None,
+    open_files: tuple[str, ...] = (),
+    shown_any: bool = False,
+) -> None:
     with patch(
         "vim_ai_follower.tmux.subprocess.run",
         return_value=MagicMock(returncode=0, stdout=f"{pane_id} vim\n"),
     ):
-        state.FollowerState.set(session_id, "tmux", pane_id, current_file=current_file)
+        state.FollowerState.set(
+            session_id,
+            "tmux",
+            pane_id,
+            current_file=current_file,
+            open_files=open_files,
+            shown_any=shown_any,
+        )

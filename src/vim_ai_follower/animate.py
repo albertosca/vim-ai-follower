@@ -107,6 +107,7 @@ def run_ops(
     ops: list[EditOp],
     pace_seconds: float,
     base_dir: Path | None = None,
+    file_path: str = "",
 ) -> AnimationResult:
     control.clear_signals(session_id, base_dir)
     control.mark_animating(session_id, base_dir)
@@ -116,7 +117,9 @@ def run_ops(
             op = ops[index]
 
             def save_pending(index: int = index) -> None:
-                control.save_pending_apply_edit(session_id, ops[index:], pace_seconds, base_dir)
+                control.save_pending_apply_edit(
+                    session_id, ops[index:], pace_seconds, base_dir, file_path=file_path
+                )
 
             delete_seq = _delete_sequences(op)
             if delete_seq:
@@ -190,6 +193,7 @@ def run_lines(
     pace_seconds: float,
     base_dir: Path | None = None,
     continuation: bool = False,
+    file_path: str = "",
 ) -> AnimationResult:
     control.clear_signals(session_id, base_dir)
     control.mark_animating(session_id, base_dir)
@@ -218,6 +222,7 @@ def run_lines(
                         pace_seconds,
                         continuation=continuation or index > 0,
                         base_dir=base_dir,
+                        file_path=file_path,
                     )
 
                 if not _wait_while_paused(session_id, save_pending, base_dir):

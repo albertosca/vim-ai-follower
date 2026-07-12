@@ -76,6 +76,18 @@ def test_pending_show_fresh_defaults_continuation_false(tmp_path: Path) -> None:
     assert pending == control.PendingShowFresh(("x",), 0.05, continuation=False)
 
 
+def test_pending_round_trips_file_path(tmp_path: Path) -> None:
+    control.save_pending_show_fresh("$1", ("a",), 0.03, base_dir=tmp_path, file_path="/tmp/f.py")
+    pending = control.load_pending_animation("$1", base_dir=tmp_path)
+    assert pending is not None and pending.file_path == "/tmp/f.py"
+
+
+def test_pending_defaults_file_path_for_old_payloads(tmp_path: Path) -> None:
+    control.save_pending_apply_edit("$1", [], 0.03, base_dir=tmp_path)
+    pending = control.load_pending_animation("$1", base_dir=tmp_path)
+    assert pending is not None and pending.file_path == ""
+
+
 def test_load_pending_animation_returns_none_when_absent(tmp_path: Path) -> None:
     assert control.load_pending_animation("$1", base_dir=tmp_path) is None
 
