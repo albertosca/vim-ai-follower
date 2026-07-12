@@ -165,7 +165,7 @@ def test_hook_post_skips_binary_files_on_first_open(tmp_path: Path) -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
-    assert _literal_sends(run) == [f":e {target}", ":setlocal readonly nomodifiable"]
+    assert _literal_sends(run) == [f":tab drop {target}", ":setlocal readonly nomodifiable"]
 
 
 def test_hook_post_skips_binary_files_on_subsequent_edit(tmp_path: Path) -> None:
@@ -193,7 +193,7 @@ def test_hook_post_read_without_offset_does_not_navigate(tmp_path: Path) -> None
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
-    assert _literal_sends(run) == [f":e {target}", ":setlocal readonly nomodifiable"]
+    assert _literal_sends(run) == [f":tab drop {target}", ":setlocal readonly nomodifiable"]
 
 
 def test_hook_post_read_navigates_to_file_and_offset(tmp_path: Path) -> None:
@@ -209,7 +209,7 @@ def test_hook_post_read_navigates_to_file_and_offset(tmp_path: Path) -> None:
         assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert _literal_sends(run) == [
-        f":e {target}",
+        f":tab drop {target}",
         ":setlocal readonly nomodifiable",
         ":2",
     ]

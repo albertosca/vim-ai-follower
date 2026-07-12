@@ -21,13 +21,38 @@ class TmuxVimFollower:
     def is_alive(self) -> bool:
         return TmuxPane(pane_id=self.pane_id).running_command() == "vim"
 
-    def ensure_showing(self, file_path: str) -> None:
+    def _normal_mode(self, pane: TmuxPane) -> None:
+        # Ctrl-\ Ctrl-N returns to Normal mode from ANY mode (insert, visual,
+        # command-line) without side effects — never trust where the user
+        # left the follower Vim.
+        pane.send_key("C-\\")
+        pane.send_key("C-n")
+
+    def goto_file(self, file_path: str) -> None:
+        """The defensive preamble: land on the tab showing file_path (by
+        name, immune to the user closing/reordering tabs), opening one if
+        missing."""
         pane = TmuxPane(pane_id=self.pane_id)
-        pane.send_text(f":e {file_path}")
+        self._normal_mode(pane)
+        pane.send_text(f":tab drop {file_path}")
         pane.send_key("Enter")
+
+    def close_tab(self, file_path: str) -> None:
+        pane = TmuxPane(pane_id=self.pane_id)
+        self.goto_file(file_path)
+        # silent!: closing the last remaining tab fails (E784) — acceptable,
+        # the buffer just stays.
+        pane.send_text(f":silent! bwipeout! {file_path}")
+        pane.send_key("Enter")
+        pane.send_text(":silent! tabclose")
+        pane.send_key("Enter")
+
+    def ensure_showing(self, file_path: str) -> None:
+        self.goto_file(file_path)
         # Locked by default so a stray keystroke into this pane can't corrupt
         # the buffer: our own animation is indistinguishable from real
         # typing at the tty level, so it must explicitly unlock around itself.
+        pane = TmuxPane(pane_id=self.pane_id)
         pane.send_text(":setlocal readonly nomodifiable")
         pane.send_key("Enter")
 

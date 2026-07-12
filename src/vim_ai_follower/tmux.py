@@ -33,6 +33,40 @@ class TmuxPane:
     def kill(self) -> None:
         subprocess.run(["tmux", "kill-pane", "-t", self.pane_id], check=False)
 
+    def window_panes(self) -> list[tuple[str, str]]:
+        result = subprocess.run(
+            [
+                "tmux",
+                "list-panes",
+                "-t",
+                self.pane_id,
+                "-F",
+                "#{pane_id} #{pane_current_command}",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        panes = []
+        for line in result.stdout.splitlines():
+            pane_id, _, command = line.partition(" ")
+            panes.append((pane_id, command))
+        return panes
+
+    def zoomed(self) -> bool:
+        result = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", self.pane_id, "#{window_zoomed_flag}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.stdout.strip() == "1"
+
+    def set_zoomed(self, zoomed: bool) -> None:
+        # resize-pane -Z is a blind toggle; assert the desired state instead.
+        if self.zoomed() != zoomed:
+            subprocess.run(["tmux", "resize-pane", "-Z", "-t", self.pane_id], check=False)
+
     @classmethod
     def split_from(cls, target_pane: str, command: str) -> TmuxPane:
         result = subprocess.run(

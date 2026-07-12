@@ -90,3 +90,24 @@ def test_session_from_env_returns_none_when_session_id_is_empty() -> None:
     fake_result = MagicMock(returncode=0, stdout="\n")
     with patch("vim_ai_follower.tmux.subprocess.run", return_value=fake_result):
         assert TmuxSession.from_env({"TMUX_PANE": "%1"}) is None
+
+
+def test_window_panes_lists_only_this_window() -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        run.return_value = MagicMock(returncode=0, stdout="%1 zsh\n%2 vim\n")
+        panes = TmuxPane(pane_id="%1").window_panes()
+    assert panes == [("%1", "zsh"), ("%2", "vim")]
+    assert run.call_args[0][0][:4] == ["tmux", "list-panes", "-t", "%1"]
+
+
+def test_set_zoomed_only_toggles_when_state_differs() -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        run.return_value = MagicMock(returncode=0, stdout="0\n")
+        TmuxPane(pane_id="%1").set_zoomed(True)
+        assert ["tmux", "resize-pane", "-Z", "-t", "%1"] in [c[0][0] for c in run.call_args_list]
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        run.return_value = MagicMock(returncode=0, stdout="1\n")
+        TmuxPane(pane_id="%1").set_zoomed(True)
+        assert ["tmux", "resize-pane", "-Z", "-t", "%1"] not in [
+            c[0][0] for c in run.call_args_list
+        ]

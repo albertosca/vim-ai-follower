@@ -45,18 +45,6 @@ def _sent_commands(run_mock: MagicMock) -> list[tuple[str, bool]]:
     return commands
 
 
-def test_ensure_showing_opens_file_then_locks_the_buffer() -> None:
-    follower = TmuxVimFollower(pane_id="%2")
-    with patch("vim_ai_follower.tmux.subprocess.run") as run:
-        follower.ensure_showing("/tmp/f.txt")
-    assert _sent_commands(run) == [
-        (":e /tmp/f.txt", True),
-        ("Enter", False),
-        (":setlocal readonly nomodifiable", True),
-        ("Enter", False),
-    ]
-
-
 def test_apply_edit_unlocks_the_buffer_only_for_the_animation(tmp_path: Path) -> None:
     follower = TmuxVimFollower(pane_id="%2", session_id="$1")
     with (
@@ -284,3 +272,41 @@ def test_hand_over_unlocks_the_buffer() -> None:
         (":setlocal modifiable nopaste", True),
         ("Enter", False),
     ]
+
+
+def test_goto_file_sends_normal_mode_then_tab_drop() -> None:
+    follower = TmuxVimFollower(pane_id="%2")
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        follower.goto_file("/tmp/a.py")
+    assert _sent_commands(run) == [
+        ("C-\\", False),
+        ("C-n", False),
+        (":tab drop /tmp/a.py", True),
+        ("Enter", False),
+    ]
+
+
+def test_ensure_showing_navigates_by_tab_drop_and_locks() -> None:
+    follower = TmuxVimFollower(pane_id="%2")
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        follower.ensure_showing("/tmp/a.py")
+    commands = _sent_commands(run)
+    assert commands == [
+        ("C-\\", False),
+        ("C-n", False),
+        (":tab drop /tmp/a.py", True),
+        ("Enter", False),
+        (":setlocal readonly nomodifiable", True),
+        ("Enter", False),
+    ]
+    assert (":e /tmp/a.py", True) not in commands
+
+
+def test_close_tab_drops_then_closes() -> None:
+    follower = TmuxVimFollower(pane_id="%2")
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        follower.close_tab("/tmp/old.py")
+    commands = _sent_commands(run)
+    drop_index = commands.index((":tab drop /tmp/old.py", True))
+    texts_after_drop = [text for text, _ in commands[drop_index:]]
+    assert ":silent! tabclose" in texts_after_drop

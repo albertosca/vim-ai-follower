@@ -34,6 +34,10 @@ class NvimRpcFollower:
         nvim = self._connect()
         nvim.command(f"edit {file_path}")
 
+    def goto_file(self, file_path: str) -> None:
+        # No tabs in this backend — just navigate to the buffer.
+        self.ensure_showing(file_path)
+
     def apply_edit(self, ops: list[EditOp]) -> AnimationResult:
         nvim = self._connect()
         buf = nvim.current.buffer
