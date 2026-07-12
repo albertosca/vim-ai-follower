@@ -586,9 +586,14 @@ def test_hook_post_des_interrupt_reverts_and_resumes_following(
     assert ":e!" in sends  # unsaved user edits discarded, real file loaded
     assert ":setlocal readonly nomodifiable" in sends  # relocked
     # the defensive `:tab drop` preamble lands on the file's tab (immune to
-    # the user having closed/reordered tabs) before it's reloaded
-    drop_index = sends.index(f":tab drop {target}")
-    assert drop_index < sends.index(":e!")
+    # the user having closed/reordered tabs) before it's reloaded. This is
+    # the fresh-file path, so NO earlier drop exists (show_fresh never tab
+    # drops — it must not load the file from disk): the one drop here IS
+    # reload_and_relock's, mutation-verified (removing its goto_file fails
+    # this index() with ValueError).
+    drops = [i for i, text in enumerate(sends) if text == f":tab drop {target}"]
+    assert len(drops) == 1
+    assert drops[0] < sends.index(":e!")
     refreshed = state.FollowerState.read("$1")
     assert refreshed is not None
     assert refreshed.current_file == str(target)  # following resumes in place
