@@ -356,12 +356,18 @@ def test_registered_keybinding_command_pauses_via_run_shell(
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
     session_id = _session_id(origin_pane)
 
-    listing = subprocess.run(
-        ["tmux", "list-keys", "-T", "prefix", "P"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
+    # Full-table listing filtered by hand: tmux 3.7b returns empty output
+    # for `list-keys -T prefix P` even when the binding exists.
+    listing = next(
+        line
+        for line in subprocess.run(
+            ["tmux", "list-keys", "-T", "prefix"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.splitlines()
+        if shlex.split(line)[:4] == ["bind-key", "-T", "prefix", "P"]
+    )
     bound_command = shlex.split(listing)[-1]
 
     # The spawned claude-follow is a separate process using the REAL home

@@ -49,14 +49,27 @@ def _saved_bindings_path() -> Path:
 
 
 def _existing_binding(key: str) -> str | None:
+    # List the whole prefix table and filter ourselves: tmux 3.7b returns
+    # empty output for `list-keys -T prefix <key>` even when the binding
+    # exists, so per-key filtering can't be trusted across versions.
     result = subprocess.run(
-        ["tmux", "list-keys", "-T", "prefix", key],
+        ["tmux", "list-keys", "-T", "prefix"],
         capture_output=True,
         text=True,
         check=False,
     )
-    line = result.stdout.strip()
-    return line if result.returncode == 0 and line else None
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        try:
+            tokens = shlex.split(line)
+        except ValueError:
+            continue
+        if "-T" in tokens:
+            table_index = tokens.index("-T")
+            if tokens[table_index + 1 : table_index + 3] == ["prefix", key]:
+                return line.strip()
+    return None
 
 
 def _register_keybindings() -> None:

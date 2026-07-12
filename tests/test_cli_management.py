@@ -193,10 +193,10 @@ def test_stop_restores_a_pre_existing_binding() -> None:
     previous = "bind-key -T prefix P paste-buffer"
 
     def _run_with_existing_binding(cmd: list[str], **kwargs: object) -> MagicMock:
-        if cmd[:3] == ["tmux", "list-keys", "-T"] and cmd[4] == "P":
+        # Full-table listing (no per-key filter arg): the caller extracts
+        # P's line itself and finds nothing for S.
+        if cmd[:4] == ["tmux", "list-keys", "-T", "prefix"]:
             return MagicMock(returncode=0, stdout=previous + "\n")
-        if cmd[:3] == ["tmux", "list-keys", "-T"]:
-            return MagicMock(returncode=1, stdout="")
         return _mock_tmux_run()(cmd, **kwargs)
 
     with patch(
@@ -216,10 +216,8 @@ def test_stop_unbinds_instead_of_restoring_a_stale_claude_follow_binding() -> No
     stale = 'bind-key -T prefix P run-shell "/old/venv/claude-follow pause >/dev/null 2>&1"'
 
     def _run_with_stale(cmd: list[str], **kwargs: object) -> MagicMock:
-        if cmd[:3] == ["tmux", "list-keys", "-T"] and cmd[4] == "P":
+        if cmd[:4] == ["tmux", "list-keys", "-T", "prefix"]:
             return MagicMock(returncode=0, stdout=stale + "\n")
-        if cmd[:3] == ["tmux", "list-keys", "-T"]:
-            return MagicMock(returncode=1, stdout="")
         return _mock_tmux_run()(cmd, **kwargs)
 
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_run_with_stale) as run:
