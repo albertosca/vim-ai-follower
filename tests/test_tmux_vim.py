@@ -110,6 +110,33 @@ def test_apply_edit_relocks_after_pause_and_resume(tmp_path: Path) -> None:
     assert commands[-2] == (":setlocal nomodifiable nopaste", True)
 
 
+def test_apply_edit_renavigates_to_its_own_tab_on_resume(tmp_path: Path) -> None:
+    # The user may have wandered to a different tab during the pause — the
+    # resume must re-select the animating file's tab before typing continues,
+    # not just once up front via goto_file's initial preamble.
+    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    calls = {"n": 0}
+
+    def _pause_then_resume(session_id: str, base_dir: Path | None = None) -> str | None:
+        calls["n"] += 1
+        return "pause" if calls["n"] in (1, 2) else None
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.control.check_signal", side_effect=_pause_then_resume),
+    ):
+        result = follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
+    commands = _sent_commands(run)
+    assert result.outcome == "completed"
+    tab_drops = [i for i, c in enumerate(commands) if c == (":tab drop /tmp/f.txt", True)]
+    # once for the initial goto_file preamble, once more for the resume
+    assert len(tab_drops) == 2
+    # the second tab drop happens after the pause and before the relock
+    relock_index = commands.index((":setlocal nomodifiable nopaste", True))
+    assert tab_drops[1] < relock_index
+
+
 def test_get_follower_forwards_pace_seconds_for_tmux_backend() -> None:
     follower = get_follower("tmux", "%2", pace_seconds=0.15)
     assert isinstance(follower, TmuxVimFollower)

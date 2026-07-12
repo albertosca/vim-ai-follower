@@ -432,6 +432,86 @@ def test_pause_persists_state_and_resume_finishes_the_edit(
     assert wait_until(_buffer_matches, timeout=10.0)
 
 
+def test_live_pause_resume_renavigates_to_the_animating_files_tab(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    # A live in-hook pause (control.request_pause, not a crash-recovered
+    # one) must also re-select the animating file's tab on resume — the
+    # user is free to wander to a different tab while paused, since nothing
+    # is animating to hold their attention, and a resume that forgot to
+    # navigate back would type straight into whatever tab they landed on.
+    origin_pane = _pane_ids(tmux_session)[0]
+    monkeypatch.setenv("TMUX_PANE", origin_pane)
+    assert cli.main(["start", "--speed", "lento"]) == 0
+    assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
+    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    session_id = _session_id(origin_pane)
+
+    a_file = tmp_path / "a.py"
+    b_file = tmp_path / "b.py"
+    a_file.write_text("print('a')\n")
+    b_file.write_text("\n".join(f"line {i}" for i in range(15)) + "\n")
+
+    write_a = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(a_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(write_a))
+    assert cli.main(["hook", "post"]) == 0
+    assert wait_until(lambda: "print('a')" in _capture(follower_pane_id), timeout=10.0)
+
+    write_b = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(b_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(write_b))
+
+    # The first pause is forced deterministically, right at the boundary
+    # between line 0 and line 1 (4 signal checks: line 0's opener, text,
+    # Escape, then line 1's opener) — landing it mid-keystroke instead would
+    # race Vim's own Escape-key disambiguation delay before the "u" rollback,
+    # an unrelated flakiness this test isn't about. Every check after the
+    # forced one falls through to the real signal file, so the real second
+    # control.request_pause below drives the actual resume.
+    real_check_signal = control.check_signal
+    calls = {"n": 0}
+
+    def _check(session_id_arg: str, base_dir: object = None) -> str | None:
+        calls["n"] += 1
+        if calls["n"] == 4:
+            return "pause"
+        return real_check_signal(session_id_arg, base_dir)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(control, "check_signal", _check)
+
+    thread = threading.Thread(target=lambda: cli.main(["hook", "post"]))
+    thread.start()
+    assert wait_until(lambda: control.animating_state(session_id) == "paused", timeout=10.0)
+
+    # The user, unaware anything is paused, flips over to a.py's tab.
+    follower_pane = TmuxPane(pane_id=follower_pane_id)
+    follower_pane.send_key("C-\\")
+    follower_pane.send_key("C-n")
+    follower_pane.send_text("gt")
+    assert wait_until(lambda: "print('a')" in _capture(follower_pane_id), timeout=5.0)
+
+    control.request_pause(session_id)  # the second press: resume
+    thread.join(timeout=30.0)
+    assert not thread.is_alive()
+
+    assert wait_until(lambda: "line 14" in _capture(follower_pane_id), timeout=15.0)
+    rows = [line.rstrip() for line in _capture(follower_pane_id).splitlines()]
+    expected = [f"line {i}" for i in range(15)]
+    anchor = rows.index("line 0")
+    assert rows[anchor : anchor + len(expected)] == expected
+    assert control.has_pending_animation(session_id) is False
+
+    # the active buffer, not just the pane content, is b.py — ask Vim itself
+    # rather than inferring it from the rendered screen.
+    marker_file = tmp_path / "active_buffer.txt"
+    follower_pane.send_text(f":call writefile([expand('%')], '{marker_file}')")
+    follower_pane.send_key("Enter")
+    assert wait_until(lambda: marker_file.exists() and marker_file.read_text().strip(), timeout=5.0)
+    assert marker_file.read_text().strip() == str(b_file)
+
+
 def test_registered_keybinding_command_pauses_via_run_shell(
     tmux_session: str,
     monkeypatch: pytest.MonkeyPatch,

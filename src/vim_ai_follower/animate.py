@@ -108,6 +108,7 @@ def run_ops(
     pace_seconds: float,
     base_dir: Path | None = None,
     file_path: str = "",
+    on_resume: Callable[[], None] | None = None,
 ) -> AnimationResult:
     control.clear_signals(session_id, base_dir)
     control.mark_animating(session_id, base_dir)
@@ -132,6 +133,8 @@ def run_ops(
                         return AnimationResult("interrupted", index)
                     if not _wait_while_paused(session_id, save_pending, base_dir):
                         return AnimationResult("interrupted", index)
+                    if on_resume is not None:
+                        on_resume()
                     continue  # resumed: retry this op from its clean boundary
 
             insert_seq, prefix_len = _insert_sequences(op)
@@ -155,6 +158,8 @@ def run_ops(
                         return AnimationResult("interrupted", index)
                     if not _wait_while_paused(session_id, save_pending, base_dir):
                         return AnimationResult("interrupted", index)
+                    if on_resume is not None:
+                        on_resume()
                     continue
 
             index += 1
@@ -194,6 +199,7 @@ def run_lines(
     base_dir: Path | None = None,
     continuation: bool = False,
     file_path: str = "",
+    on_resume: Callable[[], None] | None = None,
 ) -> AnimationResult:
     control.clear_signals(session_id, base_dir)
     control.mark_animating(session_id, base_dir)
@@ -227,6 +233,8 @@ def run_lines(
 
                 if not _wait_while_paused(session_id, save_pending, base_dir):
                     return AnimationResult("interrupted", index)
+                if on_resume is not None:
+                    on_resume()
                 continue  # resumed: retry this line (same opener, clean boundary)
             index += 1
         return AnimationResult("completed", len(lines))

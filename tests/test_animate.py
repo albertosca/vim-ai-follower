@@ -611,3 +611,50 @@ def test_run_ops_interrupt_during_delete_half_pause_wait(tmp_path: Path) -> None
         result = run_ops(pane, "$1", [op], pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("interrupted", 0)
     assert control.has_pending_animation("$1", tmp_path) is False
+
+
+def test_run_ops_calls_on_resume_exactly_once_when_resumed_from_a_pause(
+    tmp_path: Path,
+) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    calls = {"n": 0}
+
+    def _pause_then_resume(session_id: str, base_dir: Path | None = None) -> str | None:
+        calls["n"] += 1
+        return "pause" if calls["n"] in (1, 2) else None
+
+    on_resume = MagicMock()
+    with patch("vim_ai_follower.control.check_signal", side_effect=_pause_then_resume):
+        result = run_ops(pane, "$1", [op], pace_seconds=0.0, base_dir=tmp_path, on_resume=on_resume)
+    assert result == AnimationResult("completed", 1)
+    on_resume.assert_called_once_with()
+
+
+def test_run_ops_does_not_call_on_resume_when_never_paused(tmp_path: Path) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    on_resume = MagicMock()
+    with patch("vim_ai_follower.control.check_signal", return_value=None):
+        result = run_ops(pane, "$1", [op], pace_seconds=0.0, base_dir=tmp_path, on_resume=on_resume)
+    assert result == AnimationResult("completed", 1)
+    on_resume.assert_not_called()
+
+
+def test_run_lines_calls_on_resume_exactly_once_when_resumed_from_a_pause(
+    tmp_path: Path,
+) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    calls = {"n": 0}
+
+    def _pause_then_resume(session_id: str, base_dir: Path | None = None) -> str | None:
+        calls["n"] += 1
+        return "pause" if calls["n"] in (1, 2) else None
+
+    on_resume = MagicMock()
+    with patch("vim_ai_follower.control.check_signal", side_effect=_pause_then_resume):
+        result = run_lines(
+            pane, "$1", ("hello",), pace_seconds=0.0, base_dir=tmp_path, on_resume=on_resume
+        )
+    assert result == AnimationResult("completed", 1)
+    on_resume.assert_called_once_with()

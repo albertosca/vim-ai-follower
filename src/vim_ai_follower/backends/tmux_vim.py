@@ -91,7 +91,12 @@ class TmuxVimFollower:
         return self._with_unlocked(
             ":setlocal nomodifiable nopaste",
             lambda pane: run_ops(
-                pane, self.session_id, ops, self.pace_seconds, file_path=file_path
+                pane,
+                self.session_id,
+                ops,
+                self.pace_seconds,
+                file_path=file_path,
+                on_resume=lambda: self.goto_file(file_path),
             ),
         )
 
@@ -129,13 +134,21 @@ class TmuxVimFollower:
             # Wipe down to a single blank line — Vim can't have zero lines.
             inner.send_text(":%d")
             inner.send_key("Enter")
-            return run_lines(inner, self.session_id, lines, self.pace_seconds, file_path=file_path)
+            return run_lines(
+                inner,
+                self.session_id,
+                lines,
+                self.pace_seconds,
+                file_path=file_path,
+                on_resume=lambda: self.goto_file(file_path),
+            )
 
         return self._with_unlocked(":setlocal readonly nomodifiable nopaste", run)
 
     def resume(self, pending: PendingApplyEdit | PendingShowFresh) -> AnimationResult:
         if pending.file_path:
             self.goto_file(pending.file_path)
+        on_resume = (lambda: self.goto_file(pending.file_path)) if pending.file_path else None
         if isinstance(pending, PendingApplyEdit):
             return self._with_unlocked(
                 ":setlocal nomodifiable nopaste",
@@ -145,6 +158,7 @@ class TmuxVimFollower:
                     pending.ops,
                     pending.pace_seconds,
                     file_path=pending.file_path,
+                    on_resume=on_resume,
                 ),
             )
         return self._with_unlocked(
@@ -156,6 +170,7 @@ class TmuxVimFollower:
                 pending.pace_seconds,
                 continuation=pending.continuation,
                 file_path=pending.file_path,
+                on_resume=on_resume,
             ),
         )
 
