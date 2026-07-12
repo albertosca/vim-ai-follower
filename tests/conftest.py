@@ -78,7 +78,9 @@ def wait_until() -> Callable[..., bool]:
 
 @pytest.fixture
 def sent() -> list[str]:
-    """List of sent commands in format 'text::...' or 'key:...'"""
+    """List of sent commands in format 'text::...' or 'key::...'. A Vim
+    ex-command brings its own leading ':', so it records with THREE colons
+    ('text:::tabnew') — assert against that form, never 'text::tabnew'."""
     return []
 
 

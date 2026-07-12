@@ -329,4 +329,6 @@ def test_show_fresh_in_new_tab_opens_tab_before_renaming(
 
 def test_show_fresh_default_renames_in_place(sent: list[str], follower: TmuxVimFollower) -> None:
     follower.show_fresh("/tmp/new.py", "line1\n")
-    assert "text::tabnew" not in sent
+    # Vim commands carry their own leading ":", so the recorded entry has
+    # three colons — "text::tabnew" would never match anything.
+    assert "text:::tabnew" not in sent
