@@ -17,7 +17,7 @@ from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.snapshot import load as load_snapshot
 from vim_ai_follower.snapshot import save as save_snapshot
 from vim_ai_follower.state import FollowerState, touch_open_files
-from vim_ai_follower.tmux import TmuxPane, TmuxSession
+from vim_ai_follower.tmux import TmuxSession, adopt_target
 
 LOG_PATH = cache.CACHE_DIR / "hook.log"
 
@@ -44,13 +44,6 @@ def _tool_input(payload: dict[str, Any]) -> dict[str, Any]:
 def _file_path(payload: dict[str, Any]) -> str | None:
     value = _tool_input(payload).get("file_path")
     return value if isinstance(value, str) else None
-
-
-def _adopt_target(origin: str) -> str | None:
-    for pane_id, command in TmuxPane(pane_id=origin).window_panes():
-        if pane_id != origin and command == "vim":
-            return pane_id
-    return None
 
 
 def _passes_policy(cfg: config.Config, file_path: str) -> bool:
@@ -97,7 +90,7 @@ def _maybe_auto_open(
     if not origin:
         return None
     keybindings.register()
-    adopt = _adopt_target(origin) if cfg.adopt_existing else None
+    adopt = adopt_target(origin) if cfg.adopt_existing else None
     if adopt is not None:
         # shown_any=True from the first moment: an adopted Vim's current tab
         # belongs to the user and must never be renamed over.

@@ -81,6 +81,15 @@ class TmuxPane:
         return cls(pane_id=result.stdout.strip())
 
 
+def adopt_target(origin: str) -> str | None:
+    """Find an existing vim pane in origin's window to adopt as the follower
+    target, so a fresh split isn't opened when one is already running."""
+    for pane_id, command in TmuxPane(pane_id=origin).window_panes():
+        if pane_id != origin and command == "vim":
+            return pane_id
+    return None
+
+
 @dataclass(frozen=True)
 class TmuxSession:
     session_id: str

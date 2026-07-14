@@ -10,9 +10,8 @@ from typing import Literal
 from vim_ai_follower import config, control, keybindings
 from vim_ai_follower.backends import get_follower
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
-from vim_ai_follower.hooks import _adopt_target
 from vim_ai_follower.state import FollowerState, nvim_socket_path
-from vim_ai_follower.tmux import TmuxPane, TmuxSession
+from vim_ai_follower.tmux import TmuxPane, TmuxSession, adopt_target
 
 
 def _require_session(env: dict[str, str]) -> TmuxSession | None:
@@ -68,7 +67,7 @@ def cmd_start(
         return 0
 
     if defaults.adopt_existing:
-        adopt = _adopt_target(origin)
+        adopt = adopt_target(origin)
         if adopt is not None:
             FollowerState.set(
                 session.session_id,
