@@ -654,6 +654,212 @@ def test_registered_keybinding_command_pauses_via_run_shell(
         marker_path.unlink(missing_ok=True)
 
 
+def test_apply_edit_validates_a_file_with_pre_session_content(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    # The file exists with real content BEFORE the follower ever starts —
+    # unlike the other exact-content tests, which create their target file
+    # only after "start". The follower has never tracked it (open_files is
+    # empty), so its first hook round is a fresh show rather than a diff —
+    # what matters here is that the pane ends up with the exact post-edit
+    # content, not which internal path got it there.
+    target_file = tmp_path / "pre_session.txt"
+    before_lines = [f"line {i}" for i in range(1, 9)]
+    target_file.write_text("\n".join(before_lines) + "\n")
+
+    origin_pane = _pane_ids(tmux_session)[0]
+    monkeypatch.setenv("TMUX_PANE", origin_pane)
+    assert cli.main(["start"]) == 0
+    assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
+    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+
+    pre_payload = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(target_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(pre_payload))
+    assert cli.main(["hook", "pre"]) == 0
+
+    after_lines = list(before_lines)
+    after_lines[2:4] = ["replacement A", "replacement B"]
+    target_file.write_text("\n".join(after_lines) + "\n")
+    post_payload = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(target_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(post_payload))
+    assert cli.main(["hook", "post"]) == 0
+
+    assert wait_until(lambda: "replacement B" in _capture(follower_pane_id), timeout=10.0)
+    rows = [line.rstrip() for line in _capture(follower_pane_id).splitlines()]
+    anchor = rows.index("line 1")
+    assert rows[anchor : anchor + len(after_lines)] == after_lines
+
+
+def test_three_consecutive_edit_rounds_produce_exact_content_each_time(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    origin_pane = _pane_ids(tmux_session)[0]
+    monkeypatch.setenv("TMUX_PANE", origin_pane)
+    assert cli.main(["start"]) == 0
+    assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
+    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+
+    target_file = tmp_path / "rounds.txt"
+    target_file.write_text("alpha\nbeta\ngamma\ndelta\nepsilon\n")
+
+    def _round(tool_name: str, after_lines: list[str]) -> None:
+        pre_payload = json.dumps(
+            {"tool_name": tool_name, "tool_input": {"file_path": str(target_file)}}
+        )
+        monkeypatch.setattr("sys.stdin", io.StringIO(pre_payload))
+        assert cli.main(["hook", "pre"]) == 0
+
+        target_file.write_text("\n".join(after_lines) + "\n")
+        post_payload = json.dumps(
+            {"tool_name": tool_name, "tool_input": {"file_path": str(target_file)}}
+        )
+        monkeypatch.setattr("sys.stdin", io.StringIO(post_payload))
+        assert cli.main(["hook", "post"]) == 0
+
+        assert wait_until(lambda: after_lines[-1] in _capture(follower_pane_id), timeout=10.0)
+        rows = [line.rstrip() for line in _capture(follower_pane_id).splitlines()]
+        anchor = rows.index(after_lines[0])
+        assert rows[anchor : anchor + len(after_lines)] == after_lines
+
+    # Round 1 (insert): untracked before now, so this is a fresh full retype
+    # (not a diff) — still the first of the "three consecutive rounds".
+    round_1 = ["alpha", "beta", "NEW LINE", "gamma", "delta", "epsilon"]
+    _round("Edit", round_1)
+
+    # Round 2 (replace): the file is tracked now, so this diffs and animates
+    # via apply_edit.
+    round_2 = ["alpha", "beta", "NEW LINE", "GAMMA REPLACED", "delta", "epsilon"]
+    _round("Edit", round_2)
+
+    # Round 3 (delete): apply_edit again.
+    round_3 = ["alpha", "beta", "NEW LINE", "GAMMA REPLACED", "epsilon"]
+    _round("Edit", round_3)
+
+
+def test_edit_after_read_navigation_reuses_the_tab(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    origin_pane = _pane_ids(tmux_session)[0]
+    monkeypatch.setenv("TMUX_PANE", origin_pane)
+    assert cli.main(["start"]) == 0
+    assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
+    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    follower_pane = TmuxPane(pane_id=follower_pane_id)
+
+    # A first file occupies the initial (renamed-in-place) tab, so the Read
+    # below is guaranteed to open A in a genuinely new tab rather than
+    # reusing the follower's still-empty start screen.
+    b_file = tmp_path / "b.py"
+    b_file.write_text("print('b')\n")
+    write_b = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(b_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(write_b))
+    assert cli.main(["hook", "post"]) == 0
+    assert wait_until(lambda: "print('b')" in _capture(follower_pane_id), timeout=10.0)
+
+    a_file = tmp_path / "a.txt"
+    before_lines = ["first line", "second line", "third line"]
+    a_file.write_text("\n".join(before_lines) + "\n")
+    read_payload = json.dumps({"tool_name": "Read", "tool_input": {"file_path": str(a_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(read_payload))
+    assert cli.main(["hook", "post"]) == 0
+    assert wait_until(lambda: "first line" in _capture(follower_pane_id), timeout=5.0)
+
+    tab_count_marker = tmp_path / "tab_count_after_read.txt"
+    follower_pane.send_text(f":call writefile([string(tabpagenr('$'))], '{tab_count_marker}')")
+    follower_pane.send_key("Enter")
+    assert wait_until(lambda: tab_count_marker.exists(), timeout=5.0)
+    tab_count_after_read = tab_count_marker.read_text().strip()
+
+    pre_payload = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(a_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(pre_payload))
+    assert cli.main(["hook", "pre"]) == 0
+
+    after_lines = ["first line", "EDITED second line", "third line"]
+    a_file.write_text("\n".join(after_lines) + "\n")
+    post_payload = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(a_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(post_payload))
+    assert cli.main(["hook", "post"]) == 0
+
+    assert wait_until(lambda: "EDITED second line" in _capture(follower_pane_id), timeout=10.0)
+    rows = [line.rstrip() for line in _capture(follower_pane_id).splitlines()]
+    anchor = rows.index("first line")
+    assert rows[anchor : anchor + len(after_lines)] == after_lines
+
+    tab_count_marker.unlink()
+    follower_pane.send_text(f":call writefile([string(tabpagenr('$'))], '{tab_count_marker}')")
+    follower_pane.send_key("Enter")
+    assert wait_until(lambda: tab_count_marker.exists(), timeout=5.0)
+    tab_count_after_edit = tab_count_marker.read_text().strip()
+
+    # :tab drop reused A's existing tab (opened by the Read above) instead
+    # of opening a new one for the edit.
+    assert tab_count_after_edit == tab_count_after_read
+
+
+def test_edit_of_pre_existing_file_in_a_non_active_tab(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    origin_pane = _pane_ids(tmux_session)[0]
+    monkeypatch.setenv("TMUX_PANE", origin_pane)
+    assert cli.main(["start"]) == 0
+    assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
+    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    follower_pane = TmuxPane(pane_id=follower_pane_id)
+
+    a_file = tmp_path / "a.txt"
+    b_file = tmp_path / "b.txt"
+    a_before_lines = ["a line 1", "a line 2", "a line 3", "a line 4"]
+    a_file.write_text("\n".join(a_before_lines) + "\n")
+    b_file.write_text("b line 1\nb line 2\nb line 3\n")
+
+    write_a = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(a_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(write_a))
+    assert cli.main(["hook", "post"]) == 0
+    assert wait_until(lambda: "a line 4" in _capture(follower_pane_id), timeout=10.0)
+
+    write_b = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(b_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(write_b))
+    assert cli.main(["hook", "post"]) == 0
+    assert wait_until(lambda: "b line 3" in _capture(follower_pane_id), timeout=10.0)
+    # b.txt's tab is active now — the "non-active tab" setup for editing a.
+
+    pre_a = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(a_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(pre_a))
+    assert cli.main(["hook", "pre"]) == 0
+
+    a_after_lines = ["a line 1", "REPLACED two", "REPLACED three", "a line 4"]
+    a_file.write_text("\n".join(a_after_lines) + "\n")
+    post_a = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(a_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(post_a))
+    assert cli.main(["hook", "post"]) == 0
+
+    assert wait_until(lambda: "REPLACED three" in _capture(follower_pane_id), timeout=10.0)
+    rows = [line.rstrip() for line in _capture(follower_pane_id).splitlines()]
+    anchor = rows.index("a line 1")
+    assert rows[anchor : anchor + len(a_after_lines)] == a_after_lines
+
+    active_buffer_marker = tmp_path / "active_buffer.txt"
+    follower_pane.send_text(f":call writefile([expand('%')], '{active_buffer_marker}')")
+    follower_pane.send_key("Enter")
+    assert wait_until(
+        lambda: active_buffer_marker.exists() and active_buffer_marker.read_text().strip(),
+        timeout=5.0,
+    )
+    assert active_buffer_marker.read_text().strip() == str(a_file)
+
+
 def test_auto_open_adopts_a_pre_existing_vim_pane(
     tmux_session: str,
     monkeypatch: pytest.MonkeyPatch,
