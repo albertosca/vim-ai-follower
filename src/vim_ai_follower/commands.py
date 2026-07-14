@@ -15,15 +15,25 @@ from vim_ai_follower.state import FollowerState, nvim_socket_path
 from vim_ai_follower.tmux import TmuxPane, TmuxSession
 
 
+def _require_session(env: dict[str, str]) -> TmuxSession | None:
+    """Resolve the tmux session, or print the standard not-in-tmux error to
+    stderr and return None (callers that get None return exit code 1).
+    cmd_status deliberately does not use this: it reports absence on stdout
+    and exits 0, so it keeps its own inline check."""
+    session = TmuxSession.from_env(env)
+    if session is None:
+        print("claude-follow: not running inside tmux", file=sys.stderr)
+    return session
+
+
 def cmd_start(
     env: dict[str, str],
     backend: str = "tmux",
     on_failure: str | None = None,
     speed: str | None = None,
 ) -> int:
-    session = TmuxSession.from_env(env)
+    session = _require_session(env)
     if session is None:
-        print("claude-follow: not running inside tmux", file=sys.stderr)
         return 1
     if FollowerState.get(session.session_id) is not None:
         print("claude-follow: follower already running for this session")
@@ -87,9 +97,8 @@ def cmd_start(
 
 
 def cmd_stop(env: dict[str, str]) -> int:
-    session = TmuxSession.from_env(env)
+    session = _require_session(env)
     if session is None:
-        print("claude-follow: not running inside tmux", file=sys.stderr)
         return 1
     existing = FollowerState.get(session.session_id)
     if existing is not None:
@@ -173,9 +182,8 @@ def _resave_pending(
 
 
 def cmd_pause(env: dict[str, str]) -> int:
-    session = TmuxSession.from_env(env)
+    session = _require_session(env)
     if session is None:
-        print("claude-follow: not running inside tmux", file=sys.stderr)
         return 1
     current = FollowerState.get(session.session_id)
 
@@ -222,9 +230,8 @@ def cmd_pause(env: dict[str, str]) -> int:
 
 
 def cmd_interrupt(env: dict[str, str]) -> int:
-    session = TmuxSession.from_env(env)
+    session = _require_session(env)
     if session is None:
-        print("claude-follow: not running inside tmux", file=sys.stderr)
         return 1
     current = FollowerState.get(session.session_id)
 
@@ -258,9 +265,8 @@ def cmd_interrupt(env: dict[str, str]) -> int:
 
 
 def cmd_speed(env: dict[str, str], direction: Literal["up", "down"]) -> int:
-    session = TmuxSession.from_env(env)
+    session = _require_session(env)
     if session is None:
-        print("claude-follow: not running inside tmux", file=sys.stderr)
         return 1
     current = FollowerState.get(session.session_id)
     if current is None:
@@ -274,9 +280,8 @@ def cmd_speed(env: dict[str, str], direction: Literal["up", "down"]) -> int:
 
 
 def cmd_toggle(env: dict[str, str]) -> int:
-    session = TmuxSession.from_env(env)
+    session = _require_session(env)
     if session is None:
-        print("claude-follow: not running inside tmux", file=sys.stderr)
         return 1
     raw = FollowerState.read(session.session_id)
     if raw is None:

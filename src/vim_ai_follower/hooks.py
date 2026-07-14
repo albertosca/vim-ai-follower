@@ -88,8 +88,9 @@ def _get_active_follower(session_id: str) -> FollowerState | None:
     return FollowerState.get(session_id)
 
 
-def _maybe_auto_open(session_id: str, env: dict[str, str], file_path: str) -> FollowerState | None:
-    cfg = config.load()
+def _maybe_auto_open(
+    session_id: str, env: dict[str, str], file_path: str, cfg: config.Config
+) -> FollowerState | None:
     if cfg.open_policy == "manual" or not _passes_policy(cfg, file_path):
         return None
     origin = env.get("TMUX_PANE", "")
@@ -137,6 +138,21 @@ def _ensure_buffer(session_id: str, follower: Follower, file_path: str) -> None:
     the last time this file was current."""
     follower.ensure_showing(file_path)
     FollowerState.update_current_file(session_id, file_path)
+
+
+def _touch_and_evict(
+    session_id: str, follower: Follower, current: FollowerState, file_path: str, max_tabs: int
+) -> None:
+    """Bump file_path to most-recent in the tab list and close whatever now
+    falls past max_tabs. Eviction only means anything for the tab-based tmux
+    backend; on any other backend the close is skipped (nvim_rpc has no tabs)
+    rather than asserted, so a future backend can grow open_files without an
+    AssertionError crashing the hook."""
+    new_open, evicted = touch_open_files(current.open_files, file_path, max_tabs)
+    for old in evicted:
+        if isinstance(follower, TmuxVimFollower):
+            follower.close_tab(old)
+    FollowerState.update(session_id, open_files=new_open, shown_any=True)
 
 
 def _reconstruct_partial_fresh(content: str, completed_count: int) -> str:
@@ -236,7 +252,7 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
     if not _passes_policy(cfg, file_path):
         return 0
     current = _get_active_follower(session.session_id) or _maybe_auto_open(
-        session.session_id, env, file_path
+        session.session_id, env, file_path, cfg
     )
     if current is None:
         return 0
@@ -276,11 +292,7 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         # them normally (real content shown immediately, nothing to spoil).
         if is_fresh:
             _ensure_buffer(session.session_id, follower, file_path)
-        new_open, evicted = touch_open_files(current.open_files, file_path, cfg.max_tabs)
-        for old in evicted:
-            assert isinstance(follower, TmuxVimFollower)  # only tmux ever tracks tabs
-            follower.close_tab(old)
-        FollowerState.update(session.session_id, open_files=new_open, shown_any=True)
+        _touch_and_evict(session.session_id, follower, current, file_path, cfg.max_tabs)
         return 0
 
     after = raw_after.decode("utf-8", errors="replace")
@@ -289,11 +301,7 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
     # mid-typing — touch_open_files never puts the just-touched file_path in
     # the evicted slice, so the file about to be animated can never be the
     # one just closed.
-    new_open, evicted = touch_open_files(current.open_files, file_path, cfg.max_tabs)
-    for old in evicted:
-        assert isinstance(follower, TmuxVimFollower)  # only tmux ever tracks tabs
-        follower.close_tab(old)
-    FollowerState.update(session.session_id, open_files=new_open, shown_any=True)
+    _touch_and_evict(session.session_id, follower, current, file_path, cfg.max_tabs)
 
     if is_fresh:
         result = follower.show_fresh(file_path, after, in_new_tab=current.shown_any)
@@ -334,17 +342,13 @@ def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
     if not _passes_policy(cfg, file_path):
         return 0
     current = _get_active_follower(session.session_id) or _maybe_auto_open(
-        session.session_id, env, file_path
+        session.session_id, env, file_path, cfg
     )
     if current is None:
         return 0
     follower = get_follower(current.backend, current.target)
     _ensure_buffer(session.session_id, follower, file_path)
-    new_open, evicted = touch_open_files(current.open_files, file_path, cfg.max_tabs)
-    for old in evicted:
-        assert isinstance(follower, TmuxVimFollower)  # only tmux ever tracks tabs
-        follower.close_tab(old)
-    FollowerState.update(session.session_id, open_files=new_open, shown_any=True)
+    _touch_and_evict(session.session_id, follower, current, file_path, cfg.max_tabs)
     offset = _tool_input(payload).get("offset")
     if isinstance(offset, int) and offset > 0:
         follower.goto_line(offset)

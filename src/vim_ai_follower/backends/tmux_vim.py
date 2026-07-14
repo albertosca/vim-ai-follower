@@ -10,6 +10,18 @@ from vim_ai_follower.diff import EditOp
 from vim_ai_follower.state import FollowerState
 from vim_ai_follower.tmux import TmuxPane
 
+# The lock protocol, as literal Vim ex-command lines. The follower buffer is
+# read-only by default so a stray keystroke can't corrupt it; an animation
+# unlocks around itself and relocks after. Both relocks prepend a silent `:e!`
+# disk sync (the buffer's name already matches the file Claude wrote, so the
+# reload is visually a no-op but clears W11 staleness). The two relocks differ
+# only in whether they re-assert `readonly`: a fresh retype gets the stronger
+# read-only lock, an in-place edit is merely made unmodifiable.
+_LOCK_READONLY = ":setlocal readonly nomodifiable"
+_UNLOCK_FOR_ANIMATION = ":setlocal modifiable paste"
+_RELOCK_SYNCED = ":silent! e! | setlocal nomodifiable nopaste"
+_RELOCK_READONLY_SYNCED = ":silent! e! | setlocal readonly nomodifiable nopaste"
+
 
 @dataclass(frozen=True)
 class TmuxVimFollower:
@@ -59,7 +71,7 @@ class TmuxVimFollower:
         pane = TmuxPane(pane_id=self.pane_id)
         pane.send_text(":e!")
         pane.send_key("Enter")
-        pane.send_text(":setlocal readonly nomodifiable")
+        pane.send_text(_LOCK_READONLY)
         pane.send_key("Enter")
 
     def close_tab(self, file_path: str) -> None:
@@ -78,7 +90,7 @@ class TmuxVimFollower:
         # the buffer: our own animation is indistinguishable from real
         # typing at the tty level, so it must explicitly unlock around itself.
         pane = TmuxPane(pane_id=self.pane_id)
-        pane.send_text(":setlocal readonly nomodifiable")
+        pane.send_text(_LOCK_READONLY)
         pane.send_key("Enter")
 
     def _with_unlocked(
@@ -99,7 +111,7 @@ class TmuxVimFollower:
         timestamp and clears the W11 staleness that an unsynced retype
         would otherwise leave behind."""
         pane = TmuxPane(pane_id=self.pane_id)
-        pane.send_text(":setlocal modifiable paste")
+        pane.send_text(_UNLOCK_FOR_ANIMATION)
         pane.send_key("Enter")
         result = run(pane)
         if result.outcome != "interrupted":
@@ -110,7 +122,7 @@ class TmuxVimFollower:
     def apply_edit(self, file_path: str, ops: list[EditOp]) -> AnimationResult:
         self.goto_file(file_path)
         return self._with_unlocked(
-            ":silent! e! | setlocal nomodifiable nopaste",
+            _RELOCK_SYNCED,
             lambda pane: run_ops(
                 pane,
                 self.session_id,
@@ -164,7 +176,7 @@ class TmuxVimFollower:
                 on_resume=lambda: self.goto_file(file_path),
             )
 
-        return self._with_unlocked(":silent! e! | setlocal readonly nomodifiable nopaste", run)
+        return self._with_unlocked(_RELOCK_READONLY_SYNCED, run)
 
     def resume(self, pending: PendingApplyEdit | PendingShowFresh) -> AnimationResult:
         if pending.file_path:
@@ -176,7 +188,7 @@ class TmuxVimFollower:
         provider = (lambda: 0.0) if pending.pace_seconds == 0.0 else self._live_pace
         if isinstance(pending, PendingApplyEdit):
             return self._with_unlocked(
-                ":silent! e! | setlocal nomodifiable nopaste",
+                _RELOCK_SYNCED,
                 lambda pane: run_ops(
                     pane,
                     self.session_id,
@@ -187,7 +199,7 @@ class TmuxVimFollower:
                 ),
             )
         return self._with_unlocked(
-            ":silent! e! | setlocal readonly nomodifiable nopaste",
+            _RELOCK_READONLY_SYNCED,
             lambda pane: run_lines(
                 pane,
                 self.session_id,
