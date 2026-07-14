@@ -30,6 +30,15 @@ def test_load_falls_back_on_invalid_values(tmp_path: Path) -> None:
     assert (cfg.open_policy, cfg.adopt_existing, cfg.max_tabs) == ("manual", False, 5)
 
 
+def test_load_rejects_bool_max_tabs(tmp_path: Path) -> None:
+    # JSON true is a Python bool, and bool is an int subclass with True == 1,
+    # so without the explicit isinstance(bool) guard `"max_tabs": true` would
+    # sneak through as a 1-tab limit instead of falling back to the default.
+    path = tmp_path / "config.json"
+    path.write_text('{"max_tabs": true}')
+    assert config.load(path).max_tabs == config.DEFAULT_MAX_TABS
+
+
 def test_next_speed_steps_and_wraps() -> None:
     assert config.next_speed("rapido", "up") == "muito_rapido"
     assert config.next_speed("rapido", "down") == "normal"

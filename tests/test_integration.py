@@ -538,7 +538,9 @@ def test_live_pause_resume_renavigates_to_the_animating_files_tab(
 
     # The first pause is forced deterministically, right at the boundary
     # between line 0 and line 1 (4 signal checks: line 0's opener, text,
-    # Escape, then line 1's opener) — landing it mid-keystroke instead would
+    # Escape, then line 1's opener — each check is animate.send_paced's
+    # per-sequence control.check_signal call, before that sequence is sent) —
+    # landing it mid-keystroke instead would
     # race Vim's own Escape-key disambiguation delay before the "u" rollback,
     # an unrelated flakiness this test isn't about. Every check after the
     # forced one falls through to the real signal file, so the real second
@@ -776,8 +778,14 @@ def test_edit_after_read_navigation_reuses_the_tab(
     tab_count_marker = tmp_path / "tab_count_after_read.txt"
     follower_pane.send_text(f":call writefile([string(tabpagenr('$'))], '{tab_count_marker}')")
     follower_pane.send_key("Enter")
-    assert wait_until(lambda: tab_count_marker.exists(), timeout=5.0)
+    assert wait_until(
+        lambda: tab_count_marker.exists() and bool(tab_count_marker.read_text().strip()),
+        timeout=5.0,
+    )
     tab_count_after_read = tab_count_marker.read_text().strip()
+    # The Read itself opened A in a genuinely new tab: B's renamed-in-place
+    # tab plus A's = 2. (The edit below must then NOT grow this further.)
+    assert tab_count_after_read == "2"
 
     pre_payload = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(a_file)}})
     monkeypatch.setattr("sys.stdin", io.StringIO(pre_payload))
@@ -797,7 +805,10 @@ def test_edit_after_read_navigation_reuses_the_tab(
     tab_count_marker.unlink()
     follower_pane.send_text(f":call writefile([string(tabpagenr('$'))], '{tab_count_marker}')")
     follower_pane.send_key("Enter")
-    assert wait_until(lambda: tab_count_marker.exists(), timeout=5.0)
+    assert wait_until(
+        lambda: tab_count_marker.exists() and bool(tab_count_marker.read_text().strip()),
+        timeout=5.0,
+    )
     tab_count_after_edit = tab_count_marker.read_text().strip()
 
     # :tab drop reused A's existing tab (opened by the Read above) instead

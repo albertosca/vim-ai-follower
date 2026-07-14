@@ -635,6 +635,25 @@ def test_run_ops_calls_on_resume_exactly_once_when_resumed_from_a_pause(
     on_resume.assert_called_once_with()
 
 
+def test_run_ops_calls_on_resume_when_paused_in_the_delete_half(tmp_path: Path) -> None:
+    # A replace op runs a delete half before the insert half; pausing on the
+    # very first signal check lands the pause inside the delete-half send_paced,
+    # the branch the insert-only case above never reaches.
+    pane = cast(TmuxPane, MagicMock())
+    op = EditOp(kind="replace", start_line=1, end_line=1, new_lines=("X",))
+    calls = {"n": 0}
+
+    def _pause_then_resume(session_id: str, base_dir: Path | None = None) -> str | None:
+        calls["n"] += 1
+        return "pause" if calls["n"] in (1, 2) else None
+
+    on_resume = MagicMock()
+    with patch("vim_ai_follower.control.check_signal", side_effect=_pause_then_resume):
+        result = run_ops(pane, "$1", [op], pace_seconds=0.0, base_dir=tmp_path, on_resume=on_resume)
+    assert result == AnimationResult("completed", 1)
+    on_resume.assert_called_once_with()
+
+
 def test_run_ops_does_not_call_on_resume_when_never_paused(tmp_path: Path) -> None:
     pane = cast(TmuxPane, MagicMock())
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))

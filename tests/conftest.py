@@ -86,7 +86,15 @@ def sent() -> list[str]:
 
 @pytest.fixture
 def follower(sent: list[str], tmp_path: Path) -> Iterator[TmuxVimFollower]:
-    """TmuxVimFollower with mocked subprocess to capture sent commands."""
+    """TmuxVimFollower with mocked subprocess to capture sent commands.
+
+    Note: test_tmux_vim.py has its own capture double (_sent_commands, which
+    reads a MagicMock's call_args_list after the fact into (text, literal)
+    pairs). The two are kept separate on purpose: this fixture streams into a
+    live list during the run (needed by tests that assert ordering across an
+    interrupt), while _sent_commands is a post-hoc reader for the pure
+    keystroke-sequence assertions. Consolidating would force one style onto
+    both, so they stay split."""
     follower_instance = TmuxVimFollower(pane_id="%2", session_id="$1")
 
     def capture_run(cmd: list[str], **kwargs: str) -> MagicMock:
