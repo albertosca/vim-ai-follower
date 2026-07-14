@@ -1,3 +1,6 @@
+"""User configuration loading and validation, the speed/pace tables, and the
+code-file policy check."""
+
 from __future__ import annotations
 
 import json

@@ -1,3 +1,6 @@
+"""Per-tmux-session follower state (registered pane, tracked tabs, speed and
+flags) persisted as JSON, plus the tab recency/eviction helper."""
+
 from __future__ import annotations
 
 import dataclasses
@@ -28,6 +31,10 @@ def nvim_socket_path(session_id: str, base_dir: Path | None = None) -> Path:
 
 @dataclass(frozen=True)
 class FollowerState:
+    # current_file is display-only: it is reported by `status` and reset to
+    # None after an interrupt to force a resync, but no navigation decision
+    # reads it. Which tab to show is driven by open_files membership plus the
+    # follower's own name-based goto_file preamble, never by this field.
     backend: str
     target: str
     current_file: str | None
@@ -132,6 +139,9 @@ class FollowerState:
     def update_current_file(
         cls, session_id: str, file_path: str | None, base_dir: Path | None = None
     ) -> None:
+        """Record (display-only, see the current_file field) the file now
+        shown, or None to force the next edit to resync via a full retype.
+        Gated on get() — a dead follower's file pointer is not worth keeping."""
         current = cls.get(session_id, base_dir)
         if current is None:
             return

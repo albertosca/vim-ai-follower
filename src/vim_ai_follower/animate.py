@@ -1,3 +1,6 @@
+"""Keystroke translation and paced send-keys animation of edit ops and
+fresh-file retypes, checking for pause/interrupt at each line boundary."""
+
 from __future__ import annotations
 
 import time

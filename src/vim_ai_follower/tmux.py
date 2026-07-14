@@ -1,3 +1,6 @@
+"""Thin subprocess wrappers over the tmux CLI: TmuxPane (send-keys, pane
+queries, zoom) and TmuxSession (resolve the session from the environment)."""
+
 from __future__ import annotations
 
 import subprocess

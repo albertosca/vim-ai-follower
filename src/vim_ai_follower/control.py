@@ -1,3 +1,7 @@
+"""On-disk signalling between the CLI keybindings and a running animation:
+pause/interrupt signal files, the PID-tagged animating-state marker, and the
+resumable pending-animation snapshot."""
+
 from __future__ import annotations
 
 import json
@@ -67,6 +71,9 @@ def request_interrupt(session_id: str, base_dir: Path | None = None) -> None:
 
 
 def has_pending_animation(session_id: str, base_dir: Path | None = None) -> bool:
+    """Non-consuming peek at whether a resumable animation is on disk.
+    Production consumes it via load_pending_animation instead; this predicate
+    is the suite's observation point for the crash-fallback file."""
     return _pending_path(session_id, base_dir).exists()
 
 
@@ -105,11 +112,18 @@ def animating_state(session_id: str, base_dir: Path | None = None) -> str | None
 
 
 def is_animating(session_id: str, base_dir: Path | None = None) -> bool:
+    """Boolean predicate form of animating_state, for callers that only need
+    "is a live process animating?" without the running/paused/handoff detail.
+    Production reads animating_state directly; this is the suite's observation
+    point (parallel to has_pending_animation)."""
     return animating_state(session_id, base_dir) is not None
 
 
 @dataclass(frozen=True)
 class PendingApplyEdit:
+    """Resumable remainder of a diff animation. file_path records which tab
+    the resume must re-select first (empty only for legacy/unknown state)."""
+
     ops: list[EditOp]
     pace_seconds: float
     file_path: str = ""
@@ -117,6 +131,10 @@ class PendingApplyEdit:
 
 @dataclass(frozen=True)
 class PendingShowFresh:
+    """Resumable remainder of a fresh-file retype. continuation marks that
+    earlier lines already landed (so resume opens lines instead of typing
+    into the wiped buffer's first line); file_path is the tab to re-select."""
+
     lines: tuple[str, ...]
     pace_seconds: float
     continuation: bool = False

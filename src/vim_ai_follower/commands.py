@@ -303,6 +303,7 @@ def cmd_toggle(env: dict[str, str]) -> int:
             origin=raw.origin,
             on_failure=raw.on_failure,
             speed=raw.speed,
-        )  # fresh pane: shown_any=False → first file renames the start screen
+        )  # shown_any defaults False, so the first file reuses (renames) the
+        # new pane's start screen instead of opening a redundant tab.
     print("claude-follow: follower resumed")
     return 0

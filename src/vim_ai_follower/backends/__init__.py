@@ -7,7 +7,11 @@ from vim_ai_follower.diff import EditOp
 
 
 class Follower(Protocol):
-    """A target that can show and animate file edits, regardless of how."""
+    """A target that can show and animate file edits. Multi-file navigation
+    is tab-based in the tmux backend (goto_file does `:tab drop`, and the
+    hook tracks/evicts tabs); the nvim_rpc backend has no tabs and simply
+    switches buffers, so per-file tab tracking there is a no-op (see
+    NvimRpcFollower.goto_file)."""
 
     def is_alive(self) -> bool: ...
 

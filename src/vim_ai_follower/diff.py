@@ -1,3 +1,6 @@
+"""Pure, I/O-free line diffing: compute a bottom-to-top edit script between
+two file versions, replay it, and detect binary content."""
+
 from __future__ import annotations
 
 import difflib
