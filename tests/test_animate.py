@@ -13,7 +13,6 @@ from vim_ai_follower.animate import (
     _delete_sequences,
     _insert_sequences,
     _line_sequences,
-    render_keystrokes,
     run_lines,
     run_ops,
     send_paced,
@@ -23,16 +22,17 @@ from vim_ai_follower.tmux import TmuxPane
 
 
 def test_delete_only_op_emits_ex_delete_command() -> None:
-    ops = [EditOp(kind="delete", start_line=2, end_line=3, new_lines=())]
-    assert render_keystrokes(ops) == [
+    op = EditOp(kind="delete", start_line=2, end_line=3, new_lines=())
+    assert _delete_sequences(op) == [
         KeySequence(":2,3d", literal=True),
         KeySequence("Enter", literal=False),
     ]
 
 
 def test_insert_at_top_uses_gg_open_above() -> None:
-    ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))]
-    assert render_keystrokes(ops) == [
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
+    sequences, prefix_len = _insert_sequences(op)
+    assert sequences == [
         KeySequence("gg", literal=True),
         KeySequence("O", literal=True),
         KeySequence("a", literal=True),
@@ -40,11 +40,13 @@ def test_insert_at_top_uses_gg_open_above() -> None:
         KeySequence("b", literal=True),
         KeySequence("Escape", literal=False),
     ]
+    assert prefix_len == 2  # gg, O — the cursor-positioning prefix
 
 
 def test_insert_mid_file_positions_then_opens_below() -> None:
-    ops = [EditOp(kind="insert", start_line=3, end_line=2, new_lines=("c", "d"))]
-    assert render_keystrokes(ops) == [
+    op = EditOp(kind="insert", start_line=3, end_line=2, new_lines=("c", "d"))
+    sequences, prefix_len = _insert_sequences(op)
+    assert sequences == [
         KeySequence(":2", literal=True),
         KeySequence("Enter", literal=False),
         KeySequence("o", literal=True),
@@ -53,11 +55,13 @@ def test_insert_mid_file_positions_then_opens_below() -> None:
         KeySequence("d", literal=True),
         KeySequence("Escape", literal=False),
     ]
+    assert prefix_len == 3  # :2, Enter, o
 
 
 def test_replace_op_deletes_then_inserts() -> None:
-    ops = [EditOp(kind="replace", start_line=2, end_line=2, new_lines=("X",))]
-    assert render_keystrokes(ops) == [
+    op = EditOp(kind="replace", start_line=2, end_line=2, new_lines=("X",))
+    insert_seq, _ = _insert_sequences(op)
+    assert _delete_sequences(op) + insert_seq == [
         KeySequence(":2,2d", literal=True),
         KeySequence("Enter", literal=False),
         KeySequence(":1", literal=True),

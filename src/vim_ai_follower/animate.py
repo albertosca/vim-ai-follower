@@ -61,15 +61,6 @@ def _insert_sequences(op: EditOp) -> tuple[list[KeySequence], int]:
     return sequences, len(prefix)
 
 
-def render_keystrokes(ops: list[EditOp]) -> list[KeySequence]:
-    sequences: list[KeySequence] = []
-    for op in ops:
-        sequences.extend(_delete_sequences(op))
-        insert_seq, _ = _insert_sequences(op)
-        sequences.extend(insert_seq)
-    return sequences
-
-
 @dataclass(frozen=True)
 class AnimationResult:
     outcome: Literal["completed", "interrupted"]
