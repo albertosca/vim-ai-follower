@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from vim_ai_follower import cli, control
+from vim_ai_follower import cli, config, control
 from vim_ai_follower.diff import compute_edit_script
 from vim_ai_follower.tmux import TmuxPane
 
@@ -37,6 +37,20 @@ def _pane_ids(session_name: str) -> list[str]:
         check=True,
     )
     return result.stdout.splitlines()
+
+
+def _pane_command(pane_id: str) -> str | None:
+    result = subprocess.run(
+        ["tmux", "list-panes", "-a", "-F", "#{pane_id} #{pane_current_command}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    for line in result.stdout.splitlines():
+        found_pane, _, command = line.partition(" ")
+        if found_pane == pane_id:
+            return command
+    return None
 
 
 def _capture(pane_id: str) -> str:
@@ -579,3 +593,39 @@ def test_registered_keybinding_command_pauses_via_run_shell(
     finally:
         signal_path.unlink(missing_ok=True)
         marker_path.unlink(missing_ok=True)
+
+
+def test_auto_open_adopts_a_pre_existing_vim_pane(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    # A second pane already runs Vim BEFORE any hook fires — no cli.main
+    # "start" involved. adopt_existing must find it and drive it directly,
+    # instead of splitting a fresh follower pane.
+    origin_pane = _pane_ids(tmux_session)[0]
+    subprocess.run(["tmux", "split-window", "-h", "-t", origin_pane, "vim"], check=True)
+    assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
+    vim_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    assert wait_until(lambda: _pane_command(vim_pane_id) == "vim", timeout=5.0)
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"open_policy": "always", "adopt_existing": true}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    monkeypatch.setenv("TMUX_PANE", origin_pane)
+
+    target_file = tmp_path / "greeting.txt"
+    target_file.write_text("hello\n")
+
+    pre_payload = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(target_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(pre_payload))
+    assert cli.main(["hook", "pre"]) == 0
+
+    target_file.write_text("hello\nvim ai follower\n")
+    post_payload = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(target_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(post_payload))
+    assert cli.main(["hook", "post"]) == 0
+
+    assert wait_until(lambda: "vim ai follower" in _capture(vim_pane_id), timeout=5.0)
+    assert len(_pane_ids(tmux_session)) == 2  # adopted the pre-existing pane, no split

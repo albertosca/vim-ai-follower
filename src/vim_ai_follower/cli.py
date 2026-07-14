@@ -135,6 +135,17 @@ def _unregister_keybindings() -> None:
     saved_path.unlink(missing_ok=True)
 
 
+def _adopt_target(origin: str) -> str | None:
+    for pane_id, command in TmuxPane(pane_id=origin).window_panes():
+        if pane_id != origin and command == "vim":
+            return pane_id
+    return None
+
+
+def _passes_policy(cfg: config.Config, file_path: str) -> bool:
+    return cfg.open_policy != "code" or config.is_code_file(file_path)
+
+
 def cmd_start(
     env: dict[str, str],
     backend: str = "tmux",
@@ -177,6 +188,22 @@ def cmd_start(
         print(f"claude-follow: attached to Neovim at {socket_path}")
         return 0
 
+    if defaults.adopt_existing:
+        adopt = _adopt_target(origin)
+        if adopt is not None:
+            FollowerState.set(
+                session.session_id,
+                "tmux",
+                adopt,
+                origin=origin,
+                on_failure=resolved_on_failure,
+                speed=resolved_speed,
+                adopted=True,
+                shown_any=True,
+            )
+            print(f"claude-follow: adopted existing vim pane {adopt}")
+            return 0
+
     started = TmuxVimFollower.start(origin)
     FollowerState.set(
         session.session_id,
@@ -197,7 +224,15 @@ def cmd_stop(env: dict[str, str]) -> int:
         return 1
     existing = FollowerState.get(session.session_id)
     if existing is not None:
-        get_follower(existing.backend, existing.target).stop()
+        if existing.adopted:
+            # Adoption never took ownership of the pane — killing the
+            # user's own Vim on stop would be destructive. Only close the
+            # tabs the follower itself opened there.
+            follower = TmuxVimFollower(pane_id=existing.target, session_id=session.session_id)
+            for path in existing.open_files:
+                follower.close_tab(path)
+        else:
+            get_follower(existing.backend, existing.target).stop()
     FollowerState.clear(session.session_id)
     control.clear_signals(session.session_id)
     control.discard_pending_animation(session.session_id)
@@ -455,6 +490,45 @@ def _get_active_follower(session_id: str) -> FollowerState | None:
     return FollowerState.get(session_id)
 
 
+def _maybe_auto_open(session_id: str, env: dict[str, str], file_path: str) -> FollowerState | None:
+    cfg = config.load()
+    if cfg.open_policy == "manual" or not _passes_policy(cfg, file_path):
+        return None
+    origin = env.get("TMUX_PANE", "")
+    if not origin:
+        return None
+    _register_keybindings()
+    adopt = _adopt_target(origin) if cfg.adopt_existing else None
+    if adopt is not None:
+        # shown_any=True from the first moment: an adopted Vim's current tab
+        # belongs to the user and must never be renamed over.
+        FollowerState.set(
+            session_id,
+            "tmux",
+            adopt,
+            origin=origin,
+            on_failure=cfg.on_failure,
+            speed=cfg.speed,
+            adopted=True,
+            shown_any=True,
+        )
+    else:
+        try:
+            started = TmuxVimFollower.start(origin)
+        except subprocess.CalledProcessError as exc:
+            logger.warning("auto-open failed from origin %s: %s", origin, exc)
+            return None
+        FollowerState.set(
+            session_id,
+            "tmux",
+            started.pane_id,
+            origin=origin,
+            on_failure=cfg.on_failure,
+            speed=cfg.speed,
+        )
+    return FollowerState.get(session_id)
+
+
 def _ensure_buffer(session_id: str, follower: Follower, file_path: str) -> None:
     """Switches the follower to file_path's tab (`:tab drop`). Used for Read
     navigation and binary files, where showing the real on-disk content
@@ -540,6 +614,8 @@ def cmd_hook_pre(env: dict[str, str], payload: dict[str, Any]) -> int:
     file_path = _file_path(payload)
     if file_path is None:
         return 0
+    if not _passes_policy(config.load(), file_path):
+        return 0
     try:
         before = Path(file_path).read_text()
     except (OSError, UnicodeDecodeError):
@@ -555,11 +631,16 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
     raw = FollowerState.read(session.session_id)
     if raw is not None and not raw.enabled:
         return 0
-    current = _get_active_follower(session.session_id)
-    if current is None:
-        return 0
     file_path = _file_path(payload)
     if file_path is None:
+        return 0
+    cfg = config.load()
+    if not _passes_policy(cfg, file_path):
+        return 0
+    current = _get_active_follower(session.session_id) or _maybe_auto_open(
+        session.session_id, env, file_path
+    )
+    if current is None:
         return 0
     try:
         raw_after = Path(file_path).read_bytes()
@@ -573,7 +654,6 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         config.pace_seconds_for(current.speed),
         session_id=session.session_id,
     )
-    cfg = config.load()
     is_fresh = file_path not in current.open_files
     binary = diff_module.is_binary(raw_after)
 
@@ -649,14 +729,18 @@ def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
     raw = FollowerState.read(session.session_id)
     if raw is not None and not raw.enabled:
         return 0
-    current = _get_active_follower(session.session_id)
-    if current is None:
-        return 0
     file_path = _file_path(payload)
     if file_path is None:
         return 0
-    follower = get_follower(current.backend, current.target)
     cfg = config.load()
+    if not _passes_policy(cfg, file_path):
+        return 0
+    current = _get_active_follower(session.session_id) or _maybe_auto_open(
+        session.session_id, env, file_path
+    )
+    if current is None:
+        return 0
+    follower = get_follower(current.backend, current.target)
     _ensure_buffer(session.session_id, follower, file_path)
     new_open, evicted = touch_open_files(current.open_files, file_path, cfg.max_tabs)
     for old in evicted:

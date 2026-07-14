@@ -592,6 +592,101 @@ def test_hooks_are_noops_while_disabled(tmp_path: Path) -> None:
     assert _literal_sends(run) == []
 
 
+def test_auto_open_splits_a_pane_when_policy_always(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"open_policy": "always"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+
+    target = tmp_path / "f.txt"
+    target.write_text("hello\n")
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        side_effect=_mock_tmux_run(other_panes=("%1",)),
+    ) as run:
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        result = state.FollowerState.get("$1")
+
+    splits = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "split-window"]]
+    assert splits == [["tmux", "split-window", "-h", "-t", "%1", "-P", "-F", "#{pane_id}", "vim"]]
+    assert result is not None
+    assert result.target == "%2"
+    binds = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "bind-key"]]
+    assert len(binds) == len(cli._KEYBINDINGS)
+    assert "hello" in _literal_sends(run)
+
+
+def test_auto_open_adopts_existing_vim_pane(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"open_policy": "always", "adopt_existing": true}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+
+    target = tmp_path / "f.txt"
+    target.write_text("hello\n")
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+
+    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
+        if cmd[:3] == ["tmux", "list-panes", "-a"]:
+            return MagicMock(returncode=0, stdout="%1 zsh\n%7 vim\n")
+        if cmd[:4] == ["tmux", "list-panes", "-t", "%1"]:
+            return MagicMock(returncode=0, stdout="%1 zsh\n%7 vim\n")
+        if cmd[:2] == ["tmux", "display-message"]:
+            return MagicMock(returncode=0, stdout="$1\n")
+        if cmd[:3] == ["tmux", "list-keys", "-T"]:
+            return MagicMock(returncode=1, stdout="")
+        return MagicMock(returncode=0, stdout="")
+
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_run) as run:
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        result = state.FollowerState.get("$1")
+
+    assert not any(c.args[0][:2] == ["tmux", "split-window"] for c in run.call_args_list)
+    assert result is not None
+    assert result.target == "%7"
+    assert result.adopted is True
+    assert result.shown_any is True
+
+
+def test_code_policy_skips_non_code_files_entirely(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"open_policy": "code"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+
+    target = tmp_path / "notes.md"
+    target.write_text("some notes\n")
+    _register_fake_follower(
+        "$1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
+    )
+
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    assert _literal_sends(run) == []
+
+
+def test_manual_policy_never_auto_opens(tmp_path: Path) -> None:
+    target = tmp_path / "f.txt"
+    target.write_text("hello\n")
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        side_effect=_mock_tmux_run(pane_id="%9", other_panes=("%1",)),
+    ) as run:
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    assert not any(c.args[0][:2] == ["tmux", "split-window"] for c in run.call_args_list)
+    assert state.FollowerState.get("$1") is None
+
+
 def test_configure_logging_is_idempotent() -> None:
     cli._configure_logging()
     handler = cli.logger.handlers[0]

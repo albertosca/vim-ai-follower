@@ -269,6 +269,36 @@ def test_stop_with_corrupt_saved_bindings_falls_back_to_unbind() -> None:
     assert ["tmux", "unbind-key", "-T", "prefix", "S"] in unbinds
 
 
+def test_stop_on_adopted_pane_closes_tabs_but_not_the_pane() -> None:
+    a = "/tmp/a.py"
+    b = "/tmp/b.py"
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="%7 vim\n"),
+    ):
+        state.FollowerState.set(
+            "$1", "tmux", "%7", origin="%1", adopted=True, open_files=(a, b), shown_any=True
+        )
+
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        side_effect=make_mock_tmux_run(pane_id="%7", other_panes=("%1",)),
+    ) as run:
+        assert cli.cmd_stop({"TMUX_PANE": "%1"}) == 0
+
+    sends = [
+        c.args[0] for c in run.call_args_list if c.args[0][:4] == ["tmux", "send-keys", "-t", "%7"]
+    ]
+    literal = [c[6] for c in sends if "-l" in c]
+    assert literal.count(":silent! tabclose") == 2
+    assert f":silent! bwipeout! {a}" in literal
+    assert f":silent! bwipeout! {b}" in literal
+    assert not any(c.args[0][:2] == ["tmux", "kill-pane"] for c in run.call_args_list)
+    unbinds = _unbind_calls(run)
+    assert ["tmux", "unbind-key", "-T", "prefix", "P"] in unbinds
+    assert state.FollowerState.get("$1") is None
+
+
 def test_speed_up_steps_state_and_reports(capsys: pytest.CaptureFixture[str]) -> None:
     _register_fake_follower("$1", "%2")
     state.FollowerState.update("$1", speed="rapido")
