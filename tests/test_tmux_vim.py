@@ -63,7 +63,7 @@ def test_apply_edit_unlocks_the_buffer_only_for_the_animation(tmp_path: Path) ->
     assert commands[3] == ("Enter", False)
     assert commands[4] == (":setlocal modifiable paste", True)
     assert commands[5] == ("Enter", False)
-    assert commands[-2] == (":setlocal nomodifiable nopaste", True)
+    assert commands[-2] == (":silent! e! | setlocal nomodifiable nopaste", True)
     assert commands[-1] == ("Enter", False)
     assert result == AnimationResult("completed", 1)
 
@@ -109,7 +109,7 @@ def test_apply_edit_relocks_after_pause_and_resume(tmp_path: Path) -> None:
         result = follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
     commands = _sent_commands(run)
     assert result.outcome == "completed"
-    assert commands[-2] == (":setlocal nomodifiable nopaste", True)
+    assert commands[-2] == (":silent! e! | setlocal nomodifiable nopaste", True)
 
 
 def test_apply_edit_renavigates_to_its_own_tab_on_resume(tmp_path: Path) -> None:
@@ -135,8 +135,52 @@ def test_apply_edit_renavigates_to_its_own_tab_on_resume(tmp_path: Path) -> None
     # once for the initial goto_file preamble, once more for the resume
     assert len(tab_drops) == 2
     # the second tab drop happens after the pause and before the relock
-    relock_index = commands.index((":setlocal nomodifiable nopaste", True))
+    relock_index = commands.index((":silent! e! | setlocal nomodifiable nopaste", True))
     assert tab_drops[1] < relock_index
+
+
+def test_apply_edit_relocks_with_a_silent_disk_sync(tmp_path: Path) -> None:
+    # The retyped buffer never "met" the disk — its timestamp doesn't match
+    # the file Claude just wrote, causing W11 prompts, `:w` requiring `!`,
+    # and LSPs attaching to an ungrounded buffer. `:silent! e!` at relock
+    # time reloads the identical content Claude wrote, grounding the buffer
+    # with no visible flash.
+    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+    ):
+        follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
+    commands = _sent_commands(run)
+    assert commands[-2] == (":silent! e! | setlocal nomodifiable nopaste", True)
+    assert commands[-1] == ("Enter", False)
+
+
+def test_show_fresh_relocks_with_a_silent_disk_sync(tmp_path: Path) -> None:
+    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+    ):
+        follower.show_fresh("/tmp/f.txt", "a\nb\n")
+    commands = _sent_commands(run)
+    assert commands[-2] == (":silent! e! | setlocal readonly nomodifiable nopaste", True)
+    assert commands[-1] == ("Enter", False)
+
+
+def test_interrupted_animation_never_sends_a_disk_sync_reload(tmp_path: Path) -> None:
+    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
+    ):
+        result = follower.show_fresh("/tmp/f.txt", "a\nb\n")
+    commands = _sent_commands(run)
+    assert result.outcome == "interrupted"
+    assert not any(text.startswith(":silent! e!") for text, _ in commands)
 
 
 def test_get_follower_forwards_pace_seconds_for_tmux_backend() -> None:
@@ -188,7 +232,7 @@ def test_show_fresh_renames_current_buffer_without_ever_loading_the_real_file(
     assert commands[12] == (":%d", True)
     assert commands[13] == ("Enter", False)
     assert commands[14] == ("i", True)
-    assert commands[-2] == (":setlocal readonly nomodifiable nopaste", True)
+    assert commands[-2] == (":silent! e! | setlocal readonly nomodifiable nopaste", True)
     assert commands[-1] == ("Enter", False)
     typed = [text for text, literal in commands if literal]
     assert "a" in typed
@@ -221,7 +265,7 @@ def test_show_fresh_with_empty_content_still_wipes_and_relocks(tmp_path: Path) -
         ("Enter", False),
         (":%d", True),
         ("Enter", False),
-        (":setlocal readonly nomodifiable nopaste", True),
+        (":silent! e! | setlocal readonly nomodifiable nopaste", True),
         ("Enter", False),
     ]
     assert result == AnimationResult("completed", 0)
@@ -304,7 +348,7 @@ def test_resume_apply_edit_replays_remaining_ops_and_relocks(tmp_path: Path) -> 
     commands = _sent_commands(run)
     assert commands[0] == (":setlocal modifiable paste", True)
     assert commands[1] == ("Enter", False)
-    assert commands[-2] == (":setlocal nomodifiable nopaste", True)
+    assert commands[-2] == (":silent! e! | setlocal nomodifiable nopaste", True)
     assert commands[-1] == ("Enter", False)
     assert result == AnimationResult("completed", 1)
 
@@ -322,7 +366,7 @@ def test_resume_show_fresh_replays_remaining_lines_and_relocks_with_readonly(
         result = follower.resume(pending)
     commands = _sent_commands(run)
     assert commands[0] == (":setlocal modifiable paste", True)
-    assert commands[-2] == (":setlocal readonly nomodifiable nopaste", True)
+    assert commands[-2] == (":silent! e! | setlocal readonly nomodifiable nopaste", True)
     assert commands[-1] == ("Enter", False)
     assert result == AnimationResult("completed", 2)
 

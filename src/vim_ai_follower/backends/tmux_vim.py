@@ -89,9 +89,15 @@ class TmuxVimFollower:
         without it, each Enter in insert mode auto-inserts indentation that
         then stacks with the leading whitespace already in our own lines.
         An interrupted animation hands the buffer to the user — it stays
-        modifiable. completed/paused both relock (a paused buffer is
-        protected, not handed over; run_ops/run_lines always stop on a
-        clean boundary rather than a stray mid-typing spot)."""
+        modifiable. A pause never reaches here: it loops inside run_ops/
+        run_lines and only returns once the run has actually completed or
+        been interrupted, so 'relock' only ever fires on a genuinely
+        completed outcome. Callers own the exact relock string, which
+        prepends a silent `:e!` disk sync (see apply_edit/show_fresh/
+        resume) — the buffer's name matches the file Claude just wrote, so
+        the reload is visually a no-op, but it grounds the buffer's
+        timestamp and clears the W11 staleness that an unsynced retype
+        would otherwise leave behind."""
         pane = TmuxPane(pane_id=self.pane_id)
         pane.send_text(":setlocal modifiable paste")
         pane.send_key("Enter")
@@ -104,7 +110,7 @@ class TmuxVimFollower:
     def apply_edit(self, file_path: str, ops: list[EditOp]) -> AnimationResult:
         self.goto_file(file_path)
         return self._with_unlocked(
-            ":setlocal nomodifiable nopaste",
+            ":silent! e! | setlocal nomodifiable nopaste",
             lambda pane: run_ops(
                 pane,
                 self.session_id,
@@ -158,7 +164,7 @@ class TmuxVimFollower:
                 on_resume=lambda: self.goto_file(file_path),
             )
 
-        return self._with_unlocked(":setlocal readonly nomodifiable nopaste", run)
+        return self._with_unlocked(":silent! e! | setlocal readonly nomodifiable nopaste", run)
 
     def resume(self, pending: PendingApplyEdit | PendingShowFresh) -> AnimationResult:
         if pending.file_path:
@@ -170,7 +176,7 @@ class TmuxVimFollower:
         provider = (lambda: 0.0) if pending.pace_seconds == 0.0 else self._live_pace
         if isinstance(pending, PendingApplyEdit):
             return self._with_unlocked(
-                ":setlocal nomodifiable nopaste",
+                ":silent! e! | setlocal nomodifiable nopaste",
                 lambda pane: run_ops(
                     pane,
                     self.session_id,
@@ -181,7 +187,7 @@ class TmuxVimFollower:
                 ),
             )
         return self._with_unlocked(
-            ":setlocal readonly nomodifiable nopaste",
+            ":silent! e! | setlocal readonly nomodifiable nopaste",
             lambda pane: run_lines(
                 pane,
                 self.session_id,

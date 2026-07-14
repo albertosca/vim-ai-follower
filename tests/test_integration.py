@@ -236,6 +236,60 @@ def test_apply_edit_produces_exact_final_content(
     assert rows[anchor : anchor + 4] == after_lines
 
 
+def test_completed_edit_animation_writes_cleanly_with_a_bare_w(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    # Task 11 regression: without a disk sync at relock time, the retyped
+    # buffer's recorded mtime is stale by the time apply_edit finishes —
+    # Claude already rewrote the file on disk before the animation even
+    # started — so Vim treats a bare `:w` as writing over an externally
+    # changed file ("WARNING: The file has been changed since reading
+    # it!!!", W11) instead of writing cleanly. The `:silent! e!` prepended
+    # to the relock reloads the identical content Claude wrote, grounding
+    # the buffer's mtime with no visible flash, so a bare `:w` on the
+    # completed, nomodifiable buffer must write with no warning.
+    origin_pane = _pane_ids(tmux_session)[0]
+    monkeypatch.setenv("TMUX_PANE", origin_pane)
+    assert cli.main(["start"]) == 0
+    assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
+    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+
+    target_file = tmp_path / "synced.txt"
+    target_file.write_text("alpha\n")
+    first_payload = json.dumps(
+        {"tool_name": "Write", "tool_input": {"file_path": str(target_file)}}
+    )
+    monkeypatch.setattr("sys.stdin", io.StringIO(first_payload))
+    assert cli.main(["hook", "post"]) == 0
+    assert wait_until(lambda: "alpha" in _capture(follower_pane_id), timeout=10.0)
+
+    pre_payload = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(target_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(pre_payload))
+    assert cli.main(["hook", "pre"]) == 0
+
+    target_file.write_text("alpha\nbeta\n")
+    post_payload = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(target_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(post_payload))
+    assert cli.main(["hook", "post"]) == 0
+    assert wait_until(lambda: "beta" in _capture(follower_pane_id), timeout=10.0)
+
+    follower_pane = TmuxPane(pane_id=follower_pane_id)
+    follower_pane.send_text(":w")
+    follower_pane.send_key("Enter")
+
+    def _wrote_cleanly() -> bool:
+        screen = _capture(follower_pane_id)
+        return "written" in screen and "WARNING" not in screen
+
+    assert wait_until(_wrote_cleanly, timeout=5.0)
+    screen = _capture(follower_pane_id)
+    assert "WARNING" not in screen
+    assert "E45" not in screen
+
+
 def test_hook_post_read_navigates_the_follower_pane(
     tmux_session: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -339,6 +393,11 @@ def test_resuming_a_crashed_animation_lands_back_on_its_own_tab_first(
     # would have left things.
 
     ops = compute_edit_script("print('b')\n", "print('b')\nresumed line\n")
+    # A real crashed animation always finds this already on disk — Claude
+    # writes the file in full before the hook's animation even starts. The
+    # resume's relock now does a `:silent! e!` disk sync, so leaving the
+    # disk at the pre-edit content here would revert the buffer's typing.
+    b_file.write_text("print('b')\nresumed line\n")
     control.save_pending_apply_edit(session_id, ops, 0.0, file_path=str(b_file))
     assert control.animating_state(session_id) is None  # no live owner: a true crash
 
