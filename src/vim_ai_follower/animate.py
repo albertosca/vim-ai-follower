@@ -134,7 +134,7 @@ def run_ops(
 
             delete_seq = _delete_sequences(op)
             if delete_seq:
-                result = apply(
+                result = send_paced(
                     pane, delete_seq, current_pace, session_id, control_base_dir=base_dir
                 )
                 if result.outcome != "completed":
@@ -149,7 +149,7 @@ def run_ops(
 
             insert_seq, prefix_len = _insert_sequences(op)
             if insert_seq:
-                result = apply(
+                result = send_paced(
                     pane, insert_seq, current_pace, session_id, control_base_dir=base_dir
                 )
                 if result.outcome != "completed":
@@ -228,7 +228,9 @@ def run_lines(
             # below the cursor via `o`.
             opener = "o" if continuation or index > 0 else "i"
             sequences, undo_threshold = _line_sequences(line, opener)
-            result = apply(pane, sequences, current_pace, session_id, control_base_dir=base_dir)
+            result = send_paced(
+                pane, sequences, current_pace, session_id, control_base_dir=base_dir
+            )
             if result.outcome != "completed":
                 pane.send_key("Escape")
                 if result.sent_count >= undo_threshold:
@@ -257,7 +259,7 @@ def run_lines(
         control.clear_animating(session_id, base_dir)
 
 
-def apply(
+def send_paced(
     pane: TmuxPane,
     sequences: list[KeySequence],
     pace_seconds: float,

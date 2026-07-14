@@ -13,10 +13,10 @@ from vim_ai_follower.animate import (
     _delete_sequences,
     _insert_sequences,
     _line_sequences,
-    apply,
     render_keystrokes,
     run_lines,
     run_ops,
+    send_paced,
 )
 from vim_ai_follower.diff import EditOp
 from vim_ai_follower.tmux import TmuxPane
@@ -97,7 +97,7 @@ def test_apply_sends_literal_and_named_keys_and_reports_completed() -> None:
     pane = cast(TmuxPane, MagicMock())
     sequences = [KeySequence(":2,3d", literal=True), KeySequence("Enter", literal=False)]
     with patch("vim_ai_follower.control.check_signal", return_value=None):
-        result = apply(pane, sequences, pace_seconds=0.0, session_id="$1")
+        result = send_paced(pane, sequences, pace_seconds=0.0, session_id="$1")
     pane.send_text.assert_called_once_with(":2,3d")  # type: ignore[attr-defined]
     pane.send_key.assert_called_once_with("Enter")  # type: ignore[attr-defined]
     assert result == ApplyResult("completed", 2)
@@ -110,7 +110,7 @@ def test_apply_sleeps_between_each_sequence() -> None:
         patch("vim_ai_follower.control.check_signal", return_value=None),
         patch("vim_ai_follower.animate.time.sleep") as sleep,
     ):
-        result = apply(pane, sequences, pace_seconds=0.05, session_id="$1")
+        result = send_paced(pane, sequences, pace_seconds=0.05, session_id="$1")
     assert sleep.call_count == 2
     sleep.assert_called_with(0.05)
     assert result == ApplyResult("completed", 2)
@@ -124,7 +124,7 @@ def test_apply_stops_sleeping_once_the_deadline_passes() -> None:
         patch("vim_ai_follower.animate.time.sleep") as sleep,
         patch("vim_ai_follower.animate.time.monotonic", side_effect=[0.0, 0.0, 5.0, 10.0]),
     ):
-        result = apply(pane, sequences, pace_seconds=1.0, session_id="$1", max_seconds=4.0)
+        result = send_paced(pane, sequences, pace_seconds=1.0, session_id="$1", max_seconds=4.0)
     assert sleep.call_count == 1
     assert pane.send_text.call_count == 3  # type: ignore[attr-defined]
     assert result == ApplyResult("completed", 3)
@@ -138,7 +138,7 @@ def test_apply_with_zero_pace_never_checks_the_clock() -> None:
         patch("vim_ai_follower.animate.time.sleep") as sleep,
         patch("vim_ai_follower.animate.time.monotonic", side_effect=[0.0]) as monotonic,
     ):
-        result = apply(pane, sequences, pace_seconds=0.0, session_id="$1")
+        result = send_paced(pane, sequences, pace_seconds=0.0, session_id="$1")
     sleep.assert_not_called()
     monotonic.assert_called_once()  # only the initial deadline computation
     assert result == ApplyResult("completed", 2)
@@ -148,7 +148,7 @@ def test_apply_stops_before_sending_when_interrupted_immediately() -> None:
     pane = cast(TmuxPane, MagicMock())
     sequences = [KeySequence("a"), KeySequence("b")]
     with patch("vim_ai_follower.control.check_signal", return_value="interrupt"):
-        result = apply(pane, sequences, pace_seconds=0.0, session_id="$1")
+        result = send_paced(pane, sequences, pace_seconds=0.0, session_id="$1")
     pane.send_text.assert_not_called()  # type: ignore[attr-defined]
     assert result == ApplyResult("interrupted", 0)
 
@@ -157,7 +157,7 @@ def test_apply_stops_partway_when_paused_mid_sequence() -> None:
     pane = cast(TmuxPane, MagicMock())
     sequences = [KeySequence("a"), KeySequence("b"), KeySequence("c")]
     with patch("vim_ai_follower.control.check_signal", side_effect=[None, None, "pause"]):
-        result = apply(pane, sequences, pace_seconds=0.0, session_id="$1")
+        result = send_paced(pane, sequences, pace_seconds=0.0, session_id="$1")
     assert pane.send_text.call_count == 2  # type: ignore[attr-defined]
     assert result == ApplyResult("paused", 2)
 
@@ -165,7 +165,7 @@ def test_apply_stops_partway_when_paused_mid_sequence() -> None:
 def test_apply_passes_session_id_and_base_dir_to_check_signal() -> None:
     pane = cast(TmuxPane, MagicMock())
     with patch("vim_ai_follower.control.check_signal", return_value=None) as check:
-        apply(
+        send_paced(
             pane,
             [KeySequence("a")],
             pace_seconds=0.0,
@@ -295,7 +295,7 @@ def test_run_ops_interrupted_mid_insert_undoes_the_insert(tmp_path: Path) -> Non
 def test_run_ops_interrupted_before_insert_mode_entered_skips_undo(tmp_path: Path) -> None:
     pane = cast(TmuxPane, MagicMock())
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
-    # signal fires on the very first check inside the insert-half apply()
+    # signal fires on the very first check inside the insert-half send_paced()
     # call — before "gg" is even sent, so insert mode was never entered
     with patch("vim_ai_follower.control.check_signal", side_effect=["interrupt"]):
         result = run_ops(pane, "$1", [op], pace_seconds=0.0, base_dir=tmp_path)
