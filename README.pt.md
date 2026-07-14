@@ -90,7 +90,7 @@ padrão, e um valor inválido cai silenciosamente para ele.
 
 | Chave           | Valores                                                   | Padrão     | Significado                                                                              |
 | --------------- | --------------------------------------------------------- | ---------- | --------------------------------------------------------------------------------------- |
-| `open_policy`   | `always`, `code`, `manual`                                | `manual`   | `manual`: só o `start` abre follower. `code`: auto-abre em edições/leituras de arquivos de código. `always`: auto-abre em qualquer arquivo. |
+| `open_policy`   | `always`, `code`, `manual`                                | `manual`   | `manual`: só o `start` abre follower. `code`: auto-abre em edições/leituras de arquivos de código; arquivos não-código também são ignorados (nunca animados) mesmo com um follower iniciado manualmente. `always`: auto-abre em qualquer arquivo. |
 | `adopt_existing`| `true`, `false`                                           | `false`    | Ao abrir automaticamente (ou no `start`), reutiliza um Vim já rodando na janela em vez de dividir um novo painel. |
 | `max_tabs`      | inteiro ≥ 1                                                | `5`        | Quantas abas de arquivo o follower mantém. A aba menos recentemente usada é fechada ao passar do limite. |
 | `on_failure`    | `silent`, `reopen`                                        | `silent`   | Se o painel do follower morrer, `reopen` redivide um novo a partir de onde começou; `silent` apenas para de seguir. |

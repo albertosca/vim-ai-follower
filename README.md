@@ -86,7 +86,7 @@ default, and an invalid value silently falls back to it.
 
 | Key             | Values                                                    | Default    | Meaning                                                                                 |
 | --------------- | --------------------------------------------------------- | ---------- | --------------------------------------------------------------------------------------- |
-| `open_policy`   | `always`, `code`, `manual`                                | `manual`   | `manual`: only `start` opens a follower. `code`: auto-open on edits/reads of code files. `always`: auto-open on any file. |
+| `open_policy`   | `always`, `code`, `manual`                                | `manual`   | `manual`: only `start` opens a follower. `code`: auto-open on edits/reads of code files; non-code files are also ignored (never animated) even for a manually started follower. `always`: auto-open on any file. |
 | `adopt_existing`| `true`, `false`                                           | `false`    | When opening automatically (or on `start`), reuse a Vim already running in the window instead of splitting a new pane. |
 | `max_tabs`      | integer ≥ 1                                                | `5`        | How many file tabs the follower keeps. The least-recently-touched tab is closed past this limit. |
 | `on_failure`    | `silent`, `reopen`                                        | `silent`   | If the follower pane dies, `reopen` re-splits a fresh one from where it started; `silent` just stops following. |
