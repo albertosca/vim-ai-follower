@@ -140,7 +140,10 @@ class FollowerState:
         cls, session_id: str, file_path: str | None, base_dir: Path | None = None
     ) -> None:
         """Record (display-only, see the current_file field) the file now
-        shown, or None to force the next edit to resync via a full retype.
+        shown, or None to clear the pointer after a handoff. Freshness is
+        keyed on open_files, not this field, so clearing it does not force
+        a full retype on the next edit — that edit is still a diff
+        (apply_edit) against the pre-edit snapshot.
         Gated on get() — a dead follower's file pointer is not worth keeping."""
         current = cls.get(session_id, base_dir)
         if current is None:

@@ -306,8 +306,13 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
     if is_fresh:
         result = follower.show_fresh(file_path, after, in_new_tab=current.shown_any)
         if result.outcome == "interrupted":
-            # Forget the file so the next edit resyncs via a full retype —
-            # the user owns the buffer now and may change it under us.
+            # Clear the display-only pointer — the user owns the buffer now
+            # and may change it under us. Freshness is keyed on open_files,
+            # which the interrupt path never touches, so the next edit is
+            # still a diff (apply_edit) against the pre-edit snapshot, never
+            # a full retype. Even a killed handoff self-heals: the partial
+            # buffer converges to disk at the next completed animation via
+            # the `:silent! e!` relock.
             # (_await_user_handoff restores tracking on a des-interrupt.)
             FollowerState.update_current_file(session.session_id, None)
             partial = _reconstruct_partial_fresh(after, result.completed_count)
