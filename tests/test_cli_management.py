@@ -10,18 +10,18 @@ import pytest
 from helpers import make_mock_tmux_run
 from helpers import register_fake_follower as _register_fake_follower
 
-from vim_ai_follower import cli, config, control, state
+from vim_ai_follower import commands, config, control, keybindings, state
 
 _mock_tmux_run = functools.partial(make_mock_tmux_run, pane_id="%9", other_panes=("%1", "%2"))
 
 
 def test_start_without_tmux_env_fails() -> None:
-    assert cli.cmd_start({}) == 1
+    assert commands.cmd_start({}) == 1
 
 
 def test_start_creates_and_registers_a_pane() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
-        assert cli.cmd_start({"TMUX_PANE": "%1"}) == 0
+        assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
         result = state.FollowerState.get("$1")
     assert result is not None
     assert result.target == "%9"
@@ -29,8 +29,8 @@ def test_start_creates_and_registers_a_pane() -> None:
 
 def test_start_is_idempotent_when_already_running() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
-        cli.cmd_start({"TMUX_PANE": "%1"})
-        exit_code = cli.cmd_start({"TMUX_PANE": "%1"})
+        commands.cmd_start({"TMUX_PANE": "%1"})
+        exit_code = commands.cmd_start({"TMUX_PANE": "%1"})
         result = state.FollowerState.get("$1")
     assert exit_code == 0
     assert result is not None
@@ -39,37 +39,37 @@ def test_start_is_idempotent_when_already_running() -> None:
 
 def test_stop_kills_pane_and_clears_state() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
-        cli.cmd_start({"TMUX_PANE": "%1"})
-        exit_code = cli.cmd_stop({"TMUX_PANE": "%1"})
+        commands.cmd_start({"TMUX_PANE": "%1"})
+        exit_code = commands.cmd_stop({"TMUX_PANE": "%1"})
         result = state.FollowerState.get("$1")
     assert exit_code == 0
     assert result is None
 
 
 def test_stop_without_tmux_env_fails() -> None:
-    assert cli.cmd_stop({}) == 1
+    assert commands.cmd_stop({}) == 1
 
 
 def test_stop_without_active_follower_is_a_noop() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
-        assert cli.cmd_stop({"TMUX_PANE": "%1"}) == 0
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
 
 
 def test_status_reports_no_follower(capsys: pytest.CaptureFixture[str]) -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
-        cli.cmd_status({"TMUX_PANE": "%1"})
+        commands.cmd_status({"TMUX_PANE": "%1"})
     assert "no follower active" in capsys.readouterr().out
 
 
 def test_status_reports_active_follower(capsys: pytest.CaptureFixture[str]) -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
-        cli.cmd_start({"TMUX_PANE": "%1"})
-        cli.cmd_status({"TMUX_PANE": "%1"})
+        commands.cmd_start({"TMUX_PANE": "%1"})
+        commands.cmd_status({"TMUX_PANE": "%1"})
     assert "%9" in capsys.readouterr().out
 
 
 def test_status_without_tmux_env(capsys: pytest.CaptureFixture[str]) -> None:
-    assert cli.cmd_status({}) == 0
+    assert commands.cmd_status({}) == 0
     assert "not running inside tmux" in capsys.readouterr().out
 
 
@@ -78,7 +78,7 @@ def test_start_nvim_backend_fails_without_socket(capsys: pytest.CaptureFixture[s
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("pynvim.attach", side_effect=OSError("no such file")),
     ):
-        exit_code = cli.cmd_start({"TMUX_PANE": "%1"}, backend="nvim_rpc")
+        exit_code = commands.cmd_start({"TMUX_PANE": "%1"}, backend="nvim_rpc")
     assert exit_code == 1
     assert "no Neovim RPC socket found" in capsys.readouterr().err
 
@@ -90,7 +90,7 @@ def test_start_resolves_on_failure_and_speed_from_config(
     config_path.write_text('{"on_failure": "reopen", "speed": "lento"}')
     monkeypatch.setattr(config, "CONFIG_PATH", config_path)
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
-        assert cli.cmd_start({"TMUX_PANE": "%1"}) == 0
+        assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
         result = state.FollowerState.get("$1")
     assert result is not None
     assert result.on_failure == "reopen"
@@ -104,7 +104,7 @@ def test_start_explicit_args_override_config(
     config_path.write_text('{"on_failure": "reopen", "speed": "lento"}')
     monkeypatch.setattr(config, "CONFIG_PATH", config_path)
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
-        assert cli.cmd_start({"TMUX_PANE": "%1"}, on_failure="silent", speed="instant") == 0
+        assert commands.cmd_start({"TMUX_PANE": "%1"}, on_failure="silent", speed="instant") == 0
         result = state.FollowerState.get("$1")
     assert result is not None
     assert result.on_failure == "silent"
@@ -113,8 +113,8 @@ def test_start_explicit_args_override_config(
 
 def test_status_reports_on_failure_and_speed(capsys: pytest.CaptureFixture[str]) -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
-        cli.cmd_start({"TMUX_PANE": "%1"}, on_failure="reopen", speed="lento")
-        cli.cmd_status({"TMUX_PANE": "%1"})
+        commands.cmd_start({"TMUX_PANE": "%1"}, on_failure="reopen", speed="lento")
+        commands.cmd_status({"TMUX_PANE": "%1"})
     out = capsys.readouterr().out
     assert "on_failure=reopen" in out
     assert "speed=lento" in out
@@ -125,7 +125,7 @@ def test_start_nvim_backend_registers_when_socket_alive() -> None:
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("pynvim.attach", return_value=MagicMock()),
     ):
-        assert cli.cmd_start({"TMUX_PANE": "%1"}, backend="nvim_rpc") == 0
+        assert commands.cmd_start({"TMUX_PANE": "%1"}, backend="nvim_rpc") == 0
         result = state.FollowerState.get("$1")
     assert result is not None
     assert result.backend == "nvim_rpc"
@@ -147,7 +147,7 @@ def test_start_registers_keybindings_with_absolute_path_and_silenced_output(
     (fake_bin / "claude-follow").touch()
     monkeypatch.setattr(sys, "executable", str(fake_bin / "python"))
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        assert cli.cmd_start({"TMUX_PANE": "%1"}) == 0
+        assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
     binds = _bind_calls(run)
     assert [cmd[4] for cmd in binds] == ["P", "S", "+", "_", "F"]
     for cmd, subcommand in zip(
@@ -174,18 +174,18 @@ def test_claude_follow_executable_falls_back_to_which_then_bare_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(sys, "executable", str(tmp_path / "nowhere" / "python"))
-    with patch("vim_ai_follower.cli.shutil.which", return_value="/opt/bin/claude-follow"):
-        assert cli._claude_follow_executable() == "/opt/bin/claude-follow"
-    with patch("vim_ai_follower.cli.shutil.which", return_value=None):
-        assert cli._claude_follow_executable() == "claude-follow"
+    with patch("vim_ai_follower.keybindings.shutil.which", return_value="/opt/bin/claude-follow"):
+        assert keybindings._claude_follow_executable() == "/opt/bin/claude-follow"
+    with patch("vim_ai_follower.keybindings.shutil.which", return_value=None):
+        assert keybindings._claude_follow_executable() == "claude-follow"
 
 
 def test_stop_unregisters_keybindings_and_clears_signals() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        cli.cmd_start({"TMUX_PANE": "%1"})
+        commands.cmd_start({"TMUX_PANE": "%1"})
         control.request_pause("$1")
         control.save_pending_apply_edit("$1", [], 0.0)
-        assert cli.cmd_stop({"TMUX_PANE": "%1"}) == 0
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
     unbinds = _unbind_calls(run)
     assert ["tmux", "unbind-key", "-T", "prefix", "P"] in unbinds
     assert ["tmux", "unbind-key", "-T", "prefix", "S"] in unbinds
@@ -206,14 +206,14 @@ def test_stop_restores_a_pre_existing_binding() -> None:
     with patch(
         "vim_ai_follower.tmux.subprocess.run", side_effect=_run_with_existing_binding
     ) as run:
-        assert cli.cmd_start({"TMUX_PANE": "%1"}) == 0
-        assert cli.cmd_stop({"TMUX_PANE": "%1"}) == 0
+        assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
 
     rebinds = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "bind-key"]]
     assert ["tmux", "bind-key", "-T", "prefix", "P", "paste-buffer"] in rebinds
     unbinds = _unbind_calls(run)
     assert ["tmux", "unbind-key", "-T", "prefix", "S"] in unbinds  # S had no previous binding
-    assert not cli._saved_bindings_path().exists()
+    assert not keybindings._saved_bindings_path().exists()
 
 
 def test_stop_unbinds_instead_of_restoring_a_stale_claude_follow_binding() -> None:
@@ -225,8 +225,8 @@ def test_stop_unbinds_instead_of_restoring_a_stale_claude_follow_binding() -> No
         return _mock_tmux_run()(cmd, **kwargs)
 
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_run_with_stale) as run:
-        assert cli.cmd_start({"TMUX_PANE": "%1"}) == 0
-        assert cli.cmd_stop({"TMUX_PANE": "%1"}) == 0
+        assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
 
     # "restoring" our own leftover binding from a crashed run would resurrect
     # a possibly-broken path — unbind is the correct cleanup
@@ -235,8 +235,8 @@ def test_stop_unbinds_instead_of_restoring_a_stale_claude_follow_binding() -> No
 
 def test_restart_after_crash_does_not_overwrite_the_saved_original_binding() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
-        assert cli.cmd_start({"TMUX_PANE": "%1"}) == 0
-    saved_path = cli._saved_bindings_path()
+        assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
+    saved_path = keybindings._saved_bindings_path()
     first = saved_path.read_text()
 
     # simulate a crash: follower state lost, tmux bindings (ours) still live
@@ -251,7 +251,7 @@ def test_restart_after_crash_does_not_overwrite_the_saved_original_binding() -> 
         return _mock_tmux_run()(cmd, **kwargs)
 
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_run_with_our_binding):
-        assert cli.cmd_start({"TMUX_PANE": "%1"}) == 0
+        assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
 
     # the re-registration must NOT record our own still-bound key as the
     # user's "previous" binding — the original record wins
@@ -260,10 +260,10 @@ def test_restart_after_crash_does_not_overwrite_the_saved_original_binding() -> 
 
 def test_stop_with_corrupt_saved_bindings_falls_back_to_unbind() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
-        assert cli.cmd_start({"TMUX_PANE": "%1"}) == 0
-    cli._saved_bindings_path().write_text("{broken")
+        assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
+    keybindings._saved_bindings_path().write_text("{broken")
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        assert cli.cmd_stop({"TMUX_PANE": "%1"}) == 0
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
     unbinds = _unbind_calls(run)
     assert ["tmux", "unbind-key", "-T", "prefix", "P"] in unbinds
     assert ["tmux", "unbind-key", "-T", "prefix", "S"] in unbinds
@@ -284,7 +284,7 @@ def test_stop_on_adopted_pane_closes_tabs_but_not_the_pane() -> None:
         "vim_ai_follower.tmux.subprocess.run",
         side_effect=make_mock_tmux_run(pane_id="%7", other_panes=("%1",)),
     ) as run:
-        assert cli.cmd_stop({"TMUX_PANE": "%1"}) == 0
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
 
     sends = [
         c.args[0] for c in run.call_args_list if c.args[0][:4] == ["tmux", "send-keys", "-t", "%7"]
@@ -306,7 +306,7 @@ def test_speed_up_steps_state_and_reports(capsys: pytest.CaptureFixture[str]) ->
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()),
         patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
     ):
-        assert cli.cmd_speed({"TMUX_PANE": "%1"}, "up") == 0
+        assert commands.cmd_speed({"TMUX_PANE": "%1"}, "up") == 0
     result = state.FollowerState.read("$1")
     assert result is not None
     assert result.speed == "muito_rapido"
@@ -322,7 +322,7 @@ def test_speed_wraps_round_robin(capsys: pytest.CaptureFixture[str]) -> None:
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()),
         patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()),
     ):
-        assert cli.cmd_speed({"TMUX_PANE": "%1"}, "up") == 0
+        assert commands.cmd_speed({"TMUX_PANE": "%1"}, "up") == 0
     result = state.FollowerState.read("$1")
     assert result is not None
     assert result.speed == "lento"
@@ -334,7 +334,7 @@ def test_speed_without_follower_is_honest_noop(capsys: pytest.CaptureFixture[str
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
     ):
-        assert cli.cmd_speed({"TMUX_PANE": "%1"}, "down") == 0
+        assert commands.cmd_speed({"TMUX_PANE": "%1"}, "down") == 0
     out = capsys.readouterr().out
     assert "no follower active" in out
     assert popen.call_args_list == []
@@ -367,7 +367,7 @@ def test_toggle_off_mutes_and_zooms_origin() -> None:
         "vim_ai_follower.tmux.subprocess.run",
         side_effect=_mock_tmux_run_with_zoom("0", pane_id="%2"),
     ) as run:
-        assert cli.cmd_toggle({"TMUX_PANE": "%1"}) == 0
+        assert commands.cmd_toggle({"TMUX_PANE": "%1"}) == 0
     result = state.FollowerState.read("$1")
     assert result is not None
     assert result.enabled is False
@@ -381,7 +381,7 @@ def test_toggle_on_unzooms_clears_open_files_and_keeps_tabs() -> None:
         "vim_ai_follower.tmux.subprocess.run",
         side_effect=_mock_tmux_run_with_zoom("1", pane_id="%2"),
     ) as run:
-        assert cli.cmd_toggle({"TMUX_PANE": "%1"}) == 0
+        assert commands.cmd_toggle({"TMUX_PANE": "%1"}) == 0
     result = state.FollowerState.read("$1")
     assert result is not None
     assert result.enabled is True
@@ -419,7 +419,7 @@ def test_toggle_on_reopens_dead_pane_as_dedicated_split() -> None:
         return MagicMock(returncode=0, stdout="")
 
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_run) as run:
-        assert cli.cmd_toggle({"TMUX_PANE": "%1"}) == 0
+        assert commands.cmd_toggle({"TMUX_PANE": "%1"}) == 0
 
     splits = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "split-window"]]
     assert splits == [["tmux", "split-window", "-h", "-t", "%1", "-P", "-F", "#{pane_id}", "vim"]]

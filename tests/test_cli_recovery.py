@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from helpers import make_mock_tmux_run
 
-from vim_ai_follower import cli, state
+from vim_ai_follower import hooks, state
 
 _mock_tmux_run = functools.partial(make_mock_tmux_run, pane_id="%9", other_panes=("%1",))
 
@@ -23,7 +23,7 @@ def test_hook_post_reopens_dead_follower_when_configured(tmp_path: Path) -> None
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert _split_calls(run) == [
         ["tmux", "split-window", "-h", "-t", "%1", "-P", "-F", "#{pane_id}", "vim"]
@@ -41,7 +41,7 @@ def test_hook_post_stays_silent_when_dead_and_on_failure_is_silent(tmp_path: Pat
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert _split_calls(run) == []
     unchanged = state.FollowerState.read("$1")
@@ -59,7 +59,7 @@ def test_hook_post_does_not_reopen_nvim_rpc_backend(tmp_path: Path) -> None:
         patch("vim_ai_follower.backends.nvim_rpc.pynvim.attach", side_effect=OSError("gone")),
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
     ):
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert _split_calls(run) == []
 
@@ -71,7 +71,7 @@ def test_hook_post_stays_silent_when_reopen_has_no_origin(tmp_path: Path) -> Non
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert _split_calls(run) == []
 
@@ -98,7 +98,7 @@ def test_hook_post_logs_and_stays_silent_when_reopen_fails(tmp_path: Path) -> No
         return result
 
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_run):
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
 
 def test_dead_adopted_follower_reopens_fresh_not_adopted(tmp_path: Path) -> None:
@@ -123,7 +123,7 @@ def test_dead_adopted_follower_reopens_fresh_not_adopted(tmp_path: Path) -> None
     # Mock tmux: %2 does not exist (pane_exists=False), split-window returns %9
     mock_run = _mock_tmux_run(pane_exists=False)
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=mock_run) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert _split_calls(run) == [
         ["tmux", "split-window", "-h", "-t", "%1", "-P", "-F", "#{pane_id}", "vim"]

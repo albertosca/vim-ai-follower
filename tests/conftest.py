@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vim_ai_follower import cache, cli, snapshot
+from vim_ai_follower import cache, hooks, snapshot
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 
 
@@ -23,9 +23,9 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[N
     single setattr isolates all of them."""
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(snapshot, "SNAPSHOT_DIR", tmp_path / "snapshots")
-    monkeypatch.setattr(cli, "LOG_PATH", tmp_path / "hook.log")
+    monkeypatch.setattr(hooks, "LOG_PATH", tmp_path / "hook.log")
     yield
-    cli.logger.handlers.clear()
+    hooks.logger.handlers.clear()
 
 
 @pytest.fixture

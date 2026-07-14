@@ -10,7 +10,7 @@ import pytest
 from helpers import make_mock_tmux_run as _mock_tmux_run
 from helpers import register_fake_follower as _register_fake_follower
 
-from vim_ai_follower import cli, config, control, snapshot, state
+from vim_ai_follower import cli, config, control, hooks, keybindings, snapshot, state
 
 
 def _literal_sends(run_mock: MagicMock) -> list[str]:
@@ -24,7 +24,7 @@ def _literal_sends(run_mock: MagicMock) -> list[str]:
 
 def test_hook_pre_ignores_non_edit_tools() -> None:
     payload: dict[str, object] = {"tool_name": "Bash", "tool_input": {}}
-    assert cli.cmd_hook_pre({"TMUX_PANE": "%1"}, payload) == 0
+    assert hooks.cmd_hook_pre({"TMUX_PANE": "%1"}, payload) == 0
 
 
 def test_hook_pre_saves_snapshot_of_existing_file(tmp_path: Path) -> None:
@@ -35,7 +35,7 @@ def test_hook_pre_saves_snapshot_of_existing_file(tmp_path: Path) -> None:
         "vim_ai_follower.tmux.subprocess.run",
         return_value=MagicMock(returncode=0, stdout="$1\n"),
     ):
-        assert cli.cmd_hook_pre({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_pre({"TMUX_PANE": "%1"}, payload) == 0
     assert snapshot.load("$1", str(target)) == "original\n"
 
 
@@ -46,7 +46,7 @@ def test_hook_pre_saves_empty_snapshot_for_new_file(tmp_path: Path) -> None:
         "vim_ai_follower.tmux.subprocess.run",
         return_value=MagicMock(returncode=0, stdout="$1\n"),
     ):
-        assert cli.cmd_hook_pre({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_pre({"TMUX_PANE": "%1"}, payload) == 0
     assert snapshot.load("$1", str(target)) == ""
 
 
@@ -56,12 +56,12 @@ def test_hook_pre_noop_without_file_path() -> None:
         "vim_ai_follower.tmux.subprocess.run",
         return_value=MagicMock(returncode=0, stdout="$1\n"),
     ):
-        assert cli.cmd_hook_pre({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_pre({"TMUX_PANE": "%1"}, payload) == 0
 
 
 def test_hook_pre_noop_without_tmux_env() -> None:
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/f.txt"}}
-    assert cli.cmd_hook_pre({}, payload) == 0
+    assert hooks.cmd_hook_pre({}, payload) == 0
 
 
 def test_hook_post_noop_when_no_follower_registered(tmp_path: Path) -> None:
@@ -72,19 +72,19 @@ def test_hook_post_noop_when_no_follower_registered(tmp_path: Path) -> None:
         "vim_ai_follower.tmux.subprocess.run",
         return_value=MagicMock(returncode=0, stdout="$1\n"),
     ):
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
 
 def test_hook_post_edit_noop_without_tmux_env() -> None:
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/f.txt"}}
-    assert cli.cmd_hook_post({}, payload) == 0
+    assert hooks.cmd_hook_post({}, payload) == 0
 
 
 def test_hook_post_edit_noop_without_file_path() -> None:
     _register_fake_follower("$1", "%2")
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
 
 def test_hook_post_edit_logs_and_noops_when_file_unreadable(tmp_path: Path) -> None:
@@ -92,12 +92,12 @@ def test_hook_post_edit_logs_and_noops_when_file_unreadable(tmp_path: Path) -> N
     _register_fake_follower("$1", "%2")
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
 
 def test_hook_post_read_noop_without_tmux_env() -> None:
     payload: dict[str, object] = {"tool_name": "Read", "tool_input": {"file_path": "/tmp/f.txt"}}
-    assert cli.cmd_hook_post({}, payload) == 0
+    assert hooks.cmd_hook_post({}, payload) == 0
 
 
 def test_hook_post_read_noop_when_no_follower_registered(tmp_path: Path) -> None:
@@ -108,14 +108,14 @@ def test_hook_post_read_noop_when_no_follower_registered(tmp_path: Path) -> None
         "vim_ai_follower.tmux.subprocess.run",
         return_value=MagicMock(returncode=0, stdout="$1\n"),
     ):
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
 
 def test_hook_post_read_noop_without_file_path() -> None:
     _register_fake_follower("$1", "%2")
     payload: dict[str, object] = {"tool_name": "Read", "tool_input": {}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
 
 def test_hook_post_first_open_retypes_from_scratch_instead_of_pasting(tmp_path: Path) -> None:
@@ -130,7 +130,7 @@ def test_hook_post_first_open_retypes_from_scratch_instead_of_pasting(tmp_path: 
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = _literal_sends(run)
     assert not any(text.startswith(":e ") for text in sends)
@@ -152,7 +152,7 @@ def test_hook_post_animates_a_text_edit_on_subsequent_change(tmp_path: Path) -> 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
 
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert "vim ai follower" in _literal_sends(run)
 
@@ -165,7 +165,7 @@ def test_hook_post_skips_binary_files_on_first_open(tmp_path: Path) -> None:
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert _literal_sends(run) == [f":tab drop {target}", ":setlocal readonly nomodifiable"]
 
@@ -180,7 +180,7 @@ def test_hook_post_skips_binary_files_on_subsequent_edit(tmp_path: Path) -> None
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert _literal_sends(run) == []
 
@@ -195,7 +195,7 @@ def test_hook_post_read_without_offset_does_not_navigate(tmp_path: Path) -> None
         "tool_input": {"file_path": str(target)},
     }
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert _literal_sends(run) == [f":tab drop {target}", ":setlocal readonly nomodifiable"]
 
@@ -210,7 +210,7 @@ def test_hook_post_read_navigates_to_file_and_offset(tmp_path: Path) -> None:
         "tool_input": {"file_path": str(target), "offset": 2},
     }
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert _literal_sends(run) == [
         f":tab drop {target}",
@@ -232,7 +232,7 @@ def test_hook_post_read_navigates_even_when_file_already_current(tmp_path: Path)
         "tool_input": {"file_path": str(target), "offset": 2},
     }
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert _literal_sends(run) == [
         f":tab drop {target}",
@@ -252,7 +252,7 @@ def test_hook_post_skips_e_when_file_already_current(tmp_path: Path) -> None:
     target.write_text("a\nX\n")
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = _literal_sends(run)
     assert not any(text.startswith(":e ") for text in sends)
@@ -269,7 +269,7 @@ def test_edit_of_untracked_file_is_fresh_and_updates_open_files(tmp_path: Path) 
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(b)}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = _literal_sends(run)
     assert ":tabnew" in sends  # show_fresh's in_new_tab, since shown_any was already True
@@ -295,7 +295,7 @@ def test_edit_of_tracked_file_uses_apply_edit_even_when_not_current(tmp_path: Pa
 
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(a)}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = _literal_sends(run)
     # apply_edit's goto_file preamble navigates to a's tab — the backend's
@@ -323,7 +323,7 @@ def test_eviction_closes_oldest_tab_before_animating(
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(c)}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = _literal_sends(run)
     # a's tab is closed (close_tab: drop, bwipeout, tabclose) BEFORE c's
@@ -339,7 +339,7 @@ def test_eviction_closes_oldest_tab_before_animating(
 
 def test_hook_post_ignores_unrelated_tools() -> None:
     payload: dict[str, object] = {"tool_name": "Bash", "tool_input": {}}
-    assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+    assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
 
 def test_main_start_stop_status(
@@ -420,9 +420,9 @@ def test_hook_post_edit_interrupted_prints_notification_and_leaves_buffer_unlock
             "vim_ai_follower.control.check_signal",
             side_effect=_interrupt_then_user_saves(target, at_check=2),
         ),
-        patch("vim_ai_follower.cli.time.sleep"),
+        patch("vim_ai_follower.hooks.time.sleep"),
     ):
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = _literal_sends(run)
     assert not any(text == ":setlocal nomodifiable nopaste" for text in sends)
@@ -448,9 +448,9 @@ def test_hook_post_first_open_interrupted_prints_notification_with_partial_lines
             "vim_ai_follower.control.check_signal",
             side_effect=_interrupt_then_user_saves(target, at_check=4),
         ),
-        patch("vim_ai_follower.cli.time.sleep"),
+        patch("vim_ai_follower.hooks.time.sleep"),
     ):
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = _literal_sends(run)
     assert not any(text == ":setlocal readonly nomodifiable nopaste" for text in sends)
@@ -477,7 +477,7 @@ def test_hook_post_fast_forwards_pending_before_animating_same_file(tmp_path: Pa
 
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = _literal_sends(run)
     assert "leftover" in sends  # the paused remainder replayed...
@@ -494,7 +494,7 @@ def test_hook_post_discards_pending_when_switching_files(tmp_path: Path) -> None
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(new)}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     # show_fresh wipes the buffer anyway — replaying into it would be garbage
     assert "leftover" not in _literal_sends(run)
@@ -509,7 +509,7 @@ def test_hook_post_discards_pending_on_binary_files_too(tmp_path: Path) -> None:
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert "leftover" not in _literal_sends(run)
     assert control.has_pending_animation("$1") is False
@@ -528,9 +528,9 @@ def test_hook_post_interrupt_resets_current_file_for_resync(tmp_path: Path) -> N
             "vim_ai_follower.control.check_signal",
             side_effect=_interrupt_then_user_saves(target, at_check=1),
         ),
-        patch("vim_ai_follower.cli.time.sleep"),
+        patch("vim_ai_follower.hooks.time.sleep"),
     ):
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     refreshed = state.FollowerState.read("$1")
     assert refreshed is not None
@@ -549,9 +549,9 @@ def test_hook_post_fresh_interrupt_also_resets_current_file(tmp_path: Path) -> N
             "vim_ai_follower.control.check_signal",
             side_effect=_interrupt_then_user_saves(target, at_check=1),
         ),
-        patch("vim_ai_follower.cli.time.sleep"),
+        patch("vim_ai_follower.hooks.time.sleep"),
     ):
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     refreshed = state.FollowerState.read("$1")
     assert refreshed is not None
@@ -569,9 +569,9 @@ def test_hooks_are_noops_while_disabled(tmp_path: Path) -> None:
     pre_payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
-        patch("vim_ai_follower.cli.save_snapshot") as save_mock,
+        patch("vim_ai_follower.hooks.save_snapshot") as save_mock,
     ):
-        assert cli.cmd_hook_pre({"TMUX_PANE": "%1"}, pre_payload) == 0
+        assert hooks.cmd_hook_pre({"TMUX_PANE": "%1"}, pre_payload) == 0
     save_mock.assert_not_called()
 
     target.write_text("changed\n")
@@ -580,7 +580,7 @@ def test_hooks_are_noops_while_disabled(tmp_path: Path) -> None:
         "tool_input": {"file_path": str(target)},
     }
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, post_payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, post_payload) == 0
     assert _literal_sends(run) == []
 
     read_payload: dict[str, object] = {
@@ -588,7 +588,7 @@ def test_hooks_are_noops_while_disabled(tmp_path: Path) -> None:
         "tool_input": {"file_path": str(target)},
     }
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, read_payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, read_payload) == 0
     assert _literal_sends(run) == []
 
 
@@ -607,7 +607,7 @@ def test_auto_open_splits_a_pane_when_policy_always(
         "vim_ai_follower.tmux.subprocess.run",
         side_effect=_mock_tmux_run(other_panes=("%1",)),
     ) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
         result = state.FollowerState.get("$1")
 
     splits = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "split-window"]]
@@ -615,7 +615,7 @@ def test_auto_open_splits_a_pane_when_policy_always(
     assert result is not None
     assert result.target == "%2"
     binds = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "bind-key"]]
-    assert len(binds) == len(cli._KEYBINDINGS)
+    assert len(binds) == len(keybindings._KEYBINDINGS)
     assert "hello" in _literal_sends(run)
 
 
@@ -642,7 +642,7 @@ def test_auto_open_adopts_existing_vim_pane(
         return MagicMock(returncode=0, stdout="")
 
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_run) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
         result = state.FollowerState.get("$1")
 
     assert not any(c.args[0][:2] == ["tmux", "split-window"] for c in run.call_args_list)
@@ -667,7 +667,7 @@ def test_code_policy_skips_non_code_files_entirely(
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert _literal_sends(run) == []
 
@@ -681,17 +681,17 @@ def test_manual_policy_never_auto_opens(tmp_path: Path) -> None:
         "vim_ai_follower.tmux.subprocess.run",
         side_effect=_mock_tmux_run(pane_id="%9", other_panes=("%1",)),
     ) as run:
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert not any(c.args[0][:2] == ["tmux", "split-window"] for c in run.call_args_list)
     assert state.FollowerState.get("$1") is None
 
 
 def test_configure_logging_is_idempotent() -> None:
-    cli._configure_logging()
-    handler = cli.logger.handlers[0]
-    cli._configure_logging()  # a second hook in the same process must not stack handlers
-    assert cli.logger.handlers == [handler]
+    hooks._configure_logging()
+    handler = hooks.logger.handlers[0]
+    hooks._configure_logging()  # a second hook in the same process must not stack handlers
+    assert hooks.logger.handlers == [handler]
 
 
 def test_hook_post_des_interrupt_reverts_and_resumes_following(
@@ -707,9 +707,9 @@ def test_hook_post_des_interrupt_reverts_and_resumes_following(
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
         patch("vim_ai_follower.control.check_signal", side_effect=["interrupt", "interrupt"]),
-        patch("vim_ai_follower.cli.time.sleep"),
+        patch("vim_ai_follower.hooks.time.sleep"),
     ):
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = _literal_sends(run)
     assert ":e!" in sends  # unsaved user edits discarded, real file loaded
@@ -751,9 +751,9 @@ def test_hook_post_handoff_keeps_polling_through_unreadable_reads(
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("vim_ai_follower.control.check_signal", side_effect=_check),
-        patch("vim_ai_follower.cli.time.sleep") as sleep,
+        patch("vim_ai_follower.hooks.time.sleep") as sleep,
     ):
-        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert sleep.called  # at least one idle handoff poll happened
     out = json.loads(capsys.readouterr().out)
