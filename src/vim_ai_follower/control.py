@@ -14,22 +14,22 @@ from vim_ai_follower import cache
 from vim_ai_follower.diff import EditOp
 
 
-def _dir(base_dir: Path | None) -> Path:
+def _control_dir(base_dir: Path | None) -> Path:
     # cache.CACHE_DIR is read at call time (not bound at import) so one
     # monkeypatch of the cache module isolates every consumer in tests.
     return base_dir if base_dir is not None else cache.CACHE_DIR
 
 
 def _pause_path(session_id: str, base_dir: Path | None) -> Path:
-    return _dir(base_dir) / f"{session_id}.pause"
+    return _control_dir(base_dir) / f"{session_id}.pause"
 
 
 def _interrupt_path(session_id: str, base_dir: Path | None) -> Path:
-    return _dir(base_dir) / f"{session_id}.interrupt"
+    return _control_dir(base_dir) / f"{session_id}.interrupt"
 
 
 def _pending_path(session_id: str, base_dir: Path | None) -> Path:
-    return _dir(base_dir) / f"{session_id}.pending_animation.json"
+    return _control_dir(base_dir) / f"{session_id}.pending_animation.json"
 
 
 def _consume(path: Path) -> bool:
@@ -78,7 +78,7 @@ def has_pending_animation(session_id: str, base_dir: Path | None = None) -> bool
 
 
 def _animating_path(session_id: str, base_dir: Path | None) -> Path:
-    return _dir(base_dir) / f"{session_id}.animating"
+    return _control_dir(base_dir) / f"{session_id}.animating"
 
 
 def mark_animating(session_id: str, base_dir: Path | None = None, state: str = "running") -> None:
