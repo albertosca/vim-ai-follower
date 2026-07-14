@@ -20,7 +20,7 @@ from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.snapshot import load as load_snapshot
 from vim_ai_follower.snapshot import save as save_snapshot
 from vim_ai_follower.state import FollowerState, nvim_socket_path, touch_open_files
-from vim_ai_follower.tmux import TmuxSession
+from vim_ai_follower.tmux import TmuxPane, TmuxSession
 
 LOG_PATH = cache.CACHE_DIR / "hook.log"
 
@@ -34,6 +34,7 @@ _KEYBINDINGS: tuple[tuple[str, str], ...] = (
     ("S", "interrupt"),
     ("+", "speed-up"),
     ("_", "speed-down"),
+    ("F", "toggle"),
 )
 
 
@@ -368,6 +369,41 @@ def cmd_speed(env: dict[str, str], direction: Literal["up", "down"]) -> int:
     return 0
 
 
+def cmd_toggle(env: dict[str, str]) -> int:
+    session = TmuxSession.from_env(env)
+    if session is None:
+        print("claude-follow: not running inside tmux", file=sys.stderr)
+        return 1
+    raw = FollowerState.read(session.session_id)
+    if raw is None:
+        print("claude-follow: no follower to toggle")
+        return 0
+    if raw.enabled:
+        FollowerState.update(session.session_id, enabled=False)
+        if raw.origin:
+            TmuxPane(pane_id=raw.origin).set_zoomed(True)
+        print("claude-follow: follower muted")
+        return 0
+    # Re-enable. open_files is cleared so every next touch resyncs via a
+    # fresh retype — the disk moved while we were muted, and animating a
+    # diff over a stale buffer would produce garbage. Tabs stay for reading.
+    FollowerState.update(session.session_id, enabled=True, open_files=())
+    if raw.origin:
+        TmuxPane(pane_id=raw.origin).set_zoomed(False)
+    if raw.backend == "tmux" and FollowerState.get(session.session_id) is None and raw.origin:
+        started = TmuxVimFollower.start(raw.origin)
+        FollowerState.set(
+            session.session_id,
+            "tmux",
+            started.pane_id,
+            origin=raw.origin,
+            on_failure=raw.on_failure,
+            speed=raw.speed,
+        )  # fresh pane: shown_any=False → first file renames the start screen
+    print("claude-follow: follower resumed")
+    return 0
+
+
 def _configure_logging() -> None:
     if logger.handlers:
         return
@@ -498,6 +534,9 @@ def cmd_hook_pre(env: dict[str, str], payload: dict[str, Any]) -> int:
     session = TmuxSession.from_env(env)
     if session is None:
         return 0
+    raw = FollowerState.read(session.session_id)
+    if raw is not None and not raw.enabled:
+        return 0
     file_path = _file_path(payload)
     if file_path is None:
         return 0
@@ -512,6 +551,9 @@ def cmd_hook_pre(env: dict[str, str], payload: dict[str, Any]) -> int:
 def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
     session = TmuxSession.from_env(env)
     if session is None:
+        return 0
+    raw = FollowerState.read(session.session_id)
+    if raw is not None and not raw.enabled:
         return 0
     current = _get_active_follower(session.session_id)
     if current is None:
@@ -604,6 +646,9 @@ def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
     session = TmuxSession.from_env(env)
     if session is None:
         return 0
+    raw = FollowerState.read(session.session_id)
+    if raw is not None and not raw.enabled:
+        return 0
     current = _get_active_follower(session.session_id)
     if current is None:
         return 0
@@ -655,6 +700,7 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("interrupt")
     subparsers.add_parser("speed-up")
     subparsers.add_parser("speed-down")
+    subparsers.add_parser("toggle")
     return parser
 
 
@@ -676,6 +722,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_speed(env, "up")
     if args.command == "speed-down":
         return cmd_speed(env, "down")
+    if args.command == "toggle":
+        return cmd_toggle(env)
 
     payload: dict[str, Any] = json.loads(sys.stdin.read())
     if args.hook_command == "pre":

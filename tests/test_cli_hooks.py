@@ -558,6 +558,40 @@ def test_hook_post_fresh_interrupt_also_resets_current_file(tmp_path: Path) -> N
     assert refreshed.current_file is None
 
 
+def test_hooks_are_noops_while_disabled(tmp_path: Path) -> None:
+    target = tmp_path / "f.txt"
+    target.write_text("original\n")
+    _register_fake_follower(
+        "$1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
+    )
+    state.FollowerState.update("$1", enabled=False)
+
+    pre_payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.cli.save_snapshot") as save_mock,
+    ):
+        assert cli.cmd_hook_pre({"TMUX_PANE": "%1"}, pre_payload) == 0
+    save_mock.assert_not_called()
+
+    target.write_text("changed\n")
+    post_payload: dict[str, object] = {
+        "tool_name": "Edit",
+        "tool_input": {"file_path": str(target)},
+    }
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, post_payload) == 0
+    assert _literal_sends(run) == []
+
+    read_payload: dict[str, object] = {
+        "tool_name": "Read",
+        "tool_input": {"file_path": str(target)},
+    }
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert cli.cmd_hook_post({"TMUX_PANE": "%1"}, read_payload) == 0
+    assert _literal_sends(run) == []
+
+
 def test_configure_logging_is_idempotent() -> None:
     cli._configure_logging()
     handler = cli.logger.handlers[0]

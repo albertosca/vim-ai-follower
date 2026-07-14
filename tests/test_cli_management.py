@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import functools
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -148,9 +149,9 @@ def test_start_registers_keybindings_with_absolute_path_and_silenced_output(
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert cli.cmd_start({"TMUX_PANE": "%1"}) == 0
     binds = _bind_calls(run)
-    assert [cmd[4] for cmd in binds] == ["P", "S", "+", "_"]
+    assert [cmd[4] for cmd in binds] == ["P", "S", "+", "_", "F"]
     for cmd, subcommand in zip(
-        binds, ("pause", "interrupt", "speed-up", "speed-down"), strict=True
+        binds, ("pause", "interrupt", "speed-up", "speed-down", "toggle"), strict=True
     ):
         # run-shell without -b blocks ALL tmux input until the command
         # exits — a resume replay lasts tens of seconds, freezing the user
@@ -307,3 +308,94 @@ def test_speed_without_follower_is_honest_noop(capsys: pytest.CaptureFixture[str
     out = capsys.readouterr().out
     assert "no follower active" in out
     assert popen.call_args_list == []
+
+
+def _mock_tmux_run_with_zoom(zoomed: str, **kwargs: object) -> Callable[..., MagicMock]:
+    """Like make_mock_tmux_run, but display-message queries for
+    '#{window_zoomed_flag}' answer with the given flag ("0" or "1") instead
+    of the session id every other display-message query returns."""
+    base = make_mock_tmux_run(**kwargs)  # type: ignore[arg-type]
+
+    def _run(cmd: list[str], **run_kwargs: object) -> MagicMock:
+        if cmd[:2] == ["tmux", "display-message"] and cmd[-1] == "#{window_zoomed_flag}":
+            return MagicMock(returncode=0, stdout=f"{zoomed}\n")
+        return base(cmd, **run_kwargs)
+
+    return _run
+
+
+def _resize_pane_calls(run_mock: MagicMock) -> list[list[str]]:
+    return [
+        c.args[0] for c in run_mock.call_args_list if c.args[0][:3] == ["tmux", "resize-pane", "-Z"]
+    ]
+
+
+def test_toggle_off_mutes_and_zooms_origin() -> None:
+    _register_fake_follower("$1", "%2")
+    state.FollowerState.update("$1", origin="%1")
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        side_effect=_mock_tmux_run_with_zoom("0", pane_id="%2"),
+    ) as run:
+        assert cli.cmd_toggle({"TMUX_PANE": "%1"}) == 0
+    result = state.FollowerState.read("$1")
+    assert result is not None
+    assert result.enabled is False
+    assert _resize_pane_calls(run) == [["tmux", "resize-pane", "-Z", "-t", "%1"]]
+
+
+def test_toggle_on_unzooms_clears_open_files_and_keeps_tabs() -> None:
+    _register_fake_follower("$1", "%2", open_files=("/a.py",), shown_any=True)
+    state.FollowerState.update("$1", origin="%1", enabled=False)
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        side_effect=_mock_tmux_run_with_zoom("1", pane_id="%2"),
+    ) as run:
+        assert cli.cmd_toggle({"TMUX_PANE": "%1"}) == 0
+    result = state.FollowerState.read("$1")
+    assert result is not None
+    assert result.enabled is True
+    assert result.open_files == ()
+    assert result.shown_any is True
+    assert _resize_pane_calls(run) == [["tmux", "resize-pane", "-Z", "-t", "%1"]]
+    tabcloses = [
+        c.args[0] for c in run.call_args_list if c.args[0][:4] == ["tmux", "send-keys", "-t", "%2"]
+    ]
+    assert tabcloses == []  # the pane stayed alive — no split, no tab teardown
+
+
+def test_toggle_on_reopens_dead_pane_as_dedicated_split() -> None:
+    state.FollowerState.set(
+        "$1",
+        "tmux",
+        "%2",
+        origin="%1",
+        adopted=True,
+        enabled=False,
+        open_files=("/a.py",),
+        shown_any=True,
+    )
+
+    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
+        if cmd[:3] == ["tmux", "list-panes", "-a"]:
+            # the old pane %2 is dead — no vim running there anymore
+            return MagicMock(returncode=0, stdout="")
+        if cmd[:2] == ["tmux", "display-message"] and cmd[-1] == "#{window_zoomed_flag}":
+            return MagicMock(returncode=0, stdout="0\n")
+        if cmd[:2] == ["tmux", "display-message"]:
+            return MagicMock(returncode=0, stdout="$1\n")
+        if cmd[:2] == ["tmux", "split-window"]:
+            return MagicMock(returncode=0, stdout="%9\n")
+        return MagicMock(returncode=0, stdout="")
+
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_run) as run:
+        assert cli.cmd_toggle({"TMUX_PANE": "%1"}) == 0
+
+    splits = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "split-window"]]
+    assert splits == [["tmux", "split-window", "-h", "-t", "%1", "-P", "-F", "#{pane_id}", "vim"]]
+    result = state.FollowerState.read("$1")
+    assert result is not None
+    assert result.target == "%9"
+    assert result.adopted is False
+    assert result.shown_any is False
+    assert result.open_files == ()
