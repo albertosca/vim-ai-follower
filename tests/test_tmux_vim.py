@@ -474,14 +474,18 @@ def test_reload_and_relock_navigates_then_reloads_and_relocks() -> None:
     ]
 
 
-def test_close_tab_drops_then_closes() -> None:
+def test_close_tab_wipes_the_buffer_and_never_double_closes() -> None:
+    # bwipeout! of a buffer that is a tab's only window ALREADY closes that
+    # tab; a follow-up :tabclose then lands on whichever neighbor received
+    # focus and closes an innocent tab (live eviction bug, 2026-07-15).
     follower = TmuxVimFollower(pane_id="%2")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.close_tab("/tmp/old.py")
     commands = _sent_commands(run)
     drop_index = commands.index((":tab drop /tmp/old.py", True))
     texts_after_drop = [text for text, _ in commands[drop_index:]]
-    assert ":silent! tabclose" in texts_after_drop
+    assert ":silent! bwipeout! /tmp/old.py" in texts_after_drop
+    assert not any("tabclose" in text for text, _ in commands)
 
 
 def test_show_fresh_in_new_tab_opens_tab_before_renaming(

@@ -326,11 +326,13 @@ def test_eviction_closes_oldest_tab_before_animating(
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = _literal_sends(run)
-    # a's tab is closed (close_tab: drop, bwipeout, tabclose) BEFORE c's
-    # content starts animating (show_fresh's rename-in-place for c).
-    close_index = sends.index(":silent! tabclose")
+    # a's tab is closed (close_tab: drop + bwipeout, which closes the tab
+    # by itself — no :tabclose, see close_tab) BEFORE c's content starts
+    # animating (show_fresh's rename-in-place for c).
+    close_index = sends.index(f":silent! bwipeout! {a}")
     rename_index = sends.index(f":file {c}")
     assert close_index < rename_index
+    assert not any("tabclose" in text for text in sends)
 
     refreshed = state.FollowerState.read("$1")
     assert refreshed is not None
@@ -857,3 +859,18 @@ def test_handoff_shows_a_durable_cue_and_periodic_reminders(
         if any("Claude waiting" in str(a) for a in c.args[0])
     ]
     assert len(reminder_popups) >= 1  # at least one periodic reminder fired
+
+
+def test_file_paths_are_canonicalized_through_symlinks(tmp_path: Path) -> None:
+    # macOS: /tmp is a symlink to /private/tmp, and Vim resolves buffer
+    # names to the real path — a :tab drop with the symlinked spelling
+    # misses the existing buffer and opens a duplicate tab. Every path
+    # entering the hooks must be canonical.
+    real_dir = tmp_path / "real"
+    real_dir.mkdir()
+    link_dir = tmp_path / "link"
+    link_dir.symlink_to(real_dir)
+    target = link_dir / "f.py"
+    target.write_text("x = 1\n")
+    payload = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    assert hooks._file_path(payload) == str(real_dir / "f.py")

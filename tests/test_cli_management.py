@@ -290,9 +290,11 @@ def test_stop_on_adopted_pane_closes_tabs_but_not_the_pane() -> None:
         c.args[0] for c in run.call_args_list if c.args[0][:4] == ["tmux", "send-keys", "-t", "%7"]
     ]
     literal = [c[6] for c in sends if "-l" in c]
-    assert literal.count(":silent! tabclose") == 2
     assert f":silent! bwipeout! {a}" in literal
     assert f":silent! bwipeout! {b}" in literal
+    # bwipeout alone closes each tab; a :tabclose here would eat an
+    # innocent neighbor (see close_tab).
+    assert not any("tabclose" in text for text in literal)
     assert not any(c.args[0][:2] == ["tmux", "kill-pane"] for c in run.call_args_list)
     unbinds = _unbind_calls(run)
     assert ["tmux", "unbind-key", "-T", "prefix", "P"] in unbinds

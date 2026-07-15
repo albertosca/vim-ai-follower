@@ -84,11 +84,12 @@ class TmuxVimFollower:
     def close_tab(self, file_path: str) -> None:
         pane = TmuxPane(pane_id=self.pane_id)
         self.goto_file(file_path)
-        # silent!: closing the last remaining tab fails (E784) — acceptable,
-        # the buffer just stays.
+        # bwipeout! of a buffer that is its tab's only window already
+        # closes that tab; never follow it with :tabclose — focus lands on
+        # a neighboring tab and the "safety" close eats an innocent one
+        # (live eviction bug, 2026-07-15). On the last remaining tab the
+        # wipe just leaves an empty buffer, which is fine.
         pane.send_text(f":silent! bwipeout! {file_path}")
-        pane.send_key("Enter")
-        pane.send_text(":silent! tabclose")
         pane.send_key("Enter")
 
     def ensure_showing(self, file_path: str) -> None:

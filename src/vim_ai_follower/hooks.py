@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import logging
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -43,7 +44,12 @@ def _tool_input(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _file_path(payload: dict[str, Any]) -> str | None:
     value = _tool_input(payload).get("file_path")
-    return value if isinstance(value, str) else None
+    if not isinstance(value, str):
+        return None
+    # Canonical form: Vim resolves buffer names to real paths (on macOS
+    # /tmp is a symlink to /private/tmp), so a symlinked spelling makes
+    # :tab drop miss the existing buffer and open a duplicate tab.
+    return os.path.realpath(value)
 
 
 def _passes_policy(cfg: config.Config, file_path: str) -> bool:
