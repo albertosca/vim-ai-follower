@@ -105,8 +105,8 @@ no `stop`:
 | ------------- | ------------ | -------------------------------------------------------------------------- |
 | `prefix` `P`  | pause        | Pausa uma animação em andamento; aperte de novo para retomar.              |
 | `prefix` `S`  | interrupt    | Interrompe: entrega o buffer para você assumir e salvar sua própria versão. Aperte de novo durante o hand-off para descartar suas edições e retomar a do Claude. |
-| `prefix` `+`  | speed-up     | Uma marcha mais rápida (round-robin, dá a volta).                          |
-| `prefix` `_`  | speed-down   | Uma marcha mais lenta (round-robin, dá a volta).                           |
+| `prefix` `+`  | speed-up     | Uma marcha mais rápida (satura no `instant`).                          |
+| `prefix` `_`  | speed-down   | Uma marcha mais lenta (satura no `lento`).                           |
 | `prefix` `F`  | toggle       | Muta/desmuta o follower.                                                   |
 
 Os keybindings são **globais no servidor** tmux: rodar dois followers em duas
@@ -128,8 +128,8 @@ ou entregue nunca é o despejado.
 
 `prefix` `+` / `prefix` `_` releem o ritmo na hora: uma animação em andamento
 acelera ou desacelera na **próxima fronteira de linha**, não só na animação
-seguinte. As cinco velocidades formam um round-robin que dá a volta nas duas
-pontas.
+seguinte. A escala satura nas duas pontas; o popup sinaliza os limites
+(`lento (slowest)`, `instant (fastest)`).
 
 ### Pausa e interrupção
 

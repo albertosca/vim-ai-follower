@@ -39,11 +39,13 @@ def test_load_rejects_bool_max_tabs(tmp_path: Path) -> None:
     assert config.load(path).max_tabs == config.DEFAULT_MAX_TABS
 
 
-def test_next_speed_steps_and_wraps() -> None:
+def test_next_speed_steps_and_clamps() -> None:
     assert config.next_speed("rapido", "up") == "muito_rapido"
     assert config.next_speed("rapido", "down") == "normal"
-    assert config.next_speed("instant", "up") == "lento"  # round-robin
-    assert config.next_speed("lento", "down") == "instant"
+    # Clamped at both ends: wrapping surprised in live use ("lento" jumping
+    # to "instant" mid-animation), so the scale saturates instead.
+    assert config.next_speed("instant", "up") == "instant"
+    assert config.next_speed("lento", "down") == "lento"
     assert config.next_speed("bogus", "up") == config.DEFAULT_SPEED
 
 

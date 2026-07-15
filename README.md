@@ -100,8 +100,8 @@ default, and an invalid value silently falls back to it.
 | ------------- | ------------ | ------------------------------------------------------------------------- |
 | `prefix` `P`  | pause        | Pause a running animation; press again to resume.                         |
 | `prefix` `S`  | interrupt    | Interrupt: hand the buffer over so you can take over and save your own version. Press again during hand-off to discard your edits and resume Claude's. |
-| `prefix` `+`  | speed-up     | Step the animation one notch faster (round-robin, wraps).                 |
-| `prefix` `_`  | speed-down   | Step the animation one notch slower (round-robin, wraps).                 |
+| `prefix` `+`  | speed-up     | Step the animation one notch faster (saturates at `instant`).                 |
+| `prefix` `_`  | speed-down   | Step the animation one notch slower (saturates at `lento`).                 |
 | `prefix` `F`  | toggle       | Mute/unmute the follower.                                                 |
 
 The keybindings are tmux **server-global**: running two followers in two tmux
@@ -122,7 +122,8 @@ is never the one evicted.
 
 `prefix` `+` / `prefix` `_` re-read the pace on the fly: a running animation
 speeds up or slows down at its **next line boundary**, not only on the next
-animation. The five speeds form a round-robin that wraps at both ends.
+animation. The scale saturates at both ends; the popup labels the limits
+(`lento (slowest)`, `instant (fastest)`).
 
 ### Pause and interrupt
 

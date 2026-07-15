@@ -273,8 +273,16 @@ def cmd_speed(env: dict[str, str], direction: Literal["up", "down"]) -> int:
         return 0
     new_speed = config.next_speed(current.speed, direction)
     FollowerState.update(session.session_id, speed=new_speed)
-    print(f"claude-follow: speed {new_speed}")
-    _show_popup(current, f"Speed: {new_speed}")
+    # Saturating scale: label the ends so a press that changed nothing
+    # reads as "already at the limit", not as a silent miss.
+    if new_speed == config.SPEED_ORDER[-1]:
+        label = f"{new_speed} (fastest)"
+    elif new_speed == config.SPEED_ORDER[0]:
+        label = f"{new_speed} (slowest)"
+    else:
+        label = new_speed
+    print(f"claude-follow: speed {label}")
+    _show_popup(current, f"Speed: {label}")
     return 0
 
 

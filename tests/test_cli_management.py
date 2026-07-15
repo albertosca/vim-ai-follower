@@ -315,18 +315,34 @@ def test_speed_up_steps_state_and_reports(capsys: pytest.CaptureFixture[str]) ->
     assert any("Speed: muito_rapido" in arg for arg in popups[0])
 
 
-def test_speed_wraps_round_robin(capsys: pytest.CaptureFixture[str]) -> None:
+def test_speed_clamps_at_the_fast_end_and_says_so(capsys: pytest.CaptureFixture[str]) -> None:
     _register_fake_follower("$1", "%2")
     state.FollowerState.update("$1", speed="instant")
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()),
-        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
     ):
         assert commands.cmd_speed({"TMUX_PANE": "%1"}, "up") == 0
     result = state.FollowerState.read("$1")
     assert result is not None
+    assert result.speed == "instant"  # saturates, never wraps to lento
+    assert "speed instant (fastest)" in capsys.readouterr().out
+    popup_args = " ".join(str(a) for a in popen.call_args[0][0])
+    assert "Speed: instant (fastest)" in popup_args
+
+
+def test_speed_clamps_at_the_slow_end_and_says_so(capsys: pytest.CaptureFixture[str]) -> None:
+    _register_fake_follower("$1", "%2")
+    state.FollowerState.update("$1", speed="lento")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()),
+    ):
+        assert commands.cmd_speed({"TMUX_PANE": "%1"}, "down") == 0
+    result = state.FollowerState.read("$1")
+    assert result is not None
     assert result.speed == "lento"
-    assert "speed lento" in capsys.readouterr().out
+    assert "speed lento (slowest)" in capsys.readouterr().out
 
 
 def test_speed_without_follower_is_honest_noop(capsys: pytest.CaptureFixture[str]) -> None:

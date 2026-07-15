@@ -94,10 +94,13 @@ def load(config_path: Path | None = None) -> Config:
 
 
 def next_speed(speed: str, direction: Literal["up", "down"]) -> str:
+    """One notch along SPEED_ORDER, saturating at both ends — wrapping
+    around surprised in live use ("lento" jumping to "instant")."""
     if speed not in SPEED_ORDER:
         return DEFAULT_SPEED
     step = 1 if direction == "up" else -1
-    return SPEED_ORDER[(SPEED_ORDER.index(speed) + step) % len(SPEED_ORDER)]
+    index = max(0, min(len(SPEED_ORDER) - 1, SPEED_ORDER.index(speed) + step))
+    return SPEED_ORDER[index]
 
 
 def is_code_file(file_path: str) -> bool:
