@@ -57,8 +57,8 @@ def test_apply_edit_unlocks_the_buffer_only_for_the_animation(tmp_path: Path) ->
         result = follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
     commands = _sent_commands(run)
     # goto_file's defensive preamble runs first
-    assert commands[0] == ("C-\\", False)
-    assert commands[1] == ("C-n", False)
+    assert commands[0] == ("Escape", False)
+    assert commands[1] == ("Escape", False)
     assert commands[2] == (":tab drop /tmp/f.txt", True)
     assert commands[3] == ("Enter", False)
     assert commands[4] == (":setlocal modifiable paste", True)
@@ -214,9 +214,9 @@ def test_show_fresh_renames_current_buffer_without_ever_loading_the_real_file(
     ):
         result = follower.show_fresh("/tmp/f.txt", "a\nb\n")
     commands = _sent_commands(run)
-    # _normal_mode sends C-\ and C-n first
-    assert commands[0] == ("C-\\", False)
-    assert commands[1] == ("C-n", False)
+    # _normal_mode sends two prompt-proof Escapes first
+    assert commands[0] == ("Escape", False)
+    assert commands[1] == ("Escape", False)
     assert commands[2] == (":silent! bwipeout! /tmp/f.txt", True)
     assert commands[3] == ("Enter", False)
     assert commands[4] == (":file /tmp/f.txt", True)
@@ -251,8 +251,8 @@ def test_show_fresh_with_empty_content_still_wipes_and_relocks(tmp_path: Path) -
         result = follower.show_fresh("/tmp/f.txt", "")
     commands = _sent_commands(run)
     assert commands == [
-        ("C-\\", False),
-        ("C-n", False),
+        ("Escape", False),
+        ("Escape", False),
         (":silent! bwipeout! /tmp/f.txt", True),
         ("Enter", False),
         (":file /tmp/f.txt", True),
@@ -383,8 +383,8 @@ def test_resume_navigates_to_the_pending_files_tab_first(tmp_path: Path) -> None
         follower.resume(pending)
     commands = _sent_commands(run)
     assert commands[:4] == [
-        ("C-\\", False),
-        ("C-n", False),
+        ("Escape", False),
+        ("Escape", False),
         (":tab drop /tmp/f.py", True),
         ("Enter", False),
     ]
@@ -434,8 +434,8 @@ def test_goto_file_sends_normal_mode_then_tab_drop() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.goto_file("/tmp/a.py")
     assert _sent_commands(run) == [
-        ("C-\\", False),
-        ("C-n", False),
+        ("Escape", False),
+        ("Escape", False),
         (":tab drop /tmp/a.py", True),
         ("Enter", False),
     ]
@@ -447,8 +447,8 @@ def test_ensure_showing_navigates_by_tab_drop_and_locks() -> None:
         follower.ensure_showing("/tmp/a.py")
     commands = _sent_commands(run)
     assert commands == [
-        ("C-\\", False),
-        ("C-n", False),
+        ("Escape", False),
+        ("Escape", False),
         (":tab drop /tmp/a.py", True),
         ("Enter", False),
         (":setlocal readonly nomodifiable", True),
@@ -463,8 +463,8 @@ def test_reload_and_relock_navigates_then_reloads_and_relocks() -> None:
         follower.reload_and_relock("/tmp/a.py")
     commands = _sent_commands(run)
     assert commands == [
-        ("C-\\", False),
-        ("C-n", False),
+        ("Escape", False),
+        ("Escape", False),
         (":tab drop /tmp/a.py", True),
         ("Enter", False),
         (":e!", True),

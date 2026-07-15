@@ -905,3 +905,66 @@ def test_auto_open_adopts_a_pre_existing_vim_pane(
 
     assert wait_until(lambda: "vim ai follower" in _capture(vim_pane_id), timeout=5.0)
     assert len(_pane_ids(tmux_session)) == 2  # adopted the pre-existing pane, no split
+
+
+def test_preamble_survives_a_pending_hit_enter_prompt_with_hostile_ctrl_n(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    # Companion to the vim-visual-multi corruption fix (see _normal_mode
+    # and scripts/repro-plugin-preamble.sh — only a plugin-loaded Vim
+    # reproduces the corruption itself). This hermetic half guards the
+    # nearby robustness properties: an edit driven while a hit-enter
+    # prompt is parked in the follower must still animate to exact
+    # content, and no orphaned C-n may ever fire a hostile mapping (this
+    # vim maps <C-n> to a buffer-destroying command as a tripwire).
+    subprocess.run(
+        [
+            "tmux",
+            "set-environment",
+            "-t",
+            tmux_session,
+            "VIMINIT",
+            "set nocompatible noloadplugins | nnoremap <C-n> ggdG",
+        ],
+        check=True,
+    )
+    origin_pane = _pane_ids(tmux_session)[0]
+    monkeypatch.setenv("TMUX_PANE", origin_pane)
+    assert cli.main(["start"]) == 0
+    assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
+    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+
+    target = tmp_path / "victim.py"
+    target.write_text("print('one')\nprint('two')\n")
+    pre = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(target)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(pre))
+    assert cli.main(["hook", "pre"]) == 0
+    monkeypatch.setattr("sys.stdin", io.StringIO(pre))
+    assert cli.main(["hook", "post"]) == 0
+    assert wait_until(lambda: "print('two')" in _capture(follower_pane_id), timeout=5.0)
+
+    # Park a hit-enter prompt in the follower, exactly the state CoC's
+    # post-relock messages leave behind in a plugin-loaded vim.
+    follower_pane = TmuxPane(pane_id=follower_pane_id)
+    follower_pane.send_text(':echo "l1\\nl2\\nl3"')
+    follower_pane.send_key("Enter")
+    assert wait_until(lambda: "ENTER" in _capture(follower_pane_id), timeout=3.0)
+
+    monkeypatch.setattr("sys.stdin", io.StringIO(pre))
+    assert cli.main(["hook", "pre"]) == 0
+    after_lines = ["print('one')", "print('two')", "print('three')"]
+    target.write_text("\n".join(after_lines) + "\n")
+    monkeypatch.setattr("sys.stdin", io.StringIO(pre))
+    assert cli.main(["hook", "post"]) == 0
+
+    def _settled() -> bool:
+        rows = _capture(follower_pane_id).splitlines()
+        return "print('three')" in rows or any("print('three')" in r for r in rows)
+
+    assert wait_until(_settled, timeout=5.0)
+    rows = _capture(follower_pane_id).splitlines()
+    anchor = rows.index("print('one')")
+    assert rows[anchor : anchor + len(after_lines)] == after_lines

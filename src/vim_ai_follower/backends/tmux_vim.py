@@ -49,11 +49,18 @@ class TmuxVimFollower:
         return config.pace_seconds_for(state.speed)
 
     def _normal_mode(self, pane: TmuxPane) -> None:
-        # Ctrl-\ Ctrl-N returns to Normal mode from ANY mode (insert, visual,
-        # command-line) without side effects — never trust where the user
-        # left the follower Vim.
-        pane.send_key("C-\\")
-        pane.send_key("C-n")
+        # Two Escapes return to Normal mode from any mode. Never Ctrl-\
+        # Ctrl-N here: with a plugin-loaded Vim (vim-visual-multi + CoC)
+        # and a pending hit-enter prompt, the pair reproducibly corrupts
+        # the following command line — observed live and in a scripted
+        # repro as a junk buffer named "<file><Plug>(VM-Hls)" and as the
+        # :tab drop being swallowed outright. The exact feedkeys chain is
+        # VM-internal; plugin-free Vims cannot reproduce it, so the
+        # regression check lives in scripts/repro-plugin-preamble.sh
+        # against the real config. Escape is idempotent and single-key:
+        # whatever consumes the first, the second still lands as Escape.
+        pane.send_key("Escape")
+        pane.send_key("Escape")
 
     def goto_file(self, file_path: str) -> None:
         """The defensive preamble: land on the tab showing file_path (by
