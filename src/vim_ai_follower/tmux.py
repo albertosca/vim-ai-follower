@@ -3,6 +3,7 @@ queries, zoom) and TmuxSession (resolve the session from the environment)."""
 
 from __future__ import annotations
 
+import shlex
 import subprocess
 from dataclasses import dataclass
 
@@ -32,6 +33,38 @@ class TmuxPane:
 
     def send_key(self, key_name: str) -> None:
         subprocess.run(["tmux", "send-keys", "-t", self.pane_id, key_name], check=True)
+
+    def title(self) -> str:
+        result = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", self.pane_id, "#{pane_title}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.stdout.rstrip("\n")
+
+    def set_title(self, title: str) -> None:
+        subprocess.run(["tmux", "select-pane", "-t", self.pane_id, "-T", title], check=False)
+
+    def window_option(self, name: str) -> str | None:
+        """The window-local option's value, or None when unset (shown empty)."""
+        result = subprocess.run(
+            ["tmux", "show-options", "-wv", "-t", self.pane_id, name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        value = result.stdout.strip()
+        return value or None
+
+    def set_window_option(self, name: str, value: str | None) -> None:
+        """Set the window-local option, or unset it when value is None."""
+        if value is None:
+            subprocess.run(["tmux", "set-option", "-wu", "-t", self.pane_id, name], check=False)
+        else:
+            subprocess.run(
+                ["tmux", "set-option", "-w", "-t", self.pane_id, name, value], check=False
+            )
 
     def kill(self) -> None:
         subprocess.run(["tmux", "kill-pane", "-t", self.pane_id], check=False)
@@ -111,3 +144,23 @@ class TmuxSession:
         if not session_id:
             return None
         return cls(session_id=session_id)
+
+
+def show_popup(pane_id: str, message: str) -> None:
+    """Brief, self-dismissing popup over a pane. Fire-and-forget via Popen:
+    display-popup -E only exits when the popup closes, and callers must not
+    stall (nor delay a resume replay) waiting for it."""
+    subprocess.Popen(
+        [
+            "tmux",
+            "display-popup",
+            "-t",
+            pane_id,
+            "-E",
+            "-w",
+            "30",
+            "-h",
+            "3",
+            f"echo {shlex.quote(message)}; sleep 1.5",
+        ]
+    )

@@ -758,3 +758,102 @@ def test_hook_post_handoff_keeps_polling_through_unreadable_reads(
     assert sleep.called  # at least one idle handoff poll happened
     out = json.loads(capsys.readouterr().out)
     assert "SAVED their own version" in out["hookSpecificOutput"]["additionalContext"]
+
+
+def _bounded(check: Callable[..., str | None], limit: int = 50) -> Callable[..., str | None]:
+    """Fail loudly instead of hanging when a hand-off wait never releases."""
+    calls = {"n": 0}
+
+    def _check(session_id: str, base_dir: Path | None = None) -> str | None:
+        calls["n"] += 1
+        if calls["n"] > limit:
+            raise AssertionError("hand-off wait never released within the poll budget")
+        return check(session_id, base_dir)
+
+    return _check
+
+
+def test_hook_post_releases_on_a_save_that_kept_claudes_version(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Live finding (2026-07-15): releasing only on CONTENT change meant a
+    # user who saved without editing held Claude's turn forever. A save is
+    # a save — identical content must release too, with a lighter
+    # notification (there is no user version to build on).
+    target = tmp_path / "f.txt"
+    target.write_text("hello\nworld\n")
+    snapshot.save("$1", str(target), "hello\nworld\n")
+    _register_fake_follower(
+        "$1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
+    )
+    target.write_text("hello\nvim ai follower\n")
+    after = target.read_text()
+
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch(
+            "vim_ai_follower.control.check_signal",
+            side_effect=_bounded(
+                _interrupt_then_user_saves(target, at_check=2, saved_content=after)
+            ),
+        ),
+        patch("vim_ai_follower.hooks.time.sleep"),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    out = json.loads(capsys.readouterr().out)
+    context = out["hookSpecificOutput"]["additionalContext"]
+    assert "saved it unchanged" in context
+    assert "do not restore" not in context  # the full took-over warning is wrong here
+
+
+def test_handoff_shows_a_durable_cue_and_periodic_reminders(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The 1.5s "Interrupted" popup was too easy to miss (live, 2026-07-15):
+    # while the hand-off holds Claude's turn, the follower pane's border
+    # title must say how to release it, a popup reminder must re-fire
+    # periodically, and both title and border-status must be restored on
+    # release no matter how the wait ends.
+    target = tmp_path / "f.txt"
+    target.write_text("hello\nworld\n")
+    snapshot.save("$1", str(target), "hello\nworld\n")
+    _register_fake_follower(
+        "$1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
+    )
+    target.write_text("hello\nvim ai follower\n")
+
+    release_at = 160  # spins past one reminder interval (150 polls) first
+    calls = {"n": 0}
+
+    def _interrupt_then_late_save(session_id: str, base_dir: Path | None = None) -> str | None:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            return "interrupt"
+        if calls["n"] == release_at:
+            target.write_text("user version\n")
+        return None
+
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
+        patch("vim_ai_follower.control.check_signal", side_effect=_interrupt_then_late_save),
+        patch("vim_ai_follower.hooks.time.sleep"),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    tmux_calls = [c.args[0] for c in run.call_args_list]
+    set_titles = [c for c in tmux_calls if c[:2] == ["tmux", "select-pane"] and "-T" in c]
+    assert any("Claude waiting" in c[-1] for c in set_titles)  # cue up
+    assert set_titles[-1][-1] == "$1"  # restored to the pre-handoff title afterwards
+    border_sets = [c for c in tmux_calls if c[:2] == ["tmux", "set-option"]]
+    assert ["tmux", "set-option", "-w", "-t", "%2", "pane-border-status", "top"] in border_sets
+    assert ["tmux", "set-option", "-wu", "-t", "%2", "pane-border-status"] in border_sets
+    reminder_popups = [
+        c.args[0]
+        for c in popen.call_args_list
+        if any("Claude waiting" in str(a) for a in c.args[0])
+    ]
+    assert len(reminder_popups) >= 1  # at least one periodic reminder fired

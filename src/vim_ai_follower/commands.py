@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import shlex
-import subprocess
 import sys
 from typing import Literal
 
-from vim_ai_follower import config, control, keybindings
+from vim_ai_follower import config, control, keybindings, tmux
 from vim_ai_follower.backends import get_follower
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.state import FollowerState, nvim_socket_path
@@ -136,28 +134,13 @@ def cmd_status(env: dict[str, str]) -> int:
 
 
 def _show_popup(current: FollowerState | None, message: str) -> None:
-    """Brief, self-dismissing tmux popup on the follower pane confirming a
-    pause/resume/interrupt — feedback for the keybinding press itself, not a
-    guarantee that an animation was actually running to be affected. Only
-    the tmux backend has a pane to target. Fire-and-forget via Popen:
-    display-popup -E only exits when the popup closes, and the caller must
-    not stall 1.5s (nor delay a resume replay) waiting for it."""
+    """Popup on the follower pane confirming a pause/resume/interrupt —
+    feedback for the keybinding press itself, not a guarantee that an
+    animation was actually running to be affected. Only the tmux backend
+    has a pane to target."""
     if current is None or current.backend != "tmux":
         return
-    subprocess.Popen(
-        [
-            "tmux",
-            "display-popup",
-            "-t",
-            current.target,
-            "-E",
-            "-w",
-            "30",
-            "-h",
-            "3",
-            f"echo {shlex.quote(message)}; sleep 1.5",
-        ]
-    )
+    tmux.show_popup(current.target, message)
 
 
 def _resave_pending(

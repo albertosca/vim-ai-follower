@@ -17,7 +17,7 @@ from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.snapshot import load as load_snapshot
 from vim_ai_follower.snapshot import save as save_snapshot
 from vim_ai_follower.state import FollowerState, touch_open_files
-from vim_ai_follower.tmux import TmuxSession, adopt_target
+from vim_ai_follower.tmux import TmuxPane, TmuxSession, adopt_target, show_popup
 
 LOG_PATH = cache.CACHE_DIR / "hook.log"
 
@@ -152,15 +152,7 @@ def _reconstruct_partial_fresh(content: str, completed_count: int) -> str:
     return "\n".join(content.splitlines()[:completed_count])
 
 
-def _print_interrupt_notification(file_path: str, partial_content: str) -> None:
-    context = (
-        f"The user interrupted the live preview of {file_path} while it was "
-        "being written, edited it themselves, and SAVED their own version — "
-        "it is now the file's content on disk. Only this much of your "
-        f"version had been shown before they took over:\n\n{partial_content}\n\n"
-        "Re-read the file from disk and build on the user's version; do not "
-        "restore yours without asking."
-    )
+def _print_hook_context(context: str) -> None:
     print(
         json.dumps(
             {
@@ -173,7 +165,28 @@ def _print_interrupt_notification(file_path: str, partial_content: str) -> None:
     )
 
 
+def _print_interrupt_notification(file_path: str, partial_content: str) -> None:
+    _print_hook_context(
+        f"The user interrupted the live preview of {file_path} while it was "
+        "being written, edited it themselves, and SAVED their own version — "
+        "it is now the file's content on disk. Only this much of your "
+        f"version had been shown before they took over:\n\n{partial_content}\n\n"
+        "Re-read the file from disk and build on the user's version; do not "
+        "restore yours without asking."
+    )
+
+
+def _print_unchanged_save_notification(file_path: str) -> None:
+    _print_hook_context(
+        f"The user interrupted the live preview of {file_path}, reviewed it, "
+        "and saved it unchanged — your version stands as the file's content "
+        "on disk. Continue normally."
+    )
+
+
 _HANDOFF_POLL_SECONDS = 0.2
+_HANDOFF_REMINDER_POLLS = 150  # ~30s at the poll cadence above
+_HANDOFF_CUE = "Claude waiting \u2014 :w releases \u00b7 S discards"
 
 
 def _await_user_handoff(
@@ -186,7 +199,24 @@ def _await_user_handoff(
     notification — degraded but harmless."""
     control.mark_animating(session_id, state="handoff")
     try:
+        initial_mtime = Path(file_path).stat().st_mtime_ns
+    except OSError:
+        initial_mtime = None
+    # Durable cue: the 1.5s "Interrupted" popup is easy to miss, and a held
+    # turn with no visible reason reads as Claude hanging. Put the release
+    # instructions in the pane's border title for the whole wait (restored
+    # on exit), and re-fire a popup reminder roughly every 30s.
+    pane = TmuxPane(pane_id=current.target)
+    saved_title = pane.title()
+    saved_border = pane.window_option("pane-border-status")
+    pane.set_title(_HANDOFF_CUE)
+    pane.set_window_option("pane-border-status", "top")
+    polls = 0
+    try:
         while True:
+            polls += 1
+            if polls % _HANDOFF_REMINDER_POLLS == 0:
+                show_popup(current.target, _HANDOFF_CUE)
             signal = control.check_signal(session_id)
             if signal == "interrupt":
                 # the des-interrupt: reload the file Claude wrote, discarding
@@ -201,10 +231,21 @@ def _await_user_handoff(
                 if Path(file_path).read_text() != after:
                     _print_interrupt_notification(file_path, partial_content)
                     return
+                # A save is a save: a user who reviewed and kept Claude's
+                # version (identical content, fresh mtime) must release the
+                # turn too — content comparison alone held it forever.
+                if (
+                    initial_mtime is not None
+                    and Path(file_path).stat().st_mtime_ns != initial_mtime
+                ):
+                    _print_unchanged_save_notification(file_path)
+                    return
             except OSError:
                 pass  # mid-save or momentarily unreadable: check again
             time.sleep(_HANDOFF_POLL_SECONDS)
     finally:
+        pane.set_title(saved_title)
+        pane.set_window_option("pane-border-status", saved_border)
         control.clear_animating(session_id)
 
 

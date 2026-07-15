@@ -111,3 +111,52 @@ def test_set_zoomed_only_toggles_when_state_differs() -> None:
         assert ["tmux", "resize-pane", "-Z", "-t", "%1"] not in [
             c[0][0] for c in run.call_args_list
         ]
+
+
+def test_pane_title_round_trip() -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        run.return_value = MagicMock(returncode=0, stdout="my title\n")
+        title = TmuxPane(pane_id="%1").title()
+    assert title == "my title"
+    assert run.call_args[0][0] == [
+        "tmux",
+        "display-message",
+        "-p",
+        "-t",
+        "%1",
+        "#{pane_title}",
+    ]
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        TmuxPane(pane_id="%1").set_title("waiting")
+    assert run.call_args[0][0] == ["tmux", "select-pane", "-t", "%1", "-T", "waiting"]
+
+
+def test_window_option_get_set_and_unset() -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        run.return_value = MagicMock(returncode=0, stdout="top\n")
+        value = TmuxPane(pane_id="%1").window_option("pane-border-status")
+    assert value == "top"
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        run.return_value = MagicMock(returncode=0, stdout="\n")
+        assert TmuxPane(pane_id="%1").window_option("pane-border-status") is None
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        TmuxPane(pane_id="%1").set_window_option("pane-border-status", "top")
+    assert run.call_args[0][0] == [
+        "tmux",
+        "set-option",
+        "-w",
+        "-t",
+        "%1",
+        "pane-border-status",
+        "top",
+    ]
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        TmuxPane(pane_id="%1").set_window_option("pane-border-status", None)
+    assert run.call_args[0][0] == [
+        "tmux",
+        "set-option",
+        "-wu",
+        "-t",
+        "%1",
+        "pane-border-status",
+    ]
