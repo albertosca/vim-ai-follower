@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vim_ai_follower import cache, hooks, snapshot
+from vim_ai_follower import cache, config, hooks, snapshot
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 
 
@@ -24,6 +24,10 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[N
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
     monkeypatch.setattr(snapshot, "SNAPSHOT_DIR", tmp_path / "snapshots")
     monkeypatch.setattr(hooks, "LOG_PATH", tmp_path / "hook.log")
+    # The user's real ~/.config/claude-vim-follower/config.json must never
+    # leak into tests (a live open_policy=always there silently flipped
+    # auto-open tests). Point at a nonexistent per-test path: defaults.
+    monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
     yield
     hooks.logger.handlers.clear()
 
