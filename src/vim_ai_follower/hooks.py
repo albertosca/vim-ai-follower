@@ -225,16 +225,32 @@ def _await_user_handoff(
                 show_popup(current.target, _HANDOFF_CUE)
             signal = control.check_signal(session_id)
             if signal == "interrupt":
-                # the des-interrupt: reload the file Claude wrote, discarding
-                # unsaved edits (and turning the renamed buffer into a real
-                # file buffer); relock and resume following.
-                TmuxVimFollower(pane_id=current.target, session_id=session_id).reload_and_relock(
-                    file_path
-                )
-                FollowerState.update_current_file(session_id, file_path)
+                # the des-interrupt: discard the user's unsaved typing and
+                # put the show back on — rebuilding the interrupt-point
+                # buffer instantly, then REPLAYING the remaining animation
+                # at live pace. Without a stored remainder (stale state),
+                # fall back to reloading the finished file.
+                follower = TmuxVimFollower(pane_id=current.target, session_id=session_id)
+                pending = control.load_pending_animation(session_id)
+                if pending is None:
+                    follower.reload_and_relock(file_path)
+                    FollowerState.update_current_file(session_id, file_path)
+                    return
+                rebuilt = follower.rewrite_buffer(file_path, partial_content)
+                result = follower.resume(pending) if rebuilt.outcome == "completed" else rebuilt
+                if result.outcome == "completed":
+                    FollowerState.update_current_file(session_id, file_path)
+                else:
+                    # Interrupted again mid-replay: hand the buffer over and
+                    # release the turn — one hand-off wait per hook. The
+                    # partial buffer self-heals at the next completed
+                    # animation via the relock's :e!.
+                    follower.hand_over()
+                    FollowerState.update_current_file(session_id, None)
                 return
             try:
                 if Path(file_path).read_text() != after:
+                    control.discard_pending_animation(session_id)
                     _print_interrupt_notification(file_path, partial_content)
                     return
                 # A save is a save: a user who reviewed and kept Claude's
@@ -244,6 +260,7 @@ def _await_user_handoff(
                     initial_mtime is not None
                     and Path(file_path).stat().st_mtime_ns != initial_mtime
                 ):
+                    control.discard_pending_animation(session_id)
                     _print_unchanged_save_notification(file_path)
                     return
             except OSError:
@@ -356,6 +373,15 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
             # (_await_user_handoff restores tracking on a des-interrupt.)
             FollowerState.update_current_file(session.session_id, None)
             partial = _reconstruct_partial_fresh(after, result.completed_count)
+            # Keep the remainder around: a des-interrupt replays it from
+            # the interrupt point instead of flashing the finished file.
+            control.save_pending_show_fresh(
+                session.session_id,
+                tuple(after.splitlines())[result.completed_count :],
+                config.pace_seconds_for(current.speed),
+                continuation=result.completed_count > 0,
+                file_path=file_path,
+            )
             _await_user_handoff(current, session.session_id, file_path, after, partial)
         else:
             FollowerState.update_current_file(session.session_id, file_path)
@@ -369,6 +395,12 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         # completed_count indexes the very ops list the animation walked —
         # computing the script once keeps this reconstruction truthful.
         partial = diff_module.apply_ops(before, ops[: result.completed_count])
+        control.save_pending_apply_edit(
+            session.session_id,
+            ops[result.completed_count :],
+            config.pace_seconds_for(current.speed),
+            file_path=file_path,
+        )
         _await_user_handoff(current, session.session_id, file_path, after, partial)
     return 0
 

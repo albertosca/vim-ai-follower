@@ -81,6 +81,23 @@ class TmuxVimFollower:
         pane.send_text(_LOCK_READONLY)
         pane.send_key("Enter")
 
+    def rewrite_buffer(self, file_path: str, content: str) -> AnimationResult:
+        """Instantly (pace 0) rebuild the buffer to `content` — the
+        des-interrupt replay needs the buffer back at the interrupt-point
+        state, discarding the user's unsaved typing, before the remainder
+        resumes at live pace. Leaves the buffer unlocked: resume() runs
+        immediately after and owns the relock."""
+        self.goto_file(file_path)
+        pane = TmuxPane(pane_id=self.pane_id)
+        pane.send_text(_UNLOCK_FOR_ANIMATION)
+        pane.send_key("Enter")
+        pane.send_text(":%d")
+        pane.send_key("Enter")
+        lines = tuple(content.splitlines())
+        if not lines:
+            return AnimationResult("completed", 0)
+        return run_lines(pane, self.session_id, lines, 0.0, file_path=file_path)
+
     def close_tab(self, file_path: str) -> None:
         pane = TmuxPane(pane_id=self.pane_id)
         self.goto_file(file_path)

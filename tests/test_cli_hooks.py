@@ -696,7 +696,7 @@ def test_configure_logging_is_idempotent() -> None:
     assert hooks.logger.handlers == [handler]
 
 
-def test_hook_post_des_interrupt_reverts_and_resumes_following(
+def test_hook_post_des_interrupt_replays_the_remaining_animation(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     target = tmp_path / "f.txt"
@@ -704,31 +704,92 @@ def test_hook_post_des_interrupt_reverts_and_resumes_following(
     _register_fake_follower("$1", "%2")
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
-    # interrupt fires at the first check; a second S during the hand-off
-    # wait means "discard my unsaved typing and put the show back on"
+    # interrupt fires at the first check (nothing shown yet); a second S
+    # during the hand-off means "discard my typing and put the show back
+    # on" — which now REPLAYS the remaining animation from the interrupt
+    # point instead of flashing the finished file (live request,
+    # 2026-07-15). Nones afterwards let the replay run to completion.
+    signals = ["interrupt", "interrupt"] + [None] * 60
+
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
-        patch("vim_ai_follower.control.check_signal", side_effect=["interrupt", "interrupt"]),
+        patch("vim_ai_follower.control.check_signal", side_effect=signals),
         patch("vim_ai_follower.hooks.time.sleep"),
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = _literal_sends(run)
-    assert ":e!" in sends  # unsaved user edits discarded, real file loaded
-    assert ":setlocal readonly nomodifiable" in sends  # relocked
-    # the defensive `:tab drop` preamble lands on the file's tab (immune to
-    # the user having closed/reordered tabs) before it's reloaded. This is
-    # the fresh-file path, so NO earlier drop exists (show_fresh never tab
-    # drops — it must not load the file from disk): the one drop here IS
-    # reload_and_relock's, mutation-verified (removing its goto_file fails
-    # this index() with ValueError).
-    drops = [i for i, text in enumerate(sends) if text == f":tab drop {target}"]
-    assert len(drops) == 1
-    assert drops[0] < sends.index(":e!")
+    assert ":e!" not in sends  # never the instant full-file reload
+    # the replay typed the file's lines after the des-interrupt
+    assert "a" in sends and "b" in sends
+    # and relocked (fresh-retype lock) when the replay completed
+    assert ":silent! e! | setlocal readonly nomodifiable nopaste" in sends
     refreshed = state.FollowerState.read("$1")
     assert refreshed is not None
-    assert refreshed.current_file == str(target)  # following resumes in place
+    assert refreshed.current_file == str(target)  # following resumed in place
     assert capsys.readouterr().out == ""  # nothing changed for Claude: no notification
+
+
+def test_hook_post_des_interrupt_without_a_remainder_falls_back_to_reload(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # If the interrupt-point remainder is gone (stale/consumed), the old
+    # behavior remains: reload the finished file and relock.
+    target = tmp_path / "f.txt"
+    target.write_text("a\nb\n")
+    _register_fake_follower("$1", "%2")
+
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    original_load = control.load_pending_animation
+
+    def _consume_then_none(session_id: str, base_dir: Path | None = None) -> object:
+        original_load(session_id, base_dir)  # consume whatever was saved
+        return None
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+        patch("vim_ai_follower.control.check_signal", side_effect=["interrupt", "interrupt"]),
+        patch(
+            "vim_ai_follower.hooks.control.load_pending_animation",
+            side_effect=_consume_then_none,
+        ),
+        patch("vim_ai_follower.hooks.time.sleep"),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    sends = _literal_sends(run)
+    assert ":e!" in sends
+    assert ":setlocal readonly nomodifiable" in sends
+    assert capsys.readouterr().out == ""
+
+
+def test_hook_post_replay_interrupted_again_hands_over_without_a_second_wait(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A third S during the des-interrupt replay hands the buffer to the
+    # user and releases the turn — one hand-off wait per hook, no second
+    # notification loop.
+    target = tmp_path / "f.txt"
+    target.write_text("a\nb\nc\nd\n")
+    _register_fake_follower("$1", "%2")
+
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    signals: list[str | None] = ["interrupt", "interrupt", None, None, None, None, "interrupt"]
+    signals += [None] * 40
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+        patch("vim_ai_follower.control.check_signal", side_effect=signals),
+        patch("vim_ai_follower.hooks.time.sleep"),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    sends = _literal_sends(run)
+    assert ":setlocal modifiable nopaste" in sends  # handed over, unlocked
+    refreshed = state.FollowerState.read("$1")
+    assert refreshed is not None
+    assert refreshed.current_file is None  # tracking dropped until resync
+    assert capsys.readouterr().out == ""  # no notification for the replay stop
 
 
 def test_hook_post_handoff_keeps_polling_through_unreadable_reads(
