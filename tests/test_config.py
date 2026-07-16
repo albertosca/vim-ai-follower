@@ -30,6 +30,14 @@ def test_load_falls_back_on_invalid_values(tmp_path: Path) -> None:
     assert (cfg.open_policy, cfg.adopt_existing, cfg.max_tabs) == ("manual", False, 5)
 
 
+def test_load_falls_back_on_invalid_on_failure_and_speed(tmp_path: Path) -> None:
+    path = tmp_path / "config.json"
+    path.write_text('{"on_failure": "bogus", "speed": "ludicrous"}')
+    cfg = config.load(path)
+    assert cfg.on_failure == config.DEFAULT_ON_FAILURE
+    assert cfg.speed == config.DEFAULT_SPEED
+
+
 def test_load_rejects_bool_max_tabs(tmp_path: Path) -> None:
     # JSON true is a Python bool, and bool is an int subclass with True == 1,
     # so without the explicit isinstance(bool) guard `"max_tabs": true` would

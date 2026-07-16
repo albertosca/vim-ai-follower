@@ -33,6 +33,16 @@ def test_ensure_showing_issues_edit_command() -> None:
     nvim.command.assert_called_once_with("edit /tmp/f.txt")
 
 
+def test_goto_file_delegates_to_ensure_showing() -> None:
+    # No tabs in this backend (see Follower protocol docstring) — navigating
+    # to a file is just switching the current buffer, same as ensure_showing.
+    follower = NvimRpcFollower(socket_path="/tmp/x.sock")
+    nvim = MagicMock()
+    with patch("vim_ai_follower.backends.nvim_rpc.pynvim.attach", return_value=nvim):
+        follower.goto_file("/tmp/f.txt")
+    nvim.command.assert_called_once_with("edit /tmp/f.txt")
+
+
 def test_apply_edit_sets_buffer_lines_for_each_op_and_reports_completed() -> None:
     follower = NvimRpcFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()

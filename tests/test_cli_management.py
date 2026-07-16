@@ -120,6 +120,57 @@ def test_status_reports_on_failure_and_speed(capsys: pytest.CaptureFixture[str])
     assert "speed=lento" in out
 
 
+def test_start_adopts_existing_vim_pane_when_configured(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"adopt_existing": true}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+
+    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
+        if cmd[:3] == ["tmux", "list-panes", "-a"]:
+            return MagicMock(returncode=0, stdout="%1 zsh\n%7 vim\n")
+        if cmd[:4] == ["tmux", "list-panes", "-t", "%1"]:
+            return MagicMock(returncode=0, stdout="%1 zsh\n%7 vim\n")
+        if cmd[:2] == ["tmux", "display-message"]:
+            return MagicMock(returncode=0, stdout="$1\n")
+        if cmd[:3] == ["tmux", "list-keys", "-T"]:
+            return MagicMock(returncode=1, stdout="")
+        return MagicMock(returncode=0, stdout="")
+
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_run) as run:
+        assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
+        result = state.FollowerState.get("$1")
+
+    assert not any(c.args[0][:2] == ["tmux", "split-window"] for c in run.call_args_list)
+    assert result is not None
+    assert result.target == "%7"
+    assert result.adopted is True
+    assert result.shown_any is True
+
+
+def test_start_falls_back_to_a_split_when_adoption_finds_nothing_to_adopt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"adopt_existing": true}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+
+    # No vim pane sharing the origin's window — adopt_target must return
+    # None, and cmd_start falls through to its normal dedicated split.
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        side_effect=_mock_tmux_run(other_panes=("%1",)),
+    ) as run:
+        assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
+        result = state.FollowerState.get("$1")
+
+    splits = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "split-window"]]
+    assert len(splits) == 1
+    assert result is not None
+    assert result.adopted is False
+
+
 def test_start_nvim_backend_registers_when_socket_alive() -> None:
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
@@ -168,6 +219,26 @@ def test_start_registers_keybindings_with_absolute_path_and_silenced_output(
         # pane target — TMUX_PANE must take the pre-expanded id directly
         assert shell_command.startswith("TMUX_PANE=#{pane_id} ")
         assert "display-message" not in shell_command
+
+
+def test_existing_binding_skips_malformed_and_untabled_lines() -> None:
+    # Real `list-keys -T prefix` output can include lines this parser must
+    # tolerate without matching: an unbalanced-quote line (shlex.split raises
+    # ValueError) and a line with no "-T" token at all — both must be
+    # skipped, falling through to the line that actually matches.
+    output = (
+        'broken "quote\n'
+        "unrelated command\n"
+        'bind-key -T prefix P run-shell "/x/claude-follow pause"\n'
+    )
+    with patch(
+        "vim_ai_follower.keybindings.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout=output),
+    ):
+        assert (
+            keybindings._existing_binding("P")
+            == 'bind-key -T prefix P run-shell "/x/claude-follow pause"'
+        )
 
 
 def test_claude_follow_executable_falls_back_to_which_then_bare_name(
@@ -356,6 +427,10 @@ def test_speed_clamps_at_the_slow_end_and_says_so(capsys: pytest.CaptureFixture[
     assert "speed lento (slowest)" in capsys.readouterr().out
 
 
+def test_speed_without_tmux_env_fails() -> None:
+    assert commands.cmd_speed({}, "up") == 1
+
+
 def test_speed_without_follower_is_honest_noop(capsys: pytest.CaptureFixture[str]) -> None:
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
@@ -385,6 +460,47 @@ def _resize_pane_calls(run_mock: MagicMock) -> list[list[str]]:
     return [
         c.args[0] for c in run_mock.call_args_list if c.args[0][:3] == ["tmux", "resize-pane", "-Z"]
     ]
+
+
+def test_toggle_without_tmux_env_fails() -> None:
+    assert commands.cmd_toggle({}) == 1
+
+
+def test_toggle_without_a_registered_follower_is_a_noop(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        assert commands.cmd_toggle({"TMUX_PANE": "%1"}) == 0
+    assert "no follower to toggle" in capsys.readouterr().out
+
+
+def test_toggle_off_without_origin_skips_zoom() -> None:
+    # register_fake_follower never sets origin (defaults to "") — muting a
+    # follower that was never given an origin pane must not try to zoom one.
+    _register_fake_follower("$1", "%2")
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        side_effect=_mock_tmux_run_with_zoom("0", pane_id="%2"),
+    ) as run:
+        assert commands.cmd_toggle({"TMUX_PANE": "%1"}) == 0
+    result = state.FollowerState.read("$1")
+    assert result is not None
+    assert result.enabled is False
+    assert _resize_pane_calls(run) == []
+
+
+def test_toggle_on_without_origin_skips_unzoom_and_reopen() -> None:
+    _register_fake_follower("$1", "%2", open_files=("/a.py",), shown_any=True)
+    state.FollowerState.update("$1", enabled=False)
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        side_effect=_mock_tmux_run_with_zoom("1", pane_id="%2"),
+    ) as run:
+        assert commands.cmd_toggle({"TMUX_PANE": "%1"}) == 0
+    result = state.FollowerState.read("$1")
+    assert result is not None
+    assert result.enabled is True
+    assert _resize_pane_calls(run) == []
 
 
 def test_toggle_off_mutes_and_zooms_origin() -> None:

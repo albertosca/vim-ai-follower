@@ -93,7 +93,12 @@ def _maybe_auto_open(
     if cfg.open_policy == "manual" or not _passes_policy(cfg, file_path):
         return None
     origin = env.get("TMUX_PANE", "")
-    if not origin:
+    if not origin:  # pragma: no cover
+        # Genuinely unreachable: both callers (_handle_hook_post_edit,
+        # _handle_hook_post_read) only reach this function after
+        # TmuxSession.from_env(env) already returned a non-None session,
+        # which itself required env.get("TMUX_PANE") to be truthy — the
+        # same env dict, never mutated in between.
         return None
     keybindings.register()
     adopt = adopt_target(origin) if cfg.adopt_existing else None

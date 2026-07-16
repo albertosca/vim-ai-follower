@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -62,6 +63,25 @@ def test_hook_pre_noop_without_file_path() -> None:
 def test_hook_pre_noop_without_tmux_env() -> None:
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/f.txt"}}
     assert hooks.cmd_hook_pre({}, payload) == 0
+
+
+def test_hook_pre_skips_non_code_files_under_code_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"open_policy": "code"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    target = tmp_path / "notes.md"
+    target.write_text("some notes\n")
+    payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="$1\n"),
+    ):
+        assert hooks.cmd_hook_pre({"TMUX_PANE": "%1"}, payload) == 0
+    # policy blocked it before a snapshot was ever taken — no snapshot file
+    # exists at all (distinct from an empty-file snapshot that was saved)
+    assert not snapshot._snapshot_path("$1", str(target), None).exists()
 
 
 def test_hook_post_noop_when_no_follower_registered(tmp_path: Path) -> None:
@@ -198,6 +218,27 @@ def test_hook_post_read_without_offset_does_not_navigate(tmp_path: Path) -> None
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert _literal_sends(run) == [f":tab drop {target}", ":setlocal readonly nomodifiable"]
+
+
+def test_hook_post_read_skips_non_code_files_under_code_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"open_policy": "code"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+
+    target = tmp_path / "notes.md"
+    target.write_text("some notes\n")
+    _register_fake_follower("$1", "%2")
+
+    payload: dict[str, object] = {
+        "tool_name": "Read",
+        "tool_input": {"file_path": str(target)},
+    }
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    assert _literal_sends(run) == []
 
 
 def test_hook_post_read_navigates_to_file_and_offset(tmp_path: Path) -> None:
@@ -339,6 +380,44 @@ def test_eviction_closes_oldest_tab_before_animating(
     assert refreshed.open_files == (str(b), str(c))
 
 
+def test_eviction_is_a_pure_bookkeeping_noop_for_the_nvim_rpc_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The nvim_rpc backend has no tabs (see Follower protocol docstring) —
+    # eviction must still bump open_files, but there is no tab to close.
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"max_tabs": 2}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+
+    a = tmp_path / "a.py"
+    b = tmp_path / "b.py"
+    c = tmp_path / "c.py"
+    c.write_text("print('c')\n")
+    state.FollowerState.set(
+        "$1",
+        "nvim_rpc",
+        "/tmp/x.sock",
+        current_file=str(b),
+        open_files=(str(a), str(b)),
+        shown_any=True,
+    )
+
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(c)}}
+    nvim = MagicMock()
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("pynvim.attach", return_value=nvim),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    refreshed = state.FollowerState.read("$1")
+    assert refreshed is not None
+    assert refreshed.open_files == (str(b), str(c))
+    # the evicted file (a) is never touched — the tmux backend's close_tab
+    # would goto_file + bwipeout it, but this backend has no tab to close
+    assert not any(str(a) in str(call) for call in nvim.command.call_args_list)
+
+
 def test_hook_post_ignores_unrelated_tools() -> None:
     payload: dict[str, object] = {"tool_name": "Bash", "tool_input": {}}
     assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
@@ -355,6 +434,20 @@ def test_main_start_stop_status(
         assert cli.main(["stop"]) == 0
         assert cli.main(["status"]) == 0
         assert "no follower active" in capsys.readouterr().out
+
+
+def test_main_speed_and_toggle_dispatch(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        monkeypatch.setenv("TMUX_PANE", "%1")
+        assert cli.main(["start"]) == 0
+        assert cli.main(["speed-up"]) == 0
+        assert "speed" in capsys.readouterr().out
+        assert cli.main(["speed-down"]) == 0
+        assert "speed" in capsys.readouterr().out
+        assert cli.main(["toggle"]) == 0
+        assert "follower muted" in capsys.readouterr().out
 
 
 def test_main_hook_pre_reads_stdin_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -654,6 +747,33 @@ def test_auto_open_adopts_existing_vim_pane(
     assert result.shown_any is True
 
 
+def test_auto_open_logs_and_noops_when_the_split_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"open_policy": "always"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+
+    target = tmp_path / "f.txt"
+    target.write_text("hello\n")
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+
+    with (
+        patch(
+            "vim_ai_follower.tmux.subprocess.run",
+            side_effect=_mock_tmux_run(other_panes=("%1",)),
+        ),
+        patch(
+            "vim_ai_follower.hooks.TmuxVimFollower.start",
+            side_effect=subprocess.CalledProcessError(1, ["tmux", "split-window"]),
+        ),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    # the failed auto-open must not register a follower or crash the hook
+    assert state.FollowerState.get("$1") is None
+
+
 def test_code_policy_skips_non_code_files_entirely(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -730,6 +850,44 @@ def test_hook_post_des_interrupt_replays_the_remaining_animation(
     assert capsys.readouterr().out == ""  # nothing changed for Claude: no notification
 
 
+def test_hook_post_des_interrupt_rebuilds_partial_content_before_replaying(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Unlike the "nothing shown yet" case above, this interrupt fires after
+    # two lines were already typed — the des-interrupt must rebuild the
+    # buffer to that partial state (rewrite_buffer with non-empty content)
+    # before replaying the genuine remainder.
+    target = tmp_path / "f.txt"
+    target.write_text("a\nb\nc\nd\n")
+    _register_fake_follower("$1", "%2")
+
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    # 6 Nones let "a" and "b" type fully; the first "interrupt" stops "c"
+    # before anything of it is sent (completed_count == 2); the second
+    # "interrupt" is the handoff loop's first check, firing the des-interrupt
+    # immediately. Remaining Nones let the rebuild ("a","b") and the replay
+    # of the genuine remainder ("c","d") both run to completion.
+    signals = [None] * 6 + ["interrupt", "interrupt"] + [None] * 60
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+        patch("vim_ai_follower.control.check_signal", side_effect=signals),
+        patch("vim_ai_follower.hooks.time.sleep"),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    sends = _literal_sends(run)
+    assert ":e!" not in sends  # never the instant full-file reload
+    # the rebuild retyped the already-shown lines, then the replay typed
+    # the genuine remainder
+    assert "a" in sends and "b" in sends and "c" in sends and "d" in sends
+    assert ":silent! e! | setlocal readonly nomodifiable nopaste" in sends
+    refreshed = state.FollowerState.read("$1")
+    assert refreshed is not None
+    assert refreshed.current_file == str(target)
+    assert capsys.readouterr().out == ""
+
+
 def test_hook_post_des_interrupt_without_a_remainder_falls_back_to_reload(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -760,6 +918,38 @@ def test_hook_post_des_interrupt_without_a_remainder_falls_back_to_reload(
     sends = _literal_sends(run)
     assert ":e!" in sends
     assert ":setlocal readonly nomodifiable" in sends
+    assert capsys.readouterr().out == ""
+
+
+def test_hook_post_handoff_survives_an_unstatable_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The initial mtime read at hand-off time is best-effort (a transient
+    # FS hiccup must not crash the hook) — it only guards the "saved
+    # unchanged" detection, which then simply never fires.
+    target = tmp_path / "f.txt"
+    target.write_text("a\nb\n")
+    _register_fake_follower("$1", "%2")
+
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    original_load = control.load_pending_animation
+
+    def _consume_then_none(session_id: str, base_dir: Path | None = None) -> object:
+        original_load(session_id, base_dir)
+        return None
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.control.check_signal", side_effect=["interrupt", "interrupt"]),
+        patch(
+            "vim_ai_follower.hooks.control.load_pending_animation",
+            side_effect=_consume_then_none,
+        ),
+        patch("vim_ai_follower.hooks.Path.stat", side_effect=OSError("boom")),
+        patch("vim_ai_follower.hooks.time.sleep"),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
     assert capsys.readouterr().out == ""
 
 
