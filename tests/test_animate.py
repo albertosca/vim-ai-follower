@@ -21,10 +21,15 @@ from vim_ai_follower.diff import EditOp
 from vim_ai_follower.tmux import TmuxPane
 
 
-def test_delete_only_op_emits_ex_delete_command() -> None:
+def test_delete_only_op_deletes_line_by_line_for_the_animation() -> None:
+    # One :Nd per line, all at start_line (lines shift up after each), so
+    # deletions are paced and visible like insertions instead of vanishing
+    # in a single :s,ed (live request, 2026-07-15).
     op = EditOp(kind="delete", start_line=2, end_line=3, new_lines=())
     assert _delete_sequences(op) == [
-        KeySequence(":2,3d", literal=True),
+        KeySequence(":2d", literal=True),
+        KeySequence("Enter", literal=False),
+        KeySequence(":2d", literal=True),
         KeySequence("Enter", literal=False),
     ]
 
@@ -62,7 +67,7 @@ def test_replace_op_deletes_then_inserts() -> None:
     op = EditOp(kind="replace", start_line=2, end_line=2, new_lines=("X",))
     insert_seq, _ = _insert_sequences(op)
     assert _delete_sequences(op) + insert_seq == [
-        KeySequence(":2,2d", literal=True),
+        KeySequence(":2d", literal=True),
         KeySequence("Enter", literal=False),
         KeySequence(":1", literal=True),
         KeySequence("Enter", literal=False),
@@ -179,12 +184,12 @@ def test_apply_passes_session_id_and_base_dir_to_check_signal() -> None:
     check.assert_called_once_with("$7", Path("/tmp/x"))
 
 
-def test_delete_sequences_for_delete_op() -> None:
-    op = EditOp(kind="delete", start_line=2, end_line=3, new_lines=())
-    assert _delete_sequences(op) == [
-        KeySequence(":2,3d", literal=True),
-        KeySequence("Enter", literal=False),
-    ]
+def test_delete_sequences_one_pair_per_line() -> None:
+    op = EditOp(kind="delete", start_line=2, end_line=4, new_lines=())
+    seqs = _delete_sequences(op)
+    assert len(seqs) == 6  # three (":2d", Enter) pairs
+    assert all(s.text == ":2d" for s in seqs[::2])
+    assert all(s.text == "Enter" and not s.literal for s in seqs[1::2])
 
 
 def test_delete_sequences_empty_for_pure_insert_op() -> None:
@@ -311,12 +316,12 @@ def test_run_ops_interrupted_before_insert_mode_entered_skips_undo(tmp_path: Pat
 def test_run_ops_interrupted_during_delete_needs_no_undo(tmp_path: Path) -> None:
     pane = cast(TmuxPane, MagicMock())
     op = EditOp(kind="delete", start_line=2, end_line=3, new_lines=())
-    # the command text (":2,3d") gets typed, but the signal fires before its
-    # Enter — the ex-command was never executed, so Escape alone is enough
+    # the first pair's command text (":2d") gets typed, but the signal fires
+    # before its Enter — no pair committed, so Escape alone is enough
     with patch("vim_ai_follower.control.check_signal", side_effect=[None, "interrupt"]):
         result = run_ops(pane, "$1", [op], pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("interrupted", 0)
-    pane.send_text.assert_called_once_with(":2,3d")  # type: ignore[attr-defined]
+    pane.send_text.assert_called_once_with(":2d")  # type: ignore[attr-defined]
     pane.send_key.assert_called_once_with("Escape")  # type: ignore[attr-defined]
 
 
@@ -724,3 +729,46 @@ def test_run_ops_re_reads_pace_from_provider_once_per_op(tmp_path: Path) -> None
         result = run_ops(pane, "$1", ops, provider, base_dir=tmp_path)
     assert result == AnimationResult("completed", 2)
     assert len(calls) >= 2  # one evaluation per op, not one per run
+
+
+def test_delete_half_pause_rolls_back_each_committed_line_delete(tmp_path: Path) -> None:
+    # Three-line delete, pause after the second (":2d", Enter) pair: two
+    # deletes committed -> exactly two "u" before the wait, so the buffer
+    # sits back on the clean op boundary for the retry.
+    pane = cast(TmuxPane, MagicMock())
+    op = EditOp(kind="delete", start_line=2, end_line=4, new_lines=())
+    calls = {"n": 0}
+
+    def _pause_after_two_pairs(session_id: str, base_dir: Path | None = None) -> str | None:
+        calls["n"] += 1
+        # checks precede each sequence: pause at the 5th (before the 3rd
+        # pair's ":2d"), resume at the next check inside the wait.
+        return "pause" if calls["n"] in (5, 6) else None
+
+    with patch("vim_ai_follower.control.check_signal", side_effect=_pause_after_two_pairs):
+        result = run_ops(pane, "$1", [op], pace_seconds=0.0, base_dir=tmp_path)
+    assert result.outcome == "completed"
+    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    first_retry = sent_texts.index(":2d", sent_texts.index("u"))
+    assert sent_texts[:first_retry].count("u") == 2  # one per committed line delete
+
+
+def test_insert_half_rollback_undoes_every_line_of_the_delete_half(tmp_path: Path) -> None:
+    # replace op spanning three lines; interrupt during the insert half ->
+    # rollback must undo the opened insert line (1 u) AND all three
+    # per-line deletes (3 u), not just one.
+    pane = cast(TmuxPane, MagicMock())
+    op = EditOp(kind="replace", start_line=2, end_line=4, new_lines=("x",))
+    calls = {"n": 0}
+
+    def _interrupt_in_insert(session_id: str, base_dir: Path | None = None) -> str | None:
+        calls["n"] += 1
+        # delete half = 6 sequences (checks 1-6); insert prefix ":1",
+        # Enter, "o" = checks 7-9; interrupt at check 10.
+        return "interrupt" if calls["n"] == 10 else None
+
+    with patch("vim_ai_follower.control.check_signal", side_effect=_interrupt_in_insert):
+        result = run_ops(pane, "$1", [op], pace_seconds=0.0, base_dir=tmp_path)
+    assert result.outcome == "interrupted"
+    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    assert sent_texts.count("u") == 4  # 1 insert + 3 line deletes

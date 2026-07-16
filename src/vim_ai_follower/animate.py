@@ -30,9 +30,18 @@ class ApplyResult:
 
 
 def _delete_sequences(op: EditOp) -> list[KeySequence]:
+    """One (":Nd", Enter) pair per deleted line — always at start_line,
+    since the remaining lines shift up after each delete. Per-line pairs
+    make deletions paced and visible like insertions (a single :s,ed made
+    whole blocks vanish in one frame), and each pair is its own undo unit
+    for the rollback bookkeeping in run_ops."""
     if op.end_line < op.start_line:
         return []
-    return [KeySequence(f":{op.start_line},{op.end_line}d"), KeySequence("Enter", literal=False)]
+    sequences: list[KeySequence] = []
+    for _ in range(op.end_line - op.start_line + 1):
+        sequences.append(KeySequence(f":{op.start_line}d"))
+        sequences.append(KeySequence("Enter", literal=False))
+    return sequences
 
 
 def _insert_sequences(op: EditOp) -> tuple[list[KeySequence], int]:
@@ -130,6 +139,10 @@ def run_ops(
                 )
                 if result.outcome != "completed":
                     pane.send_key("Escape")
+                    # Each committed (":Nd", Enter) pair is one undo unit;
+                    # a half-typed pair was cancelled by the Escape above.
+                    for _ in range(result.sent_count // 2):
+                        pane.send_text("u")
                     if result.outcome == "interrupted":
                         return AnimationResult("interrupted", index)
                     if not _wait_while_paused(session_id, save_pending, base_dir):
@@ -147,13 +160,13 @@ def run_ops(
                     pane.send_key("Escape")
                     if result.sent_count >= prefix_len:
                         pane.send_text("u")
-                    if delete_seq:
-                        # The delete half already ran as its own undo unit;
-                        # roll it back too so the buffer sits on a clean op
-                        # boundary — otherwise retrying would re-run the
-                        # delete against lines that have shifted, and the
-                        # interrupt notification would claim less was shown
-                        # than actually happened.
+                    # The delete half already ran, one undo unit per line;
+                    # roll all of it back so the buffer sits on a clean op
+                    # boundary — otherwise retrying would re-run the delete
+                    # against lines that have shifted, and the interrupt
+                    # notification would claim less was shown than actually
+                    # happened.
+                    for _ in range(len(delete_seq) // 2):
                         pane.send_text("u")
                     if result.outcome == "interrupted":
                         return AnimationResult("interrupted", index)
