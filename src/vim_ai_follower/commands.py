@@ -265,7 +265,9 @@ def cmd_speed(env: dict[str, str], direction: Literal["up", "down"]) -> int:
     else:
         label = new_speed
     print(f"claude-follow: speed {label}")
-    _show_popup(current, f"Speed: {label}")
+    # Status line, not popup: a popup grabs the keyboard and blocks the
+    # next +/_ press until it closes.
+    tmux.show_status(current.target, f"Speed: {label}")
     return 0
 
 

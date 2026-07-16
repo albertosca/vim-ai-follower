@@ -305,7 +305,7 @@ def test_speed_up_steps_state_and_reports(capsys: pytest.CaptureFixture[str]) ->
     _register_fake_follower("$1", "%2")
     state.FollowerState.update("$1", speed="rapido")
     with (
-        patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()) as run,
         patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
     ):
         assert commands.cmd_speed({"TMUX_PANE": "%1"}, "up") == 0
@@ -313,15 +313,18 @@ def test_speed_up_steps_state_and_reports(capsys: pytest.CaptureFixture[str]) ->
     assert result is not None
     assert result.speed == "muito_rapido"
     assert "speed muito_rapido" in capsys.readouterr().out
-    popups = [c.args[0] for c in popen.call_args_list if c.args[0][:2] == ["tmux", "display-popup"]]
-    assert any("Speed: muito_rapido" in arg for arg in popups[0])
+    assert popen.call_args_list == []  # status line, never a keyboard-grabbing popup
+    status_calls = [
+        c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "display-message"]
+    ]
+    assert any("Speed: muito_rapido" in " ".join(c) for c in status_calls)
 
 
 def test_speed_clamps_at_the_fast_end_and_says_so(capsys: pytest.CaptureFixture[str]) -> None:
     _register_fake_follower("$1", "%2")
     state.FollowerState.update("$1", speed="instant")
     with (
-        patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()) as run,
         patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
     ):
         assert commands.cmd_speed({"TMUX_PANE": "%1"}, "up") == 0
@@ -329,8 +332,14 @@ def test_speed_clamps_at_the_fast_end_and_says_so(capsys: pytest.CaptureFixture[
     assert result is not None
     assert result.speed == "instant"  # saturates, never wraps to lento
     assert "speed instant (fastest)" in capsys.readouterr().out
-    popup_args = " ".join(str(a) for a in popen.call_args[0][0])
-    assert "Speed: instant (fastest)" in popup_args
+    # Feedback rides the tmux status line, never a popup: popups grab the
+    # keyboard, which forced a wait between consecutive +/_ presses (live
+    # finding, 2026-07-15).
+    assert popen.call_args_list == []
+    status_calls = [
+        c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "display-message"]
+    ]
+    assert any("Speed: instant (fastest)" in " ".join(c) for c in status_calls)
 
 
 def test_speed_clamps_at_the_slow_end_and_says_so(capsys: pytest.CaptureFixture[str]) -> None:

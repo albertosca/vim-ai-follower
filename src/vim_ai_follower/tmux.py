@@ -164,3 +164,13 @@ def show_popup(pane_id: str, message: str) -> None:
             f"echo {shlex.quote(message)}; sleep 1.5",
         ]
     )
+
+
+def show_status(pane_id: str, message: str) -> None:
+    """Transient message on the tmux status line — unlike show_popup it
+    never grabs the keyboard, so rapid repeated keybinding presses (the
+    speed keys) are not blocked while feedback is visible."""
+    subprocess.run(
+        ["tmux", "display-message", "-t", pane_id, message],
+        check=False,
+    )
