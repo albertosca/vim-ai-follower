@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from vim_ai_follower.tmux import TmuxPane, TmuxSession
+from vim_ai_follower.tmux import TmuxPane, TmuxSession, adopt_target
 
 
 def test_send_text_calls_tmux_send_keys_literal() -> None:
@@ -160,3 +160,21 @@ def test_window_option_get_set_and_unset() -> None:
         "%1",
         "pane-border-status",
     ]
+
+
+def _panes_run(listing: str) -> MagicMock:
+    return MagicMock(returncode=0, stdout=listing)
+
+
+def test_adopt_target_requires_exactly_one_vim_pane() -> None:
+    # One vim: adopt it. Two vims: ambiguous — never guess which Vim the
+    # user meant; the caller falls back to a dedicated split and says why.
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        run.return_value = _panes_run("%1 zsh\n%7 vim\n")
+        assert adopt_target("%1") == "%7"
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        run.return_value = _panes_run("%1 zsh\n%7 vim\n%9 vim\n")
+        assert adopt_target("%1") is None
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        run.return_value = _panes_run("%1 zsh\n%2 zsh\n")
+        assert adopt_target("%1") is None

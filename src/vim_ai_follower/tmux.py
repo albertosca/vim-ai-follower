@@ -115,12 +115,17 @@ class TmuxPane:
 
 
 def adopt_target(origin: str) -> str | None:
-    """Find an existing vim pane in origin's window to adopt as the follower
-    target, so a fresh split isn't opened when one is already running."""
-    for pane_id, command in TmuxPane(pane_id=origin).window_panes():
-        if pane_id != origin and command == "vim":
-            return pane_id
-    return None
+    """The single existing vim pane in origin's window to adopt as the
+    follower target, so a fresh split isn't opened when one is already
+    running. With two or more vim panes the choice is ambiguous — never
+    guess which Vim the user meant: return None and let the caller fall
+    back to a dedicated split (and say why)."""
+    vim_panes = [
+        pane_id
+        for pane_id, command in TmuxPane(pane_id=origin).window_panes()
+        if pane_id != origin and command == "vim"
+    ]
+    return vim_panes[0] if len(vim_panes) == 1 else None
 
 
 @dataclass(frozen=True)
