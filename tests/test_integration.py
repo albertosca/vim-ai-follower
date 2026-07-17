@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from vim_ai_follower import cli, config, control
+from vim_ai_follower import cli, config, control, state
 from vim_ai_follower.diff import compute_edit_script
 from vim_ai_follower.tmux import TmuxPane
 
@@ -968,3 +968,73 @@ def test_preamble_survives_a_pending_hit_enter_prompt_with_hostile_ctrl_n(
     rows = _capture(follower_pane_id).splitlines()
     anchor = rows.index("print('one')")
     assert rows[anchor : anchor + len(after_lines)] == after_lines
+
+
+def _new_window_pane(session_name: str) -> str:
+    result = subprocess.run(
+        ["tmux", "new-window", "-t", session_name, "-P", "-F", "#{pane_id}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def test_two_windows_get_isolated_followers(
+    tmux_session: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first_pane = _pane_ids(tmux_session)[0]
+    second_pane = _new_window_pane(tmux_session)
+    monkeypatch.setenv("TMUX_PANE", first_pane)
+    assert cli.main(["start"]) == 0
+    monkeypatch.setenv("TMUX_PANE", second_pane)
+    assert cli.main(["start"]) == 0
+
+    first_window = _window_id(first_pane)
+    second_window = _window_id(second_pane)
+    assert first_window != second_window
+    first_state = state.FollowerState.get(first_window)
+    second_state = state.FollowerState.get(second_window)
+    assert first_state is not None
+    assert second_state is not None
+    assert first_state.target != second_state.target
+
+    # A signal for one window is invisible to the other.
+    control.request_pause(first_window)
+    assert control.check_signal(second_window) is None
+    assert control.check_signal(first_window) == "pause"
+
+    # Strict no-op routing: a key pressed in a follower-less third window
+    # acts on nothing — no signal appears for either real follower.
+    third_pane = _new_window_pane(tmux_session)
+    monkeypatch.setenv("TMUX_PANE", third_pane)
+    assert cli.main(["pause"]) == 0
+    assert control.check_signal(first_window) is None
+    assert control.check_signal(second_window) is None
+
+
+def test_keybindings_survive_until_the_last_stop(
+    tmux_session: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first_pane = _pane_ids(tmux_session)[0]
+    second_pane = _new_window_pane(tmux_session)
+    monkeypatch.setenv("TMUX_PANE", first_pane)
+    assert cli.main(["start"]) == 0
+    monkeypatch.setenv("TMUX_PANE", second_pane)
+    assert cli.main(["start"]) == 0
+
+    def bound_keys() -> str:
+        return subprocess.run(
+            ["tmux", "list-keys", "-T", "prefix"],
+            capture_output=True,
+            text=True,
+            check=False,
+        ).stdout
+
+    monkeypatch.setenv("TMUX_PANE", first_pane)
+    assert cli.main(["stop"]) == 0
+    assert "claude-follow" in bound_keys()  # second follower still owns the keys
+
+    monkeypatch.setenv("TMUX_PANE", second_pane)
+    assert cli.main(["stop"]) == 0
+    assert "claude-follow" not in bound_keys()
