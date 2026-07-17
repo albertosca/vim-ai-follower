@@ -1,5 +1,5 @@
 """Thin subprocess wrappers over the tmux CLI: TmuxPane (send-keys, pane
-queries, zoom) and TmuxSession (resolve the session from the environment)."""
+queries, zoom) and TmuxWindow (resolve the window from the environment)."""
 
 from __future__ import annotations
 
@@ -129,26 +129,26 @@ def adopt_target(origin: str) -> str | None:
 
 
 @dataclass(frozen=True)
-class TmuxSession:
-    session_id: str
+class TmuxWindow:
+    window_id: str
 
     @classmethod
-    def from_env(cls, env: dict[str, str]) -> TmuxSession | None:
+    def from_env(cls, env: dict[str, str]) -> TmuxWindow | None:
         pane_id = env.get("TMUX_PANE")
         if not pane_id:
             return None
         result = subprocess.run(
-            ["tmux", "display-message", "-p", "-t", pane_id, "#{session_id}"],
+            ["tmux", "display-message", "-p", "-t", pane_id, "#{window_id}"],
             capture_output=True,
             text=True,
             check=False,
         )
         if result.returncode != 0:
             return None
-        session_id = result.stdout.strip()
-        if not session_id:
+        window_id = result.stdout.strip()
+        if not window_id:
             return None
-        return cls(session_id=session_id)
+        return cls(window_id=window_id)
 
 
 def show_popup(pane_id: str, message: str) -> None:

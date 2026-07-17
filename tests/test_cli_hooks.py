@@ -34,10 +34,10 @@ def test_hook_pre_saves_snapshot_of_existing_file(tmp_path: Path) -> None:
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
     with patch(
         "vim_ai_follower.tmux.subprocess.run",
-        return_value=MagicMock(returncode=0, stdout="$1\n"),
+        return_value=MagicMock(returncode=0, stdout="@1\n"),
     ):
         assert hooks.cmd_hook_pre({"TMUX_PANE": "%1"}, payload) == 0
-    assert snapshot.load("$1", str(target)) == "original\n"
+    assert snapshot.load("@1", str(target)) == "original\n"
 
 
 def test_hook_pre_saves_empty_snapshot_for_new_file(tmp_path: Path) -> None:
@@ -45,17 +45,17 @@ def test_hook_pre_saves_empty_snapshot_for_new_file(tmp_path: Path) -> None:
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     with patch(
         "vim_ai_follower.tmux.subprocess.run",
-        return_value=MagicMock(returncode=0, stdout="$1\n"),
+        return_value=MagicMock(returncode=0, stdout="@1\n"),
     ):
         assert hooks.cmd_hook_pre({"TMUX_PANE": "%1"}, payload) == 0
-    assert snapshot.load("$1", str(target)) == ""
+    assert snapshot.load("@1", str(target)) == ""
 
 
 def test_hook_pre_noop_without_file_path() -> None:
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {}}
     with patch(
         "vim_ai_follower.tmux.subprocess.run",
-        return_value=MagicMock(returncode=0, stdout="$1\n"),
+        return_value=MagicMock(returncode=0, stdout="@1\n"),
     ):
         assert hooks.cmd_hook_pre({"TMUX_PANE": "%1"}, payload) == 0
 
@@ -76,12 +76,12 @@ def test_hook_pre_skips_non_code_files_under_code_policy(
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
     with patch(
         "vim_ai_follower.tmux.subprocess.run",
-        return_value=MagicMock(returncode=0, stdout="$1\n"),
+        return_value=MagicMock(returncode=0, stdout="@1\n"),
     ):
         assert hooks.cmd_hook_pre({"TMUX_PANE": "%1"}, payload) == 0
     # policy blocked it before a snapshot was ever taken — no snapshot file
     # exists at all (distinct from an empty-file snapshot that was saved)
-    assert not snapshot._snapshot_path("$1", str(target), None).exists()
+    assert not snapshot._snapshot_path("@1", str(target), None).exists()
 
 
 def test_hook_post_noop_when_no_follower_registered(tmp_path: Path) -> None:
@@ -90,7 +90,7 @@ def test_hook_post_noop_when_no_follower_registered(tmp_path: Path) -> None:
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
     with patch(
         "vim_ai_follower.tmux.subprocess.run",
-        return_value=MagicMock(returncode=0, stdout="$1\n"),
+        return_value=MagicMock(returncode=0, stdout="@1\n"),
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
@@ -101,7 +101,7 @@ def test_hook_post_edit_noop_without_tmux_env() -> None:
 
 
 def test_hook_post_edit_noop_without_file_path() -> None:
-    _register_fake_follower("$1", "%2")
+    _register_fake_follower("@1", "%2")
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
@@ -109,7 +109,7 @@ def test_hook_post_edit_noop_without_file_path() -> None:
 
 def test_hook_post_edit_logs_and_noops_when_file_unreadable(tmp_path: Path) -> None:
     target = tmp_path / "gone.txt"
-    _register_fake_follower("$1", "%2")
+    _register_fake_follower("@1", "%2")
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
@@ -126,13 +126,13 @@ def test_hook_post_read_noop_when_no_follower_registered(tmp_path: Path) -> None
     payload: dict[str, object] = {"tool_name": "Read", "tool_input": {"file_path": str(target)}}
     with patch(
         "vim_ai_follower.tmux.subprocess.run",
-        return_value=MagicMock(returncode=0, stdout="$1\n"),
+        return_value=MagicMock(returncode=0, stdout="@1\n"),
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
 
 def test_hook_post_read_noop_without_file_path() -> None:
-    _register_fake_follower("$1", "%2")
+    _register_fake_follower("@1", "%2")
     payload: dict[str, object] = {"tool_name": "Read", "tool_input": {}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
@@ -145,8 +145,8 @@ def test_hook_post_first_open_retypes_from_scratch_instead_of_pasting(tmp_path: 
     # wiped, then the whole file is retyped from scratch — `:e` never runs.
     target = tmp_path / "f.txt"
     target.write_text("hello\nworld\n")
-    snapshot.save("$1", str(target), "hello\n")
-    _register_fake_follower("$1", "%2")
+    snapshot.save("@1", str(target), "hello\n")
+    _register_fake_follower("@1", "%2")
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
@@ -163,9 +163,9 @@ def test_hook_post_first_open_retypes_from_scratch_instead_of_pasting(tmp_path: 
 def test_hook_post_animates_a_text_edit_on_subsequent_change(tmp_path: Path) -> None:
     target = tmp_path / "f.txt"
     target.write_text("hello\nworld\n")
-    snapshot.save("$1", str(target), "hello\nworld\n")
+    snapshot.save("@1", str(target), "hello\nworld\n")
     _register_fake_follower(
-        "$1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
+        "@1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
     )
 
     target.write_text("hello\nvim ai follower\n")
@@ -180,8 +180,8 @@ def test_hook_post_animates_a_text_edit_on_subsequent_change(tmp_path: Path) -> 
 def test_hook_post_skips_binary_files_on_first_open(tmp_path: Path) -> None:
     target = tmp_path / "f.bin"
     target.write_bytes(b"\x00\x01\x02")
-    snapshot.save("$1", str(target), "")
-    _register_fake_follower("$1", "%2")
+    snapshot.save("@1", str(target), "")
+    _register_fake_follower("@1", "%2")
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
@@ -193,9 +193,9 @@ def test_hook_post_skips_binary_files_on_first_open(tmp_path: Path) -> None:
 def test_hook_post_skips_binary_files_on_subsequent_edit(tmp_path: Path) -> None:
     target = tmp_path / "f.bin"
     target.write_bytes(b"\x00\x01\x02")
-    snapshot.save("$1", str(target), "")
+    snapshot.save("@1", str(target), "")
     _register_fake_follower(
-        "$1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
+        "@1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
     )
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
@@ -208,7 +208,7 @@ def test_hook_post_skips_binary_files_on_subsequent_edit(tmp_path: Path) -> None
 def test_hook_post_read_without_offset_does_not_navigate(tmp_path: Path) -> None:
     target = tmp_path / "f.txt"
     target.write_text("a\nb\nc\n")
-    _register_fake_follower("$1", "%2")
+    _register_fake_follower("@1", "%2")
 
     payload: dict[str, object] = {
         "tool_name": "Read",
@@ -229,7 +229,7 @@ def test_hook_post_read_skips_non_code_files_under_code_policy(
 
     target = tmp_path / "notes.md"
     target.write_text("some notes\n")
-    _register_fake_follower("$1", "%2")
+    _register_fake_follower("@1", "%2")
 
     payload: dict[str, object] = {
         "tool_name": "Read",
@@ -244,7 +244,7 @@ def test_hook_post_read_skips_non_code_files_under_code_policy(
 def test_hook_post_read_navigates_to_file_and_offset(tmp_path: Path) -> None:
     target = tmp_path / "f.txt"
     target.write_text("a\nb\nc\n")
-    _register_fake_follower("$1", "%2")
+    _register_fake_follower("@1", "%2")
 
     payload: dict[str, object] = {
         "tool_name": "Read",
@@ -266,7 +266,7 @@ def test_hook_post_read_navigates_even_when_file_already_current(tmp_path: Path)
     # was current, so there's no early-return to skip it.
     target = tmp_path / "f.txt"
     target.write_text("a\nb\nc\n")
-    _register_fake_follower("$1", "%2", current_file=str(target))
+    _register_fake_follower("@1", "%2", current_file=str(target))
 
     payload: dict[str, object] = {
         "tool_name": "Read",
@@ -286,9 +286,9 @@ def test_hook_post_skips_e_when_file_already_current(tmp_path: Path) -> None:
     target = tmp_path / "f.txt"
     target.write_text("a\nb\n")
     _register_fake_follower(
-        "$1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
+        "@1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
     )
-    snapshot.save("$1", str(target), "a\nb\n")
+    snapshot.save("@1", str(target), "a\nb\n")
 
     target.write_text("a\nX\n")
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
@@ -306,7 +306,7 @@ def test_edit_of_untracked_file_is_fresh_and_updates_open_files(tmp_path: Path) 
     b.write_text("print('b')\n")
     # b was never shown before (open_files only tracks a) — freshness is
     # driven by open_files membership, not current_file.
-    _register_fake_follower("$1", "%2", current_file=str(a), open_files=(str(a),), shown_any=True)
+    _register_fake_follower("@1", "%2", current_file=str(a), open_files=(str(a),), shown_any=True)
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(b)}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
@@ -316,7 +316,7 @@ def test_edit_of_untracked_file_is_fresh_and_updates_open_files(tmp_path: Path) 
     assert ":tabnew" in sends  # show_fresh's in_new_tab, since shown_any was already True
     assert f":file {b}" in sends  # renamed in place — the show_fresh path, not apply_edit
 
-    refreshed = state.FollowerState.read("$1")
+    refreshed = state.FollowerState.read("@1")
     assert refreshed is not None
     assert refreshed.open_files == (str(a), str(b))
     assert refreshed.shown_any is True
@@ -326,12 +326,12 @@ def test_edit_of_tracked_file_uses_apply_edit_even_when_not_current(tmp_path: Pa
     a = tmp_path / "a.py"
     b = tmp_path / "b.py"
     a.write_text("print('a')\n")
-    snapshot.save("$1", str(a), "print('a')\n")
+    snapshot.save("@1", str(a), "print('a')\n")
     a.write_text("print('a changed')\n")
     # b is the current tab, but the edit targets a — already tracked, so it's
     # not fresh even though it's not the current file.
     _register_fake_follower(
-        "$1", "%2", current_file=str(b), open_files=(str(a), str(b)), shown_any=True
+        "@1", "%2", current_file=str(b), open_files=(str(a), str(b)), shown_any=True
     )
 
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(a)}}
@@ -359,7 +359,7 @@ def test_eviction_closes_oldest_tab_before_animating(
     c = tmp_path / "c.py"
     c.write_text("print('c')\n")
     _register_fake_follower(
-        "$1", "%2", current_file=str(b), open_files=(str(a), str(b)), shown_any=True
+        "@1", "%2", current_file=str(b), open_files=(str(a), str(b)), shown_any=True
     )
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(c)}}
@@ -375,7 +375,7 @@ def test_eviction_closes_oldest_tab_before_animating(
     assert close_index < rename_index
     assert not any("tabclose" in text for text in sends)
 
-    refreshed = state.FollowerState.read("$1")
+    refreshed = state.FollowerState.read("@1")
     assert refreshed is not None
     assert refreshed.open_files == (str(b), str(c))
 
@@ -394,7 +394,7 @@ def test_eviction_is_a_pure_bookkeeping_noop_for_the_nvim_rpc_backend(
     c = tmp_path / "c.py"
     c.write_text("print('c')\n")
     state.FollowerState.set(
-        "$1",
+        "@1",
         "nvim_rpc",
         "/tmp/x.sock",
         current_file=str(b),
@@ -410,7 +410,7 @@ def test_eviction_is_a_pure_bookkeeping_noop_for_the_nvim_rpc_backend(
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
-    refreshed = state.FollowerState.read("$1")
+    refreshed = state.FollowerState.read("@1")
     assert refreshed is not None
     assert refreshed.open_files == (str(b), str(c))
     # the evicted file (a) is never touched — the tmux backend's close_tab
@@ -457,7 +457,7 @@ def test_main_hook_pre_reads_stdin_json(monkeypatch: pytest.MonkeyPatch, tmp_pat
     monkeypatch.setattr("sys.stdin", io.StringIO(payload))
     with patch(
         "vim_ai_follower.tmux.subprocess.run",
-        return_value=MagicMock(returncode=0, stdout="$1\n"),
+        return_value=MagicMock(returncode=0, stdout="@1\n"),
     ):
         monkeypatch.setenv("TMUX_PANE", "%1")
         assert cli.main(["hook", "pre"]) == 0
@@ -470,7 +470,7 @@ def test_main_hook_post_reads_stdin_json(monkeypatch: pytest.MonkeyPatch, tmp_pa
     monkeypatch.setattr("sys.stdin", io.StringIO(payload))
     with patch(
         "vim_ai_follower.tmux.subprocess.run",
-        return_value=MagicMock(returncode=0, stdout="$1\n"),
+        return_value=MagicMock(returncode=0, stdout="@1\n"),
     ):
         monkeypatch.setenv("TMUX_PANE", "%1")
         assert cli.main(["hook", "post"]) == 0
@@ -484,7 +484,7 @@ def _interrupt_then_user_saves(
     rewriting the file, which releases the hook with the notification."""
     calls = {"n": 0}
 
-    def _check(session_id: str, base_dir: Path | None = None) -> str | None:
+    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
         calls["n"] += 1
         if calls["n"] == at_check:
             return "interrupt"
@@ -500,9 +500,9 @@ def test_hook_post_edit_interrupted_prints_notification_and_leaves_buffer_unlock
 ) -> None:
     target = tmp_path / "f.txt"
     target.write_text("hello\nworld\n")
-    snapshot.save("$1", str(target), "hello\nworld\n")
+    snapshot.save("@1", str(target), "hello\nworld\n")
     _register_fake_follower(
-        "$1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
+        "@1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
     )
     target.write_text("hello\nvim ai follower\n")
 
@@ -532,7 +532,7 @@ def test_hook_post_first_open_interrupted_prints_notification_with_partial_lines
 ) -> None:
     target = tmp_path / "f.txt"
     target.write_text("a\nb\nc\n")
-    _register_fake_follower("$1", "%2")
+    _register_fake_follower("@1", "%2")
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     # line "a" fully types (3 checks: i, a, Escape); "interrupt" fires on the
@@ -560,11 +560,11 @@ def test_hook_post_fast_forwards_pending_before_animating_same_file(tmp_path: Pa
     target = tmp_path / "f.txt"
     target.write_text("new content\n")
     _register_fake_follower(
-        "$1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
+        "@1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
     )
-    snapshot.save("$1", str(target), "old content\n")
+    snapshot.save("@1", str(target), "old content\n")
     control.save_pending_apply_edit(
-        "$1",
+        "@1",
         [EditOp(kind="insert", start_line=1, end_line=0, new_lines=("leftover",))],
         0.15,
         file_path=str(target),
@@ -577,15 +577,15 @@ def test_hook_post_fast_forwards_pending_before_animating_same_file(tmp_path: Pa
     sends = _literal_sends(run)
     assert "leftover" in sends  # the paused remainder replayed...
     assert sends.index("leftover") < sends.index("new content")  # ...BEFORE the new edit
-    assert control.has_pending_animation("$1") is False
+    assert control.has_pending_animation("@1") is False
 
 
 def test_hook_post_discards_pending_when_switching_files(tmp_path: Path) -> None:
     old = tmp_path / "old.txt"
     new = tmp_path / "new.txt"
     new.write_text("fresh\n")
-    _register_fake_follower("$1", "%2", current_file=str(old))
-    control.save_pending_show_fresh("$1", ("leftover",), 0.15, continuation=True)
+    _register_fake_follower("@1", "%2", current_file=str(old))
+    control.save_pending_show_fresh("@1", ("leftover",), 0.15, continuation=True)
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(new)}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
@@ -593,28 +593,28 @@ def test_hook_post_discards_pending_when_switching_files(tmp_path: Path) -> None
 
     # show_fresh wipes the buffer anyway — replaying into it would be garbage
     assert "leftover" not in _literal_sends(run)
-    assert control.has_pending_animation("$1") is False
+    assert control.has_pending_animation("@1") is False
 
 
 def test_hook_post_discards_pending_on_binary_files_too(tmp_path: Path) -> None:
     target = tmp_path / "blob.bin"
     target.write_bytes(b"\x00\x01\x02")
-    _register_fake_follower("$1", "%2", current_file=str(target))
-    control.save_pending_show_fresh("$1", ("leftover",), 0.15, continuation=True)
+    _register_fake_follower("@1", "%2", current_file=str(target))
+    control.save_pending_show_fresh("@1", ("leftover",), 0.15, continuation=True)
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert "leftover" not in _literal_sends(run)
-    assert control.has_pending_animation("$1") is False
+    assert control.has_pending_animation("@1") is False
 
 
 def test_hook_post_interrupt_resets_current_file_for_resync(tmp_path: Path) -> None:
     target = tmp_path / "f.txt"
     target.write_text("line one\nline two\n")
-    _register_fake_follower("$1", "%2", current_file=str(target))
-    snapshot.save("$1", str(target), "")
+    _register_fake_follower("@1", "%2", current_file=str(target))
+    snapshot.save("@1", str(target), "")
 
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
     with (
@@ -627,7 +627,7 @@ def test_hook_post_interrupt_resets_current_file_for_resync(tmp_path: Path) -> N
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
-    refreshed = state.FollowerState.read("$1")
+    refreshed = state.FollowerState.read("@1")
     assert refreshed is not None
     assert refreshed.current_file is None  # next edit resyncs via a full retype
 
@@ -635,7 +635,7 @@ def test_hook_post_interrupt_resets_current_file_for_resync(tmp_path: Path) -> N
 def test_hook_post_fresh_interrupt_also_resets_current_file(tmp_path: Path) -> None:
     target = tmp_path / "f.txt"
     target.write_text("a\nb\n")
-    _register_fake_follower("$1", "%2")
+    _register_fake_follower("@1", "%2")
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     with (
@@ -648,7 +648,7 @@ def test_hook_post_fresh_interrupt_also_resets_current_file(tmp_path: Path) -> N
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
-    refreshed = state.FollowerState.read("$1")
+    refreshed = state.FollowerState.read("@1")
     assert refreshed is not None
     assert refreshed.current_file is None
 
@@ -657,9 +657,9 @@ def test_hooks_are_noops_while_disabled(tmp_path: Path) -> None:
     target = tmp_path / "f.txt"
     target.write_text("original\n")
     _register_fake_follower(
-        "$1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
+        "@1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
     )
-    state.FollowerState.update("$1", enabled=False)
+    state.FollowerState.update("@1", enabled=False)
 
     pre_payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
     with (
@@ -703,7 +703,7 @@ def test_auto_open_splits_a_pane_when_policy_always(
         side_effect=_mock_tmux_run(other_panes=("%1",)),
     ) as run:
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
-        result = state.FollowerState.get("$1")
+        result = state.FollowerState.get("@1")
 
     splits = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "split-window"]]
     assert splits == [["tmux", "split-window", "-h", "-t", "%1", "-P", "-F", "#{pane_id}", "vim"]]
@@ -731,14 +731,14 @@ def test_auto_open_adopts_existing_vim_pane(
         if cmd[:4] == ["tmux", "list-panes", "-t", "%1"]:
             return MagicMock(returncode=0, stdout="%1 zsh\n%7 vim\n")
         if cmd[:2] == ["tmux", "display-message"]:
-            return MagicMock(returncode=0, stdout="$1\n")
+            return MagicMock(returncode=0, stdout="@1\n")
         if cmd[:3] == ["tmux", "list-keys", "-T"]:
             return MagicMock(returncode=1, stdout="")
         return MagicMock(returncode=0, stdout="")
 
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_run) as run:
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
-        result = state.FollowerState.get("$1")
+        result = state.FollowerState.get("@1")
 
     assert not any(c.args[0][:2] == ["tmux", "split-window"] for c in run.call_args_list)
     assert result is not None
@@ -771,7 +771,7 @@ def test_auto_open_logs_and_noops_when_the_split_fails(
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     # the failed auto-open must not register a follower or crash the hook
-    assert state.FollowerState.get("$1") is None
+    assert state.FollowerState.get("@1") is None
 
 
 def test_code_policy_skips_non_code_files_entirely(
@@ -784,7 +784,7 @@ def test_code_policy_skips_non_code_files_entirely(
     target = tmp_path / "notes.md"
     target.write_text("some notes\n")
     _register_fake_follower(
-        "$1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
+        "@1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
     )
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
@@ -806,7 +806,7 @@ def test_manual_policy_never_auto_opens(tmp_path: Path) -> None:
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert not any(c.args[0][:2] == ["tmux", "split-window"] for c in run.call_args_list)
-    assert state.FollowerState.get("$1") is None
+    assert state.FollowerState.get("@1") is None
 
 
 def test_configure_logging_is_idempotent() -> None:
@@ -821,7 +821,7 @@ def test_hook_post_des_interrupt_replays_the_remaining_animation(
 ) -> None:
     target = tmp_path / "f.txt"
     target.write_text("a\nb\n")
-    _register_fake_follower("$1", "%2")
+    _register_fake_follower("@1", "%2")
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     # interrupt fires at the first check (nothing shown yet); a second S
@@ -844,7 +844,7 @@ def test_hook_post_des_interrupt_replays_the_remaining_animation(
     assert "a" in sends and "b" in sends
     # and relocked (fresh-retype lock) when the replay completed
     assert ":silent! e! | setlocal readonly nomodifiable nopaste" in sends
-    refreshed = state.FollowerState.read("$1")
+    refreshed = state.FollowerState.read("@1")
     assert refreshed is not None
     assert refreshed.current_file == str(target)  # following resumed in place
     assert capsys.readouterr().out == ""  # nothing changed for Claude: no notification
@@ -859,7 +859,7 @@ def test_hook_post_des_interrupt_rebuilds_partial_content_before_replaying(
     # before replaying the genuine remainder.
     target = tmp_path / "f.txt"
     target.write_text("a\nb\nc\nd\n")
-    _register_fake_follower("$1", "%2")
+    _register_fake_follower("@1", "%2")
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     # 6 Nones let "a" and "b" type fully; the first "interrupt" stops "c"
@@ -882,7 +882,7 @@ def test_hook_post_des_interrupt_rebuilds_partial_content_before_replaying(
     # the genuine remainder
     assert "a" in sends and "b" in sends and "c" in sends and "d" in sends
     assert ":silent! e! | setlocal readonly nomodifiable nopaste" in sends
-    refreshed = state.FollowerState.read("$1")
+    refreshed = state.FollowerState.read("@1")
     assert refreshed is not None
     assert refreshed.current_file == str(target)
     assert capsys.readouterr().out == ""
@@ -895,13 +895,13 @@ def test_hook_post_des_interrupt_without_a_remainder_falls_back_to_reload(
     # behavior remains: reload the finished file and relock.
     target = tmp_path / "f.txt"
     target.write_text("a\nb\n")
-    _register_fake_follower("$1", "%2")
+    _register_fake_follower("@1", "%2")
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     original_load = control.load_pending_animation
 
-    def _consume_then_none(session_id: str, base_dir: Path | None = None) -> object:
-        original_load(session_id, base_dir)  # consume whatever was saved
+    def _consume_then_none(window_id: str, base_dir: Path | None = None) -> object:
+        original_load(window_id, base_dir)  # consume whatever was saved
         return None
 
     with (
@@ -929,13 +929,13 @@ def test_hook_post_handoff_survives_an_unstatable_file(
     # unchanged" detection, which then simply never fires.
     target = tmp_path / "f.txt"
     target.write_text("a\nb\n")
-    _register_fake_follower("$1", "%2")
+    _register_fake_follower("@1", "%2")
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     original_load = control.load_pending_animation
 
-    def _consume_then_none(session_id: str, base_dir: Path | None = None) -> object:
-        original_load(session_id, base_dir)
+    def _consume_then_none(window_id: str, base_dir: Path | None = None) -> object:
+        original_load(window_id, base_dir)
         return None
 
     with (
@@ -961,7 +961,7 @@ def test_hook_post_replay_interrupted_again_hands_over_without_a_second_wait(
     # notification loop.
     target = tmp_path / "f.txt"
     target.write_text("a\nb\nc\nd\n")
-    _register_fake_follower("$1", "%2")
+    _register_fake_follower("@1", "%2")
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     signals: list[str | None] = ["interrupt", "interrupt", None, None, None, None, "interrupt"]
@@ -976,7 +976,7 @@ def test_hook_post_replay_interrupted_again_hands_over_without_a_second_wait(
 
     sends = _literal_sends(run)
     assert ":setlocal modifiable nopaste" in sends  # handed over, unlocked
-    refreshed = state.FollowerState.read("$1")
+    refreshed = state.FollowerState.read("@1")
     assert refreshed is not None
     assert refreshed.current_file is None  # tracking dropped until resync
     assert capsys.readouterr().out == ""  # no notification for the replay stop
@@ -987,11 +987,11 @@ def test_hook_post_handoff_keeps_polling_through_unreadable_reads(
 ) -> None:
     target = tmp_path / "f.txt"
     target.write_text("a\n")
-    _register_fake_follower("$1", "%2")
+    _register_fake_follower("@1", "%2")
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     calls = {"n": 0}
 
-    def _check(session_id: str, base_dir: Path | None = None) -> str | None:
+    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
         calls["n"] += 1
         if calls["n"] == 1:
             return "interrupt"
@@ -1017,11 +1017,11 @@ def _bounded(check: Callable[..., str | None], limit: int = 50) -> Callable[...,
     """Fail loudly instead of hanging when a hand-off wait never releases."""
     calls = {"n": 0}
 
-    def _check(session_id: str, base_dir: Path | None = None) -> str | None:
+    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
         calls["n"] += 1
         if calls["n"] > limit:
             raise AssertionError("hand-off wait never released within the poll budget")
-        return check(session_id, base_dir)
+        return check(window_id, base_dir)
 
     return _check
 
@@ -1035,9 +1035,9 @@ def test_hook_post_releases_on_a_save_that_kept_claudes_version(
     # notification (there is no user version to build on).
     target = tmp_path / "f.txt"
     target.write_text("hello\nworld\n")
-    snapshot.save("$1", str(target), "hello\nworld\n")
+    snapshot.save("@1", str(target), "hello\nworld\n")
     _register_fake_follower(
-        "$1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
+        "@1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
     )
     target.write_text("hello\nvim ai follower\n")
     after = target.read_text()
@@ -1071,16 +1071,16 @@ def test_handoff_shows_a_durable_cue_and_periodic_reminders(
     # release no matter how the wait ends.
     target = tmp_path / "f.txt"
     target.write_text("hello\nworld\n")
-    snapshot.save("$1", str(target), "hello\nworld\n")
+    snapshot.save("@1", str(target), "hello\nworld\n")
     _register_fake_follower(
-        "$1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
+        "@1", "%2", current_file=str(target), open_files=(str(target),), shown_any=True
     )
     target.write_text("hello\nvim ai follower\n")
 
     release_at = 160  # spins past one reminder interval (150 polls) first
     calls = {"n": 0}
 
-    def _interrupt_then_late_save(session_id: str, base_dir: Path | None = None) -> str | None:
+    def _interrupt_then_late_save(window_id: str, base_dir: Path | None = None) -> str | None:
         calls["n"] += 1
         if calls["n"] == 2:
             return "interrupt"
@@ -1100,7 +1100,7 @@ def test_handoff_shows_a_durable_cue_and_periodic_reminders(
     tmux_calls = [c.args[0] for c in run.call_args_list]
     set_titles = [c for c in tmux_calls if c[:2] == ["tmux", "select-pane"] and "-T" in c]
     assert any("Claude waiting" in c[-1] for c in set_titles)  # cue up
-    assert set_titles[-1][-1] == "$1"  # restored to the pre-handoff title afterwards
+    assert set_titles[-1][-1] == "@1"  # restored to the pre-handoff title afterwards
     border_sets = [c for c in tmux_calls if c[:2] == ["tmux", "set-option"]]
     assert ["tmux", "set-option", "-w", "-t", "%2", "pane-border-status", "top"] in border_sets
     assert ["tmux", "set-option", "-wu", "-t", "%2", "pane-border-status"] in border_sets

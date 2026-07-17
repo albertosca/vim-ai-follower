@@ -182,9 +182,9 @@ Vim que você já tem aberto na mesma janela tmux. Como é o **seu** editor:
 
 ## Limitações
 
-- Um follower por sessão tmux (o estado é indexado pelo id da sessão tmux).
-- Dois processos `claude` na mesma sessão tmux compartilhariam, e poderiam
-  competir por, um único follower.
+- Um follower por janela tmux (o estado é indexado pelo id da janela tmux).
+- Dois processos `claude` na mesma janela tmux compartilham o follower daquela
+  janela.
 - Arquivos binários são navegados, não animados.
 - Arquivos muito grandes degradam para um paste em bloco quando a animação
   ficaria longa demais, em vez de ritmar tecla a tecla.

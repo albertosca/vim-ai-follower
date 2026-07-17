@@ -174,9 +174,8 @@ editor:
 
 ## Limitations
 
-- One follower per tmux session (state is keyed by tmux session id).
-- Two `claude` processes in the same tmux session would share, and could race on,
-  one follower.
+- One follower per tmux window (state is keyed by tmux window id).
+- Two `claude` processes in the same tmux window share that window's follower.
 - Binary files are navigated to, not animated.
 - Very large files degrade to a block paste once an animation would run long,
   rather than pacing keystroke by keystroke.

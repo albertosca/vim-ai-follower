@@ -34,12 +34,12 @@ def get_follower(
     backend: str,
     target: str,
     pace_seconds: float = DEFAULT_PACE_SECONDS,
-    session_id: str = "",
+    window_id: str = "",
 ) -> Follower:
     if backend == "tmux":
         from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 
-        return TmuxVimFollower(pane_id=target, pace_seconds=pace_seconds, session_id=session_id)
+        return TmuxVimFollower(pane_id=target, pace_seconds=pace_seconds, window_id=window_id)
     if backend == "nvim_rpc":
         from vim_ai_follower.backends.nvim_rpc import NvimRpcFollower
 

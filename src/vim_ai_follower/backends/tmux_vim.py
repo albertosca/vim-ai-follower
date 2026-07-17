@@ -30,7 +30,7 @@ class TmuxVimFollower:
 
     pane_id: str
     pace_seconds: float = DEFAULT_PACE_SECONDS
-    session_id: str = ""
+    window_id: str = ""
 
     def is_alive(self) -> bool:
         return TmuxPane(pane_id=self.pane_id).running_command() == "vim"
@@ -40,10 +40,10 @@ class TmuxVimFollower:
         animation reacts to Ctrl+a +/- at its next line boundary, instead
         of only on the animation started after the toggle. Falls back to
         the pace this follower was constructed with when there's no
-        session to read state for (or no state was ever written)."""
-        if not self.session_id:
+        window to read state for (or no state was ever written)."""
+        if not self.window_id:
             return self.pace_seconds
-        state = FollowerState.read(self.session_id)
+        state = FollowerState.read(self.window_id)
         if state is None:
             return self.pace_seconds
         return config.pace_seconds_for(state.speed)
@@ -96,7 +96,7 @@ class TmuxVimFollower:
         lines = tuple(content.splitlines())
         if not lines:
             return AnimationResult("completed", 0)
-        return run_lines(pane, self.session_id, lines, 0.0, file_path=file_path)
+        return run_lines(pane, self.window_id, lines, 0.0, file_path=file_path)
 
     def close_tab(self, file_path: str) -> None:
         pane = TmuxPane(pane_id=self.pane_id)
@@ -150,7 +150,7 @@ class TmuxVimFollower:
             _RELOCK_SYNCED,
             lambda pane: run_ops(
                 pane,
-                self.session_id,
+                self.window_id,
                 ops,
                 self._live_pace,
                 file_path=file_path,
@@ -194,7 +194,7 @@ class TmuxVimFollower:
             inner.send_key("Enter")
             return run_lines(
                 inner,
-                self.session_id,
+                self.window_id,
                 lines,
                 self._live_pace,
                 file_path=file_path,
@@ -216,7 +216,7 @@ class TmuxVimFollower:
                 _RELOCK_SYNCED,
                 lambda pane: run_ops(
                     pane,
-                    self.session_id,
+                    self.window_id,
                     pending.ops,
                     provider,
                     file_path=pending.file_path,
@@ -227,7 +227,7 @@ class TmuxVimFollower:
             _RELOCK_READONLY_SYNCED,
             lambda pane: run_lines(
                 pane,
-                self.session_id,
+                self.window_id,
                 pending.lines,
                 provider,
                 continuation=pending.continuation,

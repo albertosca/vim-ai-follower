@@ -9,7 +9,7 @@ from vim_ai_follower import state
 
 
 def make_mock_tmux_run(
-    session_id: str = "$1",
+    window_id: str = "@1",
     pane_id: str = "%2",
     pane_exists: bool = True,
     other_panes: tuple[str, ...] = (),
@@ -26,7 +26,7 @@ def make_mock_tmux_run(
                 lines.append(f"{pane_id} vim")
             result.stdout = "".join(line + "\n" for line in lines)
         elif cmd[:2] == ["tmux", "display-message"]:
-            result.stdout = f"{session_id}\n"
+            result.stdout = f"{window_id}\n"
         elif cmd[:2] == ["tmux", "split-window"]:
             result.stdout = f"{pane_id}\n"
         elif cmd[:2] == ["tmux", "list-keys"]:
@@ -40,7 +40,7 @@ def make_mock_tmux_run(
 
 
 def register_fake_follower(
-    session_id: str,
+    window_id: str,
     pane_id: str,
     current_file: str | None = None,
     open_files: tuple[str, ...] = (),
@@ -51,7 +51,7 @@ def register_fake_follower(
         return_value=MagicMock(returncode=0, stdout=f"{pane_id} vim\n"),
     ):
         state.FollowerState.set(
-            session_id,
+            window_id,
             "tmux",
             pane_id,
             current_file=current_file,

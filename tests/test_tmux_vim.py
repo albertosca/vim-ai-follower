@@ -48,7 +48,7 @@ def _sent_commands(run_mock: MagicMock) -> list[tuple[str, bool]]:
 
 
 def test_apply_edit_unlocks_the_buffer_only_for_the_animation(tmp_path: Path) -> None:
-    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
@@ -69,7 +69,7 @@ def test_apply_edit_unlocks_the_buffer_only_for_the_animation(tmp_path: Path) ->
 
 
 def test_apply_edit_uses_configured_pace_seconds(tmp_path: Path) -> None:
-    follower = TmuxVimFollower(pane_id="%2", pace_seconds=0.15, session_id="$1")
+    follower = TmuxVimFollower(pane_id="%2", pace_seconds=0.15, window_id="@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run"),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
@@ -81,7 +81,7 @@ def test_apply_edit_uses_configured_pace_seconds(tmp_path: Path) -> None:
 
 
 def test_apply_edit_skips_relock_when_interrupted(tmp_path: Path) -> None:
-    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
@@ -94,10 +94,10 @@ def test_apply_edit_skips_relock_when_interrupted(tmp_path: Path) -> None:
 
 
 def test_apply_edit_relocks_after_pause_and_resume(tmp_path: Path) -> None:
-    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     calls = {"n": 0}
 
-    def _pause_then_resume(session_id: str, base_dir: Path | None = None) -> str | None:
+    def _pause_then_resume(window_id: str, base_dir: Path | None = None) -> str | None:
         calls["n"] += 1
         return "pause" if calls["n"] in (1, 2) else None
 
@@ -116,10 +116,10 @@ def test_apply_edit_renavigates_to_its_own_tab_on_resume(tmp_path: Path) -> None
     # The user may have wandered to a different tab during the pause — the
     # resume must re-select the animating file's tab before typing continues,
     # not just once up front via goto_file's initial preamble.
-    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     calls = {"n": 0}
 
-    def _pause_then_resume(session_id: str, base_dir: Path | None = None) -> str | None:
+    def _pause_then_resume(window_id: str, base_dir: Path | None = None) -> str | None:
         calls["n"] += 1
         return "pause" if calls["n"] in (1, 2) else None
 
@@ -145,7 +145,7 @@ def test_apply_edit_relocks_with_a_silent_disk_sync(tmp_path: Path) -> None:
     # and LSPs attaching to an ungrounded buffer. `:silent! e!` at relock
     # time reloads the identical content Claude wrote, grounding the buffer
     # with no visible flash.
-    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
@@ -158,7 +158,7 @@ def test_apply_edit_relocks_with_a_silent_disk_sync(tmp_path: Path) -> None:
 
 
 def test_show_fresh_relocks_with_a_silent_disk_sync(tmp_path: Path) -> None:
-    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
@@ -171,7 +171,7 @@ def test_show_fresh_relocks_with_a_silent_disk_sync(tmp_path: Path) -> None:
 
 
 def test_interrupted_animation_never_sends_a_disk_sync_reload(tmp_path: Path) -> None:
-    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
@@ -189,10 +189,10 @@ def test_get_follower_forwards_pace_seconds_for_tmux_backend() -> None:
     assert follower.pace_seconds == 0.15
 
 
-def test_get_follower_forwards_session_id_for_tmux_backend() -> None:
-    follower = get_follower("tmux", "%2", session_id="$7")
+def test_get_follower_forwards_window_id_for_tmux_backend() -> None:
+    follower = get_follower("tmux", "%2", window_id="@7")
     assert isinstance(follower, TmuxVimFollower)
-    assert follower.session_id == "$7"
+    assert follower.window_id == "@7"
 
 
 def test_show_fresh_renames_current_buffer_without_ever_loading_the_real_file(
@@ -206,7 +206,7 @@ def test_show_fresh_renames_current_buffer_without_ever_loading_the_real_file(
     # filetype's indent/ftplugin scripts can turn cindent/smartindent/
     # indentexpr back on, and 'paste' only suppresses whatever was active
     # at the moment it's set — anything enabled afterwards still fires.
-    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
@@ -242,7 +242,7 @@ def test_show_fresh_renames_current_buffer_without_ever_loading_the_real_file(
 
 
 def test_show_fresh_with_empty_content_still_wipes_and_relocks(tmp_path: Path) -> None:
-    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
@@ -272,7 +272,7 @@ def test_show_fresh_with_empty_content_still_wipes_and_relocks(tmp_path: Path) -
 
 
 def test_show_fresh_uses_configured_pace_seconds(tmp_path: Path) -> None:
-    follower = TmuxVimFollower(pane_id="%2", pace_seconds=0.15, session_id="$1")
+    follower = TmuxVimFollower(pane_id="%2", pace_seconds=0.15, window_id="@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run"),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
@@ -284,7 +284,7 @@ def test_show_fresh_uses_configured_pace_seconds(tmp_path: Path) -> None:
 
 
 def test_show_fresh_skips_relock_when_interrupted(tmp_path: Path) -> None:
-    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
@@ -297,23 +297,23 @@ def test_show_fresh_skips_relock_when_interrupted(tmp_path: Path) -> None:
 
 
 def test_live_pace_reads_current_state_speed() -> None:
-    _register_fake_follower("$1", "%2")
-    state.FollowerState.update("$1", speed="lento")
-    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    _register_fake_follower("@1", "%2")
+    state.FollowerState.update("@1", speed="lento")
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     assert follower._live_pace() == config.SPEED_PACE_SECONDS["lento"]
-    state.FollowerState.update("$1", speed="instant")
+    state.FollowerState.update("@1", speed="instant")
     assert follower._live_pace() == 0.0
 
 
 def test_live_pace_falls_back_to_pace_seconds_when_state_is_missing() -> None:
-    follower = TmuxVimFollower(pane_id="%2", pace_seconds=0.42, session_id="$1")
+    follower = TmuxVimFollower(pane_id="%2", pace_seconds=0.42, window_id="@1")
     assert follower._live_pace() == 0.42
 
 
-def test_live_pace_falls_back_to_pace_seconds_when_session_id_is_empty() -> None:
-    _register_fake_follower("$1", "%2")
-    state.FollowerState.update("$1", speed="lento")
-    follower = TmuxVimFollower(pane_id="%2", pace_seconds=0.42, session_id="")
+def test_live_pace_falls_back_to_pace_seconds_when_window_id_is_empty() -> None:
+    _register_fake_follower("@1", "%2")
+    state.FollowerState.update("@1", speed="lento")
+    follower = TmuxVimFollower(pane_id="%2", pace_seconds=0.42, window_id="")
     assert follower._live_pace() == 0.42
 
 
@@ -321,9 +321,9 @@ def test_resume_at_pace_zero_stays_zero_even_when_state_says_lento(tmp_path: Pat
     # The pace-0 catch-up (cmd_pause / _handle_hook_post_edit replaying with
     # pace_seconds=0.0) must never re-read live state — otherwise a user who
     # slowed down mid-pause would see the catch-up crawl instead of dumping.
-    _register_fake_follower("$1", "%2")
-    state.FollowerState.update("$1", speed="lento")
-    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    _register_fake_follower("@1", "%2")
+    state.FollowerState.update("@1", speed="lento")
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     pending = control.PendingShowFresh(lines=("a", "b"), pace_seconds=0.0)
     with (
         patch("vim_ai_follower.tmux.subprocess.run"),
@@ -336,7 +336,7 @@ def test_resume_at_pace_zero_stays_zero_even_when_state_says_lento(tmp_path: Pat
 
 
 def test_resume_apply_edit_replays_remaining_ops_and_relocks(tmp_path: Path) -> None:
-    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
     pending = control.PendingApplyEdit(ops=[op], pace_seconds=0.0)
     with (
@@ -356,7 +356,7 @@ def test_resume_apply_edit_replays_remaining_ops_and_relocks(tmp_path: Path) -> 
 def test_resume_show_fresh_replays_remaining_lines_and_relocks_with_readonly(
     tmp_path: Path,
 ) -> None:
-    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     pending = control.PendingShowFresh(lines=("b", "c"), pace_seconds=0.0)
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
@@ -372,7 +372,7 @@ def test_resume_show_fresh_replays_remaining_lines_and_relocks_with_readonly(
 
 
 def test_resume_navigates_to_the_pending_files_tab_first(tmp_path: Path) -> None:
-    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
     pending = control.PendingApplyEdit(ops=[op], pace_seconds=0.0, file_path="/tmp/f.py")
     with (
@@ -391,7 +391,7 @@ def test_resume_navigates_to_the_pending_files_tab_first(tmp_path: Path) -> None
 
 
 def test_resume_skips_navigation_when_pending_has_no_file_path(tmp_path: Path) -> None:
-    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
     pending = control.PendingApplyEdit(ops=[op], pace_seconds=0.0)
     with (
@@ -405,7 +405,7 @@ def test_resume_skips_navigation_when_pending_has_no_file_path(tmp_path: Path) -
 
 
 def test_resume_skips_relock_when_interrupted_again(tmp_path: Path) -> None:
-    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
     pending = control.PendingApplyEdit(ops=[op], pace_seconds=0.0)
     with (
@@ -420,7 +420,7 @@ def test_resume_skips_relock_when_interrupted_again(tmp_path: Path) -> None:
 
 
 def test_hand_over_unlocks_the_buffer() -> None:
-    follower = TmuxVimFollower(pane_id="%2", session_id="$1")
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.hand_over()
     assert _sent_commands(run) == [

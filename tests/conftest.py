@@ -99,7 +99,7 @@ def follower(sent: list[str], tmp_path: Path) -> Iterator[TmuxVimFollower]:
     interrupt), while _sent_commands is a post-hoc reader for the pure
     keystroke-sequence assertions. Consolidating would force one style onto
     both, so they stay split."""
-    follower_instance = TmuxVimFollower(pane_id="%2", session_id="$1")
+    follower_instance = TmuxVimFollower(pane_id="%2", window_id="@1")
 
     def capture_run(cmd: list[str], **kwargs: str) -> MagicMock:
         """Mock subprocess.run that captures tmux send-keys commands."""

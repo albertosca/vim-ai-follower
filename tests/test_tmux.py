@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from vim_ai_follower.tmux import TmuxPane, TmuxSession, adopt_target
+from vim_ai_follower.tmux import TmuxPane, TmuxWindow, adopt_target
 
 
 def test_send_text_calls_tmux_send_keys_literal() -> None:
@@ -62,34 +62,34 @@ def test_split_from_returns_pane_with_new_id() -> None:
     )
 
 
-def test_session_from_env_returns_none_without_tmux_pane() -> None:
-    assert TmuxSession.from_env({}) is None
+def test_window_from_env_returns_none_without_tmux_pane() -> None:
+    assert TmuxWindow.from_env({}) is None
 
 
-def test_session_from_env_resolves_session_id() -> None:
-    fake_result = MagicMock(returncode=0, stdout="$3\n")
-    with patch("vim_ai_follower.tmux.subprocess.run", return_value=fake_result) as run:
-        session = TmuxSession.from_env({"TMUX_PANE": "%1"})
-    assert session is not None
-    assert session.session_id == "$3"
-    run.assert_called_once_with(
-        ["tmux", "display-message", "-p", "-t", "%1", "#{session_id}"],
+def test_window_from_env_resolves_window_id() -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout="@3\n")
+        window = TmuxWindow.from_env({"TMUX_PANE": "%1"})
+    assert window is not None
+    assert window.window_id == "@3"
+    mock_run.assert_called_once_with(
+        ["tmux", "display-message", "-p", "-t", "%1", "#{window_id}"],
         capture_output=True,
         text=True,
         check=False,
     )
 
 
-def test_session_from_env_returns_none_when_tmux_fails() -> None:
-    fake_result = MagicMock(returncode=1, stdout="")
-    with patch("vim_ai_follower.tmux.subprocess.run", return_value=fake_result):
-        assert TmuxSession.from_env({"TMUX_PANE": "%1"}) is None
+def test_window_from_env_returns_none_when_tmux_fails() -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        assert TmuxWindow.from_env({"TMUX_PANE": "%1"}) is None
 
 
-def test_session_from_env_returns_none_when_session_id_is_empty() -> None:
-    fake_result = MagicMock(returncode=0, stdout="\n")
-    with patch("vim_ai_follower.tmux.subprocess.run", return_value=fake_result):
-        assert TmuxSession.from_env({"TMUX_PANE": "%1"}) is None
+def test_window_from_env_returns_none_when_window_id_is_empty() -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout="\n")
+        assert TmuxWindow.from_env({"TMUX_PANE": "%1"}) is None
 
 
 def test_window_panes_lists_only_this_window() -> None:

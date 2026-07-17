@@ -20,16 +20,16 @@ def _control_dir(base_dir: Path | None) -> Path:
     return base_dir if base_dir is not None else cache.CACHE_DIR
 
 
-def _pause_path(session_id: str, base_dir: Path | None) -> Path:
-    return _control_dir(base_dir) / f"{session_id}.pause"
+def _pause_path(window_id: str, base_dir: Path | None) -> Path:
+    return _control_dir(base_dir) / f"{window_id}.pause"
 
 
-def _interrupt_path(session_id: str, base_dir: Path | None) -> Path:
-    return _control_dir(base_dir) / f"{session_id}.interrupt"
+def _interrupt_path(window_id: str, base_dir: Path | None) -> Path:
+    return _control_dir(base_dir) / f"{window_id}.interrupt"
 
 
-def _pending_path(session_id: str, base_dir: Path | None) -> Path:
-    return _control_dir(base_dir) / f"{session_id}.pending_animation.json"
+def _pending_path(window_id: str, base_dir: Path | None) -> Path:
+    return _control_dir(base_dir) / f"{window_id}.pending_animation.json"
 
 
 def _consume(path: Path) -> bool:
@@ -44,61 +44,61 @@ def _consume(path: Path) -> bool:
 
 
 def check_signal(
-    session_id: str, base_dir: Path | None = None
+    window_id: str, base_dir: Path | None = None
 ) -> Literal["interrupt", "pause"] | None:
-    if _consume(_interrupt_path(session_id, base_dir)):
+    if _consume(_interrupt_path(window_id, base_dir)):
         return "interrupt"
-    if _consume(_pause_path(session_id, base_dir)):
+    if _consume(_pause_path(window_id, base_dir)):
         return "pause"
     return None
 
 
-def clear_signals(session_id: str, base_dir: Path | None = None) -> None:
-    _pause_path(session_id, base_dir).unlink(missing_ok=True)
-    _interrupt_path(session_id, base_dir).unlink(missing_ok=True)
+def clear_signals(window_id: str, base_dir: Path | None = None) -> None:
+    _pause_path(window_id, base_dir).unlink(missing_ok=True)
+    _interrupt_path(window_id, base_dir).unlink(missing_ok=True)
 
 
-def request_pause(session_id: str, base_dir: Path | None = None) -> None:
-    path = _pause_path(session_id, base_dir)
+def request_pause(window_id: str, base_dir: Path | None = None) -> None:
+    path = _pause_path(window_id, base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch()
 
 
-def request_interrupt(session_id: str, base_dir: Path | None = None) -> None:
-    path = _interrupt_path(session_id, base_dir)
+def request_interrupt(window_id: str, base_dir: Path | None = None) -> None:
+    path = _interrupt_path(window_id, base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch()
 
 
-def has_pending_animation(session_id: str, base_dir: Path | None = None) -> bool:
+def has_pending_animation(window_id: str, base_dir: Path | None = None) -> bool:
     """Non-consuming peek at whether a resumable animation is on disk.
     Production consumes it via load_pending_animation instead; this predicate
     is the suite's observation point for the crash-fallback file."""
-    return _pending_path(session_id, base_dir).exists()
+    return _pending_path(window_id, base_dir).exists()
 
 
-def _animating_path(session_id: str, base_dir: Path | None) -> Path:
-    return _control_dir(base_dir) / f"{session_id}.animating"
+def _animating_path(window_id: str, base_dir: Path | None) -> Path:
+    return _control_dir(base_dir) / f"{window_id}.animating"
 
 
-def mark_animating(session_id: str, base_dir: Path | None = None, state: str = "running") -> None:
+def mark_animating(window_id: str, base_dir: Path | None = None, state: str = "running") -> None:
     """Record that an animation is in flight ("running"), waiting while
     paused ("paused"), or waiting for the user's save after an interrupt
     ("handoff") — tagged with this process's PID so a crashed hook can
     never leave a convincing stale marker."""
-    path = _animating_path(session_id, base_dir)
+    path = _animating_path(window_id, base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"{os.getpid()} {state}")
 
 
-def clear_animating(session_id: str, base_dir: Path | None = None) -> None:
-    _animating_path(session_id, base_dir).unlink(missing_ok=True)
+def clear_animating(window_id: str, base_dir: Path | None = None) -> None:
+    _animating_path(window_id, base_dir).unlink(missing_ok=True)
 
 
-def animating_state(session_id: str, base_dir: Path | None = None) -> str | None:
+def animating_state(window_id: str, base_dir: Path | None = None) -> str | None:
     """The live animation's state, or None when no live process owns one."""
     try:
-        content = _animating_path(session_id, base_dir).read_text().split()
+        content = _animating_path(window_id, base_dir).read_text().split()
         pid = int(content[0])
     except (FileNotFoundError, ValueError, IndexError):
         return None
@@ -111,12 +111,12 @@ def animating_state(session_id: str, base_dir: Path | None = None) -> str | None
     return content[1] if len(content) > 1 else "running"
 
 
-def is_animating(session_id: str, base_dir: Path | None = None) -> bool:
+def is_animating(window_id: str, base_dir: Path | None = None) -> bool:
     """Boolean predicate form of animating_state, for callers that only need
     "is a live process animating?" without the running/paused/handoff detail.
     Production reads animating_state directly; this is the suite's observation
     point (parallel to has_pending_animation)."""
-    return animating_state(session_id, base_dir) is not None
+    return animating_state(window_id, base_dir) is not None
 
 
 @dataclass(frozen=True)
@@ -141,8 +141,8 @@ class PendingShowFresh:
     file_path: str = ""
 
 
-def _write_pending(session_id: str, payload: dict[str, Any], base_dir: Path | None) -> None:
-    path = _pending_path(session_id, base_dir)
+def _write_pending(window_id: str, payload: dict[str, Any], base_dir: Path | None) -> None:
+    path = _pending_path(window_id, base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(payload))
@@ -150,14 +150,14 @@ def _write_pending(session_id: str, payload: dict[str, Any], base_dir: Path | No
 
 
 def save_pending_apply_edit(
-    session_id: str,
+    window_id: str,
     ops: list[EditOp],
     pace_seconds: float,
     base_dir: Path | None = None,
     file_path: str = "",
 ) -> None:
     _write_pending(
-        session_id,
+        window_id,
         {
             "kind": "apply_edit",
             "remaining_ops": [asdict(op) for op in ops],
@@ -169,7 +169,7 @@ def save_pending_apply_edit(
 
 
 def save_pending_show_fresh(
-    session_id: str,
+    window_id: str,
     lines: tuple[str, ...],
     pace_seconds: float,
     continuation: bool = False,
@@ -177,7 +177,7 @@ def save_pending_show_fresh(
     file_path: str = "",
 ) -> None:
     _write_pending(
-        session_id,
+        window_id,
         {
             "kind": "show_fresh",
             "remaining_lines": list(lines),
@@ -190,9 +190,9 @@ def save_pending_show_fresh(
 
 
 def load_pending_animation(
-    session_id: str, base_dir: Path | None = None
+    window_id: str, base_dir: Path | None = None
 ) -> PendingApplyEdit | PendingShowFresh | None:
-    path = _pending_path(session_id, base_dir)
+    path = _pending_path(window_id, base_dir)
     try:
         data = json.loads(path.read_text())
     except FileNotFoundError:
@@ -221,5 +221,5 @@ def load_pending_animation(
     )
 
 
-def discard_pending_animation(session_id: str, base_dir: Path | None = None) -> None:
-    _pending_path(session_id, base_dir).unlink(missing_ok=True)
+def discard_pending_animation(window_id: str, base_dir: Path | None = None) -> None:
+    _pending_path(window_id, base_dir).unlink(missing_ok=True)

@@ -80,7 +80,7 @@ PAUSE_POLL_SECONDS = 0.2
 
 
 def _wait_while_paused(
-    session_id: str,
+    window_id: str,
     save_pending: Callable[[], None],
     base_dir: Path | None,
 ) -> bool:
@@ -90,23 +90,23 @@ def _wait_while_paused(
     duration purely as a crash fallback: if this process dies (e.g. hook
     timeout), the keyboard can still finish the animation visually."""
     save_pending()
-    control.mark_animating(session_id, base_dir, state="paused")
+    control.mark_animating(window_id, base_dir, state="paused")
     try:
         while True:
-            signal = control.check_signal(session_id, base_dir)
+            signal = control.check_signal(window_id, base_dir)
             if signal == "interrupt":
                 return False
             if signal == "pause":  # the P toggle: a second press resumes
                 return True
             time.sleep(PAUSE_POLL_SECONDS)
     finally:
-        control.discard_pending_animation(session_id, base_dir)
-        control.mark_animating(session_id, base_dir, state="running")
+        control.discard_pending_animation(window_id, base_dir)
+        control.mark_animating(window_id, base_dir, state="running")
 
 
 def run_ops(
     pane: TmuxPane,
-    session_id: str,
+    window_id: str,
     ops: list[EditOp],
     pace_seconds: float | Callable[[], float],
     base_dir: Path | None = None,
@@ -116,8 +116,8 @@ def run_ops(
     provider: Callable[[], float] = (
         pace_seconds if callable(pace_seconds) else (lambda: pace_seconds)
     )
-    control.clear_signals(session_id, base_dir)
-    control.mark_animating(session_id, base_dir)
+    control.clear_signals(window_id, base_dir)
+    control.mark_animating(window_id, base_dir)
     try:
         index = 0
         while index < len(ops):
@@ -129,13 +129,13 @@ def run_ops(
 
             def save_pending(index: int = index, current_pace: float = current_pace) -> None:
                 control.save_pending_apply_edit(
-                    session_id, ops[index:], current_pace, base_dir, file_path=file_path
+                    window_id, ops[index:], current_pace, base_dir, file_path=file_path
                 )
 
             delete_seq = _delete_sequences(op)
             if delete_seq:
                 result = send_paced(
-                    pane, delete_seq, current_pace, session_id, control_base_dir=base_dir
+                    pane, delete_seq, current_pace, window_id, control_base_dir=base_dir
                 )
                 if result.outcome != "completed":
                     pane.send_key("Escape")
@@ -145,7 +145,7 @@ def run_ops(
                         pane.send_text("u")
                     if result.outcome == "interrupted":
                         return AnimationResult("interrupted", index)
-                    if not _wait_while_paused(session_id, save_pending, base_dir):
+                    if not _wait_while_paused(window_id, save_pending, base_dir):
                         return AnimationResult("interrupted", index)
                     if on_resume is not None:
                         on_resume()
@@ -154,7 +154,7 @@ def run_ops(
             insert_seq, prefix_len = _insert_sequences(op)
             if insert_seq:
                 result = send_paced(
-                    pane, insert_seq, current_pace, session_id, control_base_dir=base_dir
+                    pane, insert_seq, current_pace, window_id, control_base_dir=base_dir
                 )
                 if result.outcome != "completed":
                     pane.send_key("Escape")
@@ -170,7 +170,7 @@ def run_ops(
                         pane.send_text("u")
                     if result.outcome == "interrupted":
                         return AnimationResult("interrupted", index)
-                    if not _wait_while_paused(session_id, save_pending, base_dir):
+                    if not _wait_while_paused(window_id, save_pending, base_dir):
                         return AnimationResult("interrupted", index)
                     if on_resume is not None:
                         on_resume()
@@ -181,7 +181,7 @@ def run_ops(
     finally:
         # interrupted/completed alike: nothing is animating anymore (a
         # crash-orphaned remainder is owned by the pending file instead)
-        control.clear_animating(session_id, base_dir)
+        control.clear_animating(window_id, base_dir)
 
 
 def _line_sequences(line: str, opener: str) -> tuple[list[KeySequence], int]:
@@ -207,7 +207,7 @@ def _line_sequences(line: str, opener: str) -> tuple[list[KeySequence], int]:
 
 def run_lines(
     pane: TmuxPane,
-    session_id: str,
+    window_id: str,
     lines: tuple[str, ...],
     pace_seconds: float | Callable[[], float],
     base_dir: Path | None = None,
@@ -218,8 +218,8 @@ def run_lines(
     provider: Callable[[], float] = (
         pace_seconds if callable(pace_seconds) else (lambda: pace_seconds)
     )
-    control.clear_signals(session_id, base_dir)
-    control.mark_animating(session_id, base_dir)
+    control.clear_signals(window_id, base_dir)
+    control.mark_animating(window_id, base_dir)
     try:
         index = 0
         while index < len(lines):
@@ -232,9 +232,7 @@ def run_lines(
             # below the cursor via `o`.
             opener = "o" if continuation or index > 0 else "i"
             sequences, undo_threshold = _line_sequences(line, opener)
-            result = send_paced(
-                pane, sequences, current_pace, session_id, control_base_dir=base_dir
-            )
+            result = send_paced(pane, sequences, current_pace, window_id, control_base_dir=base_dir)
             if result.outcome != "completed":
                 pane.send_key("Escape")
                 if result.sent_count >= undo_threshold:
@@ -244,7 +242,7 @@ def run_lines(
 
                 def save_pending(index: int = index, current_pace: float = current_pace) -> None:
                     control.save_pending_show_fresh(
-                        session_id,
+                        window_id,
                         lines[index:],
                         current_pace,
                         continuation=continuation or index > 0,
@@ -252,7 +250,7 @@ def run_lines(
                         file_path=file_path,
                     )
 
-                if not _wait_while_paused(session_id, save_pending, base_dir):
+                if not _wait_while_paused(window_id, save_pending, base_dir):
                     return AnimationResult("interrupted", index)
                 if on_resume is not None:
                     on_resume()
@@ -260,14 +258,14 @@ def run_lines(
             index += 1
         return AnimationResult("completed", len(lines))
     finally:
-        control.clear_animating(session_id, base_dir)
+        control.clear_animating(window_id, base_dir)
 
 
 def send_paced(
     pane: TmuxPane,
     sequences: list[KeySequence],
     pace_seconds: float,
-    session_id: str,
+    window_id: str,
     *,
     max_seconds: float = MAX_ANIMATION_SECONDS,
     control_base_dir: Path | None = None,
@@ -280,7 +278,7 @@ def send_paced(
     hook running long enough to hit its own timeout."""
     deadline = time.monotonic() + max_seconds
     for sent_count, sequence in enumerate(sequences):
-        signal = control.check_signal(session_id, control_base_dir)
+        signal = control.check_signal(window_id, control_base_dir)
         if signal is not None:
             outcome: Literal["paused", "interrupted"] = (
                 "interrupted" if signal == "interrupt" else "paused"

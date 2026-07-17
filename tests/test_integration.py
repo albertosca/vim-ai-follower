@@ -19,9 +19,9 @@ from vim_ai_follower.tmux import TmuxPane
 pytestmark = pytest.mark.integration
 
 
-def _session_id(pane_id: str) -> str:
+def _window_id(pane_id: str) -> str:
     result = subprocess.run(
-        ["tmux", "display-message", "-p", "-t", pane_id, "#{session_id}"],
+        ["tmux", "display-message", "-p", "-t", pane_id, "#{window_id}"],
         capture_output=True,
         text=True,
         check=True,
@@ -324,7 +324,7 @@ def test_interrupt_mid_animation_leaves_buffer_unlocked_with_partial_content(
     assert cli.main(["start", "--speed", "lento"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
     follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
-    session_id = _session_id(origin_pane)
+    window_id = _window_id(origin_pane)
 
     target_file = tmp_path / "big.txt"
     target_file.write_text("\n".join(f"line {i}" for i in range(30)) + "\n")
@@ -334,7 +334,7 @@ def test_interrupt_mid_animation_leaves_buffer_unlocked_with_partial_content(
     thread = threading.Thread(target=lambda: cli.main(["hook", "post"]))
     thread.start()
     time.sleep(1.0)  # let a handful of lines type at "lento" (0.15s/keystroke)
-    control.request_interrupt(session_id)
+    control.request_interrupt(window_id)
 
     # the hook now HOLDS Claude's turn waiting for the user's save
     time.sleep(1.0)
@@ -373,7 +373,7 @@ def test_resuming_a_crashed_animation_lands_back_on_its_own_tab_first(
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
     follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
-    session_id = _session_id(origin_pane)
+    window_id = _window_id(origin_pane)
 
     a_file = tmp_path / "a.py"
     b_file = tmp_path / "b.py"
@@ -398,8 +398,8 @@ def test_resuming_a_crashed_animation_lands_back_on_its_own_tab_first(
     # resume's relock now does a `:silent! e!` disk sync, so leaving the
     # disk at the pre-edit content here would revert the buffer's typing.
     b_file.write_text("print('b')\nresumed line\n")
-    control.save_pending_apply_edit(session_id, ops, 0.0, file_path=str(b_file))
-    assert control.animating_state(session_id) is None  # no live owner: a true crash
+    control.save_pending_apply_edit(window_id, ops, 0.0, file_path=str(b_file))
+    assert control.animating_state(window_id) is None  # no live owner: a true crash
 
     # The user, unaware anything is pending, flips over to a.py's tab.
     follower_pane = TmuxPane(pane_id=follower_pane_id)
@@ -413,7 +413,7 @@ def test_resuming_a_crashed_animation_lands_back_on_its_own_tab_first(
     rows = [line.rstrip() for line in _capture(follower_pane_id).splitlines()]
     anchor = rows.index("print('b')")
     assert rows[anchor : anchor + 2] == ["print('b')", "resumed line"]
-    assert control.has_pending_animation(session_id) is False
+    assert control.has_pending_animation(window_id) is False
 
     # a.py's on-disk content, never touched by the resumed edit, is intact.
     assert a_file.read_text() == "print('a')\n"
@@ -441,7 +441,7 @@ def test_pause_persists_state_and_resume_finishes_the_edit(
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
     follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
-    session_id = _session_id(origin_pane)
+    window_id = _window_id(origin_pane)
 
     target_file = tmp_path / "edit.txt"
     before_lines = [f"line {i}" for i in range(20)]
@@ -477,7 +477,7 @@ def test_pause_persists_state_and_resume_finishes_the_edit(
     # poll) delivers the resume; the hook only returns once fully done.
     calls = {"count": 0}
 
-    def _pause_then_resume(session_id_arg: str, base_dir: Path | None = None) -> str | None:
+    def _pause_then_resume(window_id_arg: str, base_dir: Path | None = None) -> str | None:
         calls["count"] += 1
         if calls["count"] in (pause_at_check, pause_at_check + 1):
             return "pause"
@@ -485,7 +485,7 @@ def test_pause_persists_state_and_resume_finishes_the_edit(
 
     monkeypatch.setattr(control, "check_signal", _pause_then_resume)
     assert cli.main(["hook", "post"]) == 0
-    assert control.has_pending_animation(session_id) is False  # fallback disarmed on resume
+    assert control.has_pending_animation(window_id) is False  # fallback disarmed on resume
     assert wait_until(lambda: "CHANGED FIFTEEN" in _capture(follower_pane_id), timeout=10.0)
 
     # Exact-content check, not substrings: a pause landing inside a replace
@@ -521,7 +521,7 @@ def test_live_pause_resume_renavigates_to_the_animating_files_tab(
     assert cli.main(["start", "--speed", "lento"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
     follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
-    session_id = _session_id(origin_pane)
+    window_id = _window_id(origin_pane)
 
     a_file = tmp_path / "a.py"
     b_file = tmp_path / "b.py"
@@ -548,17 +548,17 @@ def test_live_pause_resume_renavigates_to_the_animating_files_tab(
     real_check_signal = control.check_signal
     calls = {"n": 0}
 
-    def _check(session_id_arg: str, base_dir: object = None) -> str | None:
+    def _check(window_id_arg: str, base_dir: object = None) -> str | None:
         calls["n"] += 1
         if calls["n"] == 4:
             return "pause"
-        return real_check_signal(session_id_arg, base_dir)  # type: ignore[arg-type]
+        return real_check_signal(window_id_arg, base_dir)  # type: ignore[arg-type]
 
     monkeypatch.setattr(control, "check_signal", _check)
 
     thread = threading.Thread(target=lambda: cli.main(["hook", "post"]))
     thread.start()
-    assert wait_until(lambda: control.animating_state(session_id) == "paused", timeout=10.0)
+    assert wait_until(lambda: control.animating_state(window_id) == "paused", timeout=10.0)
 
     # The user, unaware anything is paused, flips over to a.py's tab.
     follower_pane = TmuxPane(pane_id=follower_pane_id)
@@ -567,7 +567,7 @@ def test_live_pause_resume_renavigates_to_the_animating_files_tab(
     follower_pane.send_text("gt")
     assert wait_until(lambda: "print('a')" in _capture(follower_pane_id), timeout=5.0)
 
-    control.request_pause(session_id)  # the second press: resume
+    control.request_pause(window_id)  # the second press: resume
     thread.join(timeout=30.0)
     assert not thread.is_alive()
 
@@ -576,7 +576,7 @@ def test_live_pause_resume_renavigates_to_the_animating_files_tab(
     expected = [f"line {i}" for i in range(15)]
     anchor = rows.index("line 0")
     assert rows[anchor : anchor + len(expected)] == expected
-    assert control.has_pending_animation(session_id) is False
+    assert control.has_pending_animation(window_id) is False
 
     # the active buffer, not just the pane content, is b.py — ask Vim itself
     # rather than inferring it from the rendered screen.
@@ -617,7 +617,7 @@ def test_registered_keybinding_command_pauses_via_run_shell(
     monkeypatch.setenv("TMUX_PANE", origin_pane)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    session_id = _session_id(origin_pane)
+    window_id = _window_id(origin_pane)
 
     # Full-table listing filtered by hand: tmux 3.7b returns empty output
     # for `list-keys -T prefix P` even when the binding exists.
@@ -637,8 +637,8 @@ def test_registered_keybinding_command_pauses_via_run_shell(
     # cache dir (the in-process cache.CACHE_DIR patch can't reach it), so
     # assert there and clean up in a finally.
     real_cache = Path.home() / ".cache" / "claude-vim-follower"
-    signal_path = real_cache / f"{session_id}.pause"
-    marker_path = real_cache / f"{session_id}.animating"
+    signal_path = real_cache / f"{window_id}.pause"
+    marker_path = real_cache / f"{window_id}.animating"
     signal_path.unlink(missing_ok=True)
     real_cache.mkdir(parents=True, exist_ok=True)
     marker_path.write_text(str(os.getpid()))  # else pause is an honest no-op
@@ -649,7 +649,7 @@ def test_registered_keybinding_command_pauses_via_run_shell(
         )
         assert wait_until(signal_path.exists, timeout=5.0), (
             "the registered binding's command did not produce a pause signal "
-            f"for its own session ({session_id})"
+            f"for its own window ({window_id})"
         )
     finally:
         signal_path.unlink(missing_ok=True)

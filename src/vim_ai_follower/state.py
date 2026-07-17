@@ -1,4 +1,4 @@
-"""Per-tmux-session follower state (registered pane, tracked tabs, speed and
+"""Per-tmux-window follower state (registered pane, tracked tabs, speed and
 flags) persisted as JSON, plus the tab recency/eviction helper."""
 
 from __future__ import annotations
@@ -17,16 +17,16 @@ _DEFAULT_ON_FAILURE = "silent"
 _DEFAULT_SPEED = "rapido"
 
 
-def _state_path(session_id: str, base_dir: Path | None) -> Path:
+def _state_path(window_id: str, base_dir: Path | None) -> Path:
     directory = base_dir if base_dir is not None else cache.CACHE_DIR
-    return directory / f"{session_id}.pane"
+    return directory / f"{window_id}.pane"
 
 
-def nvim_socket_path(session_id: str, base_dir: Path | None = None) -> Path:
-    """Deterministic per-tmux-session RPC socket path. The Neovim side must
+def nvim_socket_path(window_id: str, base_dir: Path | None = None) -> Path:
+    """Deterministic per-tmux-window RPC socket path. The Neovim side must
     call vim.fn.serverstart() at this exact path (see integração no README)."""
     directory = base_dir if base_dir is not None else cache.CACHE_DIR
-    return directory / f"nvim-{session_id}.sock"
+    return directory / f"nvim-{window_id}.sock"
 
 
 @dataclass(frozen=True)
@@ -47,11 +47,11 @@ class FollowerState:
     shown_any: bool = False
 
     @classmethod
-    def read(cls, session_id: str, base_dir: Path | None = None) -> FollowerState | None:
+    def read(cls, window_id: str, base_dir: Path | None = None) -> FollowerState | None:
         """Returns the persisted state without checking whether the
         follower is still alive — used by recovery logic that needs the
         origin pane even when the current one has died."""
-        path = _state_path(session_id, base_dir)
+        path = _state_path(window_id, base_dir)
         if not path.exists():
             return None
         data = json.loads(path.read_text())
@@ -69,8 +69,8 @@ class FollowerState:
         )
 
     @classmethod
-    def get(cls, session_id: str, base_dir: Path | None = None) -> FollowerState | None:
-        state = cls.read(session_id, base_dir)
+    def get(cls, window_id: str, base_dir: Path | None = None) -> FollowerState | None:
+        state = cls.read(window_id, base_dir)
         if state is None:
             return None
         if not get_follower(state.backend, state.target).is_alive():
@@ -80,7 +80,7 @@ class FollowerState:
     @classmethod
     def set(
         cls,
-        session_id: str,
+        window_id: str,
         backend: str,
         target: str,
         current_file: str | None = None,
@@ -93,7 +93,7 @@ class FollowerState:
         shown_any: bool = False,
         base_dir: Path | None = None,
     ) -> None:
-        path = _state_path(session_id, base_dir)
+        path = _state_path(window_id, base_dir)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps(
@@ -113,15 +113,15 @@ class FollowerState:
         )
 
     @classmethod
-    def update(cls, session_id: str, base_dir: Path | None = None, **changes: Any) -> None:
+    def update(cls, window_id: str, base_dir: Path | None = None, **changes: Any) -> None:
         """Persist a partial change on top of the stored state, alive or not
         (a toggle must be able to re-enable a follower whose pane died)."""
-        current = cls.read(session_id, base_dir)
+        current = cls.read(window_id, base_dir)
         if current is None:
             return
         updated = dataclasses.replace(current, **changes)
         cls.set(
-            session_id,
+            window_id,
             updated.backend,
             updated.target,
             current_file=updated.current_file,
@@ -137,7 +137,7 @@ class FollowerState:
 
     @classmethod
     def update_current_file(
-        cls, session_id: str, file_path: str | None, base_dir: Path | None = None
+        cls, window_id: str, file_path: str | None, base_dir: Path | None = None
     ) -> None:
         """Record (display-only, see the current_file field) the file now
         shown, or None to clear the pointer after a handoff. Freshness is
@@ -145,14 +145,14 @@ class FollowerState:
         a full retype on the next edit — that edit is still a diff
         (apply_edit) against the pre-edit snapshot.
         Gated on get() — a dead follower's file pointer is not worth keeping."""
-        current = cls.get(session_id, base_dir)
+        current = cls.get(window_id, base_dir)
         if current is None:
             return
-        cls.update(session_id, base_dir=base_dir, current_file=file_path)
+        cls.update(window_id, base_dir=base_dir, current_file=file_path)
 
     @classmethod
-    def clear(cls, session_id: str, base_dir: Path | None = None) -> None:
-        _state_path(session_id, base_dir).unlink(missing_ok=True)
+    def clear(cls, window_id: str, base_dir: Path | None = None) -> None:
+        _state_path(window_id, base_dir).unlink(missing_ok=True)
 
 
 def touch_open_files(
