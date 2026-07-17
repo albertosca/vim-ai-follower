@@ -321,12 +321,13 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         # resyncs via a fresh retype instead of animating a diff over a
         # buffer we never updated.
         current_state = FollowerState.read(window.window_id)
-        if current_state is not None:  # pragma: no branch
-            # A live animating marker for this window can only exist if
-            # some process already registered a follower for it (mark_
-            # animating is only ever called from an active follower's own
-            # animation loop or handoff path) — current_state is always
-            # set here.
+        if current_state is not None:
+            # current_state can be None here: the .animating marker and the
+            # .pane state file have decoupled lifecycles. A stop for this
+            # window can clear .pane state while a still-live animator's
+            # .animating marker survives (cmd_stop never touches its own
+            # marker), or the animator can re-mark right after a stop
+            # clears it. Either way there's nothing to update — skip.
             FollowerState.update(
                 window.window_id,
                 open_files=tuple(f for f in current_state.open_files if f != file_path),

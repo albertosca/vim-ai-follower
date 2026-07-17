@@ -1210,3 +1210,29 @@ def test_dead_marker_does_not_block_the_edit(tmp_path: Path) -> None:
         c for c in (call.args[0] for call in run.call_args_list) if c[:2] == ["tmux", "send-keys"]
     ]
     assert sent != []  # animation ran
+
+
+def test_edit_skip_survives_state_cleared_out_from_under_the_marker(tmp_path: Path) -> None:
+    # .animating and .pane have decoupled lifecycles: a concurrent cmd_stop
+    # can clear this window's FollowerState while another live process's
+    # .animating marker survives (cmd_stop never clears its own marker), or
+    # the animator can re-mark right after a stop clears it. Either way the
+    # guard must still skip cleanly with no state to update and no crash.
+    target = tmp_path / "a.py"
+    target.write_text("new content\n")
+    _register_fake_follower("@1", "%2", shown_any=True)
+    control.mark_animating("@1")
+    state.FollowerState.clear("@1")  # simulates a concurrent cmd_stop
+    try:
+        with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+            exit_code = hooks.cmd_hook_post(
+                {"TMUX_PANE": "%1"},
+                {"tool_name": "Edit", "tool_input": {"file_path": str(target)}},
+            )
+    finally:
+        control.clear_animating("@1")
+    assert exit_code == 0
+    sent = [
+        c for c in (call.args[0] for call in run.call_args_list) if c[:2] == ["tmux", "send-keys"]
+    ]
+    assert sent == []
