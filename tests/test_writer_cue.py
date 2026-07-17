@@ -48,3 +48,18 @@ def test_color_wraps_past_palette_length() -> None:
 def test_palette_has_several_distinct_colors() -> None:
     assert len(writer_cue.PALETTE) >= 4
     assert len(set(writer_cue.PALETTE)) == len(writer_cue.PALETTE)
+
+
+def test_identity_ignores_non_string_values() -> None:
+    # a malformed (non-string) agent_id must be skipped, not returned
+    payload = {"agent_id": 42, "session_id": "$1"}
+    assert writer_cue.writer_identity(payload) == "$1"
+    payload = {"agent_id": 42, "session_id": 7}
+    assert writer_cue.writer_identity(payload) is None
+
+
+def test_label_ignores_non_string_values() -> None:
+    payload = {"agent_type": 42, "session_id": "sess-xyz123"}
+    assert writer_cue.writer_label(payload) == "session:xyz123"
+    payload = {"session_id": 7}
+    assert writer_cue.writer_label(payload) == "unknown"
