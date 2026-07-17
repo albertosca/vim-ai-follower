@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from vim_ai_follower import cache, config, control, keybindings
+from vim_ai_follower import cache, config, control, keybindings, writer_cue
 from vim_ai_follower import diff as diff_module
 from vim_ai_follower.backends import Follower, get_follower
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
@@ -300,6 +300,39 @@ def cmd_hook_pre(env: dict[str, str], payload: dict[str, Any]) -> int:
     return 0
 
 
+def _register_writer(window_id: str, payload: dict[str, Any]) -> None:
+    """Append this edit's writer identity+label to the window's append-only
+    writers list if it is new. Safe to call on the skip path — it only grows
+    the list; it never touches the border."""
+    identity = writer_cue.writer_identity(payload)
+    if identity is None:
+        return
+    current = FollowerState.read(window_id)
+    if current is None or identity in current.writers:
+        return
+    FollowerState.update(
+        window_id,
+        writers=(*current.writers, identity),
+        writer_labels=(*current.writer_labels, writer_cue.writer_label(payload)),
+    )
+
+
+def _apply_writer_cue(window_id: str, target: str, payload: dict[str, Any]) -> None:
+    """When 2+ distinct writers have touched this window, tint the follower
+    pane's border with the animating writer's color and label. Best-effort:
+    a missing identity or a tmux failure never blocks the animation."""
+    identity = writer_cue.writer_identity(payload)
+    current = FollowerState.read(window_id)
+    if identity is None or current is None or len(current.writers) < 2:
+        return
+    if identity not in current.writers:
+        return
+    pane = TmuxPane(pane_id=target)
+    pane.set_border_color(writer_cue.color_for(current.writers, identity))
+    pane.set_window_option("pane-border-status", "top")
+    pane.set_title(writer_cue.writer_label(payload))
+
+
 def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
     window = TmuxWindow.from_env(env)
     if window is None:
@@ -320,6 +353,7 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         # from open_files (a no-op if it wasn't tracked): its next touch
         # resyncs via a fresh retype instead of animating a diff over a
         # buffer we never updated.
+        _register_writer(window.window_id, payload)
         current_state = FollowerState.read(window.window_id)
         if current_state is not None:
             # current_state can be None here: the .animating marker and the
@@ -338,6 +372,8 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
     )
     if current is None:
         return 0
+    _register_writer(window.window_id, payload)
+    _apply_writer_cue(window.window_id, current.target, payload)
     try:
         raw_after = Path(file_path).read_bytes()
     except OSError as exc:

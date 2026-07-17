@@ -12,7 +12,17 @@ import pytest
 from helpers import make_mock_tmux_run as _mock_tmux_run
 from helpers import register_fake_follower as _register_fake_follower
 
-from vim_ai_follower import cache, cli, config, control, hooks, keybindings, snapshot, state
+from vim_ai_follower import (
+    cache,
+    cli,
+    config,
+    control,
+    hooks,
+    keybindings,
+    snapshot,
+    state,
+    writer_cue,
+)
 
 
 def _literal_sends(run_mock: MagicMock) -> list[str]:
@@ -1247,3 +1257,84 @@ def test_edit_skip_survives_state_cleared_out_from_under_the_marker(tmp_path: Pa
         c for c in (call.args[0] for call in run.call_args_list) if c[:2] == ["tmux", "send-keys"]
     ]
     assert sent == []
+
+
+def _edit_payload(target: Path, **identity: str) -> dict[str, object]:
+    return {"tool_name": "Edit", "tool_input": {"file_path": str(target)}, **identity}
+
+
+def test_single_writer_leaves_the_border_neutral(tmp_path: Path) -> None:
+    target = tmp_path / "a.py"
+    target.write_text("x\n")
+    _register_fake_follower("@1", "%2", shown_any=True)
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _edit_payload(target, session_id="$1"))
+    border_calls = [c.args[0] for c in run.call_args_list if "pane-border-style" in c.args[0]]
+    assert border_calls == []  # one writer: never tinted
+    assert state.FollowerState.read("@1").writers == ("$1",)  # type: ignore[union-attr]
+
+
+def test_second_distinct_writer_tints_the_border_with_its_color_and_label(tmp_path: Path) -> None:
+    target = tmp_path / "a.py"
+    target.write_text("x\n")
+    _register_fake_follower("@1", "%2", shown_any=True)
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _edit_payload(target, session_id="$1"))
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        hooks.cmd_hook_post(
+            {"TMUX_PANE": "%1"},
+            _edit_payload(target, session_id="$1", agent_id="a9", agent_type="code-reviewer"),
+        )
+    calls = [c.args[0] for c in run.call_args_list]
+    # a9 is the 2nd writer -> PALETTE[1]; border set on the follower pane %2
+    assert [
+        "tmux",
+        "set-option",
+        "-p",
+        "-t",
+        "%2",
+        "pane-border-style",
+        f"fg={writer_cue.PALETTE[1]}",
+    ] in calls
+    assert ["tmux", "select-pane", "-t", "%2", "-T", "code-reviewer"] in calls
+    result = state.FollowerState.read("@1")
+    assert result.writers == ("$1", "a9")  # type: ignore[union-attr]
+    assert result.writer_labels == ("session:$1", "code-reviewer")  # type: ignore[union-attr]
+
+
+def test_skipped_concurrent_writer_is_registered_but_does_not_tint(tmp_path: Path) -> None:
+    target = tmp_path / "a.py"
+    target.write_text("x\n")
+    _register_fake_follower("@1", "%2", open_files=(os.path.realpath(str(target)),), shown_any=True)
+    control.mark_animating("@1")  # another live writer owns the pane
+    try:
+        with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+            hooks.cmd_hook_post(
+                {"TMUX_PANE": "%1"},
+                _edit_payload(target, session_id="$1", agent_id="a9", agent_type="explore"),
+            )
+    finally:
+        control.clear_animating("@1")
+    border_calls = [c.args[0] for c in run.call_args_list if "pane-border-style" in c.args[0]]
+    assert border_calls == []  # skipped: registered, never tinted
+    assert state.FollowerState.read("@1").writers == ("a9",)  # type: ignore[union-attr]
+
+
+def test_register_writer_is_a_noop_when_the_identity_is_already_present(tmp_path: Path) -> None:
+    _register_fake_follower("@1", "%2", shown_any=True)
+    state.FollowerState.update("@1", writers=("$1",), writer_labels=("session:$1",))
+    hooks._register_writer("@1", {"session_id": "$1"})
+    result = state.FollowerState.read("@1")
+    assert result.writers == ("$1",)  # type: ignore[union-attr]
+    assert result.writer_labels == ("session:$1",)  # type: ignore[union-attr]
+
+
+def test_apply_writer_cue_is_a_noop_when_the_identity_is_not_yet_registered(
+    tmp_path: Path,
+) -> None:
+    _register_fake_follower("@1", "%2", shown_any=True)
+    state.FollowerState.update("@1", writers=("$1", "a9"), writer_labels=("session:$1", "explore"))
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        hooks._apply_writer_cue("@1", "%2", {"session_id": "$unknown"})
+    border_calls = [c.args[0] for c in run.call_args_list if "pane-border-style" in c.args[0]]
+    assert border_calls == []
