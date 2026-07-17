@@ -939,6 +939,17 @@ def test_hook_post_handoff_survives_an_unstatable_file(
         original_load(window_id, base_dir)
         return None
 
+    # Scope the failure to the target file only (the "unstatable file"),
+    # delegating every other Path.stat to the real implementation — a
+    # blanket patch would also break unrelated stat calls on the hook path.
+    resolved_target = Path(os.path.realpath(str(target)))
+    real_stat = Path.stat
+
+    def _stat_raises_for_target(self: Path, *args: object, **kwargs: object) -> object:
+        if self == resolved_target:
+            raise OSError("boom")
+        return real_stat(self, *args, **kwargs)  # type: ignore[arg-type]
+
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("vim_ai_follower.control.check_signal", side_effect=["interrupt", "interrupt"]),
@@ -946,7 +957,7 @@ def test_hook_post_handoff_survives_an_unstatable_file(
             "vim_ai_follower.hooks.control.load_pending_animation",
             side_effect=_consume_then_none,
         ),
-        patch("vim_ai_follower.hooks.Path.stat", side_effect=OSError("boom")),
+        patch("vim_ai_follower.hooks.Path.stat", _stat_raises_for_target),
         patch("vim_ai_follower.hooks.time.sleep"),
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
