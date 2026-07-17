@@ -313,6 +313,25 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
     cfg = config.load()
     if not _passes_policy(cfg, file_path):
         return 0
+    if control.animating_state(window.window_id) is not None:
+        # Another live hook owns this window's pane (parallel subagent or
+        # background agent). Animating concurrently would interleave
+        # keystrokes into one Vim, so skip this edit and drop the file
+        # from open_files (a no-op if it wasn't tracked): its next touch
+        # resyncs via a fresh retype instead of animating a diff over a
+        # buffer we never updated.
+        current_state = FollowerState.read(window.window_id)
+        if current_state is not None:  # pragma: no branch
+            # A live animating marker for this window can only exist if
+            # some process already registered a follower for it (mark_
+            # animating is only ever called from an active follower's own
+            # animation loop or handoff path) — current_state is always
+            # set here.
+            FollowerState.update(
+                window.window_id,
+                open_files=tuple(f for f in current_state.open_files if f != file_path),
+            )
+        return 0
     current = _get_active_follower(window.window_id) or _maybe_auto_open(
         window.window_id, env, file_path, cfg
     )
@@ -422,6 +441,10 @@ def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
         return 0
     cfg = config.load()
     if not _passes_policy(cfg, file_path):
+        return 0
+    if control.animating_state(window.window_id) is not None:
+        # Another live hook owns this window's pane: navigating now would
+        # interleave keystrokes with its animation. Skip; state untouched.
         return 0
     current = _get_active_follower(window.window_id) or _maybe_auto_open(
         window.window_id, env, file_path, cfg

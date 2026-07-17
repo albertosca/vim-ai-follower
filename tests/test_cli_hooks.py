@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -11,7 +12,7 @@ import pytest
 from helpers import make_mock_tmux_run as _mock_tmux_run
 from helpers import register_fake_follower as _register_fake_follower
 
-from vim_ai_follower import cli, config, control, hooks, keybindings, snapshot, state
+from vim_ai_follower import cache, cli, config, control, hooks, keybindings, snapshot, state
 
 
 def _literal_sends(run_mock: MagicMock) -> list[str]:
@@ -1125,3 +1126,87 @@ def test_file_paths_are_canonicalized_through_symlinks(tmp_path: Path) -> None:
     target.write_text("x = 1\n")
     payload = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     assert hooks._file_path(payload) == str(real_dir / "f.py")
+
+
+def test_edit_skips_while_another_process_animates(tmp_path: Path) -> None:
+    target = tmp_path / "a.py"
+    target.write_text("new content\n")
+    file_path = os.path.realpath(str(target))
+    _register_fake_follower("@1", "%2", open_files=(file_path,), shown_any=True)
+    control.mark_animating("@1")  # this test process's live PID: a live foreign writer
+    try:
+        with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+            exit_code = hooks.cmd_hook_post(
+                {"TMUX_PANE": "%1"},
+                {"tool_name": "Edit", "tool_input": {"file_path": str(target)}},
+            )
+    finally:
+        control.clear_animating("@1")
+    assert exit_code == 0
+    sent = [
+        c for c in (call.args[0] for call in run.call_args_list) if c[:2] == ["tmux", "send-keys"]
+    ]
+    assert sent == []  # nothing animated into the pane
+    current = state.FollowerState.read("@1")
+    assert current is not None
+    assert file_path not in current.open_files  # next touch resyncs fresh
+
+
+def test_read_skips_while_another_process_animates(tmp_path: Path) -> None:
+    target = tmp_path / "a.py"
+    target.write_text("content\n")
+    _register_fake_follower("@1", "%2", shown_any=True)
+    control.mark_animating("@1")
+    try:
+        with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+            exit_code = hooks.cmd_hook_post(
+                {"TMUX_PANE": "%1"},
+                {"tool_name": "Read", "tool_input": {"file_path": str(target)}},
+            )
+    finally:
+        control.clear_animating("@1")
+    assert exit_code == 0
+    sent = [
+        c for c in (call.args[0] for call in run.call_args_list) if c[:2] == ["tmux", "send-keys"]
+    ]
+    assert sent == []
+    current = state.FollowerState.read("@1")
+    assert current is not None
+    assert current.open_files == ()  # untouched
+
+
+def test_skip_preserves_the_other_writers_pending_animation(tmp_path: Path) -> None:
+    target = tmp_path / "a.py"
+    target.write_text("new content\n")
+    _register_fake_follower("@1", "%2", open_files=(os.path.realpath(str(target)),), shown_any=True)
+    control.save_pending_apply_edit("@1", [], 0.0, file_path=os.path.realpath(str(target)))
+    control.mark_animating("@1")
+    try:
+        with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+            hooks.cmd_hook_post(
+                {"TMUX_PANE": "%1"},
+                {"tool_name": "Edit", "tool_input": {"file_path": str(target)}},
+            )
+    finally:
+        control.clear_animating("@1")
+    assert control.has_pending_animation("@1")  # never consumed by the skipped hook
+
+
+def test_dead_marker_does_not_block_the_edit(tmp_path: Path) -> None:
+    # A crashed writer's marker (dead PID) must not suppress animation:
+    # animating_state already returns None for it, so the edit proceeds.
+    target = tmp_path / "a.py"
+    target.write_text("new content\n")
+    _register_fake_follower("@1", "%2", shown_any=True)
+    marker = cache.CACHE_DIR / "@1.animating"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("99999999 running")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        hooks.cmd_hook_post(
+            {"TMUX_PANE": "%1"},
+            {"tool_name": "Edit", "tool_input": {"file_path": str(target)}},
+        )
+    sent = [
+        c for c in (call.args[0] for call in run.call_args_list) if c[:2] == ["tmux", "send-keys"]
+    ]
+    assert sent != []  # animation ran
