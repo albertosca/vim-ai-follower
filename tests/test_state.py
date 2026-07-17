@@ -6,6 +6,46 @@ from unittest.mock import MagicMock, patch
 from vim_ai_follower.state import FollowerState, touch_open_files
 
 
+def test_set_writes_the_pane_atomically_via_rename(tmp_path: Path) -> None:
+    # Atomicity is the property under test: the .pane is replaced by an
+    # os-level rename of a fully-written temp file, never opened for an
+    # in-place truncating write. That is what lets a concurrent reader
+    # (another window's hook, in the now multi-follower world) see the old
+    # state or the new one whole, never a half-written file.
+    target = tmp_path / "@1.pane"
+    observed = {"target_written_directly": False, "renamed_onto_target": False}
+    real_write_text = Path.write_text
+    real_replace = Path.replace
+
+    def spy_write_text(self: Path, *args: object, **kwargs: object) -> int:
+        if self == target:
+            observed["target_written_directly"] = True
+        return real_write_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    def spy_replace(self: Path, dst: object, *args: object, **kwargs: object) -> Path:
+        if Path(dst) == target:  # type: ignore[arg-type]
+            observed["renamed_onto_target"] = True
+        return real_replace(self, dst, *args, **kwargs)  # type: ignore[arg-type]
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", return_value=MagicMock(stdout="%5 vim\n")),
+        patch.object(Path, "write_text", spy_write_text),
+        patch.object(Path, "replace", spy_replace),
+    ):
+        FollowerState.set("@1", "tmux", "%5", base_dir=tmp_path)
+    assert observed["renamed_onto_target"] is True  # atomic rename used
+    assert observed["target_written_directly"] is False  # target never truncated in place
+    assert FollowerState.read("@1", base_dir=tmp_path) is not None  # and it round-trips
+
+
+def test_set_does_not_leave_a_temp_file_behind(tmp_path: Path) -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run", return_value=MagicMock(stdout="%5 vim\n")):
+        FollowerState.set("@1", "tmux", "%5", base_dir=tmp_path)
+    # Only the final .pane remains; the temp file was renamed onto it. A
+    # lingering temp must also never be caught by the *.pane orphan scan.
+    assert [p.name for p in tmp_path.iterdir()] == ["@1.pane"]
+
+
 def test_get_returns_none_when_no_state_file(tmp_path: Path) -> None:
     assert FollowerState.get("@1", base_dir=tmp_path) is None
 

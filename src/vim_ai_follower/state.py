@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -95,22 +96,30 @@ class FollowerState:
     ) -> None:
         path = _state_path(window_id, base_dir)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(
-                {
-                    "backend": backend,
-                    "target": target,
-                    "current_file": current_file,
-                    "origin": origin,
-                    "on_failure": on_failure,
-                    "speed": speed,
-                    "open_files": open_files,
-                    "enabled": enabled,
-                    "adopted": adopted,
-                    "shown_any": shown_any,
-                }
-            )
+        payload = json.dumps(
+            {
+                "backend": backend,
+                "target": target,
+                "current_file": current_file,
+                "origin": origin,
+                "on_failure": on_failure,
+                "speed": speed,
+                "open_files": open_files,
+                "enabled": enabled,
+                "adopted": adopted,
+                "shown_any": shown_any,
+            }
         )
+        # Atomic write: a follower per window means several hooks can now
+        # write and read .pane files concurrently. Writing to a
+        # PID-private temp file and renaming it onto the target means a
+        # reader always sees the whole old or whole new state, never a
+        # half-written file, and two racing writers never share a temp to
+        # corrupt. The temp name never ends in ".pane", so a crash leaves
+        # nothing the *.pane orphan scan would mistake for state.
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(payload)
+        tmp.replace(path)
 
     @classmethod
     def update(cls, window_id: str, base_dir: Path | None = None, **changes: Any) -> None:
