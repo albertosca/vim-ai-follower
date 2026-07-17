@@ -185,10 +185,22 @@ def test_set_border_color_sets_both_pane_border_styles() -> None:
         TmuxPane(pane_id="%2").set_border_color("colour203")
     calls = [c.args[0] for c in run.call_args_list]
     assert [
-        "tmux", "set-option", "-p", "-t", "%2", "pane-border-style", "fg=colour203",
+        "tmux",
+        "set-option",
+        "-p",
+        "-t",
+        "%2",
+        "pane-border-style",
+        "fg=colour203",
     ] in calls
     assert [
-        "tmux", "set-option", "-p", "-t", "%2", "pane-active-border-style", "fg=colour203",
+        "tmux",
+        "set-option",
+        "-p",
+        "-t",
+        "%2",
+        "pane-active-border-style",
+        "fg=colour203",
     ] in calls
 
 
