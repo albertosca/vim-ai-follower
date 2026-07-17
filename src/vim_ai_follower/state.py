@@ -46,6 +46,8 @@ class FollowerState:
     enabled: bool = True
     adopted: bool = False
     shown_any: bool = False
+    writers: tuple[str, ...] = ()
+    writer_labels: tuple[str, ...] = ()
 
     @classmethod
     def read(cls, window_id: str, base_dir: Path | None = None) -> FollowerState | None:
@@ -67,6 +69,8 @@ class FollowerState:
             enabled=data.get("enabled", True),
             adopted=data.get("adopted", False),
             shown_any=data.get("shown_any", False),
+            writers=tuple(data.get("writers", [])),
+            writer_labels=tuple(data.get("writer_labels", [])),
         )
 
     @classmethod
@@ -92,6 +96,8 @@ class FollowerState:
         enabled: bool = True,
         adopted: bool = False,
         shown_any: bool = False,
+        writers: tuple[str, ...] = (),
+        writer_labels: tuple[str, ...] = (),
         base_dir: Path | None = None,
     ) -> None:
         path = _state_path(window_id, base_dir)
@@ -108,6 +114,8 @@ class FollowerState:
                 "enabled": enabled,
                 "adopted": adopted,
                 "shown_any": shown_any,
+                "writers": writers,
+                "writer_labels": writer_labels,
             }
         )
         # Atomic write: a follower per window means several hooks can now
@@ -141,6 +149,8 @@ class FollowerState:
             enabled=updated.enabled,
             adopted=updated.adopted,
             shown_any=updated.shown_any,
+            writers=updated.writers,
+            writer_labels=updated.writer_labels,
             base_dir=base_dir,
         )
 

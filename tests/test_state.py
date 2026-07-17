@@ -172,6 +172,35 @@ def test_update_without_state_is_a_no_op(tmp_path: Path) -> None:
     assert FollowerState.read("$9", base_dir=tmp_path) is None
 
 
+def test_writers_and_labels_round_trip(tmp_path: Path) -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run", return_value=MagicMock(stdout="%5 vim\n")):
+        FollowerState.set(
+            "@1",
+            "tmux",
+            "%5",
+            writers=("$1", "a9"),
+            writer_labels=("session:aaa111", "code-reviewer"),
+            base_dir=tmp_path,
+        )
+        result = FollowerState.get("@1", base_dir=tmp_path)
+    assert result is not None
+    assert result.writers == ("$1", "a9")
+    assert result.writer_labels == ("session:aaa111", "code-reviewer")
+
+
+def test_writers_default_empty_and_update_preserves_them(tmp_path: Path) -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run", return_value=MagicMock(stdout="%5 vim\n")):
+        FollowerState.set("@1", "tmux", "%5", base_dir=tmp_path)
+        assert FollowerState.read("@1", base_dir=tmp_path).writers == ()  # type: ignore[union-attr]
+        FollowerState.update("@1", base_dir=tmp_path, writers=("$1",), writer_labels=("session:x",))
+        FollowerState.update("@1", base_dir=tmp_path, speed="lento")  # unrelated change
+        result = FollowerState.read("@1", base_dir=tmp_path)
+    assert result is not None
+    assert result.writers == ("$1",)
+    assert result.writer_labels == ("session:x",)
+    assert result.speed == "lento"
+
+
 def test_touch_open_files_recency_and_eviction() -> None:
     assert touch_open_files((), "/a.py", 5) == (("/a.py",), ())
     assert touch_open_files(("/a.py", "/b.py"), "/a.py", 5) == (("/b.py", "/a.py"), ())
