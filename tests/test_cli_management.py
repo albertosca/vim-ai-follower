@@ -372,6 +372,19 @@ def test_stop_on_adopted_pane_closes_tabs_but_not_the_pane() -> None:
     assert state.FollowerState.get("@1") is None
 
 
+def test_stop_restores_the_follower_border() -> None:
+    _register_fake_follower(
+        "@1", "%2", writers=("$1", "a9"), writer_labels=("session:$1", "explore")
+    )
+    mock_run = make_mock_tmux_run(window_id="@1", pane_id="%2")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=mock_run) as run:
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    cmds = [c.args[0] for c in run.call_args_list]
+    # border color unset (both styles) + border-status restored on the pane
+    assert ["tmux", "set-option", "-pu", "-t", "%2", "pane-border-style"] in cmds
+    assert ["tmux", "set-option", "-wu", "-t", "%2", "pane-border-status"] in cmds
+
+
 def test_stop_keeps_keybindings_while_another_live_follower_exists() -> None:
     _register_fake_follower("@1", "%2")
     _register_fake_follower("@2", "%3")

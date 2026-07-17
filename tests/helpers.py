@@ -49,6 +49,8 @@ def register_fake_follower(
     current_file: str | None = None,
     open_files: tuple[str, ...] = (),
     shown_any: bool = False,
+    writers: tuple[str, ...] = (),
+    writer_labels: tuple[str, ...] = (),
 ) -> None:
     with patch(
         "vim_ai_follower.tmux.subprocess.run",
@@ -61,4 +63,6 @@ def register_fake_follower(
             current_file=current_file,
             open_files=open_files,
             shown_any=shown_any,
+            writers=writers,
+            writer_labels=writer_labels,
         )

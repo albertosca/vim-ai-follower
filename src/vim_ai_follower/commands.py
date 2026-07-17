@@ -132,6 +132,11 @@ def cmd_stop(env: dict[str, str]) -> int:
                 follower.close_tab(path)
         else:
             get_follower(existing.backend, existing.target).stop()
+        # Restore the target pane's border to the tmux default (best-effort; the
+        # pane may already be gone for a killed follower, in which case the tmux
+        # calls are harmless no-ops).
+        TmuxPane(pane_id=existing.target).set_border_color(None)
+        TmuxPane(pane_id=existing.target).set_window_option("pane-border-status", None)
     # Scan before clearing this window's own state: FollowerState.clear
     # below deletes this window's .pane, and scanning after that would make
     # the "skip my own key" check below unreachable — the glob would never
