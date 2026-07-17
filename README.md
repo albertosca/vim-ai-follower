@@ -104,8 +104,9 @@ default, and an invalid value silently falls back to it.
 | `prefix` `_`  | speed-down   | Step the animation one notch slower (saturates at `lento`).                 |
 | `prefix` `F`  | toggle       | Mute/unmute the follower.                                                 |
 
-The keybindings are tmux **server-global**: running two followers in two tmux
-sessions at once is unsupported (the first `stop` takes the keys down for both).
+The keybindings are tmux **server-global**, shared by every follower; each
+press acts only on the follower of the window it was pressed in, and the
+last `stop` restores your original bindings.
 
 ## Behavior details
 

@@ -13,15 +13,19 @@ def make_mock_tmux_run(
     pane_id: str = "%2",
     pane_exists: bool = True,
     other_panes: tuple[str, ...] = (),
+    vim_panes: tuple[str, ...] = (),
 ) -> Callable[..., MagicMock]:
     """Factory for a subprocess.run side_effect impersonating a tmux server
-    with one vim follower pane (pane_id) plus optional shell panes."""
+    with one vim follower pane (pane_id) plus optional shell panes
+    (other_panes, listed as zsh) and optional other live vim panes
+    (vim_panes, listed as vim — e.g. another window's live follower)."""
 
     def _run(cmd: list[str], **kwargs: object) -> MagicMock:
         result = MagicMock()
         result.returncode = 0
         if cmd[:3] == ["tmux", "list-panes", "-a"]:
             lines = [f"{pane} zsh" for pane in other_panes]
+            lines.extend(f"{pane} vim" for pane in vim_panes)
             if pane_exists:
                 lines.append(f"{pane_id} vim")
             result.stdout = "".join(line + "\n" for line in lines)

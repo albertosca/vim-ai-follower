@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from typing import Literal
 
-from vim_ai_follower import config, control, keybindings, tmux
+from vim_ai_follower import cache, config, control, keybindings, snapshot, tmux
 from vim_ai_follower.backends import get_follower
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.state import FollowerState, nvim_socket_path
@@ -93,6 +93,30 @@ def cmd_start(
     return 0
 
 
+def _other_live_follower(window_id: str) -> bool:
+    """True when any OTHER window still has a live follower — the keys are
+    server-global, so only the last stop may unregister them. Dead
+    candidates found on the way are collected (state, signals, pending,
+    animating marker, snapshots) so a stale .pane can never hold the keys
+    hostage. Keys are window ids (@N) since the window-scoping change;
+    anything else is legacy session-keyed state whose scope no longer
+    exists, collected regardless of pane liveness."""
+    found_live = False
+    for path in sorted(cache.CACHE_DIR.glob("*.pane")):
+        key = path.stem
+        if key == window_id:
+            continue
+        if key.startswith("@") and FollowerState.get(key) is not None:
+            found_live = True
+            continue
+        FollowerState.clear(key)
+        control.clear_signals(key)
+        control.clear_animating(key)
+        control.discard_pending_animation(key)
+        snapshot.clear(key)
+    return found_live
+
+
 def cmd_stop(env: dict[str, str]) -> int:
     window = _require_window(env)
     if window is None:
@@ -108,10 +132,16 @@ def cmd_stop(env: dict[str, str]) -> int:
                 follower.close_tab(path)
         else:
             get_follower(existing.backend, existing.target).stop()
+    # Scan before clearing this window's own state: FollowerState.clear
+    # below deletes this window's .pane, and scanning after that would make
+    # the "skip my own key" check below unreachable — the glob would never
+    # see it in the first place.
+    other_live = _other_live_follower(window.window_id)
     FollowerState.clear(window.window_id)
     control.clear_signals(window.window_id)
     control.discard_pending_animation(window.window_id)
-    keybindings.unregister()
+    if not other_live:
+        keybindings.unregister()
     print("claude-follow: stopped")
     return 0
 

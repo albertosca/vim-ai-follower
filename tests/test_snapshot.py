@@ -32,3 +32,14 @@ def test_save_overwrites_previous_snapshot(tmp_path: Path) -> None:
     snapshot.save("@1", "/tmp/a.txt", "first", base_dir=tmp_path)
     snapshot.save("@1", "/tmp/a.txt", "second", base_dir=tmp_path)
     assert snapshot.load("@1", "/tmp/a.txt", base_dir=tmp_path) == "second"
+
+
+def test_clear_removes_window_snapshot_dir(tmp_path: Path) -> None:
+    snapshot.save("@1", "/tmp/a.py", "content", base_dir=tmp_path)
+    snapshot.clear("@1", base_dir=tmp_path)
+    assert snapshot.load("@1", "/tmp/a.py", base_dir=tmp_path) == ""
+    assert not (tmp_path / "@1").exists()
+
+
+def test_clear_missing_dir_is_a_noop(tmp_path: Path) -> None:
+    snapshot.clear("@9", base_dir=tmp_path)  # must not raise

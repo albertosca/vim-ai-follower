@@ -109,9 +109,9 @@ no `stop`:
 | `prefix` `_`  | speed-down   | Uma marcha mais lenta (satura no `lento`).                           |
 | `prefix` `F`  | toggle       | Muta/desmuta o follower.                                                   |
 
-Os keybindings são **globais no servidor** tmux: rodar dois followers em duas
-sessões tmux ao mesmo tempo não é suportado (o primeiro `stop` derruba as teclas
-para os dois).
+Os keybindings são **globais no servidor** tmux, compartilhados por todos os
+followers; cada tecla age só no follower da janela onde foi pressionada, e o
+último `stop` restaura seus bindings originais.
 
 ## Detalhes de comportamento
 

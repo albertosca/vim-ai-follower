@@ -100,9 +100,8 @@ def register() -> None:
 def unregister() -> None:
     # check=False everywhere: stop after a crash that skipped registration
     # must still clean up without erroring. Keybindings are SERVER-global
-    # while follower state is per-session: running two followers in two
-    # tmux sessions at once is unsupported (the first stop takes the keys
-    # down for both).
+    # while follower state is per-window, so only the LAST stop calls this
+    # (cmd_stop scans for other live followers first).
     saved_path = _saved_bindings_path()
     try:
         saved: dict[str, str | None] = json.loads(saved_path.read_text())

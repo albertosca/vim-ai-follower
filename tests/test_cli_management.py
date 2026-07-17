@@ -10,7 +10,7 @@ import pytest
 from helpers import make_mock_tmux_run
 from helpers import register_fake_follower as _register_fake_follower
 
-from vim_ai_follower import commands, config, control, keybindings, state
+from vim_ai_follower import commands, config, control, keybindings, snapshot, state
 
 _mock_tmux_run = functools.partial(make_mock_tmux_run, pane_id="%9", other_panes=("%1", "%2"))
 
@@ -370,6 +370,55 @@ def test_stop_on_adopted_pane_closes_tabs_but_not_the_pane() -> None:
     unbinds = _unbind_calls(run)
     assert ["tmux", "unbind-key", "-T", "prefix", "P"] in unbinds
     assert state.FollowerState.get("@1") is None
+
+
+def test_stop_keeps_keybindings_while_another_live_follower_exists() -> None:
+    _register_fake_follower("@1", "%2")
+    _register_fake_follower("@2", "%3")
+    mock_run = make_mock_tmux_run(window_id="@1", pane_id="%2", vim_panes=("%3",))
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=mock_run),
+        patch("vim_ai_follower.commands.keybindings.unregister") as mock_unregister,
+    ):
+        exit_code = commands.cmd_stop({"TMUX_PANE": "%1"})
+    assert exit_code == 0
+    assert state.FollowerState.read("@1") is None
+    assert state.FollowerState.read("@2") is not None
+    mock_unregister.assert_not_called()
+
+
+def test_final_stop_unregisters_keybindings() -> None:
+    _register_fake_follower("@1", "%2")
+    mock_run = make_mock_tmux_run(window_id="@1", pane_id="%2")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=mock_run),
+        patch("vim_ai_follower.commands.keybindings.unregister") as mock_unregister,
+    ):
+        exit_code = commands.cmd_stop({"TMUX_PANE": "%1"})
+    assert exit_code == 0
+    mock_unregister.assert_called_once()
+
+
+def test_stop_collects_dead_and_legacy_state() -> None:
+    _register_fake_follower("@1", "%2")
+    _register_fake_follower("@2", "%9")  # dead: %9 not in list-panes output
+    _register_fake_follower("$0", "%2")  # legacy session key: collected even though %2 is alive
+    control.request_pause("@2")
+    control.save_pending_apply_edit("@2", [], 0.0, file_path="/tmp/a.py")
+    snapshot.save("@2", "/tmp/a.py", "before")
+    mock_run = make_mock_tmux_run(window_id="@1", pane_id="%2")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=mock_run),
+        patch("vim_ai_follower.commands.keybindings.unregister") as mock_unregister,
+    ):
+        exit_code = commands.cmd_stop({"TMUX_PANE": "%1"})
+    assert exit_code == 0
+    assert state.FollowerState.read("@2") is None
+    assert state.FollowerState.read("$0") is None
+    assert control.check_signal("@2") is None
+    assert not control.has_pending_animation("@2")
+    assert snapshot.load("@2", "/tmp/a.py") == ""
+    mock_unregister.assert_called_once()
 
 
 def test_speed_up_steps_state_and_reports(capsys: pytest.CaptureFixture[str]) -> None:
