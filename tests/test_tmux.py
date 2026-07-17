@@ -178,3 +178,23 @@ def test_adopt_target_requires_exactly_one_vim_pane() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         run.return_value = _panes_run("%1 zsh\n%2 zsh\n")
         assert adopt_target("%1") is None
+
+
+def test_set_border_color_sets_both_pane_border_styles() -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        TmuxPane(pane_id="%2").set_border_color("colour203")
+    calls = [c.args[0] for c in run.call_args_list]
+    assert [
+        "tmux", "set-option", "-p", "-t", "%2", "pane-border-style", "fg=colour203",
+    ] in calls
+    assert [
+        "tmux", "set-option", "-p", "-t", "%2", "pane-active-border-style", "fg=colour203",
+    ] in calls
+
+
+def test_set_border_color_none_unsets_both_styles() -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        TmuxPane(pane_id="%2").set_border_color(None)
+    calls = [c.args[0] for c in run.call_args_list]
+    assert ["tmux", "set-option", "-pu", "-t", "%2", "pane-border-style"] in calls
+    assert ["tmux", "set-option", "-pu", "-t", "%2", "pane-active-border-style"] in calls

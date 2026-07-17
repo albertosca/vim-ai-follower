@@ -66,6 +66,19 @@ class TmuxPane:
                 ["tmux", "set-option", "-w", "-t", self.pane_id, name, value], check=False
             )
 
+    def set_border_color(self, color: str | None) -> None:
+        """Tint this pane's border (both active and inactive styles), or
+        restore the window default when color is None. Per-pane border
+        styles need tmux 3.4+; best-effort like the other tmux helpers."""
+        for name in ("pane-border-style", "pane-active-border-style"):
+            if color is None:
+                subprocess.run(["tmux", "set-option", "-pu", "-t", self.pane_id, name], check=False)
+            else:
+                subprocess.run(
+                    ["tmux", "set-option", "-p", "-t", self.pane_id, name, f"fg={color}"],
+                    check=False,
+                )
+
     def kill(self) -> None:
         subprocess.run(["tmux", "kill-pane", "-t", self.pane_id], check=False)
 
