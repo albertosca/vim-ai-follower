@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from vim_ai_follower import control
 from vim_ai_follower.animate import (
@@ -284,7 +284,10 @@ def test_run_ops_interrupted_before_first_op_undoes_nothing() -> None:
         result = run_ops(pane, "@1", ops, pace_seconds=0.0)
     assert result == AnimationResult("interrupted", 0)
     pane.send_text.assert_not_called()  # type: ignore[attr-defined]
-    pane.send_key.assert_called_once_with("Escape")  # type: ignore[attr-defined]
+    assert pane.send_key.call_args_list == [  # type: ignore[attr-defined]
+        call("Escape"),
+        call("Escape"),
+    ]  # two Escapes: a completion popup can eat the first (see _exit_insert_mode)
 
 
 def test_run_ops_interrupted_mid_insert_undoes_the_insert(tmp_path: Path) -> None:
@@ -298,7 +301,10 @@ def test_run_ops_interrupted_mid_insert_undoes_the_insert(tmp_path: Path) -> Non
     assert result == AnimationResult("interrupted", 0)
     sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent_texts == ["gg", "O", "u"]
-    pane.send_key.assert_called_once_with("Escape")  # type: ignore[attr-defined]
+    assert pane.send_key.call_args_list == [  # type: ignore[attr-defined]
+        call("Escape"),
+        call("Escape"),
+    ]  # two Escapes: a completion popup can eat the first (see _exit_insert_mode)
 
 
 def test_run_ops_interrupted_before_insert_mode_entered_skips_undo(tmp_path: Path) -> None:
@@ -309,7 +315,10 @@ def test_run_ops_interrupted_before_insert_mode_entered_skips_undo(tmp_path: Pat
     with patch("vim_ai_follower.control.check_signal", side_effect=["interrupt"]):
         result = run_ops(pane, "@1", [op], pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("interrupted", 0)
-    pane.send_key.assert_called_once_with("Escape")  # type: ignore[attr-defined]
+    assert pane.send_key.call_args_list == [  # type: ignore[attr-defined]
+        call("Escape"),
+        call("Escape"),
+    ]  # two Escapes: a completion popup can eat the first (see _exit_insert_mode)
     pane.send_text.assert_not_called()  # type: ignore[attr-defined]
 
 
@@ -322,7 +331,10 @@ def test_run_ops_interrupted_during_delete_needs_no_undo(tmp_path: Path) -> None
         result = run_ops(pane, "@1", [op], pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("interrupted", 0)
     pane.send_text.assert_called_once_with(":2d")  # type: ignore[attr-defined]
-    pane.send_key.assert_called_once_with("Escape")  # type: ignore[attr-defined]
+    assert pane.send_key.call_args_list == [  # type: ignore[attr-defined]
+        call("Escape"),
+        call("Escape"),
+    ]  # two Escapes: a completion popup can eat the first (see _exit_insert_mode)
 
 
 def test_run_ops_pause_in_insert_half_rolls_back_both_halves_then_resumes(
@@ -440,7 +452,10 @@ def test_run_lines_interrupted_before_any_line_sent() -> None:
         result = run_lines(pane, "@1", ("a",), pace_seconds=0.0)
     assert result == AnimationResult("interrupted", 0)
     pane.send_text.assert_not_called()  # type: ignore[attr-defined]
-    pane.send_key.assert_called_once_with("Escape")  # type: ignore[attr-defined]
+    assert pane.send_key.call_args_list == [  # type: ignore[attr-defined]
+        call("Escape"),
+        call("Escape"),
+    ]  # two Escapes: a completion popup can eat the first (see _exit_insert_mode)
 
 
 def test_run_lines_types_each_line_on_its_own_line() -> None:
@@ -477,7 +492,10 @@ def test_run_lines_interrupted_after_bare_i_skips_undo(tmp_path: Path) -> None:
     assert result == AnimationResult("interrupted", 0)
     sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent_texts == ["i"]
-    pane.send_key.assert_called_once_with("Escape")  # type: ignore[attr-defined]
+    assert pane.send_key.call_args_list == [  # type: ignore[attr-defined]
+        call("Escape"),
+        call("Escape"),
+    ]  # two Escapes: a completion popup can eat the first (see _exit_insert_mode)
 
 
 def test_run_lines_interrupted_after_text_undoes_the_partial_line(tmp_path: Path) -> None:

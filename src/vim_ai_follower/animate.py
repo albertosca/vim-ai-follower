@@ -79,6 +79,18 @@ class AnimationResult:
 PAUSE_POLL_SECONDS = 0.2
 
 
+def _exit_insert_mode(pane: TmuxPane) -> None:
+    """Two Escapes before the rollback undo. A completion popup (CoC/Copilot)
+    maps the first <Esc> to close the popup and STAY in insert mode, so a
+    single Escape followed by `u` would type the `u` literally into the
+    buffer (empirically "banu"; see scripts/repro-stray-u.sh). The second
+    Escape lands as a real Escape whatever consumed the first — the same
+    guarantee TmuxVimFollower._normal_mode relies on (kept separate here to
+    avoid coupling animate to the follower; a shared helper is a follow-up)."""
+    pane.send_key("Escape")
+    pane.send_key("Escape")
+
+
 def _wait_while_paused(
     window_id: str,
     save_pending: Callable[[], None],
@@ -138,7 +150,7 @@ def run_ops(
                     pane, delete_seq, current_pace, window_id, control_base_dir=base_dir
                 )
                 if result.outcome != "completed":
-                    pane.send_key("Escape")
+                    _exit_insert_mode(pane)
                     # Each committed (":Nd", Enter) pair is one undo unit;
                     # a half-typed pair was cancelled by the Escape above.
                     for _ in range(result.sent_count // 2):
@@ -157,7 +169,7 @@ def run_ops(
                     pane, insert_seq, current_pace, window_id, control_base_dir=base_dir
                 )
                 if result.outcome != "completed":
-                    pane.send_key("Escape")
+                    _exit_insert_mode(pane)
                     if result.sent_count >= prefix_len:
                         pane.send_text("u")
                     # The delete half already ran, one undo unit per line;
@@ -234,7 +246,7 @@ def run_lines(
             sequences, undo_threshold = _line_sequences(line, opener)
             result = send_paced(pane, sequences, current_pace, window_id, control_base_dir=base_dir)
             if result.outcome != "completed":
-                pane.send_key("Escape")
+                _exit_insert_mode(pane)
                 if result.sent_count >= undo_threshold:
                     pane.send_text("u")
                 if result.outcome == "interrupted":
