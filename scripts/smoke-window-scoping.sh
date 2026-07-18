@@ -25,11 +25,12 @@ B=/tmp/vaf-smoke-beta.py
 
 tmux has-session -t vaf-smoke 2>/dev/null && { echo "vaf-smoke exists — kill it first: tmux kill-session -t vaf-smoke"; exit 1; }
 
-tmux new-session -d -s vaf-smoke -x 200 -y 50   # window 0
-tmux new-window -t vaf-smoke                     # window 1
-W0=$(tmux list-panes -t vaf-smoke:0 -F '#{pane_id}' | head -1)
-W1=$(tmux list-panes -t vaf-smoke:1 -F '#{pane_id}' | head -1)
-echo "window 0 origin=$W0   window 1 origin=$W1"
+tmux new-session -d -s vaf-smoke -x 200 -y 50   # first window
+# Target by pane id, never window index: your ~/.tmux.conf base-index would
+# otherwise break a hardcoded ":0".
+W0=$(tmux list-panes -t vaf-smoke -F '#{pane_id}' | head -1)
+W1=$(tmux new-window -t vaf-smoke -P -F '#{pane_id}')   # second window, its pane id
+echo "window A origin=$W0   window B origin=$W1"
 
 echo ">>> starting a follower in each window (real config; keychain prompt possible)..."
 TMUX_PANE=$W0 "$CF" start
@@ -59,8 +60,11 @@ T0=$(python3 -c "import json;print(json.load(open('$CACHE/$WID0.pane'))['target'
 T1=$(python3 -c "import json;print(json.load(open('$CACHE/$WID1.pane'))['target'])" 2>/dev/null)
 echo "    follower targets: w0=$T0  w1=$T1  (must differ: $([[ -n $T0 && $T0 != $T1 ]] && echo OK || echo FAIL))"
 
+N0=$(tmux display-message -p -t "$W0" '#{window_index}')
+N1=$(tmux display-message -p -t "$W1" '#{window_index}')
 echo
 echo "=== NOW: tmux attach -t vaf-smoke ==="
-echo "  prefix 0 -> follower shows ONLY 'WINDOW ZERO';  prefix 1 -> ONLY 'WINDOW ONE'."
+echo "  prefix $N0 -> follower shows ONLY 'WINDOW ZERO';  prefix $N1 -> ONLY 'WINDOW ONE'."
+echo "  (or 'prefix w' to pick a window from the list)"
 echo "  PASS: no bleed between the two windows' followers."
 echo "  Cleanup: tmux kill-session -t vaf-smoke"
