@@ -1078,3 +1078,49 @@ def test_second_writer_tints_the_follower_border(
     target.write_text("hello\nworld\n")
     hook({**base, "session_id": "$foreground", "agent_id": "a9", "agent_type": "explore"})
     assert wait_until(lambda: _pane_border_style(follower).startswith("fg="), timeout=10.0)
+
+
+def _window_border_status(pane_id: str) -> str:
+    return subprocess.run(
+        ["tmux", "show-options", "-wv", "-t", pane_id, "pane-border-status"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+
+
+def test_stop_clears_the_window_border_status_left_by_the_cue(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    # The cue tints by setting the window-level pane-border-status to "top".
+    # stop must clear it — and it must target a LIVE pane, because the
+    # follower pane is killed during teardown. Restoring after the kill (as
+    # a naive ordering does) sends `set-option -wu` at a dead pane, which
+    # fails, leaving pane-border-status stuck on "top" for the whole window.
+    origin = _pane_ids(tmux_session)[0]
+    monkeypatch.setenv("TMUX_PANE", origin)
+    assert cli.main(["start"]) == 0
+    assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
+    follower = next(p for p in _pane_ids(tmux_session) if p != origin)
+
+    target = tmp_path / "f.txt"
+    target.write_text("hello\n")
+
+    def hook(payload: dict[str, object]) -> None:
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+        assert cli.main(["hook", "post"]) == 0
+
+    base = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    hook({**base, "session_id": "$foreground"})
+    assert wait_until(lambda: "hello" in _capture(follower), timeout=10.0)
+    target.write_text("hello\nworld\n")
+    hook({**base, "session_id": "$foreground", "agent_id": "a9", "agent_type": "explore"})
+    assert wait_until(lambda: _pane_border_style(follower).startswith("fg="), timeout=10.0)
+    assert _window_border_status(origin) == "top"  # cue active
+
+    assert cli.main(["stop"]) == 0
+    assert wait_until(lambda: len(_pane_ids(tmux_session)) == 1)  # follower pane killed
+    assert _window_border_status(origin) == ""  # cleared, not stuck on "top"

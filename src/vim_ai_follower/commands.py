@@ -123,6 +123,14 @@ def cmd_stop(env: dict[str, str]) -> int:
         return 1
     existing = FollowerState.get(window.window_id)
     if existing is not None:
+        # Restore the border BEFORE teardown, while the pane is still alive:
+        # a non-adopted stop kills the follower pane, and pane-border-status
+        # is a WINDOW option — `set-option -wu` aimed at the killed pane
+        # fails to resolve its target, leaving the whole window's
+        # pane-border-status stuck on "top". Unsetting it (and the per-pane
+        # color) while the pane still exists lands cleanly.
+        TmuxPane(pane_id=existing.target).set_border_color(None)
+        TmuxPane(pane_id=existing.target).set_window_option("pane-border-status", None)
         if existing.adopted:
             # Adoption never took ownership of the pane — killing the
             # user's own Vim on stop would be destructive. Only close the
@@ -132,11 +140,6 @@ def cmd_stop(env: dict[str, str]) -> int:
                 follower.close_tab(path)
         else:
             get_follower(existing.backend, existing.target).stop()
-        # Restore the target pane's border to the tmux default (best-effort; the
-        # pane may already be gone for a killed follower, in which case the tmux
-        # calls are harmless no-ops).
-        TmuxPane(pane_id=existing.target).set_border_color(None)
-        TmuxPane(pane_id=existing.target).set_window_option("pane-border-status", None)
     # Scan before clearing this window's own state: FollowerState.clear
     # below deletes this window's .pane, and scanning after that would make
     # the "skip my own key" check below unreachable — the glob would never
