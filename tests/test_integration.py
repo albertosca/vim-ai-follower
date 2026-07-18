@@ -1038,3 +1038,43 @@ def test_keybindings_survive_until_the_last_stop(
     monkeypatch.setenv("TMUX_PANE", second_pane)
     assert cli.main(["stop"]) == 0
     assert "claude-follow" not in bound_keys()
+
+
+def _pane_border_style(pane_id: str) -> str:
+    return subprocess.run(
+        ["tmux", "show-options", "-pv", "-t", pane_id, "pane-border-style"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+
+
+def test_second_writer_tints_the_follower_border(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    origin = _pane_ids(tmux_session)[0]
+    monkeypatch.setenv("TMUX_PANE", origin)
+    assert cli.main(["start"]) == 0
+    assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
+    follower = next(p for p in _pane_ids(tmux_session) if p != origin)
+
+    target = tmp_path / "f.txt"
+    target.write_text("hello\n")
+
+    def hook(payload: dict[str, object]) -> None:
+        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+        assert cli.main(["hook", "post"]) == 0
+
+    base = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    hook({**base, "session_id": "$foreground"})
+    assert wait_until(lambda: "hello" in _capture(follower), timeout=10.0)
+    # A single writer leaves the border unset (the real tmux 3.7b value for
+    # an unset pane-border-style, confirmed against a live server).
+    assert _pane_border_style(follower) == ""
+
+    target.write_text("hello\nworld\n")
+    hook({**base, "session_id": "$foreground", "agent_id": "a9", "agent_type": "explore"})
+    assert wait_until(lambda: _pane_border_style(follower).startswith("fg="), timeout=10.0)
