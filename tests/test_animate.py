@@ -44,6 +44,7 @@ def test_insert_at_top_uses_gg_open_above() -> None:
         KeySequence("Enter", literal=False),
         KeySequence("b", literal=True),
         KeySequence("Escape", literal=False),
+        KeySequence("Escape", literal=False),
     ]
     assert prefix_len == 2  # gg, O — the cursor-positioning prefix
 
@@ -58,6 +59,7 @@ def test_insert_mid_file_positions_then_opens_below() -> None:
         KeySequence("c", literal=True),
         KeySequence("Enter", literal=False),
         KeySequence("d", literal=True),
+        KeySequence("Escape", literal=False),
         KeySequence("Escape", literal=False),
     ]
     assert prefix_len == 3  # :2, Enter, o
@@ -74,6 +76,7 @@ def test_replace_op_deletes_then_inserts() -> None:
         KeySequence("o", literal=True),
         KeySequence("X", literal=True),
         KeySequence("Escape", literal=False),
+        KeySequence("Escape", literal=False),
     ]
 
 
@@ -82,6 +85,7 @@ def test_line_sequences_first_line_opens_with_i() -> None:
     assert sequences == [
         KeySequence("i", literal=True),
         KeySequence("alpha", literal=True),
+        KeySequence("Escape", literal=False),
         KeySequence("Escape", literal=False),
     ]
     assert threshold == 2  # only opener+text creates an undoable change
@@ -92,6 +96,7 @@ def test_line_sequences_later_line_opens_with_o() -> None:
     assert sequences == [
         KeySequence("o", literal=True),
         KeySequence("beta", literal=True),
+        KeySequence("Escape", literal=False),
         KeySequence("Escape", literal=False),
     ]
     assert threshold == 1  # 'o' alone already opened a line
@@ -212,6 +217,7 @@ def test_insert_sequences_at_top_uses_gg_open_above() -> None:
         KeySequence("Enter", literal=False),
         KeySequence("b", literal=True),
         KeySequence("Escape", literal=False),
+        KeySequence("Escape", literal=False),
     ]
     assert prefix_len == 2  # "gg", "O"
 
@@ -226,6 +232,7 @@ def test_insert_sequences_mid_file_positions_then_opens_below() -> None:
         KeySequence("c", literal=True),
         KeySequence("Enter", literal=False),
         KeySequence("d", literal=True),
+        KeySequence("Escape", literal=False),
         KeySequence("Escape", literal=False),
     ]
     # the prefix is derived from the same list it describes — it can't desync
@@ -412,9 +419,9 @@ def test_run_ops_interrupt_during_pause_wait_discards_pending(tmp_path: Path) ->
 
     def _check(window_id: str, base_dir: Path | None = None) -> str | None:
         calls["n"] += 1
-        if calls["n"] == 5:  # op0 completes (4 checks); pause before op1
+        if calls["n"] == 6:  # op0 completes (5 checks); pause before op1
             return "pause"
-        if calls["n"] == 6:  # interrupt lands while the hook is waiting
+        if calls["n"] == 7:  # interrupt lands while the hook is waiting
             assert control.has_pending_animation("@1", tmp_path) is True
             return "interrupt"
         return None
@@ -511,11 +518,12 @@ def test_run_lines_interrupted_after_text_undoes_the_partial_line(tmp_path: Path
 
 def test_run_lines_interrupted_after_bare_o_undoes_the_opened_line(tmp_path: Path) -> None:
     pane = cast(TmuxPane, MagicMock())
-    # line "a" completes (3 checks); line "b"'s opener "o" goes through and
-    # the interrupt fires before its text — 'o' alone already opened a line
-    # (a real change), so it must be undone
+    # line "a" completes (4 checks: i, text, Esc, Esc); line "b"'s opener "o"
+    # goes through and the interrupt fires before its text — 'o' alone already
+    # opened a line (a real change), so it must be undone
     with patch(
-        "vim_ai_follower.control.check_signal", side_effect=[None, None, None, None, "interrupt"]
+        "vim_ai_follower.control.check_signal",
+        side_effect=[None, None, None, None, None, "interrupt"],
     ):
         result = run_lines(pane, "@1", ("a", "b"), pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("interrupted", 1)
@@ -553,9 +561,9 @@ def test_run_lines_pause_on_later_line_arms_continuation_fallback(tmp_path: Path
 
     def _check(window_id: str, base_dir: Path | None = None) -> str | None:
         calls["n"] += 1
-        if calls["n"] == 4:  # line "a" completed (3 checks); pause before line "b"
+        if calls["n"] == 5:  # line "a" completed (4 checks); pause before line "b"
             return "pause"
-        if calls["n"] == 5:
+        if calls["n"] == 6:
             pending_seen.append(control.load_pending_animation("@1", tmp_path))
             return "pause"
         return None

@@ -23,6 +23,21 @@ class KeySequence:
     literal: bool = True
 
 
+# Two Escapes to leave insert mode, never one. A completion popup (CoC/Copilot)
+# maps the first <Esc> to close the popup and STAY in insert mode, so a single
+# Escape can leave the follower in insert mode; the next op's ex-command (:Nd)
+# or opener (o/gg/O) is then typed as LITERAL text and garbles the buffer —
+# the delete does not happen and the command text is written into the file
+# (empirically confirmed under a real popup; scripts/repro-mode-escape.sh).
+# The second Escape lands whatever consumed the first, the same guarantee
+# TmuxVimFollower._normal_mode relies on. `:set paste` suppresses autoindent
+# but NOT an insert-mode <Esc> mapping, so paste alone does not cover this.
+_EXIT_INSERT: tuple[KeySequence, ...] = (
+    KeySequence("Escape", literal=False),
+    KeySequence("Escape", literal=False),
+)
+
+
 @dataclass(frozen=True)
 class ApplyResult:
     outcome: Literal["completed", "paused", "interrupted"]
@@ -66,7 +81,7 @@ def _insert_sequences(op: EditOp) -> tuple[list[KeySequence], int]:
         sequences.append(KeySequence(line))
         if index < last_index:
             sequences.append(KeySequence("Enter", literal=False))
-    sequences.append(KeySequence("Escape", literal=False))
+    sequences.extend(_EXIT_INSERT)
     return sequences, len(prefix)
 
 
@@ -206,7 +221,7 @@ def _line_sequences(line: str, opener: str) -> tuple[list[KeySequence], int]:
     sequences = [
         KeySequence(opener),
         KeySequence(line),
-        KeySequence("Escape", literal=False),
+        *_EXIT_INSERT,
     ]
     if opener == "o":
         threshold = 1
