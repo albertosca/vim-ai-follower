@@ -16,6 +16,22 @@ dedicated `vaf-smoke` session that Check 4 creates and you kill.
 - **Cache dir:** `~/.cache/claude-vim-follower/` (state `<window_id>.pane`, signals, logs).
 - **Time budget:** ~10–12 min for all four checks.
 
+## Fast path — autonomous hermetic smoke
+
+One command validates start, the color cue, stop-restore, and window-scoping
+end to end through the real CLI, in a private tmux + plugin-free Vim (never
+touches your tmux, never prompts the keychain):
+
+```sh
+zsh scripts/smoke-autonomous.sh    # expect: "9 passed, 0 failed"
+zsh scripts/repro-stray-u.sh       # Escape+undo proof; expect: PASS
+```
+
+Run these after any follower change for a quick green/red. The **manual**
+checks below still matter for what the hermetic run can't cover: the color
+tint as your eye sees it, and the Escape+undo fix under your REAL CoC/Copilot
+completion popups (Check 3).
+
 ## Features under test
 
 | Check | Feature | Shipped | What only a live test catches |
@@ -178,4 +194,5 @@ Record each run so regressions are obvious over time.
 
 | Date | 1 cue | 2 stop | 3 esc+undo | 4 window | Notes |
 | --- | --- | --- | --- | --- | --- |
-| 2026-07-17 | | ✗→fixed | | | Check 2 failed live (border stuck); fixed in `c1760c8`, re-run pending |
+| 2026-07-17 | | ✗→fixed | | | Check 2 failed live (border stuck); fixed in `c1760c8` |
+| 2026-07-18 | ✓ | ✓ | ✓ | ✓ | Autonomous hermetic run (`smoke-autonomous.sh` 9/9 + `repro-stray-u.sh` PASS). Check 3 under real CoC still pending a manual run. |
