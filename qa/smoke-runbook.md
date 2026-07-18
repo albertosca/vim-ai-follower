@@ -10,14 +10,11 @@ test files in `qa/fixtures/` (already made — the scripts copy them into `/tmp`
 at run time). Nothing here ever touches your own tmux sessions except the
 dedicated `vaf-smoke` session that Check 4 creates and you kill.
 
-- **Binary:** `/Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow`
-  (not on `PATH` — always use the full path). Below it is aliased `CF`.
+- **Binary:** `claude-follow` is **not** on `PATH` — every command below uses
+  the full path `/Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow`
+  so you can copy-paste each line as-is, no alias to set first.
 - **Cache dir:** `~/.cache/claude-vim-follower/` (state `<window_id>.pane`, signals, logs).
 - **Time budget:** ~10–12 min for all four checks.
-
-```sh
-CF=/Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow
-```
 
 ## Features under test
 
@@ -35,7 +32,7 @@ CF=/Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow
 Open a tmux window and, from the pane where `claude` normally runs:
 
 ```sh
-$CF start        # opens a follower Vim pane beside you (dedicated split)
+/Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow start        # opens a follower Vim pane beside you (dedicated split)
 ```
 
 **PASS:** a second (follower) pane opens. **FAIL:** an error, or no pane.
@@ -69,7 +66,7 @@ you can look.
 Immediately after Check 1, in the same pane:
 
 ```sh
-$CF stop
+/Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow stop
 ```
 
 **PASS:** the follower pane closes **and** the border returns to default — no
@@ -90,7 +87,7 @@ Needs a pause landing **mid-animation while a completion popup is up** (your
 real CoC/Copilot). Restart the follower slow so you have time:
 
 ```sh
-$CF stop 2>/dev/null; $CF start --speed lento
+/Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow stop 2>/dev/null; /Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow start --speed lento
 ```
 
 Then paste this prompt into your Claude Code (it drives the follower):
@@ -107,8 +104,8 @@ função collect_paths que usa os.listdir, os.path.join, .strip().lower(),
 ```sh
 cp qa/fixtures/pause-trigger.py /tmp/vaf-smoke-pause.py
 P='{"tool_name":"Write","tool_input":{"file_path":"/tmp/vaf-smoke-pause.py"},"session_id":"me"}'
-echo "$P" | $CF hook pre
-echo "$P" | $CF hook post   # animates slowly — press `prefix P` mid-line
+echo "$P" | /Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow hook pre
+echo "$P" | /Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow hook post   # animates slowly — press `prefix P` mid-line
 ```
 
 While a line with `os.` / `.strip()` / `sorted(` is animating and a completion
@@ -162,7 +159,7 @@ tmux kill-session -t vaf-smoke
 ## Teardown / reset
 
 ```sh
-$CF stop 2>/dev/null                      # stop any follower in the current window
+/Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow stop 2>/dev/null                      # stop any follower in the current window
 tmux kill-session -t vaf-smoke 2>/dev/null  # if Check 4 left it
 rm -f /tmp/vaf-smoke-*.py                  # scratch copies
 ```
