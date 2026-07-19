@@ -292,24 +292,24 @@ class NvimFollower:
         lines: tuple[str, ...],
         pace_provider: Callable[[], float],
         file_path: str,
+        seeded: bool,
     ) -> AnimationResult:
         """Append the remaining whole lines of an interrupted fresh retype to
         the current buffer, landing at EXACTLY the final content.
 
         The seed subtlety: show_fresh only drops its trailing seed blank on a
         COMPLETED outcome, so the two resume entry points hand us different
-        buffer shapes. The des-interrupt replay runs right after rewrite_buffer,
-        which rebuilt the buffer seedless (and _reconstruct_partial_fresh, via
-        its "\\n".join round-trip, never leaves a trailing blank there), so the
-        buffer never ends in a blank. The pace-0 consume (hooks.py:439) runs on
-        the LIVE interrupted buffer, which still carries the trailing seed blank
-        at the bottom. So a trailing blank line — and only then — is the seed:
-        type the remainder in front of it and drop it on completion, exactly as
-        show_fresh does. With no trailing blank we simply append at the end (a
-        lone seed buffer, `[""]`, counts as a seed too: type into it, drop)."""
+        buffer shapes. `seeded` carries that provenance EXPLICITLY — the buffer
+        shape can't: a legit trailing blank in the content is indistinguishable
+        from the seed by sniffing existing[-1] == "" (that ambiguity was the
+        bug). The des-interrupt replay (seeded=False) runs right after
+        rewrite_buffer, which rebuilt the buffer to EXACTLY the partial with no
+        seed — so append at the very end. The pace-0 consume (seeded=True) runs
+        on the LIVE interrupted buffer, which still carries the trailing seed
+        blank: type the remainder in front of it and drop it on completion,
+        exactly as show_fresh does."""
         existing = nvim.api.buf_get_lines(buf, 0, -1, True)
-        has_seed = bool(existing) and existing[-1] == ""
-        start_row = len(existing) - 1 if has_seed else len(existing)
+        start_row = len(existing) - 1 if seeded else len(existing)
 
         def save_pending(index: int) -> None:
             control.save_pending_show_fresh(
@@ -330,18 +330,25 @@ class NvimFollower:
             ns,
             save_pending=save_pending,
         )
-        if result.outcome == "completed" and has_seed:
+        if result.outcome == "completed" and seeded:
             # Drop the seed blank the retype pushed to the bottom.
             drop = start_row + len(lines)
             nvim.api.buf_set_lines(buf, drop, drop + 1, True, [])
         return result
 
-    def resume(self, pending: PendingApplyEdit | PendingShowFresh) -> AnimationResult:
+    def resume(
+        self, pending: PendingApplyEdit | PendingShowFresh, *, seeded: bool = False
+    ) -> AnimationResult:
         """Replay a saved animation remainder (des-interrupt live replay, or a
         pace-0 crash-fallback consume). Mirrors the tmux backend: re-select the
         tab, then replay the op-loop (PendingApplyEdit) or append the remaining
         whole lines (PendingShowFresh), wrapped in _drive so a completed replay
         relocks (unless adopted) and an interrupt hands the buffer over.
+
+        `seeded` records whether the current buffer still carries show_fresh's
+        trailing seed blank (True for the live pace-0 consume; False for the
+        des-interrupt replay onto a seedless rewrite_buffer). Only PendingShow
+        Fresh consults it; PendingApplyEdit ignores it.
 
         The pace-0 catch-up must stay silent forever: pending.pace_seconds == 0
         selects a fixed-0 provider that never re-reads live speed mid-catch-up
@@ -361,7 +368,9 @@ class NvimFollower:
         return self._drive(
             nvim,
             buf,
-            lambda: self._resume_fresh(nvim, buf, ns, pending.lines, provider, pending.file_path),
+            lambda: self._resume_fresh(
+                nvim, buf, ns, pending.lines, provider, pending.file_path, seeded
+            ),
         )
 
     def hand_over(self) -> None:

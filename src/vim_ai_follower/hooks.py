@@ -198,7 +198,12 @@ def _touch_and_evict(
 
 
 def _reconstruct_partial_fresh(content: str, completed_count: int) -> str:
-    return "\n".join(content.splitlines()[:completed_count])
+    # Terminate every line with "\n" instead of joining with it: the returned
+    # string is later `.splitlines()`'d again (by rewrite_buffer, and shown in
+    # the interrupt notification), and a "\n".join round-trip is LOSSY for
+    # trailing blank lines — ['a','',''] -> "a\n\n" -> ['a',''] drops one. The
+    # terminating form is lossless: ['a','',''] -> "a\n\n\n" -> ['a','',''].
+    return "".join(line + "\n" for line in content.splitlines()[:completed_count])
 
 
 def _print_hook_context(context: str) -> None:
@@ -277,7 +282,17 @@ def _await_user_handoff(
                     FollowerState.update_current_file(window_id, file_path)
                     return
                 rebuilt = follower.rewrite_buffer(file_path, partial_content)
-                result = follower.resume(pending) if rebuilt.outcome == "completed" else rebuilt
+                # rewrite_buffer rebuilds the buffer to EXACTLY the partial, so
+                # there is no seed to strip — EXCEPT when the partial is empty
+                # (interrupt before any line was typed): nvim can't hold a truly
+                # empty buffer, so rewrite_buffer forces a single blank line,
+                # which IS a seed the replay must type in front of and drop.
+                seeded = partial_content == ""
+                result = (
+                    follower.resume(pending, seeded=seeded)
+                    if rebuilt.outcome == "completed"
+                    else rebuilt
+                )
                 if result.outcome == "completed":
                     FollowerState.update_current_file(window_id, file_path)
                 else:
@@ -438,7 +453,11 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
     ):
         # Both backends persist pending state now, so route the pace-0 catch-up
         # through the already-constructed backend follower (get_follower above).
-        follower.resume(dataclasses.replace(pending, pace_seconds=0.0))
+        # seeded=True: the live interrupted show_fresh buffer still carries the
+        # trailing seed blank (show_fresh only drops it on a completed outcome),
+        # so _resume_fresh must type in front of it and drop it. A PendingApply
+        # Edit ignores seeded entirely.
+        follower.resume(dataclasses.replace(pending, pace_seconds=0.0), seeded=True)
 
     if binary:
         # Binary files are never animated, so it's safe to just navigate to

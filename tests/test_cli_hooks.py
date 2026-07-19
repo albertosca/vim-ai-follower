@@ -946,6 +946,25 @@ def test_hook_post_des_interrupt_replays_the_remaining_animation(
     assert capsys.readouterr().out == ""  # nothing changed for Claude: no notification
 
 
+def test_reconstruct_partial_fresh_preserves_consecutive_trailing_blanks() -> None:
+    # The reconstructed partial is `.splitlines()`'d again downstream (by
+    # rewrite_buffer and the interrupt notification), so the round-trip must be
+    # lossless for trailing blank lines. A "\n".join would collapse them:
+    # ['a','',''] -> "a\n\n" -> ['a',''] drops one. Terminating each line keeps
+    # them: ['a','',''] -> "a\n\n\n" -> ['a','',''].
+    content = "a\n\n\nb\nc\n"
+    assert content.splitlines() == ["a", "", "", "b", "c"]
+
+    # completed_count spanning both trailing blanks reconstructs them intact.
+    partial = hooks._reconstruct_partial_fresh(content, 3)
+    assert partial == "a\n\n\n"
+    assert partial.splitlines() == ["a", "", ""]  # lossless round-trip
+
+    # nothing shown yet -> empty string -> no lines (unchanged from before).
+    assert hooks._reconstruct_partial_fresh(content, 0) == ""
+    assert hooks._reconstruct_partial_fresh(content, 0).splitlines() == []
+
+
 def test_hook_post_des_interrupt_rebuilds_partial_content_before_replaying(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -1109,6 +1128,9 @@ def test_pace0_consume_routes_resume_to_the_nvim_follower(
     fake.resume.assert_called_once()
     consumed = fake.resume.call_args.args[0]
     assert consumed.pace_seconds == 0.0  # the catch-up is forced silent
+    # the pace-0 consume runs on the LIVE interrupted buffer, which still
+    # carries show_fresh's trailing seed blank — provenance passed explicitly
+    assert fake.resume.call_args.kwargs.get("seeded") is True
     assert list(consumed.ops) == [
         EditOp(kind="replace", start_line=2, end_line=2, new_lines=("B",))
     ]

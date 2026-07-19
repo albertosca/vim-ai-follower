@@ -421,10 +421,88 @@ def test_pace0_consume_of_an_interrupted_show_fresh_lands_at_full_content(
     pending = PendingShowFresh(
         lines=tuple(lines[2:]), pace_seconds=0.0, continuation=True, file_path=file_a
     )
-    follower.resume(pending)
+    # entry B: the live buffer still carries show_fresh's trailing seed blank,
+    # so provenance is passed explicitly (seeded=True) rather than sniffed.
+    follower.resume(pending, seeded=True)
 
     nvim = pynvim.attach("socket", path=headless_nvim)
     assert nvim.current.buffer[:] == lines  # seed dropped, nothing lost
+
+
+@pytest.mark.integration
+def test_des_interrupt_replays_a_remainder_after_consecutive_trailing_blanks(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Entry point A with a partial that ends in TWO consecutive blank lines —
+    # the exact shape the "\n".join round-trip used to collapse. The lossless
+    # _reconstruct_partial_fresh + explicit seeded=False must land at EXACTLY
+    # the full content with both blanks preserved.
+    from vim_ai_follower import cache
+
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    file_a = str(tmp_path / "a.py")
+    content = "a\n\n\nb\nc\n"
+    lines = content.splitlines()
+    assert lines == ["a", "", "", "b", "c"]
+
+    monkeypatch.setattr(control, "check_signal", _interrupt_at(4))  # stop before "b"
+    result = follower.show_fresh(file_a, content)
+    assert result == AnimationResult("interrupted", 3)  # a + the two blanks typed
+
+    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
+    # Exactly what hooks._reconstruct_partial_fresh produces for the hook, then
+    # rewrite_buffer rebuilds the seedless interrupt-point buffer from it.
+    partial = "".join(f"{ln}\n" for ln in lines[:3])
+    assert partial == "a\n\n\n"
+    rebuilt = follower.rewrite_buffer(file_a, partial)
+    assert rebuilt.outcome == "completed"
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    assert nvim.current.buffer[:] == ["a", "", ""]  # seedless partial, blanks intact
+
+    pending = PendingShowFresh(
+        lines=tuple(lines[3:]), pace_seconds=0.0, continuation=True, file_path=file_a
+    )
+    replay = follower.resume(pending, seeded=False)
+    assert replay.outcome == "completed"
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    assert nvim.current.buffer[:] == ["a", "", "", "b", "c"]  # both blanks survive
+
+
+@pytest.mark.integration
+def test_pace0_consume_after_consecutive_trailing_blanks_lands_at_full_content(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Entry point B (pace-0 consume) with a partial ending in two blank lines.
+    # The live interrupted buffer carries the trailing seed blank on TOP of the
+    # two content blanks; seeded=True must drop only the seed and preserve both
+    # content blanks.
+    from vim_ai_follower import cache
+
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    file_a = str(tmp_path / "a.py")
+    content = "a\n\n\nb\nc\n"
+    lines = content.splitlines()
+
+    monkeypatch.setattr(control, "check_signal", _interrupt_at(4))
+    assert follower.show_fresh(file_a, content) == AnimationResult("interrupted", 3)
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    # a + two content blanks + the trailing seed blank show_fresh has not
+    # dropped yet (four lines, the last being the seed).
+    assert nvim.current.buffer[:] == ["a", "", "", ""]
+
+    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
+    pending = PendingShowFresh(
+        lines=tuple(lines[3:]), pace_seconds=0.0, continuation=True, file_path=file_a
+    )
+    follower.resume(pending, seeded=True)
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    assert nvim.current.buffer[:] == ["a", "", "", "b", "c"]  # seed dropped, blanks kept
 
 
 @pytest.mark.integration
@@ -449,7 +527,9 @@ def test_resume_from_scratch_types_the_whole_file_when_nothing_was_shown(
     pending = PendingShowFresh(
         lines=tuple(lines), pace_seconds=0.0, continuation=False, file_path=file_a
     )
-    follower.resume(pending)
+    # entry B on a lone seed buffer ([""]): seeded=True types into it and drops
+    # the seed on completion.
+    follower.resume(pending, seeded=True)
 
     nvim = pynvim.attach("socket", path=headless_nvim)
     assert nvim.current.buffer[:] == lines
