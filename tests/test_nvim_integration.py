@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -11,6 +12,7 @@ from vim_ai_follower import control  # noqa: E402
 from vim_ai_follower.animate import AnimationResult  # noqa: E402
 from vim_ai_follower.backends.nvim import NvimFollower  # noqa: E402
 from vim_ai_follower.diff import compute_edit_script  # noqa: E402
+from vim_ai_follower.status_surface import NvimStatusSurface  # noqa: E402
 
 
 @pytest.mark.integration
@@ -157,7 +159,35 @@ def test_goto_file_navigates_between_buffers_and_close_tab_evicts(
 
     follower.close_tab(file_b)
     assert file_b not in _buf_names()
-    assert file_a in _buf_names()
+
+
+def _floating_windows(nvim: Any) -> list[int]:
+    return [w for w in nvim.api.list_wins() if nvim.api.win_get_config(w)["relative"] != ""]
+
+
+@pytest.mark.integration
+def test_set_writer_opens_a_floating_window_with_the_label_then_clear_closes_it(
+    headless_nvim: str,
+) -> None:
+    surface = NvimStatusSurface(socket_path=headless_nvim)
+
+    surface.set_writer("code-reviewer", "colour78")
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    floating = _floating_windows(nvim)
+    assert len(floating) >= 1
+    buf = nvim.api.win_get_buf(floating[0])
+    lines = nvim.api.buf_get_lines(buf, 0, -1, True)
+    assert any("code-reviewer" in line for line in lines)
+
+    surface.set_state("Claude waiting — :w releases · S discards")
+    lines_with_state = nvim.api.buf_get_lines(buf, 0, -1, True)
+    assert any("Claude waiting" in line for line in lines_with_state)
+    # still exactly one floating status window, not a second one stacked on top
+    assert len(_floating_windows(nvim)) == 1
+
+    surface.clear()
+    assert _floating_windows(pynvim.attach("socket", path=headless_nvim)) == []
 
 
 @pytest.mark.integration

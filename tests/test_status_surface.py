@@ -6,12 +6,12 @@ tests pin the surface's own command sequence directly."""
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from helpers import make_mock_tmux_run
 
 from vim_ai_follower.state import FollowerState
-from vim_ai_follower.status_surface import TmuxStatusSurface, status_surface_for
+from vim_ai_follower.status_surface import NvimStatusSurface, TmuxStatusSurface, status_surface_for
 
 
 def test_set_writer_tints_border_sets_status_top_and_title() -> None:
@@ -104,3 +104,151 @@ def test_status_surface_for_returns_tmux_surface_bound_to_the_target_pane() -> N
     surface = status_surface_for(state)
     assert isinstance(surface, TmuxStatusSurface)
     assert surface.pane_id == "%2"
+
+
+def test_status_surface_for_returns_nvim_surface_bound_to_the_socket_path() -> None:
+    state = FollowerState(
+        backend="nvim",
+        target="/tmp/nvim-@1.sock",
+        current_file=None,
+        origin="%1",
+        on_failure="reopen",
+        speed="normal",
+    )
+    surface = status_surface_for(state)
+    assert isinstance(surface, NvimStatusSurface)
+    assert surface.socket_path == "/tmp/nvim-@1.sock"
+
+
+# --- NvimStatusSurface (mocked pynvim.attach) -----------------------------
+
+
+def test_set_writer_creates_a_floating_window_when_none_exists() -> None:
+    # Two pre-existing windows that must both be skipped by the search: a
+    # non-floating one, and a floating one showing an unrelated buffer.
+    nvim = MagicMock()
+    nvim.api.list_wins.return_value = [1, 2]
+    nvim.api.win_get_config.side_effect = lambda win: (
+        {"relative": ""} if win == 1 else {"relative": "editor"}
+    )
+    nvim.api.win_get_buf.side_effect = lambda win: 99
+    nvim.api.buf_get_name.side_effect = lambda buf: "/tmp/other-file.py"
+    nvim.api.create_buf.return_value = 7
+    nvim.api.open_win.return_value = 3
+    nvim.api.buf_get_lines.return_value = []
+    nvim.api.win_get_cursor.return_value = (5, 0)
+
+    with patch("pynvim.attach", return_value=nvim) as attach:
+        NvimStatusSurface(socket_path="/tmp/x.sock").set_writer("code-reviewer", "colour78")
+
+    attach.assert_called_once_with("socket", path="/tmp/x.sock")
+    nvim.api.create_buf.assert_called_once_with(False, True)
+    nvim.api.buf_set_name.assert_called_once()
+    nvim.api.open_win.assert_called_once()
+    nvim.api.buf_set_lines.assert_any_call(7, 0, -1, True, ["code-reviewer"])
+    nvim.command.assert_any_call("highlight default VafWriterCue ctermfg=78")
+    nvim.api.buf_add_highlight.assert_called_once()
+    nvim.api.buf_set_extmark.assert_called_once()
+    extmark_call = nvim.api.buf_set_extmark.call_args
+    assert extmark_call.args[2] == 4  # row - 1, from win_get_cursor's (5, 0)
+
+
+def test_set_writer_reuses_an_existing_floating_window_and_keeps_saved_state_line() -> None:
+    nvim = MagicMock()
+    nvim.api.list_wins.return_value = [3]
+    nvim.api.win_get_config.return_value = {"relative": "editor"}
+    nvim.api.win_get_buf.return_value = 7
+    nvim.api.buf_get_name.return_value = "vaf-status"
+    nvim.api.buf_get_lines.return_value = ["old-label", "Claude waiting"]
+    nvim.api.win_get_cursor.return_value = (1, 0)
+
+    with patch("pynvim.attach", return_value=nvim):
+        NvimStatusSurface(socket_path="/tmp/x.sock").set_writer("new-writer", None)
+
+    nvim.api.create_buf.assert_not_called()
+    nvim.api.open_win.assert_not_called()
+    nvim.api.buf_set_lines.assert_any_call(7, 0, -1, True, ["new-writer", "Claude waiting"])
+    nvim.command.assert_not_called()  # color=None: no highlight command issued
+    nvim.api.buf_add_highlight.assert_not_called()
+
+
+def test_set_state_writes_the_second_line_and_opens_a_window_if_needed() -> None:
+    nvim = MagicMock()
+    nvim.api.list_wins.return_value = []
+    nvim.api.create_buf.return_value = 7
+    nvim.api.open_win.return_value = 3
+    nvim.api.buf_get_lines.return_value = []
+
+    with patch("pynvim.attach", return_value=nvim):
+        NvimStatusSurface(socket_path="/tmp/x.sock").set_state("Claude waiting")
+
+    nvim.api.buf_set_lines.assert_any_call(7, 0, -1, True, ["", "Claude waiting"])
+    nvim.api.open_win.assert_called_once()
+
+
+def test_set_state_reuses_an_existing_window_and_keeps_the_saved_label() -> None:
+    nvim = MagicMock()
+    nvim.api.list_wins.return_value = [3]
+    nvim.api.win_get_config.return_value = {"relative": "editor"}
+    nvim.api.win_get_buf.return_value = 7
+    nvim.api.buf_get_name.return_value = "vaf-status"
+    nvim.api.buf_get_lines.return_value = ["code-reviewer"]
+
+    with patch("pynvim.attach", return_value=nvim):
+        NvimStatusSurface(socket_path="/tmp/x.sock").set_state("Claude waiting")
+
+    nvim.api.open_win.assert_not_called()
+    nvim.api.buf_set_lines.assert_any_call(7, 0, -1, True, ["code-reviewer", "Claude waiting"])
+
+
+def test_set_state_with_none_delegates_to_clear() -> None:
+    nvim = MagicMock()
+    nvim.api.list_wins.return_value = [3]
+    nvim.api.win_get_config.return_value = {"relative": "editor"}
+    nvim.api.win_get_buf.return_value = 7
+    nvim.api.buf_get_name.return_value = "vaf-status"
+    nvim.api.get_current_buf.return_value = 1
+
+    with patch("pynvim.attach", return_value=nvim):
+        NvimStatusSurface(socket_path="/tmp/x.sock").set_state(None)
+
+    nvim.api.win_close.assert_called_once_with(3, True)
+
+
+def test_clear_closes_the_window_wipes_its_buffer_and_clears_cursor_virtual_text() -> None:
+    nvim = MagicMock()
+    nvim.api.list_wins.return_value = [3]
+    nvim.api.win_get_config.return_value = {"relative": "editor"}
+    nvim.api.win_get_buf.return_value = 7
+    nvim.api.buf_get_name.return_value = "vaf-status"
+    nvim.api.get_current_buf.return_value = 1
+
+    with patch("pynvim.attach", return_value=nvim):
+        NvimStatusSurface(socket_path="/tmp/x.sock").clear()
+
+    nvim.api.win_close.assert_called_once_with(3, True)
+    nvim.command.assert_any_call("silent! bwipeout! 7")
+    nvim.api.buf_clear_namespace.assert_called_once_with(
+        1, nvim.api.create_namespace.return_value, 0, -1
+    )
+
+
+def test_clear_with_no_window_still_clears_cursor_virtual_text_without_raising() -> None:
+    nvim = MagicMock()
+    nvim.api.list_wins.return_value = []
+    nvim.api.get_current_buf.return_value = 1
+
+    with patch("pynvim.attach", return_value=nvim):
+        NvimStatusSurface(socket_path="/tmp/x.sock").clear()
+
+    nvim.api.win_close.assert_not_called()
+    nvim.api.buf_clear_namespace.assert_called_once()
+
+
+def test_all_methods_swallow_a_dead_socket_instead_of_raising() -> None:
+    with patch("pynvim.attach", side_effect=OSError("no such socket")):
+        surface = NvimStatusSurface(socket_path="/tmp/dead.sock")
+        surface.set_writer("code-reviewer", "colour78")
+        surface.set_state("Claude waiting")
+        surface.set_state(None)
+        surface.clear()
