@@ -135,7 +135,7 @@ def cmd_stop(env: dict[str, str]) -> int:
             # Adoption never took ownership of the pane — killing the
             # user's own Vim on stop would be destructive. Only close the
             # tabs the follower itself opened there.
-            follower = TmuxVimFollower(pane_id=existing.target, window_id=window.window_id)
+            follower = get_follower(existing.backend, existing.target, window_id=window.window_id)
             for path in existing.open_files:
                 follower.close_tab(path)
         else:

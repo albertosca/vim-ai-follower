@@ -7,10 +7,20 @@ from __future__ import annotations
 
 import os
 import subprocess
+import time
 from pathlib import Path
 
 from vim_ai_follower import state
 from vim_ai_follower.tmux import TmuxPane
+
+# Bounded wait for the launched nvim to bind its RPC socket before we return
+# control to the caller. The socket file's mere existence is a sound
+# readiness proxy for a unix-domain listening socket. Heavy configs can take
+# a while to boot, hence the generous ceiling; if it times out we still
+# return (no worse than the old unconditional-return behavior) and the
+# subsequent pynvim.attach() raises the same clear OSError as before.
+_SOCKET_WAIT_SECONDS = 3.0
+_SOCKET_POLL_INTERVAL_SECONDS = 0.02
 
 
 def launch_socket_path(window_id: str, base_dir: Path | None = None) -> Path:
@@ -37,4 +47,7 @@ def resolve_nvim_target(origin_pane: str, window_id: str, adopt: bool) -> tuple[
         ["tmux", "split-window", "-h", "-t", origin_pane, "nvim", "--listen", sock],
         check=True,
     )
+    deadline = time.monotonic() + _SOCKET_WAIT_SECONDS
+    while not Path(sock).exists() and time.monotonic() < deadline:
+        time.sleep(_SOCKET_POLL_INTERVAL_SECONDS)
     return sock, True

@@ -408,6 +408,40 @@ def test_stop_on_adopted_pane_closes_tabs_but_not_the_pane() -> None:
     assert state.FollowerState.get("@1") is None
 
 
+def test_stop_on_adopted_nvim_closes_tabs_over_rpc_not_tmux_send_keys(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # An adopted nvim's `target` is an RPC socket path, not a tmux pane id —
+    # cmd_stop must route it through get_follower(backend, ...) rather than
+    # hardcoding TmuxVimFollower (which would aim tmux send-keys at the
+    # socket path and blow up before FollowerState.clear runs).
+    sock = "/tmp/nvim-@1.sock"
+    a = "/tmp/a.py"
+    b = "/tmp/b.py"
+    state.FollowerState.set(
+        "@1", "nvim", sock, origin="%1", adopted=True, open_files=(a, b), shown_any=True
+    )
+    nvim_mock = MagicMock()
+    nvim_mock.funcs.bufnr.return_value = 7
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+        patch("pynvim.attach", return_value=nvim_mock) as attach,
+    ):
+        exit_code = commands.cmd_stop({"TMUX_PANE": "%1"})
+    assert exit_code == 0
+    assert "claude-follow: stopped" in capsys.readouterr().out
+    # the nvim RPC path was actually used to close the tabs...
+    attach.assert_called()
+    nvim_mock.funcs.bufnr.assert_any_call(a)
+    nvim_mock.funcs.bufnr.assert_any_call(b)
+    # ...and never through a tmux send-keys aimed at the socket path (what
+    # the old hardcoded TmuxVimFollower(pane_id=existing.target, ...) did —
+    # it never calls pynvim.attach, and instead fires send-keys -t <sock>).
+    assert not any(c.args[0][:4] == ["tmux", "send-keys", "-t", sock] for c in run.call_args_list)
+    # state cleanup still ran to completion
+    assert state.FollowerState.get("@1") is None
+
+
 def test_stop_restores_the_follower_border() -> None:
     _register_fake_follower(
         "@1", "%2", writers=("$1", "a9"), writer_labels=("session:$1", "explore")
