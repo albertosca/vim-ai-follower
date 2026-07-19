@@ -3,7 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from vim_ai_follower.state import FollowerState, touch_open_files
+from vim_ai_follower.state import FollowerState, nvim_socket_path, touch_open_files
+
+
+def test_nvim_socket_path_is_window_scoped(tmp_path: Path) -> None:
+    assert nvim_socket_path("@3", tmp_path) == tmp_path / "nvim-@3.sock"
 
 
 def test_set_writes_the_pane_atomically_via_rename(tmp_path: Path) -> None:

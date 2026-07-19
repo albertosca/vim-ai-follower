@@ -759,6 +759,65 @@ def test_auto_open_adopts_existing_vim_pane(
     assert result.shown_any is True
 
 
+def test_auto_open_selects_nvim_backend_and_persists_launched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"open_policy": "always", "backend": "nvim"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+
+    target = tmp_path / "f.py"
+    target.write_text("print(1)\n")
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+
+    with (
+        patch(
+            "vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run(other_panes=("%1",))
+        ),
+        patch(
+            "vim_ai_follower.hooks.resolve_nvim_target",
+            return_value=("/tmp/nvim.sock", True),
+        ) as resolve,
+        # The follower's own connection (show_fresh) is mocked out — this test
+        # only asserts the backend selection and persisted state.
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=MagicMock()),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    resolve.assert_called_once_with("%1", "@1", adopt=False)
+    result = state.FollowerState.read("@1")
+    assert result is not None
+    assert result.backend == "nvim"
+    assert result.target == "/tmp/nvim.sock"
+    assert result.adopted is False
+
+
+def test_auto_open_nvim_resolve_failure_logs_and_noops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"open_policy": "always", "backend": "nvim"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+
+    target = tmp_path / "f.py"
+    target.write_text("print(1)\n")
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+
+    with (
+        patch(
+            "vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run(other_panes=("%1",))
+        ),
+        patch(
+            "vim_ai_follower.hooks.resolve_nvim_target",
+            side_effect=subprocess.CalledProcessError(1, ["tmux", "split-window"]),
+        ),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    # A failed nvim auto-open registers nothing and never crashes the hook.
+    assert state.FollowerState.read("@1") is None
+
+
 def test_auto_open_logs_and_noops_when_the_split_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

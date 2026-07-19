@@ -7,8 +7,9 @@ from typing import Literal
 
 from vim_ai_follower import cache, config, control, keybindings, snapshot, tmux
 from vim_ai_follower.backends import get_follower
+from vim_ai_follower.backends.nvim_connect import resolve_nvim_target
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
-from vim_ai_follower.state import FollowerState, nvim_socket_path
+from vim_ai_follower.state import FollowerState
 from vim_ai_follower.tmux import TmuxPane, TmuxWindow, adopt_target
 
 
@@ -25,7 +26,7 @@ def _require_window(env: dict[str, str]) -> TmuxWindow | None:
 
 def cmd_start(
     env: dict[str, str],
-    backend: str = "tmux",
+    backend: str | None = None,
     on_failure: str | None = None,
     speed: str | None = None,
 ) -> int:
@@ -37,31 +38,30 @@ def cmd_start(
         return 0
 
     defaults = config.load()
+    # An explicit --backend wins; otherwise honor config.backend (tmux|nvim).
+    resolved_backend = backend if backend is not None else defaults.backend
     resolved_on_failure = on_failure if on_failure is not None else defaults.on_failure
     resolved_speed = speed if speed is not None else defaults.speed
     origin = env["TMUX_PANE"]
     keybindings.register()
 
-    if backend == "nvim":
-        socket_path = nvim_socket_path(window.window_id)
-        follower = get_follower("nvim", str(socket_path))
-        if not follower.is_alive():
-            print(
-                "claude-follow: no Neovim RPC socket found at "
-                f"{socket_path} — open Neovim in this tmux session first "
-                "(needs vim.fn.serverstart() wired to that path)",
-                file=sys.stderr,
-            )
-            return 1
+    if resolved_backend == "nvim":
+        # Adopt a running nvim's socket, or launch a dedicated one; either way
+        # persist the socket to drive and whether we adopted (adopted nvims are
+        # never relocked or killed).
+        sock, launched = resolve_nvim_target(
+            origin, window.window_id, adopt=defaults.adopt_existing
+        )
         FollowerState.set(
             window.window_id,
             "nvim",
-            str(socket_path),
+            sock,
             origin=origin,
             on_failure=resolved_on_failure,
             speed=resolved_speed,
+            adopted=not launched,
         )
-        print(f"claude-follow: attached to Neovim at {socket_path}")
+        print(f"claude-follow: attached to Neovim at {sock}")
         return 0
 
     if defaults.adopt_existing:

@@ -15,7 +15,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="claude-follow")
     subparsers = parser.add_subparsers(dest="command", required=True)
     start_parser = subparsers.add_parser("start")
-    start_parser.add_argument("--backend", choices=["tmux", "nvim"], default="tmux")
+    # Default None (not "tmux") so a bare `start` falls back to config.backend;
+    # an explicit --backend still overrides it.
+    start_parser.add_argument("--backend", choices=["tmux", "nvim"], default=None)
     start_parser.add_argument("--on-failure", choices=["silent", "reopen"], default=None)
     start_parser.add_argument(
         "--speed",

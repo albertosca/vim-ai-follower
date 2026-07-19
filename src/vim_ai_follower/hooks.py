@@ -14,6 +14,7 @@ from typing import Any
 from vim_ai_follower import cache, config, control, keybindings, writer_cue
 from vim_ai_follower import diff as diff_module
 from vim_ai_follower.backends import Follower, get_follower
+from vim_ai_follower.backends.nvim_connect import resolve_nvim_target
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.snapshot import load as load_snapshot
 from vim_ai_follower.snapshot import save as save_snapshot
@@ -66,8 +67,29 @@ def _get_active_follower(window_id: str) -> FollowerState | None:
         return current
 
     raw = FollowerState.read(window_id)
-    if raw is None or raw.on_failure != "reopen" or raw.backend != "tmux" or not raw.origin:
+    if raw is None or raw.on_failure != "reopen" or not raw.origin:
         return None
+
+    if raw.backend == "nvim":
+        # Recovery never re-adopts: relaunch a fresh dedicated nvim (adopt=
+        # False) so a user who closed their own editor is not silently taken
+        # over again.
+        try:
+            sock, _launched = resolve_nvim_target(raw.origin, window_id, adopt=False)
+        except subprocess.CalledProcessError as exc:
+            logger.warning("failed to relaunch nvim from origin %s: %s", raw.origin, exc)
+            return None
+        FollowerState.set(
+            window_id,
+            "nvim",
+            sock,
+            current_file=None,
+            origin=raw.origin,
+            on_failure=raw.on_failure,
+            speed=raw.speed,
+            adopted=False,
+        )
+        return FollowerState.get(window_id)
 
     try:
         started = TmuxVimFollower.start(raw.origin)
@@ -101,6 +123,23 @@ def _maybe_auto_open(
         # same env dict, never mutated in between.
         return None
     keybindings.register()
+    if cfg.backend == "nvim":
+        # Same adopt-or-launch selection as cmd_start, but from the hook path.
+        try:
+            sock, launched = resolve_nvim_target(origin, window_id, adopt=cfg.adopt_existing)
+        except subprocess.CalledProcessError as exc:
+            logger.warning("nvim auto-open failed from origin %s: %s", origin, exc)
+            return None
+        FollowerState.set(
+            window_id,
+            "nvim",
+            sock,
+            origin=origin,
+            on_failure=cfg.on_failure,
+            speed=cfg.speed,
+            adopted=not launched,
+        )
+        return FollowerState.get(window_id)
     adopt = adopt_target(origin) if cfg.adopt_existing else None
     if adopt is not None:
         # shown_any=True from the first moment: an adopted Vim's current tab

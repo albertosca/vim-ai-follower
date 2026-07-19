@@ -14,10 +14,11 @@ from pathlib import Path
 
 import pynvim
 
-from vim_ai_follower import control
-from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult
+from vim_ai_follower import config, control
+from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult, _wait_while_paused
 from vim_ai_follower.backends import nvim_lua
 from vim_ai_follower.diff import EditOp
+from vim_ai_follower.state import FollowerState
 
 _NAMESPACE = "vaf"
 
@@ -31,19 +32,38 @@ def _animate_lines(
     window_id: str,
     ns: int,
     base_dir: Path | None = None,
+    save_pending: Callable[[int], None] | None = None,
 ) -> AnimationResult:
     """Type `lines` into `buf` from `start_row`, one Lua-dispatched line at a
     time, checking for a pause/interrupt signal at each line boundary (never
-    mid-char: TYPE_LINE types a whole line atomically inside nvim). Any signal
-    stops the run before that line is typed and returns "interrupted" with the
-    count already shown. Full pause-wait/resume + speed re-read parity lands in
-    Task 5 — here a signal simply ends the animation, mirroring the returned
-    outcomes of animate.run_lines."""
-    for index, line in enumerate(lines):
-        if control.check_signal(window_id, base_dir) is not None:
+    mid-char: TYPE_LINE types a whole line atomically inside nvim).
+
+    Full pause/resume parity with animate.run_lines: an "interrupt" stops the
+    run before the current line is typed and returns "interrupted" with the
+    count already shown; a "pause" blocks in place (via animate._wait_while_
+    paused) until the user resumes — then the same line is typed — or
+    interrupts. A pause always lands at a clean line boundary (TYPE_LINE is
+    atomic in nvim), so no partial line needs rolling back. The pace is re-read
+    per line from `pace_provider` so a live Ctrl+a +/- takes effect at the next
+    boundary. `save_pending(index)` persists the crash-fallback remainder while
+    waiting (discarded on resume by _wait_while_paused)."""
+    index = 0
+    while index < len(lines):
+        signal = control.check_signal(window_id, base_dir)
+        if signal == "interrupt":
             return AnimationResult("interrupted", index)
+        if signal == "pause":
+
+            def _save(index: int = index) -> None:
+                if save_pending is not None:
+                    save_pending(index)
+
+            if not _wait_while_paused(window_id, _save, base_dir):
+                return AnimationResult("interrupted", index)
+            continue  # resumed: retype this line from its clean boundary
         pace_ms = int(pace_provider() * 1000)
-        nvim.api.exec_lua(nvim_lua.TYPE_LINE, [buf, start_row + index, line, pace_ms, ns])
+        nvim.api.exec_lua(nvim_lua.TYPE_LINE, [buf, start_row + index, lines[index], pace_ms, ns])
+        index += 1
     return AnimationResult("completed", len(lines))
 
 
@@ -51,9 +71,10 @@ def _animate_lines(
 class NvimFollower:
     """Follower backend that animates edits in a real Neovim over the RPC API.
 
-    Buffer-per-file navigation (goto_file/ensure_showing) and the launched-vs-
-    adopted lock/lifecycle distinction land in later phases (Tasks 5/6); this
-    task owns the connection, show_fresh, apply_edit, and the per-line driver."""
+    Buffer-per-file navigation (goto_file/ensure_showing) lands in Phase 3;
+    this backend owns the connection, show_fresh, apply_edit, the per-line
+    driver, full pause/resume + live-speed parity, and the launched-vs-adopted
+    relock distinction."""
 
     socket_path: str
     window_id: str = ""
@@ -63,7 +84,24 @@ class NvimFollower:
         return pynvim.attach("socket", path=self.socket_path)
 
     def _pace_provider(self) -> float:
-        return self.pace_seconds
+        """Re-read the live speed from FollowerState each line so a running
+        animation reacts to Ctrl+a +/- at its next line boundary (parity with
+        the tmux backend's _live_pace). Falls back to the pace this follower
+        was constructed with when there's no window state to read."""
+        if not self.window_id:
+            return self.pace_seconds
+        state = FollowerState.read(self.window_id)
+        if state is None:
+            return self.pace_seconds
+        return config.pace_seconds_for(state.speed)
+
+    def _is_adopted(self) -> bool:
+        """An adopted nvim is the user's own editor and is never relocked
+        after an animation — locking the user out of their own buffer would be
+        hostile. A launched, dedicated follower does relock (see _drive). The
+        adopted flag is persisted in FollowerState by start/auto-open."""
+        state = FollowerState.read(self.window_id)
+        return state is not None and state.adopted
 
     def is_alive(self) -> bool:
         try:
@@ -80,8 +118,10 @@ class NvimFollower:
     ) -> AnimationResult:
         """Shared envelope for every animation: unlock the buffer, clear stale
         signals, mark the window animating for its duration, run, then relock
-        (nomodifiable) on any non-interrupted outcome. An interrupt hands the
-        buffer to the user, so it is deliberately left modifiable."""
+        (nomodifiable) on a completed outcome — but only for a launched,
+        dedicated follower. An adopted nvim is the user's own editor and is
+        never relocked. An interrupt hands the buffer to the user, so it is
+        deliberately left modifiable regardless."""
         nvim.api.buf_set_option(buf, "modifiable", True)
         control.clear_signals(self.window_id)
         control.mark_animating(self.window_id)
@@ -89,7 +129,7 @@ class NvimFollower:
             result = run()
         finally:
             control.clear_animating(self.window_id)
-        if result.outcome != "interrupted":
+        if result.outcome != "interrupted" and not self._is_adopted():
             nvim.api.buf_set_option(buf, "modifiable", False)
         return result
 
@@ -113,7 +153,26 @@ class NvimFollower:
 
         def run() -> AnimationResult:
             nvim.api.buf_set_lines(buf, 0, -1, True, [""])
-            result = _animate_lines(nvim, buf, lines, 0, self._pace_provider, self.window_id, ns)
+
+            def save_pending(index: int) -> None:
+                control.save_pending_show_fresh(
+                    self.window_id,
+                    lines[index:],
+                    self._pace_provider(),
+                    continuation=index > 0,
+                    file_path=file_path,
+                )
+
+            result = _animate_lines(
+                nvim,
+                buf,
+                lines,
+                0,
+                self._pace_provider,
+                self.window_id,
+                ns,
+                save_pending=save_pending,
+            )
             if result.outcome == "completed" and lines:
                 # Drop the seed blank line the retype pushed to the bottom, so
                 # the buffer holds exactly `content` with no trailing blank.
@@ -131,9 +190,32 @@ class NvimFollower:
         buf = nvim.api.get_current_buf().handle
 
         def run() -> AnimationResult:
-            for index, op in enumerate(ops):
-                if control.check_signal(self.window_id) is not None:
+            index = 0
+            while index < len(ops):
+                op = ops[index]
+
+                # One callback serving both boundaries: _wait_while_paused
+                # calls it with no args (op-boundary pause), _animate_lines
+                # with the line index (mid-op pause) — either way the saved
+                # remainder is op-granular (the current op onward), mirroring
+                # animate.run_ops. A nvim resume just continues typing; the
+                # pending is only ever consumed by a crashed hook, never
+                # replayed live here.
+                def save_pending(_line: int = 0, _op: int = index) -> None:
+                    control.save_pending_apply_edit(
+                        self.window_id,
+                        ops[_op:],
+                        self._pace_provider(),
+                        file_path=file_path,
+                    )
+
+                signal = control.check_signal(self.window_id)
+                if signal == "interrupt":
                     return AnimationResult("interrupted", index)
+                if signal == "pause":
+                    if not _wait_while_paused(self.window_id, save_pending, None):
+                        return AnimationResult("interrupted", index)
+                    continue  # resumed: retry this op from its clean boundary
                 # start_line-1/end_line are the 0-indexed, end-exclusive range
                 # nvim_buf_set_lines wants (same convention as diff.apply_ops).
                 nvim.api.buf_set_lines(buf, op.start_line - 1, op.end_line, True, [])
@@ -146,9 +228,11 @@ class NvimFollower:
                         self._pace_provider,
                         self.window_id,
                         ns,
+                        save_pending=save_pending,
                     )
                     if result.outcome == "interrupted":
                         return AnimationResult("interrupted", index)
+                index += 1
             return AnimationResult("completed", len(ops))
 
         return self._drive(nvim, buf, run)

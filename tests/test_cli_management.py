@@ -73,14 +73,61 @@ def test_status_without_tmux_env(capsys: pytest.CaptureFixture[str]) -> None:
     assert "not running inside tmux" in capsys.readouterr().out
 
 
-def test_start_nvim_backend_fails_without_socket(capsys: pytest.CaptureFixture[str]) -> None:
+def test_start_nvim_launches_dedicated_and_records_not_adopted() -> None:
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
-        patch("pynvim.attach", side_effect=OSError("no such file")),
+        patch(
+            "vim_ai_follower.commands.resolve_nvim_target",
+            return_value=("/tmp/nvim.sock", True),
+        ) as resolve,
     ):
-        exit_code = commands.cmd_start({"TMUX_PANE": "%1"}, backend="nvim")
-    assert exit_code == 1
-    assert "no Neovim RPC socket found" in capsys.readouterr().err
+        assert commands.cmd_start({"TMUX_PANE": "%1"}, backend="nvim") == 0
+    resolve.assert_called_once_with("%1", "@1", adopt=False)
+    result = state.FollowerState.read("@1")
+    assert result is not None
+    assert result.backend == "nvim"
+    assert result.target == "/tmp/nvim.sock"
+    assert result.adopted is False  # launched, so a dedicated (relockable) nvim
+
+
+def test_start_nvim_adopts_existing_and_records_adopted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"adopt_existing": true}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch(
+            "vim_ai_follower.commands.resolve_nvim_target",
+            return_value=("/found.sock", False),
+        ) as resolve,
+    ):
+        assert commands.cmd_start({"TMUX_PANE": "%1"}, backend="nvim") == 0
+    resolve.assert_called_once_with("%1", "@1", adopt=True)
+    result = state.FollowerState.read("@1")
+    assert result is not None
+    assert result.adopted is True  # adopted the user's own nvim; never relocked
+
+
+def test_start_uses_config_backend_nvim_without_flag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"backend": "nvim"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch(
+            "vim_ai_follower.commands.resolve_nvim_target",
+            return_value=("/s.sock", True),
+        ) as resolve,
+    ):
+        assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0  # no --backend flag
+    resolve.assert_called_once()
+    result = state.FollowerState.read("@1")
+    assert result is not None
+    assert result.backend == "nvim"
 
 
 def test_start_resolves_on_failure_and_speed_from_config(
@@ -169,17 +216,6 @@ def test_start_falls_back_to_a_split_when_adoption_finds_nothing_to_adopt(
     assert len(splits) == 1
     assert result is not None
     assert result.adopted is False
-
-
-def test_start_nvim_backend_registers_when_socket_alive() -> None:
-    with (
-        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
-        patch("pynvim.attach", return_value=MagicMock()),
-    ):
-        assert commands.cmd_start({"TMUX_PANE": "%1"}, backend="nvim") == 0
-        result = state.FollowerState.get("@1")
-    assert result is not None
-    assert result.backend == "nvim"
 
 
 def _bind_calls(run_mock: MagicMock) -> list[list[str]]:
