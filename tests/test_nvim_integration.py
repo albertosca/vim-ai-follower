@@ -11,8 +11,23 @@ pynvim = pytest.importorskip("pynvim")
 from vim_ai_follower import control  # noqa: E402
 from vim_ai_follower.animate import AnimationResult  # noqa: E402
 from vim_ai_follower.backends.nvim import NvimFollower  # noqa: E402
-from vim_ai_follower.diff import compute_edit_script  # noqa: E402
+from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh  # noqa: E402
+from vim_ai_follower.diff import apply_ops, compute_edit_script  # noqa: E402
+from vim_ai_follower.state import FollowerState  # noqa: E402
 from vim_ai_follower.status_surface import NvimStatusSurface  # noqa: E402
+
+
+def _interrupt_at(nth: int) -> Any:
+    """A check_signal double that fires a single 'interrupt' on the nth call
+    (1-indexed) and None otherwise — the deterministic mid-animation stop the
+    resume/hand-over tests below drive."""
+    calls = {"n": 0}
+
+    def _signal(window_id: str, base_dir: Path | None = None) -> str | None:
+        calls["n"] += 1
+        return "interrupt" if calls["n"] == nth else None
+
+    return _signal
 
 
 @pytest.mark.integration
@@ -255,3 +270,276 @@ def test_touch_and_evict_wipes_the_evicted_buffer_on_real_nvim(
     refreshed = FollowerState.read("@1")
     assert refreshed is not None
     assert refreshed.open_files == (file_b,)
+
+
+@pytest.mark.integration
+def test_reload_and_relock_reloads_disk_and_relocks_a_launched_follower(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Des-interrupt with NO pending: discard the user's unsaved typing by
+    # reloading the file Claude wrote (edit!), then relock read-only. A
+    # launched (non-adopted) follower IS relocked.
+    from vim_ai_follower import cache
+
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    file_a = str(tmp_path / "a.py")
+    Path(file_a).write_text("final = 1\n")
+    FollowerState.set(
+        "@1", "nvim", headless_nvim, open_files=(file_a,), shown_any=True, adopted=False
+    )
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    follower.show_fresh(file_a, "typed = 999\n")
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    buf = nvim.api.get_current_buf().handle
+    nvim.api.buf_set_option(buf, "modifiable", True)
+    nvim.api.buf_set_lines(buf, 0, -1, True, ["user junk in progress"])
+
+    follower.reload_and_relock(file_a)
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    # the user's typing is gone; the buffer holds the finished disk content
+    assert nvim.current.buffer[:] == ["final = 1"]
+    assert nvim.api.buf_get_option(nvim.current.buffer.handle, "modifiable") is False
+
+
+@pytest.mark.integration
+def test_reload_and_relock_leaves_an_adopted_follower_modifiable(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vim_ai_follower import cache
+
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    file_a = str(tmp_path / "a.py")
+    Path(file_a).write_text("final = 1\n")
+    FollowerState.set(
+        "@1", "nvim", headless_nvim, open_files=(file_a,), shown_any=True, adopted=True
+    )
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    follower.show_fresh(file_a, "typed = 999\n")
+
+    follower.reload_and_relock(file_a)
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    assert nvim.current.buffer[:] == ["final = 1"]
+    # an adopted nvim is the user's own editor: never locked out of it
+    assert nvim.api.buf_get_option(nvim.current.buffer.handle, "modifiable") is True
+
+
+@pytest.mark.integration
+def test_des_interrupt_replays_a_show_fresh_remainder_to_exact_content(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Entry point A (des-interrupt): rewrite_buffer rebuilds the interrupt-point
+    # buffer (seedless, exactly the partial), then resume appends the remaining
+    # whole lines to EXACTLY the final content — no stray seed blank, no
+    # dropped line.
+    from vim_ai_follower import cache
+
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    file_a = str(tmp_path / "a.py")
+    content = "l0\nl1\nl2\nl3\n"
+    lines = content.splitlines()
+
+    monkeypatch.setattr(control, "check_signal", _interrupt_at(3))  # stop before l2
+    result = follower.show_fresh(file_a, content)
+    assert result == AnimationResult("interrupted", 2)
+
+    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
+    partial = "\n".join(lines[:2])
+    rebuilt = follower.rewrite_buffer(file_a, partial)
+    assert rebuilt.outcome == "completed"
+    pending = PendingShowFresh(
+        lines=tuple(lines[2:]), pace_seconds=0.0, continuation=True, file_path=file_a
+    )
+    replay = follower.resume(pending)
+    assert replay.outcome == "completed"
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    assert nvim.current.buffer[:] == lines
+    # relocked read-only for a launched follower once the replay completed
+    assert nvim.api.buf_get_option(nvim.current.buffer.handle, "modifiable") is False
+
+
+@pytest.mark.integration
+def test_des_interrupt_replays_an_apply_edit_remainder_to_exact_content(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vim_ai_follower import cache
+
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    file_a = str(tmp_path / "a.py")
+    before = "a\nb\nc\n"
+    after = "a\nB1\nB2\nB3\n"
+    follower.show_fresh(file_a, before)
+    ops = compute_edit_script(before, after)
+
+    monkeypatch.setattr(control, "check_signal", _interrupt_at(2))
+    result = follower.apply_edit(file_a, ops)
+    assert result.outcome == "interrupted"
+
+    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
+    partial = apply_ops(before, ops[: result.completed_count])
+    rebuilt = follower.rewrite_buffer(file_a, partial)
+    assert rebuilt.outcome == "completed"
+    pending = PendingApplyEdit(
+        ops=ops[result.completed_count :], pace_seconds=0.0, file_path=file_a
+    )
+    replay = follower.resume(pending)
+    assert replay.outcome == "completed"
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    assert nvim.current.buffer[:] == after.splitlines()
+
+
+@pytest.mark.integration
+def test_pace0_consume_of_an_interrupted_show_fresh_lands_at_full_content(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Entry point B (the hooks.py:439 pace-0 consume): resume runs directly on
+    # the LIVE interrupted buffer, which still carries the trailing seed blank
+    # show_fresh only drops on a completed outcome. The resume must strip that
+    # seed and still land at EXACTLY the full content.
+    from vim_ai_follower import cache
+
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    file_a = str(tmp_path / "a.py")
+    content = "l0\nl1\nl2\nl3\n"
+    lines = content.splitlines()
+
+    monkeypatch.setattr(control, "check_signal", _interrupt_at(3))
+    assert follower.show_fresh(file_a, content) == AnimationResult("interrupted", 2)
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    # the interrupt left a trailing seed blank at the bottom (the crux)
+    assert nvim.current.buffer[:] == ["l0", "l1", ""]
+
+    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
+    pending = PendingShowFresh(
+        lines=tuple(lines[2:]), pace_seconds=0.0, continuation=True, file_path=file_a
+    )
+    follower.resume(pending)
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    assert nvim.current.buffer[:] == lines  # seed dropped, nothing lost
+
+
+@pytest.mark.integration
+def test_resume_from_scratch_types_the_whole_file_when_nothing_was_shown(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # k == 0 (interrupt before the first line): the buffer is a lone seed
+    # blank; resume must type every line into it and land exactly at content,
+    # with no leading or trailing stray blank.
+    from vim_ai_follower import cache
+
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    file_a = str(tmp_path / "a.py")
+    content = "x\ny\nz\n"
+    lines = content.splitlines()
+
+    monkeypatch.setattr(control, "check_signal", _interrupt_at(1))  # nothing shown
+    assert follower.show_fresh(file_a, content) == AnimationResult("interrupted", 0)
+
+    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
+    pending = PendingShowFresh(
+        lines=tuple(lines), pace_seconds=0.0, continuation=False, file_path=file_a
+    )
+    follower.resume(pending)
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    assert nvim.current.buffer[:] == lines
+
+
+@pytest.mark.integration
+def test_hand_over_reasserts_the_buffer_is_modifiable(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vim_ai_follower import cache
+
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    file_a = str(tmp_path / "a.py")
+    follower.show_fresh(file_a, "a = 1\n")  # completes -> relocked nomodifiable
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    assert nvim.api.buf_get_option(nvim.current.buffer.handle, "modifiable") is False
+
+    follower.hand_over()
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    assert nvim.api.buf_get_option(nvim.current.buffer.handle, "modifiable") is True
+
+
+@pytest.mark.integration
+def test_resume_persists_a_remainder_when_paused_mid_replay(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A des-interrupt replay that is itself PAUSED must persist the still-
+    # remaining lines (crash fallback) while it waits, exactly like the
+    # first-pass animation. _wait_while_paused discards that file again on
+    # exit, so spy on the save to prove the fallback path ran with the
+    # correct op-granular remainder.
+    from vim_ai_follower import cache
+
+    cache_dir = tmp_path / "cache"
+    monkeypatch.setattr(cache, "CACHE_DIR", cache_dir)
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    file_a = str(tmp_path / "a.py")
+    follower.show_fresh(file_a, "p\n")  # a one-line prefix already on screen
+
+    saved: list[tuple[str, ...]] = []
+    real_save = control.save_pending_show_fresh
+
+    def _spy_save(window_id: str, lines: tuple[str, ...], *args: Any, **kwargs: Any) -> None:
+        saved.append(tuple(lines))
+        real_save(window_id, lines, *args, **kwargs)
+
+    monkeypatch.setattr(control, "save_pending_show_fresh", _spy_save)
+
+    # Pause on resume's 2nd signal check (after the first replayed line "q"),
+    # then interrupt out of the wait.
+    calls = {"n": 0}
+
+    def _pause_then_interrupt(window_id: str, base_dir: Path | None = None) -> str | None:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            return "pause"
+        if calls["n"] >= 3:
+            return "interrupt"
+        return None
+
+    monkeypatch.setattr(control, "check_signal", _pause_then_interrupt)
+    pending = PendingShowFresh(
+        lines=("q", "r", "s"), pace_seconds=0.05, continuation=True, file_path=file_a
+    )
+    result = follower.resume(pending)
+    assert result.outcome == "interrupted"
+    # the remainder past the first replayed line ("q") was persisted
+    assert saved == [("r", "s")]
+
+
+@pytest.mark.integration
+def test_resume_without_a_file_path_operates_on_the_current_buffer(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Legacy/unknown pending state carries an empty file_path: resume must skip
+    # the goto_file re-select and replay onto whatever buffer is current.
+    from vim_ai_follower import cache
+
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    file_a = str(tmp_path / "a.py")
+    follower.show_fresh(file_a, "one\n")  # current buffer, one line, no seed
+
+    pending = PendingShowFresh(
+        lines=("two", "three"), pace_seconds=0.0, continuation=True, file_path=""
+    )
+    result = follower.resume(pending)
+    assert result.outcome == "completed"
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    assert nvim.current.buffer[:] == ["one", "two", "three"]

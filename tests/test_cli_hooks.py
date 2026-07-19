@@ -23,6 +23,7 @@ from vim_ai_follower import (
     state,
     writer_cue,
 )
+from vim_ai_follower.animate import AnimationResult
 
 
 def _literal_sends(run_mock: MagicMock) -> list[str]:
@@ -1014,6 +1015,103 @@ def test_hook_post_des_interrupt_without_a_remainder_falls_back_to_reload(
     assert ":e!" in sends
     assert ":setlocal readonly nomodifiable" in sends
     assert capsys.readouterr().out == ""
+
+
+def test_des_interrupt_routes_through_the_backend_follower_for_nvim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The des-interrupt branch must build the follower from the window's
+    # backend, not a hardcoded TmuxVimFollower. With backend "nvim" it must
+    # reach the NvimFollower (constructed via get_follower with the socket
+    # target) — mutation-catching: the old `TmuxVimFollower(pane_id=...)` would
+    # get the socket as a pane id and never route to nvim at all.
+    target = tmp_path / "f.txt"
+    target.write_text("a\nb\n")
+    state.FollowerState.set(
+        "@1",
+        "nvim",
+        "/tmp/x.sock",
+        current_file=str(target),
+        open_files=(str(target),),
+        shown_any=True,
+    )
+    current = state.FollowerState.read("@1")
+    assert current is not None
+    control.save_pending_show_fresh("@1", ("b",), 0.0, continuation=True, file_path=str(target))
+
+    fake = MagicMock()
+    fake.rewrite_buffer.return_value = AnimationResult("completed", 1)
+    fake.resume.return_value = AnimationResult("completed", 1)
+    captured: dict[str, object] = {}
+
+    def _fake_get_follower(backend: str, follower_target: str, **kwargs: object) -> MagicMock:
+        captured["backend"] = backend
+        captured["target"] = follower_target
+        return fake
+
+    monkeypatch.setattr(hooks, "get_follower", _fake_get_follower)
+    monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(hooks, "show_popup", lambda *a, **k: None)
+
+    with (
+        patch("vim_ai_follower.control.check_signal", side_effect=["interrupt"] + [None] * 5),
+        patch("vim_ai_follower.hooks.time.sleep"),
+    ):
+        hooks._await_user_handoff(current, "@1", str(target), "a\nb\n", "a")
+
+    assert captured["backend"] == "nvim"
+    assert captured["target"] == "/tmp/x.sock"
+    fake.rewrite_buffer.assert_called_once_with(str(target), "a")
+    fake.resume.assert_called_once()
+    refreshed = state.FollowerState.read("@1")
+    assert refreshed is not None
+    assert refreshed.current_file == str(target)
+
+
+def test_pace0_consume_routes_resume_to_the_nvim_follower(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The pace-0 pending-consume (hooks.py:439) must call resume on whatever
+    # backend follower it built — not assert-isinstance TmuxVimFollower. With
+    # backend "nvim" and a persisted pending, the old assert would have raised
+    # AssertionError; the new path just calls follower.resume at pace 0.
+    from vim_ai_follower.diff import EditOp
+
+    target = tmp_path / "f.txt"
+    target.write_text("a\nB\n")
+    state.FollowerState.set(
+        "@1",
+        "nvim",
+        "/tmp/x.sock",
+        current_file=str(target),
+        open_files=(str(target),),
+        shown_any=True,
+    )
+    snapshot.save("@1", str(target), "a\nb\n")
+    control.save_pending_apply_edit(
+        "@1",
+        [EditOp(kind="replace", start_line=2, end_line=2, new_lines=("B",))],
+        0.03,
+        file_path=str(target),
+    )
+
+    fake = MagicMock()
+    fake.apply_edit.return_value = AnimationResult("completed", 1)
+    payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
+
+    with (
+        patch("vim_ai_follower.hooks.get_follower", return_value=fake),
+        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    fake.resume.assert_called_once()
+    consumed = fake.resume.call_args.args[0]
+    assert consumed.pace_seconds == 0.0  # the catch-up is forced silent
+    assert list(consumed.ops) == [
+        EditOp(kind="replace", start_line=2, end_line=2, new_lines=("B",))
+    ]
 
 
 def test_hook_post_handoff_survives_an_unstatable_file(

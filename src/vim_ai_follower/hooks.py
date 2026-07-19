@@ -270,7 +270,7 @@ def _await_user_handoff(
                 # buffer instantly, then REPLAYING the remaining animation
                 # at live pace. Without a stored remainder (stale state),
                 # fall back to reloading the finished file.
-                follower = TmuxVimFollower(pane_id=current.target, window_id=window_id)
+                follower = get_follower(current.backend, current.target, window_id=window_id)
                 pending = control.load_pending_animation(window_id)
                 if pending is None:
                     follower.reload_and_relock(file_path)
@@ -436,7 +436,8 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         and not is_fresh
         and not binary
     ):
-        assert isinstance(follower, TmuxVimFollower)  # only tmux ever persists pending state
+        # Both backends persist pending state now, so route the pace-0 catch-up
+        # through the already-constructed backend follower (get_follower above).
         follower.resume(dataclasses.replace(pending, pace_seconds=0.0))
 
     if binary:

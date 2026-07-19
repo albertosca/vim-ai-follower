@@ -17,6 +17,7 @@ import pynvim
 from vim_ai_follower import config, control
 from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult, _wait_while_paused
 from vim_ai_follower.backends import nvim_lua
+from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
 from vim_ai_follower.diff import EditOp
 from vim_ai_follower.state import FollowerState
 
@@ -181,6 +182,65 @@ class NvimFollower:
 
         return self._drive(nvim, buf, run)
 
+    def _run_ops(
+        self,
+        nvim: pynvim.Nvim,
+        buf: int,
+        ns: int,
+        ops: list[EditOp],
+        pace_provider: Callable[[], float],
+        file_path: str,
+    ) -> AnimationResult:
+        """The shared op-loop behind both apply_edit and resume: each op
+        deletes its old range (instant, via nvim_buf_set_lines) and animates
+        its new lines in with `pace_provider`, checking for a signal at every
+        op and line boundary. On a pause it persists the op-granular remainder
+        (the current op onward) as the crash fallback and blocks until resume
+        or interrupt — the same contract as animate.run_ops."""
+        index = 0
+        while index < len(ops):
+            op = ops[index]
+
+            # One callback serving both boundaries: _wait_while_paused calls it
+            # with no args (op-boundary pause), _animate_lines with the line
+            # index (mid-op pause) — either way the saved remainder is
+            # op-granular (the current op onward). The persisted pace is the
+            # live pace, so a crash-fallback replay picks up the user's speed;
+            # a live nvim resume just continues typing.
+            def save_pending(_line: int = 0, _op: int = index) -> None:
+                control.save_pending_apply_edit(
+                    self.window_id,
+                    ops[_op:],
+                    self._pace_provider(),
+                    file_path=file_path,
+                )
+
+            signal = control.check_signal(self.window_id)
+            if signal == "interrupt":
+                return AnimationResult("interrupted", index)
+            if signal == "pause":
+                if not _wait_while_paused(self.window_id, save_pending, None):
+                    return AnimationResult("interrupted", index)
+                continue  # resumed: retry this op from its clean boundary
+            # start_line-1/end_line are the 0-indexed, end-exclusive range
+            # nvim_buf_set_lines wants (same convention as diff.apply_ops).
+            nvim.api.buf_set_lines(buf, op.start_line - 1, op.end_line, True, [])
+            if op.new_lines:
+                result = _animate_lines(
+                    nvim,
+                    buf,
+                    op.new_lines,
+                    op.start_line - 1,
+                    pace_provider,
+                    self.window_id,
+                    ns,
+                    save_pending=save_pending,
+                )
+                if result.outcome == "interrupted":
+                    return AnimationResult("interrupted", index)
+            index += 1
+        return AnimationResult("completed", len(ops))
+
     def apply_edit(self, file_path: str, ops: list[EditOp]) -> AnimationResult:
         """Apply an edit script to the current buffer: each op deletes its
         old range (instant, via nvim_buf_set_lines) and animates its new lines
@@ -188,54 +248,130 @@ class NvimFollower:
         nvim = self._connect()
         ns = nvim.api.create_namespace(_NAMESPACE)
         buf = nvim.api.get_current_buf().handle
+        return self._drive(
+            nvim,
+            buf,
+            lambda: self._run_ops(nvim, buf, ns, ops, self._pace_provider, file_path),
+        )
 
-        def run() -> AnimationResult:
-            index = 0
-            while index < len(ops):
-                op = ops[index]
+    def reload_and_relock(self, file_path: str) -> None:
+        """Des-interrupt with NO stored remainder: discard the user's unsaved
+        typing by reloading the file Claude wrote (`edit!`), then relock. The
+        buffer's name matches that file, so — unlike show_fresh — we WANT the
+        reload to load the finished disk content here (the user discarded their
+        typing, so the file on disk is the truth). A launched, dedicated
+        follower is relocked nomodifiable; an adopted nvim is the user's own
+        editor and is never locked out of its own buffer (same rule as
+        _drive)."""
+        self.goto_file(file_path)
+        nvim = self._connect()
+        nvim.command("edit!")
+        if not self._is_adopted():
+            buf = nvim.api.get_current_buf().handle
+            nvim.api.buf_set_option(buf, "modifiable", False)
 
-                # One callback serving both boundaries: _wait_while_paused
-                # calls it with no args (op-boundary pause), _animate_lines
-                # with the line index (mid-op pause) — either way the saved
-                # remainder is op-granular (the current op onward), mirroring
-                # animate.run_ops. A nvim resume just continues typing; the
-                # pending is only ever consumed by a crashed hook, never
-                # replayed live here.
-                def save_pending(_line: int = 0, _op: int = index) -> None:
-                    control.save_pending_apply_edit(
-                        self.window_id,
-                        ops[_op:],
-                        self._pace_provider(),
-                        file_path=file_path,
-                    )
+    def rewrite_buffer(self, file_path: str, content: str) -> AnimationResult:
+        """Instantly (no animation) rebuild the buffer to `content` — the
+        des-interrupt replay needs the buffer back at the interrupt-point state,
+        discarding the user's unsaved typing, before resume() replays the
+        remainder at live pace. Leaves the buffer UNLOCKED and seedless (exactly
+        `content`): resume() runs immediately after and owns the relock."""
+        self.goto_file(file_path)
+        nvim = self._connect()
+        buf = nvim.api.get_current_buf().handle
+        nvim.api.buf_set_option(buf, "modifiable", True)
+        lines = content.splitlines()
+        nvim.api.buf_set_lines(buf, 0, -1, True, lines or [""])
+        return AnimationResult("completed", len(lines))
 
-                signal = control.check_signal(self.window_id)
-                if signal == "interrupt":
-                    return AnimationResult("interrupted", index)
-                if signal == "pause":
-                    if not _wait_while_paused(self.window_id, save_pending, None):
-                        return AnimationResult("interrupted", index)
-                    continue  # resumed: retry this op from its clean boundary
-                # start_line-1/end_line are the 0-indexed, end-exclusive range
-                # nvim_buf_set_lines wants (same convention as diff.apply_ops).
-                nvim.api.buf_set_lines(buf, op.start_line - 1, op.end_line, True, [])
-                if op.new_lines:
-                    result = _animate_lines(
-                        nvim,
-                        buf,
-                        op.new_lines,
-                        op.start_line - 1,
-                        self._pace_provider,
-                        self.window_id,
-                        ns,
-                        save_pending=save_pending,
-                    )
-                    if result.outcome == "interrupted":
-                        return AnimationResult("interrupted", index)
-                index += 1
-            return AnimationResult("completed", len(ops))
+    def _resume_fresh(
+        self,
+        nvim: pynvim.Nvim,
+        buf: int,
+        ns: int,
+        lines: tuple[str, ...],
+        pace_provider: Callable[[], float],
+        file_path: str,
+    ) -> AnimationResult:
+        """Append the remaining whole lines of an interrupted fresh retype to
+        the current buffer, landing at EXACTLY the final content.
 
-        return self._drive(nvim, buf, run)
+        The seed subtlety: show_fresh only drops its trailing seed blank on a
+        COMPLETED outcome, so the two resume entry points hand us different
+        buffer shapes. The des-interrupt replay runs right after rewrite_buffer,
+        which rebuilt the buffer seedless (and _reconstruct_partial_fresh, via
+        its "\\n".join round-trip, never leaves a trailing blank there), so the
+        buffer never ends in a blank. The pace-0 consume (hooks.py:439) runs on
+        the LIVE interrupted buffer, which still carries the trailing seed blank
+        at the bottom. So a trailing blank line — and only then — is the seed:
+        type the remainder in front of it and drop it on completion, exactly as
+        show_fresh does. With no trailing blank we simply append at the end (a
+        lone seed buffer, `[""]`, counts as a seed too: type into it, drop)."""
+        existing = nvim.api.buf_get_lines(buf, 0, -1, True)
+        has_seed = bool(existing) and existing[-1] == ""
+        start_row = len(existing) - 1 if has_seed else len(existing)
+
+        def save_pending(index: int) -> None:
+            control.save_pending_show_fresh(
+                self.window_id,
+                lines[index:],
+                self._pace_provider(),
+                continuation=start_row + index > 0,
+                file_path=file_path,
+            )
+
+        result = _animate_lines(
+            nvim,
+            buf,
+            lines,
+            start_row,
+            pace_provider,
+            self.window_id,
+            ns,
+            save_pending=save_pending,
+        )
+        if result.outcome == "completed" and has_seed:
+            # Drop the seed blank the retype pushed to the bottom.
+            drop = start_row + len(lines)
+            nvim.api.buf_set_lines(buf, drop, drop + 1, True, [])
+        return result
+
+    def resume(self, pending: PendingApplyEdit | PendingShowFresh) -> AnimationResult:
+        """Replay a saved animation remainder (des-interrupt live replay, or a
+        pace-0 crash-fallback consume). Mirrors the tmux backend: re-select the
+        tab, then replay the op-loop (PendingApplyEdit) or append the remaining
+        whole lines (PendingShowFresh), wrapped in _drive so a completed replay
+        relocks (unless adopted) and an interrupt hands the buffer over.
+
+        The pace-0 catch-up must stay silent forever: pending.pace_seconds == 0
+        selects a fixed-0 provider that never re-reads live speed mid-catch-up
+        (parity with tmux.resume)."""
+        nvim = self._connect()
+        ns = nvim.api.create_namespace(_NAMESPACE)
+        if pending.file_path:
+            self.goto_file(pending.file_path)
+        buf = nvim.api.get_current_buf().handle
+        provider = (lambda: 0.0) if pending.pace_seconds == 0.0 else self._pace_provider
+        if isinstance(pending, PendingApplyEdit):
+            return self._drive(
+                nvim,
+                buf,
+                lambda: self._run_ops(nvim, buf, ns, pending.ops, provider, pending.file_path),
+            )
+        return self._drive(
+            nvim,
+            buf,
+            lambda: self._resume_fresh(nvim, buf, ns, pending.lines, provider, pending.file_path),
+        )
+
+    def hand_over(self) -> None:
+        """Unlock the current buffer for direct user editing. The interrupt
+        path already leaves the buffer modifiable via _drive; this is the
+        explicit re-assert used when a des-interrupt replay is itself
+        interrupted."""
+        nvim = self._connect()
+        buf = nvim.api.get_current_buf().handle
+        nvim.api.buf_set_option(buf, "modifiable", True)
 
     def goto_file(self, file_path: str) -> None:
         """Switch to the buffer named `file_path`, creating it (unnamed,

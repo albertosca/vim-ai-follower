@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult
+from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
 from vim_ai_follower.diff import EditOp
 
 
@@ -31,6 +32,14 @@ class Follower(Protocol):
     def goto_line(self, offset: int) -> None: ...
 
     def stop(self) -> None: ...
+
+    def reload_and_relock(self, file_path: str) -> None: ...
+
+    def rewrite_buffer(self, file_path: str, content: str) -> AnimationResult: ...
+
+    def resume(self, pending: PendingApplyEdit | PendingShowFresh) -> AnimationResult: ...
+
+    def hand_over(self) -> None: ...
 
 
 def get_follower(
