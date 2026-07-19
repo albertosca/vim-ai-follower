@@ -1422,3 +1422,31 @@ def test_apply_writer_cue_is_a_noop_when_the_identity_is_not_yet_registered(
         hooks._apply_writer_cue("@1", "%2", {"session_id": "$unknown"})
     border_calls = [c.args[0] for c in run.call_args_list if "pane-border-style" in c.args[0]]
     assert border_calls == []
+
+
+def test_apply_writer_cue_routes_nvim_backed_windows_to_the_nvim_status_surface(
+    tmp_path: Path,
+) -> None:
+    # The nvim backend has no tmux pane border to tint, so this must go
+    # through NvimStatusSurface (a floating window + virtual text), never
+    # construct a TmuxStatusSurface around the socket path.
+    state.FollowerState.set(
+        "@1",
+        "nvim",
+        "/tmp/x.sock",
+        open_files=(),
+        shown_any=True,
+        writers=("$1", "a9"),
+        writer_labels=("session:$1", "code-reviewer"),
+    )
+    nvim = MagicMock()
+    with (
+        patch("pynvim.attach", return_value=nvim) as attach,
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+    ):
+        hooks._apply_writer_cue(
+            "@1", "/tmp/x.sock", {"agent_id": "a9", "agent_type": "code-reviewer"}
+        )
+    attach.assert_called_once_with("socket", path="/tmp/x.sock")
+    border_calls = [c.args[0] for c in run.call_args_list if "pane-border-style" in c.args[0]]
+    assert border_calls == []

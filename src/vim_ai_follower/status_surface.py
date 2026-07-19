@@ -200,7 +200,8 @@ class NvimStatusSurface:
             nvim.api.buf_clear_namespace(cur_buf, ns, 0, -1)
 
 
-def status_surface_for(state: FollowerState) -> StatusSurface:
+def status_surface_for(state: FollowerState, target: str | None = None) -> StatusSurface:
+    addr = state.target if target is None else target
     if state.backend == "nvim":
-        return NvimStatusSurface(socket_path=state.target)
-    return TmuxStatusSurface(pane_id=state.target)
+        return NvimStatusSurface(socket_path=addr)
+    return TmuxStatusSurface(pane_id=addr)

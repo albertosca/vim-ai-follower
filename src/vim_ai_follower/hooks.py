@@ -19,7 +19,7 @@ from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.snapshot import load as load_snapshot
 from vim_ai_follower.snapshot import save as save_snapshot
 from vim_ai_follower.state import FollowerState, touch_open_files
-from vim_ai_follower.status_surface import TmuxStatusSurface, status_surface_for
+from vim_ai_follower.status_surface import status_surface_for
 from vim_ai_follower.tmux import TmuxWindow, adopt_target, show_popup
 
 LOG_PATH = cache.CACHE_DIR / "hook.log"
@@ -352,16 +352,17 @@ def _register_writer(window_id: str, payload: dict[str, Any]) -> None:
 
 
 def _apply_writer_cue(window_id: str, target: str, payload: dict[str, Any]) -> None:
-    """When 2+ distinct writers have touched this window, tint the follower
-    pane's border with the animating writer's color and label. Best-effort:
-    a missing identity or a tmux failure never blocks the animation."""
+    """When 2+ distinct writers have touched this window, render the
+    animating writer's color and label on the window's status surface (a
+    tmux pane border, or an nvim floating window). Best-effort: a missing
+    identity or a surface failure never blocks the animation."""
     identity = writer_cue.writer_identity(payload)
     current = FollowerState.read(window_id)
     if identity is None or current is None or len(current.writers) < 2:
         return
     if identity not in current.writers:
         return
-    surface = TmuxStatusSurface(pane_id=target)
+    surface = status_surface_for(current, target=target)
     color = writer_cue.color_for(current.writers, identity)
     surface.set_writer(writer_cue.writer_label(payload), color)
 
