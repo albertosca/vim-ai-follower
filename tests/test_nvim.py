@@ -446,30 +446,43 @@ def test_goto_line_sets_cursor() -> None:
     assert nvim.current.window.cursor == (3, 0)
 
 
-def test_close_tab_wipes_the_named_buffer() -> None:
+def test_close_tab_wipes_the_buffer_found_via_bufnr() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
+    nvim.funcs.bufnr.return_value = 9
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.close_tab("/tmp/f.py")
-    nvim.command.assert_called_once_with("silent! bwipeout! /tmp/f.py")
+    nvim.funcs.bufnr.assert_called_once_with("/tmp/f.py")
+    nvim.command.assert_called_once_with("silent! bwipeout! 9")
 
 
-def test_goto_file_switches_to_an_existing_buffer_by_name() -> None:
+def test_close_tab_is_a_noop_when_bufnr_finds_nothing() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
-    nvim.api.list_bufs.return_value = [5, 9]
-    nvim.api.buf_get_name.side_effect = lambda buf: {5: "/tmp/a.py", 9: "/tmp/f.py"}[buf]
+    nvim.funcs.bufnr.return_value = -1
+    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+        follower.close_tab("/tmp/f.py")
+    nvim.command.assert_not_called()
+
+
+def test_goto_file_switches_to_an_existing_buffer_via_bufnr() -> None:
+    # bufnr() applies nvim's own path canonicalization (e.g. macOS's
+    # /tmp -> /private/tmp symlink), unlike a raw string compare against
+    # nvim_buf_get_name — see the docstring on goto_file.
+    follower = NvimFollower(socket_path="/tmp/x.sock")
+    nvim = MagicMock()
+    nvim.funcs.bufnr.return_value = 9
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.goto_file("/tmp/f.py")
+    nvim.funcs.bufnr.assert_called_once_with("/tmp/f.py")
     nvim.api.set_current_buf.assert_called_once_with(9)
     nvim.api.create_buf.assert_not_called()
 
 
-def test_goto_file_creates_and_names_a_new_buffer_when_absent() -> None:
+def test_goto_file_creates_and_names_a_new_buffer_when_bufnr_finds_nothing() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
-    nvim.api.list_bufs.return_value = [5]
-    nvim.api.buf_get_name.return_value = "/tmp/other.py"
+    nvim.funcs.bufnr.return_value = -1
     nvim.api.create_buf.return_value = 42
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.goto_file("/tmp/f.py")
@@ -481,8 +494,7 @@ def test_goto_file_creates_and_names_a_new_buffer_when_absent() -> None:
 def test_ensure_showing_delegates_to_goto_file() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
-    nvim.api.list_bufs.return_value = [9]
-    nvim.api.buf_get_name.return_value = "/tmp/f.py"
+    nvim.funcs.bufnr.return_value = 9
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.ensure_showing("/tmp/f.py")
     nvim.api.set_current_buf.assert_called_once_with(9)

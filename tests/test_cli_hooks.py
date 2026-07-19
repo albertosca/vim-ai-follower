@@ -416,6 +416,7 @@ def test_eviction_wipes_the_buffer_for_the_nvim_backend(
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(c)}}
     nvim = MagicMock()
+    nvim.funcs.bufnr.return_value = 7  # the buffer number bufnr(str(a)) resolves to
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("pynvim.attach", return_value=nvim),
@@ -425,8 +426,10 @@ def test_eviction_wipes_the_buffer_for_the_nvim_backend(
     refreshed = state.FollowerState.read("@1")
     assert refreshed is not None
     assert refreshed.open_files == (str(b), str(c))
-    # close_tab wipes the evicted file's buffer (a) generically now.
-    nvim.command.assert_any_call(f"silent! bwipeout! {a}")
+    # close_tab looks the evicted file (a) up via bufnr() (nvim's own path
+    # canonicalization, not a raw string compare) then wipes it by number.
+    nvim.funcs.bufnr.assert_any_call(str(a))
+    nvim.command.assert_any_call("silent! bwipeout! 7")
 
 
 def test_touch_and_evict_closes_the_evicted_tab_on_any_follower(

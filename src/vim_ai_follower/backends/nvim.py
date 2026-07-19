@@ -240,26 +240,35 @@ class NvimFollower:
     def goto_file(self, file_path: str) -> None:
         """Switch to the buffer named `file_path`, creating it (unnamed,
         listed) if it doesn't exist yet. Never `:e` the real file here — that
-        would flash disk content before a retype. Scans nvim_list_bufs by
-        name rather than trusting nvim_call_function("bufnr", ...) alone,
-        since a freshly created-but-unnamed buffer wouldn't be found by
-        name lookup anyway and this keeps the lookup a single strategy."""
+        would flash disk content before a retype. Looked up via
+        nvim.funcs.bufnr rather than a hand-rolled nvim_list_bufs + string
+        compare: nvim CANONICALIZES buffer names (resolves symlinks — e.g.
+        macOS /tmp -> /private/tmp), so a raw string compare of file_path
+        against nvim_buf_get_name misses an existing buffer whenever a path
+        component is a symlink, and the followup buf_set_name then blows up
+        with E95 (buffer with that resolved name already exists) instead of
+        finding it. bufnr() applies nvim's own normalization, so it agrees
+        with whatever name nvim actually gave the buffer."""
         nvim = self._connect()
-        buf = None
-        for candidate in nvim.api.list_bufs():
-            if nvim.api.buf_get_name(candidate) == file_path:
-                buf = candidate
-                break
-        if buf is None:
+        bufnr = nvim.funcs.bufnr(file_path)
+        if bufnr != -1:
+            nvim.api.set_current_buf(bufnr)
+        else:
             buf = nvim.api.create_buf(True, False)
             nvim.api.buf_set_name(buf, file_path)
-        nvim.api.set_current_buf(buf)
+            nvim.api.set_current_buf(buf)
 
     def ensure_showing(self, file_path: str) -> None:
         self.goto_file(file_path)
 
     def close_tab(self, file_path: str) -> None:
-        self._connect().command(f"silent! bwipeout! {file_path}")
+        # bufnr() here too, for the same reason as goto_file: bwipeout by a
+        # raw (unresolved) name is a no-op if nvim canonicalized the buffer's
+        # actual name, silently leaving the "evicted" buffer alive.
+        nvim = self._connect()
+        bufnr = nvim.funcs.bufnr(file_path)
+        if bufnr != -1:
+            nvim.command(f"silent! bwipeout! {bufnr}")
 
     def goto_line(self, offset: int) -> None:
         self._connect().current.window.cursor = (offset, 0)

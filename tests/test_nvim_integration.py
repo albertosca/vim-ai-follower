@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 
 import pytest
@@ -157,6 +158,38 @@ def test_goto_file_navigates_between_buffers_and_close_tab_evicts(
     follower.close_tab(file_b)
     assert file_b not in _buf_names()
     assert file_a in _buf_names()
+
+
+@pytest.mark.integration
+def test_goto_file_finds_the_buffer_despite_a_symlinked_path_component(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression for the Task 6 review finding: nvim CANONICALIZES buffer
+    # names (macOS resolves /tmp -> /private/tmp), so a hand-rolled
+    # nvim_list_bufs + raw string compare misses an existing buffer whenever
+    # a path component is a symlink — the followup buf_set_name then raises
+    # E95 (buffer with that resolved name already exists). Deliberately use
+    # a literal /tmp/... path here (NOT the tmp_path fixture, which pytest
+    # pre-resolves and would hide the bug) to exercise the real symlink.
+    from vim_ai_follower import cache
+
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    nvim = pynvim.attach("socket", path=headless_nvim)
+
+    file_a = f"/tmp/vaf-symlink-regress-{uuid.uuid4().hex}.py"
+
+    follower.show_fresh(file_a, "a = 1\n")
+    buf_after_show = nvim.api.get_current_buf()
+    canonical_name = nvim.api.buf_get_name(buf_after_show)
+
+    # Must not raise E95, and must land on the SAME buffer already showing
+    # file_a (by canonical name) rather than creating a duplicate.
+    follower.goto_file(file_a)
+    assert nvim.api.get_current_buf() == buf_after_show
+
+    matching = [b for b in nvim.api.list_bufs() if nvim.api.buf_get_name(b) == canonical_name]
+    assert len(matching) == 1
 
 
 @pytest.mark.integration
