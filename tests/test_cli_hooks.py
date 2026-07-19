@@ -391,12 +391,12 @@ def test_eviction_closes_oldest_tab_before_animating(
     assert refreshed.open_files == (str(b), str(c))
 
 
-def test_eviction_is_a_pure_bookkeeping_noop_for_the_nvim_backend(
+def test_eviction_wipes_the_buffer_for_the_nvim_backend(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The nvim backend has buffers, not tabs (see Follower protocol docstring),
-    # and generic per-file eviction lands in Phase 3 — for now eviction must
-    # still bump open_files, but there is no tab to close.
+    # but close_tab wipes the buffer generically — eviction is no longer
+    # tmux-only (Task 6).
     config_path = tmp_path / "config.json"
     config_path.write_text('{"max_tabs": 2}')
     monkeypatch.setattr(config, "CONFIG_PATH", config_path)
@@ -425,9 +425,30 @@ def test_eviction_is_a_pure_bookkeeping_noop_for_the_nvim_backend(
     refreshed = state.FollowerState.read("@1")
     assert refreshed is not None
     assert refreshed.open_files == (str(b), str(c))
-    # the evicted file (a) is never touched — the tmux backend's close_tab
-    # would goto_file + bwipeout it, but this backend has no tab to close
-    assert not any(str(a) in str(call) for call in nvim.command.call_args_list)
+    # close_tab wipes the evicted file's buffer (a) generically now.
+    nvim.command.assert_any_call(f"silent! bwipeout! {a}")
+
+
+def test_touch_and_evict_closes_the_evicted_tab_on_any_follower(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Generic eviction (Task 6): _touch_and_evict must call close_tab on
+    # whatever follower it's given — not just TmuxVimFollower — proven here
+    # with a bare mock that is deliberately NOT a TmuxVimFollower instance.
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    state.FollowerState.set(
+        "@1", "nvim", "/tmp/x.sock", open_files=("/tmp/a.py", "/tmp/b.py"), shown_any=True
+    )
+    current = state.FollowerState.read("@1")
+    assert current is not None
+
+    follower = MagicMock()
+    hooks._touch_and_evict("@1", follower, current, "/tmp/c.py", max_tabs=2)
+
+    follower.close_tab.assert_called_once_with("/tmp/a.py")
+    refreshed = state.FollowerState.read("@1")
+    assert refreshed is not None
+    assert refreshed.open_files == ("/tmp/b.py", "/tmp/c.py")
 
 
 def test_hook_post_ignores_unrelated_tools() -> None:

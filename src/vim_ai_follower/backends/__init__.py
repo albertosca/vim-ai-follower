@@ -10,13 +10,17 @@ class Follower(Protocol):
     """A target that can show and animate file edits. Multi-file navigation
     is tab-based in the tmux backend (goto_file does `:tab drop`, and the
     hook tracks/evicts tabs); the nvim backend has buffers rather than tabs,
-    so per-file navigation there grows in Phase 3 (see NvimFollower)."""
+    with goto_file switching to (or creating) the buffer named file_path.
+    Either way, close_tab is the generic eviction primitive the hook calls
+    on whatever falls past max_tabs."""
 
     def is_alive(self) -> bool: ...
 
     def ensure_showing(self, file_path: str) -> None: ...
 
     def goto_file(self, file_path: str) -> None: ...
+
+    def close_tab(self, file_path: str) -> None: ...
 
     def apply_edit(self, file_path: str, ops: list[EditOp]) -> AnimationResult: ...
 

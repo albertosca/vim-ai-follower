@@ -454,14 +454,38 @@ def test_close_tab_wipes_the_named_buffer() -> None:
     nvim.command.assert_called_once_with("silent! bwipeout! /tmp/f.py")
 
 
-def test_goto_file_and_ensure_showing_are_noops_until_phase_3() -> None:
-    # Buffer-per-file navigation lands in Task 6 (Phase 3); here they must not
-    # touch the connection (and never `:e` the real file).
+def test_goto_file_switches_to_an_existing_buffer_by_name() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock")
-    with patch("vim_ai_follower.backends.nvim.pynvim.attach") as attach:
+    nvim = MagicMock()
+    nvim.api.list_bufs.return_value = [5, 9]
+    nvim.api.buf_get_name.side_effect = lambda buf: {5: "/tmp/a.py", 9: "/tmp/f.py"}[buf]
+    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.goto_file("/tmp/f.py")
+    nvim.api.set_current_buf.assert_called_once_with(9)
+    nvim.api.create_buf.assert_not_called()
+
+
+def test_goto_file_creates_and_names_a_new_buffer_when_absent() -> None:
+    follower = NvimFollower(socket_path="/tmp/x.sock")
+    nvim = MagicMock()
+    nvim.api.list_bufs.return_value = [5]
+    nvim.api.buf_get_name.return_value = "/tmp/other.py"
+    nvim.api.create_buf.return_value = 42
+    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+        follower.goto_file("/tmp/f.py")
+    nvim.api.create_buf.assert_called_once_with(True, False)
+    nvim.api.buf_set_name.assert_called_once_with(42, "/tmp/f.py")
+    nvim.api.set_current_buf.assert_called_once_with(42)
+
+
+def test_ensure_showing_delegates_to_goto_file() -> None:
+    follower = NvimFollower(socket_path="/tmp/x.sock")
+    nvim = MagicMock()
+    nvim.api.list_bufs.return_value = [9]
+    nvim.api.buf_get_name.return_value = "/tmp/f.py"
+    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.ensure_showing("/tmp/f.py")
-    attach.assert_not_called()
+    nvim.api.set_current_buf.assert_called_once_with(9)
 
 
 def test_stop_is_a_noop() -> None:

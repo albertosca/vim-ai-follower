@@ -187,15 +187,12 @@ def _touch_and_evict(
     window_id: str, follower: Follower, current: FollowerState, file_path: str, max_tabs: int
 ) -> None:
     """Bump file_path to most-recent in the tab list and close whatever now
-    falls past max_tabs. Eviction only means anything for the tab-based tmux
-    backend; on any other backend the close is skipped (the nvim backend has
-    buffers, not tabs — generalized eviction lands in Phase 3)
-    rather than asserted, so a future backend can grow open_files without an
-    AssertionError crashing the hook."""
+    falls past max_tabs. close_tab wipes the buffer on nvim (it has buffers,
+    not tabs) and closes the tab on tmux — both backends implement the
+    Follower protocol's close_tab, so eviction is generic here."""
     new_open, evicted = touch_open_files(current.open_files, file_path, max_tabs)
     for old in evicted:
-        if isinstance(follower, TmuxVimFollower):
-            follower.close_tab(old)
+        follower.close_tab(old)
     FollowerState.update(window_id, open_files=new_open, shown_any=True)
 
 

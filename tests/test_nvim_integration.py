@@ -125,3 +125,70 @@ def test_interrupt_leaves_the_buffer_modifiable_for_hand_over(
     # Hand-over: an interrupted animation is never relocked, so the user owns
     # the buffer and can finish it themselves.
     assert nvim.api.buf_get_option(nvim.current.buffer.handle, "modifiable") is True
+
+
+@pytest.mark.integration
+def test_goto_file_navigates_between_buffers_and_close_tab_evicts(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vim_ai_follower import cache
+
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    nvim = pynvim.attach("socket", path=headless_nvim)
+
+    file_a = str(tmp_path / "a.py")
+    file_b = str(tmp_path / "b.py")
+
+    follower.show_fresh(file_a, "a = 1\n")
+    follower.show_fresh(file_b, "b = 1\n")
+
+    def _buf_names() -> list[str]:
+        return [nvim.api.buf_get_name(b) for b in nvim.api.list_bufs()]
+
+    names = _buf_names()
+    assert file_a in names
+    assert file_b in names
+    assert nvim.api.buf_get_name(nvim.api.get_current_buf()) == file_b
+
+    follower.goto_file(file_a)
+    assert nvim.api.buf_get_name(nvim.api.get_current_buf()) == file_a
+
+    follower.close_tab(file_b)
+    assert file_b not in _buf_names()
+    assert file_a in _buf_names()
+
+
+@pytest.mark.integration
+def test_touch_and_evict_wipes_the_evicted_buffer_on_real_nvim(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # End-to-end proof of the generic eviction path (hooks._touch_and_evict)
+    # against a real headless nvim: with max_tabs=1, editing file B (after A
+    # was shown) evicts A's buffer entirely.
+    from vim_ai_follower import cache, hooks
+    from vim_ai_follower.state import FollowerState
+
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    nvim = pynvim.attach("socket", path=headless_nvim)
+
+    file_a = str(tmp_path / "a.py")
+    file_b = str(tmp_path / "b.py")
+
+    follower.show_fresh(file_a, "a = 1\n")
+    FollowerState.set(
+        "@1", "nvim", headless_nvim, current_file=file_a, open_files=(file_a,), shown_any=True
+    )
+    current = FollowerState.read("@1")
+    assert current is not None
+
+    hooks._touch_and_evict("@1", follower, current, file_b, max_tabs=1)
+    follower.show_fresh(file_b, "b = 1\n")
+
+    names = [nvim.api.buf_get_name(b) for b in nvim.api.list_bufs()]
+    assert file_a not in names
+    assert file_b in names
+    refreshed = FollowerState.read("@1")
+    assert refreshed is not None
+    assert refreshed.open_files == (file_b,)

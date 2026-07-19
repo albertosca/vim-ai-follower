@@ -238,13 +238,25 @@ class NvimFollower:
         return self._drive(nvim, buf, run)
 
     def goto_file(self, file_path: str) -> None:
-        # Buffer-per-file navigation lands in Task 6 (Phase 3). Never `:e` the
-        # real file here — that would flash disk content before a retype.
-        pass
+        """Switch to the buffer named `file_path`, creating it (unnamed,
+        listed) if it doesn't exist yet. Never `:e` the real file here — that
+        would flash disk content before a retype. Scans nvim_list_bufs by
+        name rather than trusting nvim_call_function("bufnr", ...) alone,
+        since a freshly created-but-unnamed buffer wouldn't be found by
+        name lookup anyway and this keeps the lookup a single strategy."""
+        nvim = self._connect()
+        buf = None
+        for candidate in nvim.api.list_bufs():
+            if nvim.api.buf_get_name(candidate) == file_path:
+                buf = candidate
+                break
+        if buf is None:
+            buf = nvim.api.create_buf(True, False)
+            nvim.api.buf_set_name(buf, file_path)
+        nvim.api.set_current_buf(buf)
 
     def ensure_showing(self, file_path: str) -> None:
-        # See goto_file — a no-op until Phase 3 grows buffer navigation.
-        pass
+        self.goto_file(file_path)
 
     def close_tab(self, file_path: str) -> None:
         self._connect().command(f"silent! bwipeout! {file_path}")
