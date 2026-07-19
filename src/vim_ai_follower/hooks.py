@@ -19,7 +19,8 @@ from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.snapshot import load as load_snapshot
 from vim_ai_follower.snapshot import save as save_snapshot
 from vim_ai_follower.state import FollowerState, touch_open_files
-from vim_ai_follower.tmux import TmuxPane, TmuxWindow, adopt_target, show_popup
+from vim_ai_follower.status_surface import TmuxStatusSurface, status_surface_for
+from vim_ai_follower.tmux import TmuxWindow, adopt_target, show_popup
 
 LOG_PATH = cache.CACHE_DIR / "hook.log"
 
@@ -254,11 +255,8 @@ def _await_user_handoff(
     # turn with no visible reason reads as Claude hanging. Put the release
     # instructions in the pane's border title for the whole wait (restored
     # on exit), and re-fire a popup reminder roughly every 30s.
-    pane = TmuxPane(pane_id=current.target)
-    saved_title = pane.title()
-    saved_border = pane.window_option("pane-border-status")
-    pane.set_title(_HANDOFF_CUE)
-    pane.set_window_option("pane-border-status", "top")
+    surface = status_surface_for(current)
+    surface.set_state(_HANDOFF_CUE)
     polls = 0
     try:
         while True:
@@ -309,8 +307,7 @@ def _await_user_handoff(
                 pass  # mid-save or momentarily unreadable: check again
             time.sleep(_HANDOFF_POLL_SECONDS)
     finally:
-        pane.set_title(saved_title)
-        pane.set_window_option("pane-border-status", saved_border)
+        surface.clear()
         control.clear_animating(window_id)
 
 
@@ -364,10 +361,9 @@ def _apply_writer_cue(window_id: str, target: str, payload: dict[str, Any]) -> N
         return
     if identity not in current.writers:
         return
-    pane = TmuxPane(pane_id=target)
-    pane.set_border_color(writer_cue.color_for(current.writers, identity))
-    pane.set_window_option("pane-border-status", "top")
-    pane.set_title(writer_cue.writer_label(payload))
+    surface = TmuxStatusSurface(pane_id=target)
+    color = writer_cue.color_for(current.writers, identity)
+    surface.set_writer(writer_cue.writer_label(payload), color)
 
 
 def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:

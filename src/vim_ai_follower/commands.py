@@ -10,6 +10,7 @@ from vim_ai_follower.backends import get_follower
 from vim_ai_follower.backends.nvim_connect import resolve_nvim_target
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.state import FollowerState
+from vim_ai_follower.status_surface import status_surface_for
 from vim_ai_follower.tmux import TmuxPane, TmuxWindow, adopt_target
 
 
@@ -129,8 +130,7 @@ def cmd_stop(env: dict[str, str]) -> int:
         # fails to resolve its target, leaving the whole window's
         # pane-border-status stuck on "top". Unsetting it (and the per-pane
         # color) while the pane still exists lands cleanly.
-        TmuxPane(pane_id=existing.target).set_border_color(None)
-        TmuxPane(pane_id=existing.target).set_window_option("pane-border-status", None)
+        status_surface_for(existing).clear()
         if existing.adopted:
             # Adoption never took ownership of the pane — killing the
             # user's own Vim on stop would be destructive. Only close the
@@ -313,7 +313,11 @@ def cmd_speed(env: dict[str, str], direction: Literal["up", "down"]) -> int:
         label = new_speed
     print(f"claude-follow: speed {label}")
     # Status line, not popup: a popup grabs the keyboard and blocks the
-    # next +/_ press until it closes.
+    # next +/_ press until it closes. Deliberately not routed through
+    # StatusSurface.set_state: that method save-and-restores the pane's
+    # title/border, which is the right behavior for a persistent cue
+    # (handoff) but would wrongly latch this transient status-line message
+    # as something to restore later.
     tmux.show_status(current.target, f"Speed: {label}")
     return 0
 
