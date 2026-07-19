@@ -34,6 +34,18 @@ class TmuxPane:
     def send_key(self, key_name: str) -> None:
         subprocess.run(["tmux", "send-keys", "-t", self.pane_id, key_name], check=True)
 
+    def pane_pid(self) -> int | None:
+        result = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", self.pane_id, "#{pane_pid}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        try:
+            return int(result.stdout.strip())
+        except ValueError:
+            return None
+
     def title(self) -> str:
         result = subprocess.run(
             ["tmux", "display-message", "-p", "-t", self.pane_id, "#{pane_title}"],

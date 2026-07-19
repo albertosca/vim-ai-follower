@@ -49,6 +49,26 @@ def test_running_command_returns_none_for_missing_pane() -> None:
         assert pane.running_command() is None
 
 
+def test_pane_pid_returns_int_for_existing_pane() -> None:
+    pane = TmuxPane(pane_id="%3")
+    fake_result = MagicMock(stdout="4242\n")
+    with patch("vim_ai_follower.tmux.subprocess.run", return_value=fake_result) as run:
+        assert pane.pane_pid() == 4242
+    run.assert_called_once_with(
+        ["tmux", "display-message", "-p", "-t", "%3", "#{pane_pid}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_pane_pid_returns_none_on_unparseable_output() -> None:
+    pane = TmuxPane(pane_id="%3")
+    fake_result = MagicMock(stdout="\n")
+    with patch("vim_ai_follower.tmux.subprocess.run", return_value=fake_result):
+        assert pane.pane_pid() is None
+
+
 def test_split_from_returns_pane_with_new_id() -> None:
     fake_result = MagicMock(stdout="%42\n")
     with patch("vim_ai_follower.tmux.subprocess.run", return_value=fake_result) as run:
