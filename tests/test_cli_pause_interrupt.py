@@ -94,12 +94,12 @@ def test_interrupt_skips_popup_when_no_follower_is_registered() -> None:
     assert _popup_calls(popen) == []
 
 
-def test_pause_skips_popup_for_nvim_rpc_backend() -> None:
+def test_pause_skips_popup_for_nvim_backend() -> None:
     with patch(
         "vim_ai_follower.tmux.subprocess.run",
         return_value=MagicMock(returncode=0, stdout="@1\n"),
     ):
-        state.FollowerState.set("@1", "nvim_rpc", "/tmp/x.sock")
+        state.FollowerState.set("@1", "nvim", "/tmp/x.sock")
     control.mark_animating("@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),

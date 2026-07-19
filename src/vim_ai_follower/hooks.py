@@ -149,7 +149,8 @@ def _touch_and_evict(
 ) -> None:
     """Bump file_path to most-recent in the tab list and close whatever now
     falls past max_tabs. Eviction only means anything for the tab-based tmux
-    backend; on any other backend the close is skipped (nvim_rpc has no tabs)
+    backend; on any other backend the close is skipped (the nvim backend has
+    buffers, not tabs — generalized eviction lands in Phase 3)
     rather than asserted, so a future backend can grow open_files without an
     AssertionError crashing the hook."""
     new_open, evicted = touch_open_files(current.open_files, file_path, max_tabs)

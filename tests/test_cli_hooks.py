@@ -391,11 +391,12 @@ def test_eviction_closes_oldest_tab_before_animating(
     assert refreshed.open_files == (str(b), str(c))
 
 
-def test_eviction_is_a_pure_bookkeeping_noop_for_the_nvim_rpc_backend(
+def test_eviction_is_a_pure_bookkeeping_noop_for_the_nvim_backend(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The nvim_rpc backend has no tabs (see Follower protocol docstring) —
-    # eviction must still bump open_files, but there is no tab to close.
+    # The nvim backend has buffers, not tabs (see Follower protocol docstring),
+    # and generic per-file eviction lands in Phase 3 — for now eviction must
+    # still bump open_files, but there is no tab to close.
     config_path = tmp_path / "config.json"
     config_path.write_text('{"max_tabs": 2}')
     monkeypatch.setattr(config, "CONFIG_PATH", config_path)
@@ -406,7 +407,7 @@ def test_eviction_is_a_pure_bookkeeping_noop_for_the_nvim_rpc_backend(
     c.write_text("print('c')\n")
     state.FollowerState.set(
         "@1",
-        "nvim_rpc",
+        "nvim",
         "/tmp/x.sock",
         current_file=str(b),
         open_files=(str(a), str(b)),

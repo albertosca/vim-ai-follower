@@ -42,9 +42,9 @@ def cmd_start(
     origin = env["TMUX_PANE"]
     keybindings.register()
 
-    if backend == "nvim_rpc":
+    if backend == "nvim":
         socket_path = nvim_socket_path(window.window_id)
-        follower = get_follower("nvim_rpc", str(socket_path))
+        follower = get_follower("nvim", str(socket_path))
         if not follower.is_alive():
             print(
                 "claude-follow: no Neovim RPC socket found at "
@@ -55,7 +55,7 @@ def cmd_start(
             return 1
         FollowerState.set(
             window.window_id,
-            "nvim_rpc",
+            "nvim",
             str(socket_path),
             origin=origin,
             on_failure=resolved_on_failure,

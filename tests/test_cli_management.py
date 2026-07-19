@@ -78,7 +78,7 @@ def test_start_nvim_backend_fails_without_socket(capsys: pytest.CaptureFixture[s
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("pynvim.attach", side_effect=OSError("no such file")),
     ):
-        exit_code = commands.cmd_start({"TMUX_PANE": "%1"}, backend="nvim_rpc")
+        exit_code = commands.cmd_start({"TMUX_PANE": "%1"}, backend="nvim")
     assert exit_code == 1
     assert "no Neovim RPC socket found" in capsys.readouterr().err
 
@@ -176,10 +176,10 @@ def test_start_nvim_backend_registers_when_socket_alive() -> None:
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("pynvim.attach", return_value=MagicMock()),
     ):
-        assert commands.cmd_start({"TMUX_PANE": "%1"}, backend="nvim_rpc") == 0
+        assert commands.cmd_start({"TMUX_PANE": "%1"}, backend="nvim") == 0
         result = state.FollowerState.get("@1")
     assert result is not None
-    assert result.backend == "nvim_rpc"
+    assert result.backend == "nvim"
 
 
 def _bind_calls(run_mock: MagicMock) -> list[list[str]]:

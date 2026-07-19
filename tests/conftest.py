@@ -68,6 +68,31 @@ def tmux_session(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
 
 
 @pytest.fixture
+def headless_nvim() -> Iterator[str]:
+    """A throwaway headless Neovim listening on a private socket, parallel to
+    tmux_session. `-n` (no swap), `-u NONE -i NONE` (no vimrc/shada) keep it
+    hermetic — no user plugins or config leak into the animation. The socket
+    file appears within ~1s of launch; poll for it before yielding."""
+    socket_dir = tempfile.mkdtemp(prefix="cf-nvim-")
+    sock = str(Path(socket_dir) / "nvim.sock")
+    proc = subprocess.Popen(
+        ["nvim", "--headless", "-n", "-u", "NONE", "-i", "NONE", "--listen", sock]
+    )
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and not Path(sock).exists():
+        time.sleep(0.05)
+    try:
+        yield sock
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:  # pragma: no cover - defensive cleanup
+            proc.kill()
+        shutil.rmtree(socket_dir, ignore_errors=True)
+
+
+@pytest.fixture
 def wait_until() -> Callable[..., bool]:
     def _wait(predicate: Callable[[], bool], timeout: float = 3.0, interval: float = 0.1) -> bool:
         deadline = time.monotonic() + timeout
