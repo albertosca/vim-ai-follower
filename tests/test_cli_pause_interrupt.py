@@ -109,6 +109,33 @@ def test_pause_skips_popup_for_nvim_backend() -> None:
     assert _popup_calls(popen) == []
 
 
+def test_pause_discards_a_crash_orphaned_nvim_pending_without_crashing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A paused nvim animation whose hook was KILLED leaves a pending on disk
+    # with a stale (dead-PID) animating marker. A later `prefix P` must not hit
+    # the tmux-only keyboard-replay resume (which would AssertionError); it
+    # discards the orphaned pending and reports gracefully.
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="@1\n"),
+    ):
+        state.FollowerState.set("@1", "nvim", "/tmp/x.sock")
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
+    control.save_pending_apply_edit("@1", [op], 0.0)  # crash fallback, no live marker
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()),
+        # get() -> is_alive() must see the adopted nvim as alive.
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=MagicMock()),
+    ):
+        assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 0
+
+    assert control.has_pending_animation("@1") is False
+    assert "nothing to resume" in capsys.readouterr().out
+
+
 def test_pause_resumes_pending_apply_edit(capsys: pytest.CaptureFixture[str]) -> None:
     _register_fake_follower("@1", "%2")
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))

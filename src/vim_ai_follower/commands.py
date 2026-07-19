@@ -234,6 +234,15 @@ def cmd_pause(env: dict[str, str]) -> int:
         print("claude-follow: no follower registered to resume", file=sys.stderr)
         return 1
 
+    if current.backend != "tmux":
+        # The keyboard replay below is inherently tmux-only (send-keys). A
+        # crash-orphaned nvim pending has no keyboard resume path yet, so
+        # discard it rather than crash on the tmux-only resume — mirrors the
+        # backend guard cmd_interrupt already applies to this same path.
+        control.discard_pending_animation(window.window_id)
+        print("claude-follow: nothing to resume")
+        return 0
+
     follower = get_follower(
         current.backend,
         current.target,
