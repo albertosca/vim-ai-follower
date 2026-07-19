@@ -3,12 +3,13 @@ name = "vim-ai-follower"
 version = "0.1.0"
 description = "Watch Claude Code edit files live in a tmux+Vim pane or directly in a running Neovim"
 requires-python = ">=3.11"
-dependencies = ["pynvim>=0.5"]
+dependencies = []
 
 [project.scripts]
 claude-follow = "vim_ai_follower.cli:main"
 
 [project.optional-dependencies]
+nvim = ["pynvim>=0.5"]
 dev = [
     "ruff>=0.6",
     "mypy>=1.10",
