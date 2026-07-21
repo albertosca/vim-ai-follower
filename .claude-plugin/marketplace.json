@@ -1,0 +1,14 @@
+{
+  "name": "vim-ai-follower",
+  "owner": { "name": "albertosca" },
+  "metadata": {
+    "description": "Watch Claude Code edit files live in a tmux+Vim pane or a running Neovim"
+  },
+  "plugins": [
+    {
+      "name": "vim-ai-follower",
+      "source": ".",
+      "description": "Watch Claude Code edit files live in a tmux+Vim pane or a running Neovim"
+    }
+  ]
+}
