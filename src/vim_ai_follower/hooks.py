@@ -270,6 +270,8 @@ def _await_user_handoff(
                 show_popup(current.target, _HANDOFF_CUE)
             signal = control.check_signal(window_id)
             if signal == "interrupt":
+                # switch the cue from "waiting" to the replay before it runs
+                surface.set_state("Writing...")
                 # the des-interrupt: discard the user's unsaved typing and
                 # put the show back on — rebuilding the interrupt-point
                 # buffer instantly, then REPLAYING the remaining animation

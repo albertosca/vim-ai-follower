@@ -181,6 +181,21 @@ def _show_popup(current: FollowerState | None, message: str) -> None:
     tmux.show_popup(current.target, message)
 
 
+def _pause_feedback(current: FollowerState | None, *, paused: bool) -> None:
+    """Feedback for a pause/resume keypress. tmux flashes a popup on the
+    follower pane; nvim has no pane to target (its target is an RPC socket),
+    so it shows "Paused" in the floating status window instead, cleared on
+    resume."""
+    if current is None:
+        return
+    if current.backend == "nvim":
+        # Resuming restores the "Writing..." activity line rather than closing
+        # the box, so a writer cue's title/border survive the pause.
+        status_surface_for(current).set_state("Paused" if paused else "Writing...")
+        return
+    _show_popup(current, "Paused" if paused else "Resuming")
+
+
 def _resave_pending(
     window_id: str, pending: control.PendingApplyEdit | control.PendingShowFresh
 ) -> None:
@@ -211,12 +226,12 @@ def cmd_pause(env: dict[str, str]) -> int:
     if state == "running":
         control.request_pause(window.window_id)
         print("claude-follow: pause requested")
-        _show_popup(current, "Paused")
+        _pause_feedback(current, paused=True)
         return 0
     if state == "paused":
         control.request_pause(window.window_id)  # the toggle: resumes the waiting hook
         print("claude-follow: resume requested")
-        _show_popup(current, "Resuming")
+        _pause_feedback(current, paused=False)
         return 0
     if state == "handoff":
         print("claude-follow: interrupted — save (:w!) to release Claude, or press S again")

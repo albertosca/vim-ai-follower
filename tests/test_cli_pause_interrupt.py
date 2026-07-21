@@ -94,18 +94,48 @@ def test_interrupt_skips_popup_when_no_follower_is_registered() -> None:
     assert _popup_calls(popen) == []
 
 
-def test_pause_skips_popup_for_nvim_backend() -> None:
+def test_pause_shows_paused_in_the_nvim_surface_not_a_tmux_popup() -> None:
+    # nvim has no pane to popup on (its target is an RPC socket), so a pause
+    # renders "Paused" in the floating status surface instead. pynvim.attach is
+    # stubbed so FollowerState.get's is_alive() liveness check passes (a dead
+    # socket would drop the follower and never reach the feedback).
     with patch(
         "vim_ai_follower.tmux.subprocess.run",
         return_value=MagicMock(returncode=0, stdout="@1\n"),
     ):
         state.FollowerState.set("@1", "nvim", "/tmp/x.sock")
     control.mark_animating("@1")
+    surface = MagicMock()
     with (
+        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.commands.status_surface_for", return_value=surface),
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
     ):
         assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 0
+    surface.set_state.assert_called_once_with("Paused")
+    assert _popup_calls(popen) == []
+
+
+def test_pause_resume_restores_writing_on_the_nvim_surface_not_a_tmux_popup() -> None:
+    # Resuming an nvim follower restores the "Writing..." activity line via the
+    # surface (keeping a writer cue's title/border), with no tmux popup. Same
+    # is_alive() stubbing as the pause case.
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="@1\n"),
+    ):
+        state.FollowerState.set("@1", "nvim", "/tmp/x.sock")
+    control.mark_animating("@1", state="paused")
+    surface = MagicMock()
+    with (
+        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.commands.status_surface_for", return_value=surface),
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
+    ):
+        assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 0
+    surface.set_state.assert_called_once_with("Writing...")
     assert _popup_calls(popen) == []
 
 
