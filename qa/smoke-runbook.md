@@ -280,3 +280,4 @@ Record each run so regressions are obvious over time.
 | 2026-07-17 | | ✗→fixed | | | | | Check 2 failed live (border stuck); fixed in `c1760c8` |
 | 2026-07-18 | ✓ | ✓ | ✓ | ✓ | | | Autonomous hermetic run (`smoke-autonomous.sh` 9/9 + `repro-stray-u.sh` PASS). Check 3 under real CoC still pending a manual run. |
 | 2026-07-19 | | | | | | | nvim backend Checks 5/6 added; pending Alberto's live run before merge |
+| 2026-07-21 | | | | | ✓ | ✓ | Alberto's live nvim smoke: drove a 4-commit UX pass (per-char animation → instant pause/interrupt; termguicolors-safe colored box; "Writing..."/"Paused"/handoff feedback). Both green after the pass; branch merged to main. |
