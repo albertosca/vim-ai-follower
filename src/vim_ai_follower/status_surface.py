@@ -22,7 +22,31 @@ _STATUS_NAMESPACE = "vaf-status"
 _CURSOR_NAMESPACE = "vaf-status-cursor"
 _HIGHLIGHT_GROUP = "VafWriterCue"
 _WINDOW_WIDTH = 32
-_WINDOW_HEIGHT = 2
+_WINDOW_HEIGHT = 3
+_DEFAULT_TITLE = " claude-follow "
+_XTERM_CUBE = (0, 95, 135, 175, 215, 255)
+
+
+def _cterm_to_hex(number: int) -> str:
+    """xterm-256 color index -> "#rrggbb", so the writer cue shows under
+    termguicolors (guifg) as well as cterm (ctermfg). Covers the 6x6x6 color
+    cube (16-231) and the grayscale ramp (232-255) — the whole range PALETTE
+    draws from."""
+    if number >= 232:
+        level = 8 + 10 * (number - 232)
+        return f"#{level:02x}{level:02x}{level:02x}"
+    n = number - 16
+    r, g, b = _XTERM_CUBE[n // 36], _XTERM_CUBE[(n // 6) % 6], _XTERM_CUBE[n % 6]
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _centered_box(lines: list[str]) -> list[str]:
+    """Pad `lines` (each centered horizontally) with blank rows top and bottom
+    so the content sits vertically centered in a _WINDOW_HEIGHT-tall box."""
+    top = (_WINDOW_HEIGHT - len(lines)) // 2
+    out = [""] * top + [line.center(_WINDOW_WIDTH) for line in lines]
+    out += [""] * (_WINDOW_HEIGHT - len(out))
+    return out[:_WINDOW_HEIGHT]
 
 
 class StatusSurface(Protocol):
@@ -67,9 +91,12 @@ class TmuxStatusSurface:
             self.clear()
             return
         pane = TmuxPane(pane_id=self.pane_id)
-        self._saved_title = pane.title()
-        self._saved_border_status = pane.window_option(_BORDER_STATUS_OPTION)
-        self._has_saved_state = True
+        if not self._has_saved_state:  # save what was showing FIRST — a second
+            # set_state (e.g. handoff cue -> "Writing..." on des-interrupt) must
+            # not clobber the original that clear() has to restore.
+            self._saved_title = pane.title()
+            self._saved_border_status = pane.window_option(_BORDER_STATUS_OPTION)
+            self._has_saved_state = True
         pane.set_title(text)
         pane.set_window_option(_BORDER_STATUS_OPTION, "top")
 
@@ -87,13 +114,14 @@ class TmuxStatusSurface:
 
 @dataclass
 class NvimStatusSurface:
-    """Renders cues as a small floating window in a running Neovim (opened
-    via nvim_open_win, style="minimal") plus a virtual-text label near the
-    cursor in the current buffer. The floating window's buffer holds up to
-    two lines: the writer label (set_writer) and the transient hand-off cue
-    (set_state) — both survive across calls because they live in the nvim
-    process itself, found back by the buffer's fixed name, not in this
-    (typically short-lived, re-constructed-per-call) Python object.
+    """Renders cues as a small rounded floating window anchored top-right in a
+    running Neovim, plus a subtle virtual-text marker near the cursor. The
+    writer identity lives in the window title (the agent name, colored by
+    identity) and the tinted border (set_writer); the transient state — Paused,
+    the hand-off cue — is centered in the body (set_state). Both survive across
+    calls because they live in the nvim process itself (the window's config and
+    its fixed-name buffer), not in this short-lived, re-constructed-per-call
+    Python object.
 
     Best-effort like TmuxStatusSurface's tmux calls (which run with
     check=False): any nvim RPC failure — a dead socket, a closed instance —
@@ -119,13 +147,24 @@ class NvimStatusSurface:
         return None
 
     def _open_window(self, nvim: pynvim.Nvim, buf: Any) -> Any:
+        # Anchor to the TOP-RIGHT, not the top-left (0,0): a fresh retype types
+        # its content and parks the cursor + the virtual-text writer label at
+        # the top-left, so a status window there sits directly on top of the
+        # animation and hides it (confirmed in the 2026-07-20 live smoke).
+        # Placing it flush against the right edge keeps it clear of where the
+        # text is being typed.
+        columns = int(nvim.api.get_option_value("columns", {}))
         opts = {
             "relative": "editor",
             "width": _WINDOW_WIDTH,
             "height": _WINDOW_HEIGHT,
-            "row": 0,
-            "col": 0,
+            "row": 1,
+            # -2 leaves room for the rounded border against the right edge.
+            "col": max(0, columns - _WINDOW_WIDTH - 2),
             "style": "minimal",
+            "border": "rounded",
+            "title": _DEFAULT_TITLE,
+            "title_pos": "center",
             "focusable": False,
             "noautocmd": True,
         }
@@ -143,49 +182,66 @@ class NvimStatusSurface:
         win = self._open_window(nvim, buf)
         return win, buf
 
-    def _mark_cursor(self, nvim: pynvim.Nvim, label: str) -> None:
-        """The "at the edit point" cue: a virtual-text extmark carrying the
-        writer label at end-of-line, near the cursor in whatever buffer is
-        currently showing (never the status window itself, which is
-        unfocusable)."""
+    def _mark_cursor(self, nvim: pynvim.Nvim, label: str, color: str | None) -> None:
+        """The "at the edit point" cue: a SUBTLE virtual-text extmark near the
+        cursor in whatever buffer is currently showing (never the status
+        window itself, which is unfocusable). A small dot in the writer's
+        color plus the label dimmed to Comment — the box already carries the
+        prominent name, so this only whispers "who, right here"."""
         cur_buf = nvim.api.get_current_buf()
         ns = nvim.api.create_namespace(_CURSOR_NAMESPACE)
         nvim.api.buf_clear_namespace(cur_buf, ns, 0, -1)
         row, _col = nvim.api.win_get_cursor(0)
+        dot_hl = _HIGHLIGHT_GROUP if color is not None else "Comment"
         nvim.api.buf_set_extmark(
             cur_buf,
             ns,
             row - 1,
             0,
-            {"virt_text": [[label, _HIGHLIGHT_GROUP]], "virt_text_pos": "eol"},
+            {"virt_text": [["  ● ", dot_hl], [label, "Comment"]], "virt_text_pos": "eol"},
         )
 
     def set_writer(self, label: str, color: str | None) -> None:
+        """Writer cue: the agent's name in the box title (colored by identity),
+        the border tinted to match, and a "Writing..." activity line centered
+        in the body. The identity color is set for both cterm and gui (guifg),
+        so it shows under termguicolors too."""
         with contextlib.suppress(Exception):
             nvim = self._connect()
-            _, buf = self._ensure_window(nvim)
-            lines = nvim.api.buf_get_lines(buf, 0, -1, True)
-            state_line = lines[1] if len(lines) > 1 else None
-            new_lines = [label, state_line] if state_line else [label]
-            nvim.api.buf_set_lines(buf, 0, -1, True, new_lines)
+            win, buf = self._ensure_window(nvim)
+            title_hl = "Title"
+            if color is not None:
+                number = int(color.removeprefix("colour"))
+                nvim.command(
+                    f"highlight {_HIGHLIGHT_GROUP} ctermfg={number} guifg={_cterm_to_hex(number)}"
+                )
+                title_hl = _HIGHLIGHT_GROUP
+                nvim.api.win_set_option(win, "winhighlight", f"FloatBorder:{_HIGHLIGHT_GROUP}")
+            else:
+                nvim.api.win_set_option(win, "winhighlight", "")
+            nvim.api.win_set_config(
+                win, {"title": [[f" {label} ", title_hl]], "title_pos": "center"}
+            )
+            # The identity lives in the title now; the body shows the activity.
+            body = _centered_box(["Writing..."])
+            nvim.api.buf_set_lines(buf, 0, -1, True, body)
             ns = nvim.api.create_namespace(_STATUS_NAMESPACE)
             nvim.api.buf_clear_namespace(buf, ns, 0, -1)
             if color is not None:
-                number = color.removeprefix("colour")
-                nvim.command(f"highlight default {_HIGHLIGHT_GROUP} ctermfg={number}")
-                nvim.api.buf_add_highlight(buf, ns, _HIGHLIGHT_GROUP, 0, 0, -1)
-            self._mark_cursor(nvim, label)
+                activity_row = next((i for i, line in enumerate(body) if line.strip()), 0)
+                nvim.api.buf_add_highlight(buf, ns, _HIGHLIGHT_GROUP, activity_row, 0, -1)
+            self._mark_cursor(nvim, label, color)
 
     def set_state(self, text: str | None) -> None:
+        """Transient state (Paused, the hand-off cue): shown centered in the
+        box body. The writer title/border set by set_writer persist above it."""
         if text is None:
             self.clear()
             return
         with contextlib.suppress(Exception):
             nvim = self._connect()
             _, buf = self._ensure_window(nvim)
-            lines = nvim.api.buf_get_lines(buf, 0, -1, True)
-            label_line = lines[0] if lines else ""
-            nvim.api.buf_set_lines(buf, 0, -1, True, [label_line, text])
+            nvim.api.buf_set_lines(buf, 0, -1, True, _centered_box([text]))
 
     def clear(self) -> None:
         with contextlib.suppress(Exception):

@@ -11,7 +11,13 @@ from unittest.mock import MagicMock, patch
 from helpers import make_mock_tmux_run
 
 from vim_ai_follower.state import FollowerState
-from vim_ai_follower.status_surface import NvimStatusSurface, TmuxStatusSurface, status_surface_for
+from vim_ai_follower.status_surface import (
+    NvimStatusSurface,
+    TmuxStatusSurface,
+    _centered_box,
+    _cterm_to_hex,
+    status_surface_for,
+)
 
 
 def test_set_writer_tints_border_sets_status_top_and_title() -> None:
@@ -80,6 +86,21 @@ def test_set_state_saves_prior_title_and_status_then_clear_restores_them() -> No
     assert not any("pane-border-style" in c for c in cmds)
 
 
+def test_set_state_twice_keeps_the_first_saved_title_for_clear_to_restore() -> None:
+    # The des-interrupt calls set_state a second time ("Writing...") over the
+    # handoff cue; the second call must NOT re-save (clobbering the original the
+    # first save captured), so clear() still restores the original title.
+    surface = TmuxStatusSurface(pane_id="%2")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()):
+        surface.set_state("Claude waiting")
+        surface.set_state("Writing...")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()) as run:
+        surface.clear()
+    cmds = [c.args[0] for c in run.call_args_list]
+    # restores the ORIGINAL title (mock answers "@1"), not "Claude waiting".
+    assert ["tmux", "select-pane", "-t", "%2", "-T", "@1"] in cmds
+
+
 def test_set_state_with_none_and_nothing_saved_falls_back_to_full_reset() -> None:
     # set_state(None) is the same "clear" request clear() serves elsewhere;
     # without a prior set_state to restore, it must fall back to the same
@@ -123,6 +144,14 @@ def test_status_surface_for_returns_nvim_surface_bound_to_the_socket_path() -> N
 # --- NvimStatusSurface (mocked pynvim.attach) -----------------------------
 
 
+def test_cterm_to_hex_covers_the_color_cube_and_the_grayscale_ramp() -> None:
+    # Cube (16-231): colour78 is the green PALETTE entry.
+    assert _cterm_to_hex(78) == "#5fd787"
+    # Grayscale ramp (232-255): level = 8 + 10*(n-232).
+    assert _cterm_to_hex(232) == "#080808"
+    assert _cterm_to_hex(255) == "#eeeeee"
+
+
 def test_set_writer_creates_a_floating_window_when_none_exists() -> None:
     # Two pre-existing windows that must both be skipped by the search: a
     # non-floating one, and a floating one showing an unrelated buffer.
@@ -145,15 +174,20 @@ def test_set_writer_creates_a_floating_window_when_none_exists() -> None:
     nvim.api.create_buf.assert_called_once_with(False, True)
     nvim.api.buf_set_name.assert_called_once()
     nvim.api.open_win.assert_called_once()
-    nvim.api.buf_set_lines.assert_any_call(7, 0, -1, True, ["code-reviewer"])
-    nvim.command.assert_any_call("highlight default VafWriterCue ctermfg=78")
+    nvim.api.buf_set_lines.assert_any_call(7, 0, -1, True, _centered_box(["Writing..."]))
+    # cterm AND gui, so the cue shows under termguicolors too (colour78 -> #5fd787)
+    nvim.command.assert_any_call(f"highlight VafWriterCue ctermfg=78 guifg={_cterm_to_hex(78)}")
+    nvim.api.win_set_config.assert_any_call(
+        3, {"title": [[" code-reviewer ", "VafWriterCue"]], "title_pos": "center"}
+    )
+    nvim.api.win_set_option.assert_any_call(3, "winhighlight", "FloatBorder:VafWriterCue")
     nvim.api.buf_add_highlight.assert_called_once()
     nvim.api.buf_set_extmark.assert_called_once()
     extmark_call = nvim.api.buf_set_extmark.call_args
     assert extmark_call.args[2] == 4  # row - 1, from win_get_cursor's (5, 0)
 
 
-def test_set_writer_reuses_an_existing_floating_window_and_keeps_saved_state_line() -> None:
+def test_set_writer_reuses_an_existing_floating_window_and_clears_the_color_when_none() -> None:
     nvim = MagicMock()
     nvim.api.list_wins.return_value = [3]
     nvim.api.win_get_config.return_value = {"relative": "editor"}
@@ -167,12 +201,18 @@ def test_set_writer_reuses_an_existing_floating_window_and_keeps_saved_state_lin
 
     nvim.api.create_buf.assert_not_called()
     nvim.api.open_win.assert_not_called()
-    nvim.api.buf_set_lines.assert_any_call(7, 0, -1, True, ["new-writer", "Claude waiting"])
+    # Body is the centered name; the state line is not preserved (state lives
+    # in the title now, and set_state owns the body).
+    nvim.api.buf_set_lines.assert_any_call(7, 0, -1, True, _centered_box(["Writing..."]))
+    nvim.api.win_set_config.assert_any_call(
+        3, {"title": [[" new-writer ", "Title"]], "title_pos": "center"}
+    )
+    nvim.api.win_set_option.assert_any_call(3, "winhighlight", "")  # color=None clears the tint
     nvim.command.assert_not_called()  # color=None: no highlight command issued
     nvim.api.buf_add_highlight.assert_not_called()
 
 
-def test_set_state_writes_the_second_line_and_opens_a_window_if_needed() -> None:
+def test_set_state_centers_the_text_and_opens_a_window_if_needed() -> None:
     nvim = MagicMock()
     nvim.api.list_wins.return_value = []
     nvim.api.create_buf.return_value = 7
@@ -182,11 +222,11 @@ def test_set_state_writes_the_second_line_and_opens_a_window_if_needed() -> None
     with patch("pynvim.attach", return_value=nvim):
         NvimStatusSurface(socket_path="/tmp/x.sock").set_state("Claude waiting")
 
-    nvim.api.buf_set_lines.assert_any_call(7, 0, -1, True, ["", "Claude waiting"])
+    nvim.api.buf_set_lines.assert_any_call(7, 0, -1, True, _centered_box(["Claude waiting"]))
     nvim.api.open_win.assert_called_once()
 
 
-def test_set_state_reuses_an_existing_window_and_keeps_the_saved_label() -> None:
+def test_set_state_reuses_an_existing_window_without_recreating_it() -> None:
     nvim = MagicMock()
     nvim.api.list_wins.return_value = [3]
     nvim.api.win_get_config.return_value = {"relative": "editor"}
@@ -198,7 +238,7 @@ def test_set_state_reuses_an_existing_window_and_keeps_the_saved_label() -> None
         NvimStatusSurface(socket_path="/tmp/x.sock").set_state("Claude waiting")
 
     nvim.api.open_win.assert_not_called()
-    nvim.api.buf_set_lines.assert_any_call(7, 0, -1, True, ["code-reviewer", "Claude waiting"])
+    nvim.api.buf_set_lines.assert_any_call(7, 0, -1, True, _centered_box(["Claude waiting"]))
 
 
 def test_set_state_with_none_delegates_to_clear() -> None:
