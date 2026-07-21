@@ -139,7 +139,7 @@ def cmd_stop(env: dict[str, str]) -> int:
             for path in existing.open_files:
                 follower.close_tab(path)
         else:
-            get_follower(existing.backend, existing.target).stop()
+            get_follower(existing.backend, existing.target, window_id=window.window_id).stop()
     # Scan before clearing this window's own state: FollowerState.clear
     # below deletes this window's .pane, and scanning after that would make
     # the "skip my own key" check below unreachable — the glob would never

@@ -462,6 +462,13 @@ class NvimFollower:
         self._connect().current.window.cursor = (offset, 0)
 
     def stop(self) -> None:
-        # No-op: never kill the user's editor from here. Launched-nvim
-        # lifecycle (quit the dedicated instance) is wired in a later phase.
-        pass
+        # Quit the dedicated nvim this follower launched — its tmux split
+        # closes with it. cmd_stop only routes a NON-adopted follower here (an
+        # adopted nvim goes to close_tab), but guard on _is_adopted anyway:
+        # quitting the user's own editor would be hostile. Best-effort — qall!
+        # tears down the RPC channel, so the call itself may raise as the
+        # socket drops.
+        if self._is_adopted():
+            return
+        with contextlib.suppress(Exception):
+            self._connect().command("qall!")
