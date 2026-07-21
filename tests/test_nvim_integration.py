@@ -146,6 +146,26 @@ def test_interrupt_leaves_the_buffer_modifiable_for_hand_over(
 
 
 @pytest.mark.integration
+def test_stop_quits_a_launched_nvim(
+    headless_nvim: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    wait_until: Any,
+) -> None:
+    from vim_ai_follower import cache
+
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    # Recorded not adopted -> stop() quits the dedicated nvim (its split closes).
+    FollowerState.set("@1", "nvim", headless_nvim, adopted=False)
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1")
+    assert follower.is_alive()
+
+    follower.stop()
+
+    assert wait_until(lambda: not follower.is_alive(), timeout=5.0)
+
+
+@pytest.mark.integration
 def test_goto_file_navigates_between_buffers_and_close_tab_evicts(
     headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

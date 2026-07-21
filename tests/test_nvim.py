@@ -415,6 +415,34 @@ def test_drive_relocks_a_dedicated_follower_recorded_not_adopted(tmp_path: Path)
     assert nvim.api.buf_set_option.call_args_list[-1] == call(7, "modifiable", False)
 
 
+def test_stop_quits_a_launched_nvim(tmp_path: Path) -> None:
+    from vim_ai_follower import state
+
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
+    nvim = MagicMock()
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+    ):
+        state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=False)
+        follower.stop()
+    nvim.command.assert_called_once_with("qall!")  # dedicated nvim quit, its split closes
+
+
+def test_stop_is_a_noop_for_an_adopted_nvim(tmp_path: Path) -> None:
+    from vim_ai_follower import state
+
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
+    nvim = MagicMock()
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+    ):
+        state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=True)
+        follower.stop()
+    nvim.command.assert_not_called()  # never quit the user's own editor
+
+
 def test_apply_edit_deletes_then_animates_each_op(tmp_path: Path) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
