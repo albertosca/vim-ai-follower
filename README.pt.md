@@ -8,8 +8,8 @@ já aberto) espelha cada arquivo que o Claude Code lê ou escreve, animando cada
 mudança linha a linha, como se o Claude estivesse digitando no seu próprio
 editor.
 
-Instala uma vez, conecta nos hooks globais do Claude Code e funciona em qualquer
-projeto onde o `claude` rode dentro do tmux.
+Instala como um plugin do Claude Code que conecta os próprios hooks, e funciona
+em qualquer projeto onde o `claude` rode dentro do tmux.
 
 ## Como funciona
 
@@ -33,16 +33,37 @@ termina.
 
 ## Instalação
 
-```sh
-pip install -e .          # a partir de um clone; instala o script `claude-follow`
-pip install -e '.[nvim]'  # adiciona o extra pynvim para usar o backend nvim
+**Como plugin do Claude Code (recomendado).** O plugin declara os próprios
+hooks, então não há `settings.json` para editar:
+
+```
+/plugin marketplace add albertosca/vim-ai-follower
+/plugin install vim-ai-follower
 ```
 
-### Conectar os hooks
+O backend `tmux` padrão **não precisa de `pip`** — o plugin embute a CLI
+stdlib-only e a roda no lugar. Para o backend `nvim`, instale também o pynvim no
+`python3` do seu `PATH`:
 
-Adicione estas entradas em `~/.claude/settings.json` para que o Claude Code
-invoque a CLI (use o caminho absoluto do `claude-follow` instalado no seu
-ambiente):
+```sh
+pip install pynvim
+```
+
+Os hooks nunca bloqueiam nem falham uma chamada de ferramenta — todo caminho sai
+com `0`, e problemas vão para `~/.cache/claude-vim-follower/hook.log`, não para o
+Claude.
+
+### Instalação manual / desenvolvimento
+
+A partir de um clone — para desenvolvimento, ou se preferir não usar o plugin:
+
+```sh
+pip install -e .          # instala o script `claude-follow`
+pip install -e '.[nvim]'  # adiciona o extra pynvim para o backend nvim
+```
+
+Depois conecte os hooks à mão: adicione em `~/.claude/settings.json` (use o
+caminho absoluto do `claude-follow` instalado):
 
 ```json
 {
@@ -60,10 +81,6 @@ ambiente):
   }
 }
 ```
-
-Os hooks nunca bloqueiam nem falham uma chamada de ferramenta — todo caminho sai
-com `0`, e problemas vão para `~/.cache/claude-vim-follower/hook.log`, não para o
-Claude.
 
 ## Uso
 

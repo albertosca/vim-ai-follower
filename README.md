@@ -7,7 +7,7 @@ no GUI. A dedicated tmux pane (or a running Neovim) mirrors every file Claude
 Code reads or writes, animating each change line by line so it looks like Claude
 is typing into your own editor.
 
-It installs once, wires into Claude Code's global hooks, and works from any
+It installs as a Claude Code plugin that wires its own hooks, and works from any
 project where `claude` runs inside tmux.
 
 ## How it works
@@ -31,15 +31,36 @@ relocks (with a silent disk resync) when it finishes.
 
 ## Install
 
-```sh
-pip install -e .          # from a clone; installs the `claude-follow` script
-pip install -e '.[nvim]'  # add the pynvim extra to use the nvim backend
+**As a Claude Code plugin (recommended).** The plugin declares the hooks
+itself, so there is no `settings.json` to edit:
+
+```
+/plugin marketplace add albertosca/vim-ai-follower
+/plugin install vim-ai-follower
 ```
 
-### Wire the hooks
+The default `tmux` backend needs **no `pip` install** — the plugin bundles the
+stdlib-only CLI and runs it in place. For the `nvim` backend, additionally
+install pynvim into the `python3` on your `PATH`:
 
-Add these entries to `~/.claude/settings.json` so Claude Code invokes the CLI
-(use the absolute path to the `claude-follow` installed in your environment):
+```sh
+pip install pynvim
+```
+
+Hooks never block or fail a tool call — every path exits `0`, and problems go to
+`~/.cache/claude-vim-follower/hook.log`, not to Claude.
+
+### Manual / development install
+
+From a clone — for development, or if you'd rather not use the plugin:
+
+```sh
+pip install -e .          # installs the `claude-follow` script
+pip install -e '.[nvim]'  # add the pynvim extra for the nvim backend
+```
+
+Then wire the hooks by hand: add these to `~/.claude/settings.json` (use the
+absolute path to the installed `claude-follow`):
 
 ```json
 {
@@ -57,9 +78,6 @@ Add these entries to `~/.claude/settings.json` so Claude Code invokes the CLI
   }
 }
 ```
-
-Hooks never block or fail a tool call — every path exits `0`, and problems go to
-`~/.cache/claude-vim-follower/hook.log`, not to Claude.
 
 ## Usage
 
