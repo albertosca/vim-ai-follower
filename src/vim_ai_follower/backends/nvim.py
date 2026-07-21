@@ -1,13 +1,16 @@
 """First-class Neovim follower backend. Unlike the retired nvim_rpc stub, this
 drives a dedicated (or adopted) nvim entirely over msgpack-RPC: a Python control
-loop walks the edit at line boundaries — checking control.check_signal exactly
-like animate.run_lines/run_ops — and dispatches each line to a Lua snippet
-(nvim_lua.TYPE_LINE) that types it char-by-char, paces with vim.wait, highlights
-it with an extmark, and moves the cursor. No `tmux send-keys`, so the keystroke-
-corruption bug class the tmux backend fights simply does not exist here."""
+loop types each edit one CHARACTER at a time over the API — checking
+control.check_signal before every character, exactly like animate.run_lines/
+run_ops do per keystroke — highlighting the active line with an extmark, moving
+the cursor, and forcing a redraw so the typing shows smoothly. No `tmux
+send-keys`, so the keystroke-corruption bug class the tmux backend fights simply
+does not exist here."""
 
 from __future__ import annotations
 
+import contextlib
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,12 +19,23 @@ import pynvim
 
 from vim_ai_follower import config, control
 from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult, _wait_while_paused
-from vim_ai_follower.backends import nvim_lua
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
 from vim_ai_follower.diff import EditOp
 from vim_ai_follower.state import FollowerState
 
 _NAMESPACE = "vaf"
+_TYPING_HL = "VafTypingLine"
+
+
+def _bind_save(save_pending: Callable[[int], None] | None, index: int) -> Callable[[], None]:
+    """A zero-arg callable persisting the crash-fallback remainder from `index`
+    (or a no-op when no save_pending was given), as _wait_while_paused wants."""
+
+    def _save() -> None:
+        if save_pending is not None:
+            save_pending(index)
+
+    return _save
 
 
 def _animate_lines(
@@ -35,35 +49,64 @@ def _animate_lines(
     base_dir: Path | None = None,
     save_pending: Callable[[int], None] | None = None,
 ) -> AnimationResult:
-    """Type `lines` into `buf` from `start_row`, one Lua-dispatched line at a
-    time, checking for a pause/interrupt signal at each line boundary (never
-    mid-char: TYPE_LINE types a whole line atomically inside nvim).
+    """Type `lines` into `buf` from `start_row`, one CHARACTER at a time over
+    the API, checking for a pause/interrupt signal before every character (not
+    just between lines) so both respond immediately — the per-keystroke
+    granularity the tmux backend gets from run_lines. A redraw per character
+    flushes the terminal UI so the typing shows smoothly instead of in
+    coalesced bursts.
 
-    Full pause/resume parity with animate.run_lines: an "interrupt" stops the
-    run before the current line is typed and returns "interrupted" with the
-    count already shown; a "pause" blocks in place (via animate._wait_while_
-    paused) until the user resumes — then the same line is typed — or
-    interrupts. A pause always lands at a clean line boundary (TYPE_LINE is
-    atomic in nvim), so no partial line needs rolling back. The pace is re-read
-    per line from `pace_provider` so a live Ctrl+a +/- takes effect at the next
-    boundary. `save_pending(index)` persists the crash-fallback remainder while
-    waiting (discarded on resume by _wait_while_paused)."""
+    On interrupt the current line is snapped to its full text — leaving the
+    buffer at a clean line boundary, since the partial/resume machinery is
+    whole-line — and the run returns "interrupted" with that line counted. A
+    pause blocks in place via animate._wait_while_paused until the user resumes
+    (retyping from the same character) or interrupts. The pace is re-read per
+    line so a live Ctrl+a +/- takes effect at the next line; a zero pace types
+    the whole line at once (the pace-0 catch-up must not animate).
+    `save_pending(index)` persists the crash-fallback remainder while paused."""
+    nvim.command(f"highlight default {_TYPING_HL} ctermbg=237 guibg=#3a3a3a")
     index = 0
     while index < len(lines):
         signal = control.check_signal(window_id, base_dir)
         if signal == "interrupt":
             return AnimationResult("interrupted", index)
         if signal == "pause":
-
-            def _save(index: int = index) -> None:
-                if save_pending is not None:
-                    save_pending(index)
-
-            if not _wait_while_paused(window_id, _save, base_dir):
+            if not _wait_while_paused(window_id, _bind_save(save_pending, index), base_dir):
                 return AnimationResult("interrupted", index)
             continue  # resumed: retype this line from its clean boundary
-        pace_ms = int(pace_provider() * 1000)
-        nvim.api.exec_lua(nvim_lua.TYPE_LINE, [buf, start_row + index, lines[index], pace_ms, ns])
+        row = start_row + index
+        nvim.api.buf_set_lines(buf, row, row, True, [""])
+        line = lines[index]
+        pace = pace_provider()
+        if pace <= 0:  # pace-0 catch-up: type the whole line at once, no anim
+            if line:
+                nvim.api.buf_set_text(buf, row, 0, row, 0, [line])
+            index += 1
+            continue
+        mark = nvim.api.buf_set_extmark(buf, ns, row, 0, {"line_hl_group": _TYPING_HL})
+        char = 0
+        interrupted = False
+        while char < len(line):
+            signal = control.check_signal(window_id, base_dir)
+            if signal == "interrupt":
+                interrupted = True
+                break
+            if signal == "pause":
+                if not _wait_while_paused(window_id, _bind_save(save_pending, index), base_dir):
+                    interrupted = True
+                    break
+                continue  # resumed: retype from the same character
+            nvim.api.buf_set_text(buf, row, char, row, char, [line[char]])
+            char += 1
+            with contextlib.suppress(Exception):
+                nvim.api.win_set_cursor(0, [row + 1, char])
+            nvim.command("redraw")
+            time.sleep(pace)
+        if char < len(line):  # snap the untyped remainder on interrupt
+            nvim.api.buf_set_text(buf, row, char, row, char, [line[char:]])
+        nvim.api.buf_del_extmark(buf, ns, mark)
+        if interrupted:
+            return AnimationResult("interrupted", index + 1)
         index += 1
     return AnimationResult("completed", len(lines))
 

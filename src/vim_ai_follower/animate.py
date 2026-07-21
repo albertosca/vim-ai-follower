@@ -91,7 +91,7 @@ class AnimationResult:
     completed_count: int
 
 
-PAUSE_POLL_SECONDS = 0.2
+PAUSE_POLL_SECONDS = 0.1
 
 
 def _exit_insert_mode(pane: TmuxPane) -> None:

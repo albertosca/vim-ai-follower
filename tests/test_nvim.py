@@ -1,42 +1,61 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 from vim_ai_follower.animate import AnimationResult
-from vim_ai_follower.backends import get_follower, nvim_lua
+from vim_ai_follower.backends import get_follower
 from vim_ai_follower.backends.nvim import NvimFollower, _animate_lines
 from vim_ai_follower.diff import EditOp, compute_edit_script
 
 # --- _animate_lines driver (mocked Nvim) ---------------------------------
 
 
-def test_animate_lines_dispatches_type_line_once_per_line() -> None:
+@pytest.fixture(autouse=True)
+def _no_sleep() -> Iterator[None]:
+    # The per-char animation sleeps `pace` between characters; drop the real
+    # delay so unit tests exercise the loop instantly.
+    with patch("vim_ai_follower.backends.nvim.time.sleep"):
+        yield
+
+
+def test_animate_lines_types_each_line_char_by_char() -> None:
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", return_value=None):
         result = _animate_lines(
             nvim, 7, ("a", "bb"), 0, lambda: 0.05, "@1", ns=3, base_dir=Path("/tmp/x")
         )
     assert result == AnimationResult("completed", 2)
-    assert nvim.api.exec_lua.call_args_list == [
-        call(nvim_lua.TYPE_LINE, [7, 0, "a", 50, 3]),
-        call(nvim_lua.TYPE_LINE, [7, 1, "bb", 50, 3]),
+    # each line is seeded blank at its row, then typed one character at a time
+    assert nvim.api.buf_set_lines.call_args_list == [
+        call(7, 0, 0, True, [""]),
+        call(7, 1, 1, True, [""]),
+    ]
+    assert nvim.api.buf_set_text.call_args_list == [
+        call(7, 0, 0, 0, 0, ["a"]),
+        call(7, 1, 0, 1, 0, ["b"]),
+        call(7, 1, 1, 1, 1, ["b"]),
     ]
 
 
-def test_animate_lines_offsets_rows_by_start_row() -> None:
+def test_animate_lines_pace_zero_types_the_whole_line_at_once() -> None:
+    # The pace-0 catch-up (des-interrupt / crash replay) must not animate: one
+    # whole-line insert per line, no per-char loop.
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", return_value=None):
         _animate_lines(nvim, 7, ("x",), 4, lambda: 0.0, "@1", ns=1)
-    nvim.api.exec_lua.assert_called_once_with(nvim_lua.TYPE_LINE, [7, 4, "x", 0, 1])
+    nvim.api.buf_set_lines.assert_any_call(7, 4, 4, True, [""])
+    nvim.api.buf_set_text.assert_called_once_with(7, 4, 0, 4, 0, ["x"])
 
 
 def test_animate_lines_checks_signal_before_each_line() -> None:
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", return_value=None) as check:
         _animate_lines(nvim, 7, ("a", "b"), 0, lambda: 0.0, "@9", ns=1, base_dir=Path("/d"))
+    # pace 0 -> only the per-line boundary checks (no per-char loop)
     assert check.call_args_list == [call("@9", Path("/d")), call("@9", Path("/d"))]
 
 
@@ -45,15 +64,70 @@ def test_animate_lines_interrupts_before_typing_when_signal_fires_immediately() 
     with patch("vim_ai_follower.control.check_signal", return_value="interrupt"):
         result = _animate_lines(nvim, 7, ("a", "b"), 0, lambda: 0.0, "@1", ns=1)
     assert result == AnimationResult("interrupted", 0)
-    nvim.api.exec_lua.assert_not_called()
+    nvim.api.buf_set_text.assert_not_called()
 
 
-def test_animate_lines_stops_partway_when_interrupt_fires_mid_run() -> None:
+def test_animate_lines_stops_partway_when_interrupt_fires_between_lines() -> None:
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", side_effect=[None, "interrupt"]):
         result = _animate_lines(nvim, 7, ("a", "b", "c"), 0, lambda: 0.0, "@1", ns=1)
     assert result == AnimationResult("interrupted", 1)
-    assert nvim.api.exec_lua.call_count == 1
+    assert nvim.api.buf_set_text.call_count == 1  # only line 0 was typed
+
+
+def test_animate_lines_snaps_the_line_on_a_mid_char_interrupt() -> None:
+    # Interrupt detected mid-line (per-char check): the untyped remainder is
+    # snapped in so the buffer lands on a clean line boundary, and the line
+    # counts as done (index + 1).
+    nvim = MagicMock()
+    # line 0 "hi" typed fully, then on line 1 "abc" type 'a', interrupt before 'b'
+    signals = [None, None, None, None, None, "interrupt"]
+    with patch("vim_ai_follower.control.check_signal", side_effect=signals):
+        result = _animate_lines(nvim, 7, ("hi", "abc"), 0, lambda: 0.05, "@1", ns=1)
+    assert result == AnimationResult("interrupted", 2)
+    nvim.api.buf_set_text.assert_any_call(7, 1, 1, 1, 1, ["bc"])  # snapped remainder
+
+
+def test_animate_lines_pause_inside_the_char_loop_then_resumes(tmp_path: Path) -> None:
+    # Pause mid-line (per-char check) blocks in _wait_while_paused; the resume
+    # toggle then continues typing the same line from the same character.
+    nvim = MagicMock()
+    with (
+        patch(
+            "vim_ai_follower.control.check_signal",
+            side_effect=[None, "pause", "pause", None, None],
+        ),
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+    ):
+        result = _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", ns=1)
+    assert result == AnimationResult("completed", 1)
+    assert nvim.api.buf_set_text.call_args_list == [
+        call(7, 0, 0, 0, 0, ["a"]),
+        call(7, 0, 1, 0, 1, ["b"]),
+    ]
+
+
+def test_animate_lines_interrupt_during_a_mid_line_pause_snaps_and_stops(tmp_path: Path) -> None:
+    # Paused mid-line, then interrupted: _wait_while_paused returns False, the
+    # line is snapped whole, and the run reports interrupted with it counted.
+    nvim = MagicMock()
+    with (
+        patch("vim_ai_follower.control.check_signal", side_effect=[None, "pause", "interrupt"]),
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+    ):
+        result = _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", ns=1)
+    assert result == AnimationResult("interrupted", 1)
+    nvim.api.buf_set_text.assert_any_call(7, 0, 0, 0, 0, ["ab"])  # snapped whole
+
+
+def test_animate_lines_pace_zero_skips_empty_lines(tmp_path: Path) -> None:
+    # A blank line in the pace-0 catch-up path is just the seeded "" — no
+    # whole-line insert for it.
+    nvim = MagicMock()
+    with patch("vim_ai_follower.control.check_signal", return_value=None):
+        result = _animate_lines(nvim, 7, ("a", "", "b"), 0, lambda: 0.0, "@1", ns=1)
+    assert result == AnimationResult("completed", 3)
+    assert nvim.api.buf_set_text.call_count == 2  # the empty line inserts nothing
 
 
 def test_animate_lines_pauses_then_resumes_retyping_the_same_line(tmp_path: Path) -> None:
@@ -66,7 +140,7 @@ def test_animate_lines_pauses_then_resumes_retyping_the_same_line(tmp_path: Path
     ):
         result = _animate_lines(nvim, 7, ("a", "b"), 0, lambda: 0.0, "@1", ns=1)
     assert result == AnimationResult("completed", 2)
-    assert nvim.api.exec_lua.call_count == 2  # both lines typed, none skipped
+    assert nvim.api.buf_set_text.call_count == 2  # both lines typed, none skipped
 
 
 def test_animate_lines_pause_then_interrupt_returns_interrupted(tmp_path: Path) -> None:
@@ -77,7 +151,7 @@ def test_animate_lines_pause_then_interrupt_returns_interrupted(tmp_path: Path) 
     ):
         result = _animate_lines(nvim, 7, ("a", "b"), 0, lambda: 0.0, "@1", ns=1)
     assert result == AnimationResult("interrupted", 0)
-    nvim.api.exec_lua.assert_not_called()
+    nvim.api.buf_set_text.assert_not_called()
 
 
 def test_animate_lines_saves_the_remainder_while_paused(tmp_path: Path) -> None:
@@ -87,25 +161,16 @@ def test_animate_lines_saves_the_remainder_while_paused(tmp_path: Path) -> None:
         patch("vim_ai_follower.control.check_signal", side_effect=["pause", "pause", None]),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
     ):
-        _animate_lines(
-            nvim,
-            7,
-            ("a",),
-            0,
-            lambda: 0.0,
-            "@1",
-            ns=1,
-            save_pending=saved.append,
-        )
+        _animate_lines(nvim, 7, ("a",), 0, lambda: 0.0, "@1", ns=1, save_pending=saved.append)
     assert saved == [0]  # the crash-fallback remainder starts at the paused line
 
 
-def test_animate_lines_empty_completes_without_dispatch() -> None:
+def test_animate_lines_empty_completes_without_typing() -> None:
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", return_value=None):
         result = _animate_lines(nvim, 7, (), 0, lambda: 0.0, "@1", ns=1)
     assert result == AnimationResult("completed", 0)
-    nvim.api.exec_lua.assert_not_called()
+    nvim.api.buf_set_text.assert_not_called()
 
 
 # --- NvimFollower (mocked pynvim.attach) ---------------------------------
@@ -140,11 +205,9 @@ def test_show_fresh_never_edits_the_real_file_and_types_the_content(tmp_path: Pa
     # Never `:e`/`:edit` the real file — that would flash the finished content.
     issued = [c.args[0] for c in nvim.command.call_args_list]
     assert not any(cmd.startswith("edit ") or cmd.startswith("e ") for cmd in issued)
-    # Each line is typed via the Lua snippet.
-    assert nvim.api.exec_lua.call_args_list == [
-        call(nvim_lua.TYPE_LINE, [7, 0, "hello", 0, nvim.api.create_namespace.return_value]),
-        call(nvim_lua.TYPE_LINE, [7, 1, "world", 0, nvim.api.create_namespace.return_value]),
-    ]
+    # Each line is typed at its row (pace 0 here -> whole-line inserts).
+    nvim.api.buf_set_text.assert_any_call(7, 0, 0, 0, 0, ["hello"])
+    nvim.api.buf_set_text.assert_any_call(7, 1, 0, 1, 0, ["world"])
 
 
 def test_show_fresh_marks_and_clears_animating(tmp_path: Path) -> None:
@@ -267,7 +330,7 @@ def test_apply_edit_pause_at_op_boundary_saves_ops_and_resumes(tmp_path: Path) -
         result = follower.apply_edit("/tmp/f.py", [op])
     assert result == AnimationResult("completed", 1)
     assert saved == [1]  # remainder = the whole op list from the paused op
-    nvim.api.exec_lua.assert_called_once()
+    nvim.api.buf_set_text.assert_called_once()
 
 
 def test_apply_edit_pause_at_op_boundary_then_interrupt(tmp_path: Path) -> None:
@@ -282,7 +345,7 @@ def test_apply_edit_pause_at_op_boundary_then_interrupt(tmp_path: Path) -> None:
     ):
         result = follower.apply_edit("/tmp/f.py", [op])
     assert result == AnimationResult("interrupted", 0)
-    nvim.api.exec_lua.assert_not_called()  # interrupted before op0's delete
+    nvim.api.buf_set_text.assert_not_called()  # interrupted before op0's delete
 
 
 def test_apply_edit_pause_inside_an_ops_lines_saves_and_resumes(tmp_path: Path) -> None:
@@ -314,7 +377,7 @@ def test_apply_edit_pause_inside_an_ops_lines_saves_and_resumes(tmp_path: Path) 
         result = follower.apply_edit("/tmp/f.py", [op])
     assert result == AnimationResult("completed", 1)
     assert saved == [1]  # the op-granular remainder is saved mid-op too
-    assert nvim.api.exec_lua.call_count == 2  # both lines eventually typed
+    assert nvim.api.buf_set_text.call_count == 2  # both lines eventually typed
 
 
 def test_drive_skips_relock_for_an_adopted_follower(tmp_path: Path) -> None:
@@ -364,11 +427,9 @@ def test_apply_edit_deletes_then_animates_each_op(tmp_path: Path) -> None:
     ):
         result = follower.apply_edit("/tmp/f.py", ops)
     assert result == AnimationResult("completed", 1)
-    # replace of line 2: delete old line then type the new one via Lua.
+    # replace of line 2: delete old line then type the new one (pace 0 -> whole line).
     nvim.api.buf_set_lines.assert_any_call(7, 1, 2, True, [])
-    nvim.api.exec_lua.assert_any_call(
-        nvim_lua.TYPE_LINE, [7, 1, "vim ai follower", 0, nvim.api.create_namespace.return_value]
-    )
+    nvim.api.buf_set_text.assert_any_call(7, 1, 0, 1, 0, ["vim ai follower"])
 
 
 def test_apply_edit_interrupted_reports_completed_op_index(tmp_path: Path) -> None:
@@ -381,8 +442,9 @@ def test_apply_edit_interrupted_reports_completed_op_index(tmp_path: Path) -> No
     ]
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
-        # op0 checks (op boundary + its line), then op1's boundary interrupts.
-        patch("vim_ai_follower.control.check_signal", side_effect=[None, None, "interrupt"]),
+        # op0: boundary + line0 between + line0 char0 (types "a"); then op1's
+        # boundary interrupts -> completed op index 1.
+        patch("vim_ai_follower.control.check_signal", side_effect=[None, None, None, "interrupt"]),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", ops)
@@ -404,7 +466,7 @@ def test_apply_edit_interrupted_inside_an_ops_line_animation(tmp_path: Path) -> 
     ):
         result = follower.apply_edit("/tmp/f.py", [op])
     assert result == AnimationResult("interrupted", 0)
-    assert nvim.api.exec_lua.call_count == 1  # only line0 got typed
+    assert nvim.api.buf_set_text.call_count == 1  # line0 snapped whole on interrupt
 
 
 def test_apply_edit_pure_delete_op_needs_no_animation(tmp_path: Path) -> None:
@@ -420,7 +482,7 @@ def test_apply_edit_pure_delete_op_needs_no_animation(tmp_path: Path) -> None:
         result = follower.apply_edit("/tmp/f.py", [op])
     assert result == AnimationResult("completed", 1)
     nvim.api.buf_set_lines.assert_any_call(7, 1, 3, True, [])
-    nvim.api.exec_lua.assert_not_called()
+    nvim.api.buf_set_text.assert_not_called()
 
 
 def test_pace_provider_falls_back_to_constructed_pace_without_window_id() -> None:
