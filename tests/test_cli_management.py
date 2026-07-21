@@ -277,9 +277,20 @@ def test_existing_binding_skips_malformed_and_untabled_lines() -> None:
         )
 
 
+def test_claude_follow_executable_prefers_the_plugin_wrapper_when_running_as_a_plugin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # As a Claude Code plugin, CLAUDE_PLUGIN_ROOT points at the install; the
+    # tmux server (no plugin PATH, no venv) needs the bundled bin wrapper's
+    # absolute path.
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(tmp_path))
+    assert keybindings._claude_follow_executable() == str(tmp_path / "bin" / "claude-follow")
+
+
 def test_claude_follow_executable_falls_back_to_which_then_bare_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)  # not running as a plugin
     monkeypatch.setattr(sys, "executable", str(tmp_path / "nowhere" / "python"))
     with patch("vim_ai_follower.keybindings.shutil.which", return_value="/opt/bin/claude-follow"):
         assert keybindings._claude_follow_executable() == "/opt/bin/claude-follow"

@@ -1,0 +1,7 @@
+#!/bin/sh
+# Runs the bundled vim-ai-follower CLI without a pip install. On the Bash
+# tool's PATH while the plugin is enabled, and the absolute target the tmux
+# keybindings use (see keybindings._claude_follow_executable). Resolves the
+# bundled src/ relative to this script so `claude-follow` works from anywhere.
+DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+exec env PYTHONPATH="$DIR/src" python3 -m vim_ai_follower.cli "$@"
