@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -21,10 +22,17 @@ _KEYBINDINGS: tuple[tuple[str, str], ...] = (
 
 
 def _claude_follow_executable() -> str:
-    """Absolute path to this venv's claude-follow entry point. tmux
-    run-shell commands execute with the tmux SERVER's environment, whose
-    PATH never includes this project's virtualenv — a bare name exits 127
-    there, so the keybinding must embed the resolved path."""
+    """Absolute path to the claude-follow entry point. tmux run-shell commands
+    execute with the tmux SERVER's environment, whose PATH never includes this
+    project's virtualenv nor a plugin's PATH — a bare name exits 127 there, so
+    the keybinding must embed the resolved path.
+
+    When running as a Claude Code plugin, CLAUDE_PLUGIN_ROOT points at the
+    plugin install; use its bundled bin/claude-follow wrapper. Otherwise fall
+    back to this venv's installed script, then PATH."""
+    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    if plugin_root:
+        return str(Path(plugin_root) / "bin" / "claude-follow")
     candidate = Path(sys.executable).parent / "claude-follow"
     if candidate.exists():
         return str(candidate)
