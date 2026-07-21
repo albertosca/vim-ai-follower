@@ -3,7 +3,7 @@
 # Must run AFTER t2 against the same follower: the cue fires only once 2+
 # DISTINCT writers have touched this window. Writer 2 carries an agent_id +
 # agent_type, so it's the second identity.
-source /Users/albertosca/Programming/vim-ai-follower/scripts/nvim-smoke/_lib.sh || exit 1
+source "${0:A:h}/_lib.sh" || exit 1
 F=/tmp/vaf-nvim-cue.py
 
 echo "TEST 3 — writer 2 (code-reviewer): the floating status window"

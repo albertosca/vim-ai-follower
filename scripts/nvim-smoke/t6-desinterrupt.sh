@@ -2,7 +2,7 @@
 # TEST 6 — Des-interrupt (second S) replay to exact content, across blank lines.
 # Needs the same SLOW follower. Uses nvim-blanks.py (double blank lines between
 # defs) so a des-interrupt landing near a gap exercises the 27aa0e4 fix.
-source /Users/albertosca/Programming/vim-ai-follower/scripts/nvim-smoke/_lib.sh || exit 1
+source "${0:A:h}/_lib.sh" || exit 1
 F=/tmp/vaf-nvim-t6.py
 
 echo "TEST 6 — des-interrupt (discard your typing, replay the remainder)"

@@ -1,9 +1,10 @@
 #!/bin/zsh
 # Shared boilerplate for the nvim-backend manual smoke (Checks 5/6 of
-# qa/smoke-runbook.md). Each tN-*.sh sources this by absolute path, so every
-# test script is self-contained and runnable one at a time.
-CF=/Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow
-FIX=/Users/albertosca/Programming/vim-ai-follower/qa/fixtures
+# qa/smoke-runbook.md). Each tN-*.sh sources this relative to itself, so the
+# scripts run from any clone without hardcoded paths.
+REPO="${0:A:h:h:h}"
+CF="$REPO/bin/claude-follow"
+FIX="$REPO/qa/fixtures"
 
 if [[ -z "$TMUX" || -z "$TMUX_PANE" ]]; then
   echo "ERROR: run this from INSIDE the tmux pane where you ran 'claude-follow start --backend nvim'."

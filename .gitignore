@@ -7,3 +7,4 @@ __pycache__/
 .coverage
 .claude/
 *.sw[a-p]
+docs/superpowers/

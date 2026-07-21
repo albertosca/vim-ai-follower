@@ -10,9 +10,9 @@ test files in `qa/fixtures/` (already made — the scripts copy them into `/tmp`
 at run time). Nothing here ever touches your own tmux sessions except the
 dedicated `vaf-smoke` session that Check 4 creates and you kill.
 
-- **Binary:** `claude-follow` is **not** on `PATH` — every command below uses
-  the full path `/Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow`
-  so you can copy-paste each line as-is, no alias to set first.
+- **Binary:** commands below call `claude-follow` directly. It is on `PATH`
+  when the plugin is enabled; from a clone, use `./bin/claude-follow` or your
+  installed script.
 - **Cache dir:** `~/.cache/claude-vim-follower/` (state `<window_id>.pane`, signals, logs).
 - **Time budget:** ~10–12 min for all four checks.
 
@@ -50,7 +50,7 @@ completion popups (Check 3).
 Open a tmux window and, from the pane where `claude` normally runs:
 
 ```sh
-/Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow start        # opens a follower Vim pane beside you (dedicated split)
+claude-follow start        # opens a follower Vim pane beside you (dedicated split)
 ```
 
 **PASS:** a second (follower) pane opens. **FAIL:** an error, or no pane.
@@ -84,7 +84,7 @@ you can look.
 Immediately after Check 1, in the same pane:
 
 ```sh
-/Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow stop
+claude-follow stop
 ```
 
 **PASS:** the follower pane closes **and** the border returns to default — no
@@ -105,7 +105,7 @@ Needs a pause landing **mid-animation while a completion popup is up** (your
 real CoC/Copilot). Restart the follower slow so you have time:
 
 ```sh
-/Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow stop 2>/dev/null; /Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow start --speed lento
+claude-follow stop 2>/dev/null; claude-follow start --speed lento
 ```
 
 Then paste this prompt into your Claude Code (it drives the follower):
@@ -122,8 +122,8 @@ função collect_paths que usa os.listdir, os.path.join, .strip().lower(),
 ```sh
 cp qa/fixtures/pause-trigger.py /tmp/vaf-smoke-pause.py
 P='{"tool_name":"Write","tool_input":{"file_path":"/tmp/vaf-smoke-pause.py"},"session_id":"me"}'
-echo "$P" | /Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow hook pre
-echo "$P" | /Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow hook post   # animates slowly — press `prefix P` mid-line
+echo "$P" | claude-follow hook pre
+echo "$P" | claude-follow hook post   # animates slowly — press `prefix P` mid-line
 ```
 
 While a line with `os.` / `.strip()` / `sorted(` is animating and a completion
@@ -187,7 +187,7 @@ does **not** touch your `~/.config/claude-vim-follower/config.json`. From the
 origin pane where `claude` runs:
 
 ```sh
-/Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow start --backend nvim
+claude-follow start --backend nvim
 ```
 
 **PASS:** a dedicated **nvim** pane opens beside you. **FAIL:** an error, or a
@@ -214,7 +214,7 @@ It fires two edits with distinct identities and pauses between them.
 Restart the nvim follower slow so you can catch it mid-animation:
 
 ```sh
-/Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow stop 2>/dev/null; /Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow start --backend nvim --speed lento
+claude-follow stop 2>/dev/null; claude-follow start --backend nvim --speed lento
 ```
 
 > `stop` on a **launched** nvim is a no-op by design (it never kills your
@@ -226,8 +226,8 @@ Drive a slow edit from the origin pane:
 ```sh
 cp qa/fixtures/pause-trigger.py /tmp/vaf-nvim-pause.py
 P='{"tool_name":"Write","tool_input":{"file_path":"/tmp/vaf-nvim-pause.py"},"session_id":"me"}'
-echo "$P" | /Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow hook pre
-echo "$P" | /Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow hook post   # animates slowly
+echo "$P" | claude-follow hook pre
+echo "$P" | claude-follow hook post   # animates slowly
 ```
 
 While it types, exercise the controls (same prefix keys as the tmux backend):
@@ -255,7 +255,7 @@ automated suite. Stage it manually only if you want to eyeball adoption.
 ## Teardown / reset
 
 ```sh
-/Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow stop 2>/dev/null                      # stop any follower in the current window
+claude-follow stop 2>/dev/null                      # stop any follower in the current window
 tmux kill-session -t vaf-smoke 2>/dev/null  # if Check 4 left it
 rm -f /tmp/vaf-smoke-*.py /tmp/vaf-nvim-*.py  # scratch copies
 ```

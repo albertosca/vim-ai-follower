@@ -19,7 +19,7 @@
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX="$HERE/../qa/fixtures"
-CF=/Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow
+CF="$(cd "$(dirname "$0")/.." && pwd)/bin/claude-follow"
 A=/tmp/vaf-smoke-alpha.py
 B=/tmp/vaf-smoke-beta.py
 

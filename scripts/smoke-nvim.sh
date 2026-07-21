@@ -14,7 +14,7 @@
 #   1. From the pane where `claude` normally runs (adopt_existing defaults to
 #      false, so this LAUNCHES a dedicated nvim in a split — it does NOT touch
 #      your config):
-#        /Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow start --backend nvim
+#        claude-follow start --backend nvim
 #      Confirm a dedicated nvim pane opened beside you.
 #   2. Run this script from that SAME pane (it needs your $TMUX_PANE).
 #
@@ -25,7 +25,7 @@
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX="$HERE/../qa/fixtures"
-CF=/Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow
+CF=claude-follow
 F=/tmp/vaf-nvim-smoke.py
 if [[ -z "$TMUX_PANE" ]]; then
   echo "ERROR: run this from inside your tmux pane (the one where you ran 'claude-follow start --backend nvim')."

@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install the package with dev + nvim extras
+        run: pip install -e '.[nvim,dev]'
+
+      - name: Lint (ruff)
+        run: |
+          ruff check src tests
+          ruff format --check src tests
+
+      - name: Type-check (mypy)
+        run: mypy src
+
+      # The integration tests need a real tmux + Vim/Neovim and are
+      # timing-sensitive; they run as a local/manual gate (see qa/). CI runs
+      # the deterministic unit suite so the badge stays reliably green.
+      - name: Unit tests
+        run: pytest -m "not integration" -q

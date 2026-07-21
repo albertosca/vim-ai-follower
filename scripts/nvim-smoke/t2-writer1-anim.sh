@@ -1,6 +1,6 @@
 #!/bin/zsh
 # TEST 2 — Char-by-char animation (writer 1, no floating cue yet).
-source /Users/albertosca/Programming/vim-ai-follower/scripts/nvim-smoke/_lib.sh || exit 1
+source "${0:A:h}/_lib.sh" || exit 1
 F=/tmp/vaf-nvim-cue.py
 
 echo "TEST 2 — writer 1 types in char-by-char"

@@ -5,7 +5,7 @@
 #     claude-follow stop 2>/dev/null
 #     :q  the old launched nvim pane (stop is a no-op for launched nvim)
 #     claude-follow start --backend nvim --speed lento
-source /Users/albertosca/Programming/vim-ai-follower/scripts/nvim-smoke/_lib.sh || exit 1
+source "${0:A:h}/_lib.sh" || exit 1
 F=/tmp/vaf-nvim-t4.py
 
 echo "TEST 4 — pause / resume  (press keys WHILE it types)"

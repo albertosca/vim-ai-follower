@@ -9,7 +9,7 @@
 # Everything targets tmux by PANE ID, never window index, so a base-index in
 # ~/.tmux.conf can't throw it off.
 set -u
-CF=/Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow
+CF="$(cd "$(dirname "$0")/.." && pwd)/bin/claude-follow"
 FIX="$(cd "$(dirname "$0")/../qa/fixtures" && pwd)"
 unset TMUX
 export TMUX_TMPDIR=$(mktemp -d /tmp/vaf-auto-XXXX)

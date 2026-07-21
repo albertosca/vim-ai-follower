@@ -12,7 +12,7 @@
 # lines -> add lines back) and dumps the follower buffer after each. Paste me
 # the whole output: a correct run has each FOLLOWER block == its DISK block.
 set -u
-CF=/Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow
+CF="$(cd "$(dirname "$0")/.." && pwd)/bin/claude-follow"
 FILE=/tmp/vaf-reedit.py
 unset TMUX
 tmux has-session -t vaf-reedit 2>/dev/null && { echo "kill it first: tmux kill-session -t vaf-reedit"; exit 1; }

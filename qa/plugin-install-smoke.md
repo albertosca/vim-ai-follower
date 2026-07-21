@@ -5,13 +5,13 @@ the part `pytest` can't cover (real `claude` plugin loading, real tmux). Run
 after any change to `.claude-plugin/`, `hooks/hooks.json`, `bin/claude-follow`,
 `commands/`, or `keybindings._claude_follow_executable`.
 
-- **Repo:** `/Users/albertosca/Programming/vim-ai-follower`
+- **Repo:** `the repo root`
 - **No pip install needed** for the tmux backend — the plugin bundles the CLI.
 
 ## Fast structural check (no tmux)
 
 ```sh
-cd /Users/albertosca/Programming/vim-ai-follower
+cd the repo root
 claude plugin validate .                                   # expect: ✔ Validation passed
 CLAUDE_PLUGIN_ROOT="$PWD" PYTHONPATH="$PWD/src" python3 -m vim_ai_follower.cli status </dev/null
 #   expect: "claude-follow: not running inside tmux" (the bundled CLI runs, no install)
@@ -30,7 +30,7 @@ tmux attach -t vaf-plugin
 Inside that session, start Claude with the plugin loaded from the working tree:
 
 ```sh
-claude --plugin-dir /Users/albertosca/Programming/vim-ai-follower
+claude --plugin-dir the repo root
 ```
 
 | Check | PASS |
@@ -43,7 +43,7 @@ claude --plugin-dir /Users/albertosca/Programming/vim-ai-follower
 **Teardown:**
 
 ```sh
-/Users/albertosca/Programming/vim-ai-follower/bin/claude-follow stop 2>/dev/null
+./bin/claude-follow stop 2>/dev/null
 tmux kill-session -t vaf-plugin
 ```
 

@@ -1,6 +1,6 @@
 #!/bin/zsh
 # TEST 7 — Cleanup.
-source /Users/albertosca/Programming/vim-ai-follower/scripts/nvim-smoke/_lib.sh || exit 1
+source "${0:A:h}/_lib.sh" || exit 1
 
 echo "TEST 7 — cleanup"
 "$CF" stop 2>/dev/null

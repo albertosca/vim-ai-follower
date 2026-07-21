@@ -7,7 +7,7 @@
 #
 # PREREQUISITES (do these first, then run this from the SAME origin pane):
 #   1. From the pane where `claude` normally runs:
-#        /Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow start
+#        claude-follow start
 #      Confirm a follower Vim pane opened beside you.
 #   2. Run this script from that SAME pane (it needs your $TMUX_PANE).
 #
@@ -18,7 +18,7 @@
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX="$HERE/../qa/fixtures"
-CF=/Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow
+CF="$(cd "$(dirname "$0")/.." && pwd)/bin/claude-follow"
 F=/tmp/vaf-smoke-cue.py
 if [[ -z "$TMUX_PANE" ]]; then
   echo "ERROR: run this from inside your tmux pane (the one where you ran 'claude-follow start')."
