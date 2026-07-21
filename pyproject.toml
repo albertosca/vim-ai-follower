@@ -3,12 +3,13 @@ name = "vim-ai-follower"
 version = "0.1.0"
 description = "Watch Claude Code edit files live in a tmux+Vim pane or directly in a running Neovim"
 requires-python = ">=3.11"
-dependencies = ["pynvim>=0.5"]
+dependencies = []
 
 [project.scripts]
 claude-follow = "vim_ai_follower.cli:main"
 
 [project.optional-dependencies]
+nvim = ["pynvim>=0.5"]
 dev = [
     "ruff>=0.6",
     "mypy>=1.10",
@@ -29,6 +30,11 @@ line-length = 100
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "C4", "RET", "PTH", "RUF"]
 
+[tool.ruff.lint.per-file-ignores]
+# Lua snippet constants are single logical statements; wrapping them to satisfy
+# the line-length limit would break the embedded Lua for no readability gain.
+"src/vim_ai_follower/backends/nvim_lua.py" = ["E501"]
+
 [tool.ruff.format]
 quote-style = "double"
 
@@ -42,4 +48,4 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["integration: requires a real tmux binary on PATH"]
+markers = ["integration: requires a real tmux and/or nvim binary on PATH"]

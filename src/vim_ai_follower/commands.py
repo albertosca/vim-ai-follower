@@ -7,8 +7,10 @@ from typing import Literal
 
 from vim_ai_follower import cache, config, control, keybindings, snapshot, tmux
 from vim_ai_follower.backends import get_follower
+from vim_ai_follower.backends.nvim_connect import resolve_nvim_target
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
-from vim_ai_follower.state import FollowerState, nvim_socket_path
+from vim_ai_follower.state import FollowerState
+from vim_ai_follower.status_surface import status_surface_for
 from vim_ai_follower.tmux import TmuxPane, TmuxWindow, adopt_target
 
 
@@ -25,7 +27,7 @@ def _require_window(env: dict[str, str]) -> TmuxWindow | None:
 
 def cmd_start(
     env: dict[str, str],
-    backend: str = "tmux",
+    backend: str | None = None,
     on_failure: str | None = None,
     speed: str | None = None,
 ) -> int:
@@ -37,31 +39,30 @@ def cmd_start(
         return 0
 
     defaults = config.load()
+    # An explicit --backend wins; otherwise honor config.backend (tmux|nvim).
+    resolved_backend = backend if backend is not None else defaults.backend
     resolved_on_failure = on_failure if on_failure is not None else defaults.on_failure
     resolved_speed = speed if speed is not None else defaults.speed
     origin = env["TMUX_PANE"]
     keybindings.register()
 
-    if backend == "nvim_rpc":
-        socket_path = nvim_socket_path(window.window_id)
-        follower = get_follower("nvim_rpc", str(socket_path))
-        if not follower.is_alive():
-            print(
-                "claude-follow: no Neovim RPC socket found at "
-                f"{socket_path} — open Neovim in this tmux session first "
-                "(needs vim.fn.serverstart() wired to that path)",
-                file=sys.stderr,
-            )
-            return 1
+    if resolved_backend == "nvim":
+        # Adopt a running nvim's socket, or launch a dedicated one; either way
+        # persist the socket to drive and whether we adopted (adopted nvims are
+        # never relocked or killed).
+        sock, launched = resolve_nvim_target(
+            origin, window.window_id, adopt=defaults.adopt_existing
+        )
         FollowerState.set(
             window.window_id,
-            "nvim_rpc",
-            str(socket_path),
+            "nvim",
+            sock,
             origin=origin,
             on_failure=resolved_on_failure,
             speed=resolved_speed,
+            adopted=not launched,
         )
-        print(f"claude-follow: attached to Neovim at {socket_path}")
+        print(f"claude-follow: attached to Neovim at {sock}")
         return 0
 
     if defaults.adopt_existing:
@@ -129,13 +130,12 @@ def cmd_stop(env: dict[str, str]) -> int:
         # fails to resolve its target, leaving the whole window's
         # pane-border-status stuck on "top". Unsetting it (and the per-pane
         # color) while the pane still exists lands cleanly.
-        TmuxPane(pane_id=existing.target).set_border_color(None)
-        TmuxPane(pane_id=existing.target).set_window_option("pane-border-status", None)
+        status_surface_for(existing).clear()
         if existing.adopted:
             # Adoption never took ownership of the pane — killing the
             # user's own Vim on stop would be destructive. Only close the
             # tabs the follower itself opened there.
-            follower = TmuxVimFollower(pane_id=existing.target, window_id=window.window_id)
+            follower = get_follower(existing.backend, existing.target, window_id=window.window_id)
             for path in existing.open_files:
                 follower.close_tab(path)
         else:
@@ -181,6 +181,21 @@ def _show_popup(current: FollowerState | None, message: str) -> None:
     tmux.show_popup(current.target, message)
 
 
+def _pause_feedback(current: FollowerState | None, *, paused: bool) -> None:
+    """Feedback for a pause/resume keypress. tmux flashes a popup on the
+    follower pane; nvim has no pane to target (its target is an RPC socket),
+    so it shows "Paused" in the floating status window instead, cleared on
+    resume."""
+    if current is None:
+        return
+    if current.backend == "nvim":
+        # Resuming restores the "Writing..." activity line rather than closing
+        # the box, so a writer cue's title/border survive the pause.
+        status_surface_for(current).set_state("Paused" if paused else "Writing...")
+        return
+    _show_popup(current, "Paused" if paused else "Resuming")
+
+
 def _resave_pending(
     window_id: str, pending: control.PendingApplyEdit | control.PendingShowFresh
 ) -> None:
@@ -211,12 +226,12 @@ def cmd_pause(env: dict[str, str]) -> int:
     if state == "running":
         control.request_pause(window.window_id)
         print("claude-follow: pause requested")
-        _show_popup(current, "Paused")
+        _pause_feedback(current, paused=True)
         return 0
     if state == "paused":
         control.request_pause(window.window_id)  # the toggle: resumes the waiting hook
         print("claude-follow: resume requested")
-        _show_popup(current, "Resuming")
+        _pause_feedback(current, paused=False)
         return 0
     if state == "handoff":
         print("claude-follow: interrupted — save (:w!) to release Claude, or press S again")
@@ -233,6 +248,15 @@ def cmd_pause(env: dict[str, str]) -> int:
         _resave_pending(window.window_id, pending)
         print("claude-follow: no follower registered to resume", file=sys.stderr)
         return 1
+
+    if current.backend != "tmux":
+        # The keyboard replay below is inherently tmux-only (send-keys). A
+        # crash-orphaned nvim pending has no keyboard resume path yet, so
+        # discard it rather than crash on the tmux-only resume — mirrors the
+        # backend guard cmd_interrupt already applies to this same path.
+        control.discard_pending_animation(window.window_id)
+        print("claude-follow: nothing to resume")
+        return 0
 
     follower = get_follower(
         current.backend,
@@ -304,7 +328,11 @@ def cmd_speed(env: dict[str, str], direction: Literal["up", "down"]) -> int:
         label = new_speed
     print(f"claude-follow: speed {label}")
     # Status line, not popup: a popup grabs the keyboard and blocks the
-    # next +/_ press until it closes.
+    # next +/_ press until it closes. Deliberately not routed through
+    # StatusSurface.set_state: that method save-and-restores the pane's
+    # title/border, which is the right behavior for a persistent cue
+    # (handoff) but would wrongly latch this transient status-line message
+    # as something to restore later.
     tmux.show_status(current.target, f"Speed: {label}")
     return 0
 

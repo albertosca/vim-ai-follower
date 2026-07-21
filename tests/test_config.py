@@ -13,6 +13,7 @@ def test_load_returns_defaults_when_no_file(tmp_path: Path) -> None:
         open_policy="manual",
         adopt_existing=False,
         max_tabs=5,
+        backend="tmux",
     )
 
 
@@ -74,3 +75,11 @@ def test_pace_seconds_for_known_speeds() -> None:
 
 def test_pace_seconds_for_unknown_speed_falls_back_to_default() -> None:
     assert config.pace_seconds_for("ludicrous") == config.pace_seconds_for("rapido")
+
+
+def test_backend_defaults_to_tmux_and_validates(tmp_path: Path) -> None:
+    assert config.load(tmp_path / "none.json").backend == "tmux"
+    (tmp_path / "c.json").write_text('{"backend": "nvim"}')
+    assert config.load(tmp_path / "c.json").backend == "nvim"
+    (tmp_path / "bad.json").write_text('{"backend": "emacs"}')
+    assert config.load(tmp_path / "bad.json").backend == "tmux"

@@ -203,7 +203,13 @@ class TmuxVimFollower:
 
         return self._with_unlocked(_RELOCK_READONLY_SYNCED, run)
 
-    def resume(self, pending: PendingApplyEdit | PendingShowFresh) -> AnimationResult:
+    def resume(
+        self, pending: PendingApplyEdit | PendingShowFresh, *, seeded: bool = False
+    ) -> AnimationResult:
+        # `seeded` is part of the Follower protocol for the nvim backend's
+        # explicit seed-provenance; tmux resyncs from disk on relock, so the
+        # buffer's exact shape is behaviorally invisible here — ignored.
+        del seeded
         if pending.file_path:
             self.goto_file(pending.file_path)
         on_resume = (lambda: self.goto_file(pending.file_path)) if pending.file_path else None

@@ -23,6 +23,7 @@ from vim_ai_follower import (
     state,
     writer_cue,
 )
+from vim_ai_follower.animate import AnimationResult
 
 
 def _literal_sends(run_mock: MagicMock) -> list[str]:
@@ -391,11 +392,12 @@ def test_eviction_closes_oldest_tab_before_animating(
     assert refreshed.open_files == (str(b), str(c))
 
 
-def test_eviction_is_a_pure_bookkeeping_noop_for_the_nvim_rpc_backend(
+def test_eviction_wipes_the_buffer_for_the_nvim_backend(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The nvim_rpc backend has no tabs (see Follower protocol docstring) —
-    # eviction must still bump open_files, but there is no tab to close.
+    # The nvim backend has buffers, not tabs (see Follower protocol docstring),
+    # but close_tab wipes the buffer generically — eviction is no longer
+    # tmux-only (Task 6).
     config_path = tmp_path / "config.json"
     config_path.write_text('{"max_tabs": 2}')
     monkeypatch.setattr(config, "CONFIG_PATH", config_path)
@@ -406,7 +408,7 @@ def test_eviction_is_a_pure_bookkeeping_noop_for_the_nvim_rpc_backend(
     c.write_text("print('c')\n")
     state.FollowerState.set(
         "@1",
-        "nvim_rpc",
+        "nvim",
         "/tmp/x.sock",
         current_file=str(b),
         open_files=(str(a), str(b)),
@@ -415,6 +417,7 @@ def test_eviction_is_a_pure_bookkeeping_noop_for_the_nvim_rpc_backend(
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(c)}}
     nvim = MagicMock()
+    nvim.funcs.bufnr.return_value = 7  # the buffer number bufnr(str(a)) resolves to
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("pynvim.attach", return_value=nvim),
@@ -424,9 +427,32 @@ def test_eviction_is_a_pure_bookkeeping_noop_for_the_nvim_rpc_backend(
     refreshed = state.FollowerState.read("@1")
     assert refreshed is not None
     assert refreshed.open_files == (str(b), str(c))
-    # the evicted file (a) is never touched — the tmux backend's close_tab
-    # would goto_file + bwipeout it, but this backend has no tab to close
-    assert not any(str(a) in str(call) for call in nvim.command.call_args_list)
+    # close_tab looks the evicted file (a) up via bufnr() (nvim's own path
+    # canonicalization, not a raw string compare) then wipes it by number.
+    nvim.funcs.bufnr.assert_any_call(str(a))
+    nvim.command.assert_any_call("silent! bwipeout! 7")
+
+
+def test_touch_and_evict_closes_the_evicted_tab_on_any_follower(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Generic eviction (Task 6): _touch_and_evict must call close_tab on
+    # whatever follower it's given — not just TmuxVimFollower — proven here
+    # with a bare mock that is deliberately NOT a TmuxVimFollower instance.
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    state.FollowerState.set(
+        "@1", "nvim", "/tmp/x.sock", open_files=("/tmp/a.py", "/tmp/b.py"), shown_any=True
+    )
+    current = state.FollowerState.read("@1")
+    assert current is not None
+
+    follower = MagicMock()
+    hooks._touch_and_evict("@1", follower, current, "/tmp/c.py", max_tabs=2)
+
+    follower.close_tab.assert_called_once_with("/tmp/a.py")
+    refreshed = state.FollowerState.read("@1")
+    assert refreshed is not None
+    assert refreshed.open_files == ("/tmp/b.py", "/tmp/c.py")
 
 
 def test_hook_post_ignores_unrelated_tools() -> None:
@@ -758,6 +784,65 @@ def test_auto_open_adopts_existing_vim_pane(
     assert result.shown_any is True
 
 
+def test_auto_open_selects_nvim_backend_and_persists_launched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"open_policy": "always", "backend": "nvim"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+
+    target = tmp_path / "f.py"
+    target.write_text("print(1)\n")
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+
+    with (
+        patch(
+            "vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run(other_panes=("%1",))
+        ),
+        patch(
+            "vim_ai_follower.hooks.resolve_nvim_target",
+            return_value=("/tmp/nvim.sock", True),
+        ) as resolve,
+        # The follower's own connection (show_fresh) is mocked out — this test
+        # only asserts the backend selection and persisted state.
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=MagicMock()),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    resolve.assert_called_once_with("%1", "@1", adopt=False)
+    result = state.FollowerState.read("@1")
+    assert result is not None
+    assert result.backend == "nvim"
+    assert result.target == "/tmp/nvim.sock"
+    assert result.adopted is False
+
+
+def test_auto_open_nvim_resolve_failure_logs_and_noops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"open_policy": "always", "backend": "nvim"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+
+    target = tmp_path / "f.py"
+    target.write_text("print(1)\n")
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+
+    with (
+        patch(
+            "vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run(other_panes=("%1",))
+        ),
+        patch(
+            "vim_ai_follower.hooks.resolve_nvim_target",
+            side_effect=subprocess.CalledProcessError(1, ["tmux", "split-window"]),
+        ),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    # A failed nvim auto-open registers nothing and never crashes the hook.
+    assert state.FollowerState.read("@1") is None
+
+
 def test_auto_open_logs_and_noops_when_the_split_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -861,6 +946,25 @@ def test_hook_post_des_interrupt_replays_the_remaining_animation(
     assert capsys.readouterr().out == ""  # nothing changed for Claude: no notification
 
 
+def test_reconstruct_partial_fresh_preserves_consecutive_trailing_blanks() -> None:
+    # The reconstructed partial is `.splitlines()`'d again downstream (by
+    # rewrite_buffer and the interrupt notification), so the round-trip must be
+    # lossless for trailing blank lines. A "\n".join would collapse them:
+    # ['a','',''] -> "a\n\n" -> ['a',''] drops one. Terminating each line keeps
+    # them: ['a','',''] -> "a\n\n\n" -> ['a','',''].
+    content = "a\n\n\nb\nc\n"
+    assert content.splitlines() == ["a", "", "", "b", "c"]
+
+    # completed_count spanning both trailing blanks reconstructs them intact.
+    partial = hooks._reconstruct_partial_fresh(content, 3)
+    assert partial == "a\n\n\n"
+    assert partial.splitlines() == ["a", "", ""]  # lossless round-trip
+
+    # nothing shown yet -> empty string -> no lines (unchanged from before).
+    assert hooks._reconstruct_partial_fresh(content, 0) == ""
+    assert hooks._reconstruct_partial_fresh(content, 0).splitlines() == []
+
+
 def test_hook_post_des_interrupt_rebuilds_partial_content_before_replaying(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -930,6 +1034,106 @@ def test_hook_post_des_interrupt_without_a_remainder_falls_back_to_reload(
     assert ":e!" in sends
     assert ":setlocal readonly nomodifiable" in sends
     assert capsys.readouterr().out == ""
+
+
+def test_des_interrupt_routes_through_the_backend_follower_for_nvim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The des-interrupt branch must build the follower from the window's
+    # backend, not a hardcoded TmuxVimFollower. With backend "nvim" it must
+    # reach the NvimFollower (constructed via get_follower with the socket
+    # target) — mutation-catching: the old `TmuxVimFollower(pane_id=...)` would
+    # get the socket as a pane id and never route to nvim at all.
+    target = tmp_path / "f.txt"
+    target.write_text("a\nb\n")
+    state.FollowerState.set(
+        "@1",
+        "nvim",
+        "/tmp/x.sock",
+        current_file=str(target),
+        open_files=(str(target),),
+        shown_any=True,
+    )
+    current = state.FollowerState.read("@1")
+    assert current is not None
+    control.save_pending_show_fresh("@1", ("b",), 0.0, continuation=True, file_path=str(target))
+
+    fake = MagicMock()
+    fake.rewrite_buffer.return_value = AnimationResult("completed", 1)
+    fake.resume.return_value = AnimationResult("completed", 1)
+    captured: dict[str, object] = {}
+
+    def _fake_get_follower(backend: str, follower_target: str, **kwargs: object) -> MagicMock:
+        captured["backend"] = backend
+        captured["target"] = follower_target
+        return fake
+
+    monkeypatch.setattr(hooks, "get_follower", _fake_get_follower)
+    monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(hooks, "show_popup", lambda *a, **k: None)
+
+    with (
+        patch("vim_ai_follower.control.check_signal", side_effect=["interrupt"] + [None] * 5),
+        patch("vim_ai_follower.hooks.time.sleep"),
+    ):
+        hooks._await_user_handoff(current, "@1", str(target), "a\nb\n", "a")
+
+    assert captured["backend"] == "nvim"
+    assert captured["target"] == "/tmp/x.sock"
+    fake.rewrite_buffer.assert_called_once_with(str(target), "a")
+    fake.resume.assert_called_once()
+    refreshed = state.FollowerState.read("@1")
+    assert refreshed is not None
+    assert refreshed.current_file == str(target)
+
+
+def test_pace0_consume_routes_resume_to_the_nvim_follower(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The pace-0 pending-consume (hooks.py:439) must call resume on whatever
+    # backend follower it built — not assert-isinstance TmuxVimFollower. With
+    # backend "nvim" and a persisted pending, the old assert would have raised
+    # AssertionError; the new path just calls follower.resume at pace 0.
+    from vim_ai_follower.diff import EditOp
+
+    target = tmp_path / "f.txt"
+    target.write_text("a\nB\n")
+    state.FollowerState.set(
+        "@1",
+        "nvim",
+        "/tmp/x.sock",
+        current_file=str(target),
+        open_files=(str(target),),
+        shown_any=True,
+    )
+    snapshot.save("@1", str(target), "a\nb\n")
+    control.save_pending_apply_edit(
+        "@1",
+        [EditOp(kind="replace", start_line=2, end_line=2, new_lines=("B",))],
+        0.03,
+        file_path=str(target),
+    )
+
+    fake = MagicMock()
+    fake.apply_edit.return_value = AnimationResult("completed", 1)
+    payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
+
+    with (
+        patch("vim_ai_follower.hooks.get_follower", return_value=fake),
+        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    fake.resume.assert_called_once()
+    consumed = fake.resume.call_args.args[0]
+    assert consumed.pace_seconds == 0.0  # the catch-up is forced silent
+    # the pace-0 consume runs on the LIVE interrupted buffer, which still
+    # carries show_fresh's trailing seed blank — provenance passed explicitly
+    assert fake.resume.call_args.kwargs.get("seeded") is True
+    assert list(consumed.ops) == [
+        EditOp(kind="replace", start_line=2, end_line=2, new_lines=("B",))
+    ]
 
 
 def test_hook_post_handoff_survives_an_unstatable_file(
@@ -1336,5 +1540,33 @@ def test_apply_writer_cue_is_a_noop_when_the_identity_is_not_yet_registered(
     state.FollowerState.update("@1", writers=("$1", "a9"), writer_labels=("session:$1", "explore"))
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         hooks._apply_writer_cue("@1", "%2", {"session_id": "$unknown"})
+    border_calls = [c.args[0] for c in run.call_args_list if "pane-border-style" in c.args[0]]
+    assert border_calls == []
+
+
+def test_apply_writer_cue_routes_nvim_backed_windows_to_the_nvim_status_surface(
+    tmp_path: Path,
+) -> None:
+    # The nvim backend has no tmux pane border to tint, so this must go
+    # through NvimStatusSurface (a floating window + virtual text), never
+    # construct a TmuxStatusSurface around the socket path.
+    state.FollowerState.set(
+        "@1",
+        "nvim",
+        "/tmp/x.sock",
+        open_files=(),
+        shown_any=True,
+        writers=("$1", "a9"),
+        writer_labels=("session:$1", "code-reviewer"),
+    )
+    nvim = MagicMock()
+    with (
+        patch("pynvim.attach", return_value=nvim) as attach,
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+    ):
+        hooks._apply_writer_cue(
+            "@1", "/tmp/x.sock", {"agent_id": "a9", "agent_type": "code-reviewer"}
+        )
+    attach.assert_called_once_with("socket", path="/tmp/x.sock")
     border_calls = [c.args[0] for c in run.call_args_list if "pane-border-style" in c.args[0]]
     assert border_calls == []

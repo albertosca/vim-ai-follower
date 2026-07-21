@@ -15,9 +15,11 @@ DEFAULT_SPEED = "rapido"
 DEFAULT_OPEN_POLICY = "manual"
 DEFAULT_ADOPT_EXISTING = False
 DEFAULT_MAX_TABS = 5
+DEFAULT_BACKEND = "tmux"
 
 _VALID_ON_FAILURE = ("silent", "reopen")
 _VALID_OPEN_POLICY = ("always", "code", "manual")
+_VALID_BACKEND = ("tmux", "nvim")
 
 SPEED_PACE_SECONDS: dict[str, float] = {
     "instant": 0.0,
@@ -70,6 +72,7 @@ class Config:
     open_policy: str
     adopt_existing: bool
     max_tabs: int
+    backend: str
 
 
 def load(config_path: Path | None = None) -> Config:
@@ -80,6 +83,7 @@ def load(config_path: Path | None = None) -> Config:
     open_policy = data.get("open_policy", DEFAULT_OPEN_POLICY)
     adopt_existing = data.get("adopt_existing", DEFAULT_ADOPT_EXISTING)
     max_tabs = data.get("max_tabs", DEFAULT_MAX_TABS)
+    backend = data.get("backend", DEFAULT_BACKEND)
     if on_failure not in _VALID_ON_FAILURE:
         on_failure = DEFAULT_ON_FAILURE
     if speed not in SPEED_PACE_SECONDS:
@@ -90,7 +94,9 @@ def load(config_path: Path | None = None) -> Config:
         adopt_existing = DEFAULT_ADOPT_EXISTING
     if not isinstance(max_tabs, int) or isinstance(max_tabs, bool) or max_tabs < 1:
         max_tabs = DEFAULT_MAX_TABS
-    return Config(on_failure, speed, open_policy, adopt_existing, max_tabs)
+    if backend not in _VALID_BACKEND:
+        backend = DEFAULT_BACKEND
+    return Config(on_failure, speed, open_policy, adopt_existing, max_tabs, backend)
 
 
 def next_speed(speed: str, direction: Literal["up", "down"]) -> str:

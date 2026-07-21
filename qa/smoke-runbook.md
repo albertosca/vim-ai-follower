@@ -40,6 +40,8 @@ completion popups (Check 3).
 | 2 | Stop restores the border | 2026-07-17 (fix `c1760c8`) | `pane-border-status` cleared on a real window after the pane is killed |
 | 3 | Escape+undo race fix | 2026-07-17 | No stray `u` under real CoC/Copilot completion popups |
 | 4 | Window-scoped identity | 2026-07-17 | Two real windows stay isolated, no cross-bleed |
+| 5 | nvim backend: char-by-char animation + floating writer cue | 2026-07-19 | Real nvim types over RPC (extmark highlight, cursor follow) + the floating status window renders the writer label |
+| 6 | nvim backend: pause / interrupt / des-interrupt | 2026-07-19 | Control parity over RPC (no `send-keys`): pause resumes clean, interrupt hands the buffer over, second `S` replays |
 
 ---
 
@@ -172,13 +174,94 @@ tmux kill-session -t vaf-smoke
 
 ---
 
+## Check 5 — nvim backend: char-by-char animation + floating writer cue 🪟
+
+The nvim backend drives a **real Neovim over RPC** (no `tmux send-keys`), so
+none of the send-keys bug classes (Checks 2/3) can exist here — this check is
+about the *positive* behavior: it types char-by-char and shows nvim-native
+visuals.
+
+`--backend nvim` overrides config for this invocation; with `adopt_existing`
+at its default (`false`) this **launches a dedicated nvim** in a split — it
+does **not** touch your `~/.config/claude-vim-follower/config.json`. From the
+origin pane where `claude` runs:
+
+```sh
+/Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow start --backend nvim
+```
+
+**PASS:** a dedicated **nvim** pane opens beside you. **FAIL:** an error, or a
+Vim (not nvim) pane. Then, from that same origin pane:
+
+```sh
+zsh scripts/smoke-nvim.sh
+```
+
+It fires two edits with distinct identities and pauses between them.
+
+| Moment | PASS | FAIL |
+| --- | --- | --- |
+| Writer 1 (you, no `agent_id`) | The content **types in char-by-char** in the nvim pane — the current line highlighted, the cursor following. No floating window yet. | Content flashes in whole, or no highlight/cursor motion |
+| Writer 2 (`agent_type=code-reviewer`) | A small **floating window** appears with the label **`code-reviewer`** in a color | No floating window, or no label/color |
+
+> The nvim writer cue is the floating window — it *replaces* the tmux border
+> tint of Check 1, with more info (there is no tmux border to read here).
+
+---
+
+## Check 6 — nvim backend: pause / interrupt / des-interrupt ⏯️
+
+Restart the nvim follower slow so you can catch it mid-animation:
+
+```sh
+/Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow stop 2>/dev/null; /Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow start --backend nvim --speed lento
+```
+
+> `stop` on a **launched** nvim is a no-op by design (it never kills your
+> editor), so the previous nvim pane stays — close it with `:q` in that pane
+> first if it's cluttering, then run the line above.
+
+Drive a slow edit from the origin pane:
+
+```sh
+cp qa/fixtures/pause-trigger.py /tmp/vaf-nvim-pause.py
+P='{"tool_name":"Write","tool_input":{"file_path":"/tmp/vaf-nvim-pause.py"},"session_id":"me"}'
+echo "$P" | /Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow hook pre
+echo "$P" | /Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow hook post   # animates slowly
+```
+
+While it types, exercise the controls (same prefix keys as the tmux backend):
+
+| Action | Key | PASS | FAIL |
+| --- | --- | --- | --- |
+| **Pause / resume** | `prefix P`, then `prefix P` again | Typing halts at a clean line boundary, then resumes to the exact full content | Mid-char stop, garbled resume, or lost lines |
+| **Interrupt (hand-over)** | `prefix S` mid-animation | Typing stops and the buffer becomes **modifiable** — you can edit it. Edit + `:w` → your version releases Claude's turn (a notification is printed) | Buffer stays locked, or the turn never releases |
+| **Des-interrupt** | after an interrupt, `prefix S` again | Your unsaved typing is discarded and the **remaining** animation replays to the exact final content — no dropped lines, even across consecutive blank lines | A dropped line, a stray blank, or a flash of the finished file |
+
+> The consecutive-blank-line des-interrupt fidelity is the fix in `27aa0e4`.
+> Automated proof (real nvim, no manual timing luck) is in the integration
+> suite (`tests/test_nvim_integration.py`, the `*des_interrupt*` /
+> `*pace0_consume*` tests) — this manual check confirms it under your real
+> nvim config.
+
+**Note — adopt path (optional).** Checks 5/6 use the **launch** path (turnkey,
+deterministic). The **adopt** path (drive an nvim you already have open) needs
+`adopt_existing: true` in config and an nvim running in the origin pane; its
+socket discovery + the adopted-stop cleanup (fix `6c565f9`) are covered by the
+automated suite. Stage it manually only if you want to eyeball adoption.
+
+---
+
 ## Teardown / reset
 
 ```sh
 /Users/albertosca/Programming/vim-ai-follower/.venv/bin/claude-follow stop 2>/dev/null                      # stop any follower in the current window
 tmux kill-session -t vaf-smoke 2>/dev/null  # if Check 4 left it
-rm -f /tmp/vaf-smoke-*.py                  # scratch copies
+rm -f /tmp/vaf-smoke-*.py /tmp/vaf-nvim-*.py  # scratch copies
 ```
+
+> A **launched nvim** follower (Checks 5/6) is not killed by `stop` (by
+> design). Close each leftover nvim split yourself with `:q` in that pane.
 
 If a check misbehaves, the hook log is the first place to look:
 
@@ -192,7 +275,8 @@ tail -n 40 ~/.cache/claude-vim-follower/hook.log
 
 Record each run so regressions are obvious over time.
 
-| Date | 1 cue | 2 stop | 3 esc+undo | 4 window | Notes |
-| --- | --- | --- | --- | --- | --- |
-| 2026-07-17 | | ✗→fixed | | | Check 2 failed live (border stuck); fixed in `c1760c8` |
-| 2026-07-18 | ✓ | ✓ | ✓ | ✓ | Autonomous hermetic run (`smoke-autonomous.sh` 9/9 + `repro-stray-u.sh` PASS). Check 3 under real CoC still pending a manual run. |
+| Date | 1 cue | 2 stop | 3 esc+undo | 4 window | 5 nvim anim | 6 nvim ctrl | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-07-17 | | ✗→fixed | | | | | Check 2 failed live (border stuck); fixed in `c1760c8` |
+| 2026-07-18 | ✓ | ✓ | ✓ | ✓ | | | Autonomous hermetic run (`smoke-autonomous.sh` 9/9 + `repro-stray-u.sh` PASS). Check 3 under real CoC still pending a manual run. |
+| 2026-07-19 | | | | | | | nvim backend Checks 5/6 added; pending Alberto's live run before merge |

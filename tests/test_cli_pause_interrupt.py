@@ -94,19 +94,76 @@ def test_interrupt_skips_popup_when_no_follower_is_registered() -> None:
     assert _popup_calls(popen) == []
 
 
-def test_pause_skips_popup_for_nvim_rpc_backend() -> None:
+def test_pause_shows_paused_in_the_nvim_surface_not_a_tmux_popup() -> None:
+    # nvim has no pane to popup on (its target is an RPC socket), so a pause
+    # renders "Paused" in the floating status surface instead. pynvim.attach is
+    # stubbed so FollowerState.get's is_alive() liveness check passes (a dead
+    # socket would drop the follower and never reach the feedback).
     with patch(
         "vim_ai_follower.tmux.subprocess.run",
         return_value=MagicMock(returncode=0, stdout="@1\n"),
     ):
-        state.FollowerState.set("@1", "nvim_rpc", "/tmp/x.sock")
+        state.FollowerState.set("@1", "nvim", "/tmp/x.sock")
     control.mark_animating("@1")
+    surface = MagicMock()
     with (
+        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.commands.status_surface_for", return_value=surface),
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
     ):
         assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 0
+    surface.set_state.assert_called_once_with("Paused")
     assert _popup_calls(popen) == []
+
+
+def test_pause_resume_restores_writing_on_the_nvim_surface_not_a_tmux_popup() -> None:
+    # Resuming an nvim follower restores the "Writing..." activity line via the
+    # surface (keeping a writer cue's title/border), with no tmux popup. Same
+    # is_alive() stubbing as the pause case.
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="@1\n"),
+    ):
+        state.FollowerState.set("@1", "nvim", "/tmp/x.sock")
+    control.mark_animating("@1", state="paused")
+    surface = MagicMock()
+    with (
+        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.commands.status_surface_for", return_value=surface),
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
+    ):
+        assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 0
+    surface.set_state.assert_called_once_with("Writing...")
+    assert _popup_calls(popen) == []
+
+
+def test_pause_discards_a_crash_orphaned_nvim_pending_without_crashing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # A paused nvim animation whose hook was KILLED leaves a pending on disk
+    # with a stale (dead-PID) animating marker. A later `prefix P` must not hit
+    # the tmux-only keyboard-replay resume (which would AssertionError); it
+    # discards the orphaned pending and reports gracefully.
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="@1\n"),
+    ):
+        state.FollowerState.set("@1", "nvim", "/tmp/x.sock")
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
+    control.save_pending_apply_edit("@1", [op], 0.0)  # crash fallback, no live marker
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()),
+        # get() -> is_alive() must see the adopted nvim as alive.
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=MagicMock()),
+    ):
+        assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 0
+
+    assert control.has_pending_animation("@1") is False
+    assert "nothing to resume" in capsys.readouterr().out
 
 
 def test_pause_resumes_pending_apply_edit(capsys: pytest.CaptureFixture[str]) -> None:

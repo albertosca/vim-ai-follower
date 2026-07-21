@@ -49,19 +49,42 @@ def test_hook_post_stays_silent_when_dead_and_on_failure_is_silent(tmp_path: Pat
     assert unchanged.target == "%2"
 
 
-def test_hook_post_does_not_reopen_nvim_rpc_backend(tmp_path: Path) -> None:
-    target = tmp_path / "f.txt"
-    target.write_text("content\n")
-    state.FollowerState.set("@1", "nvim_rpc", "/tmp/x.sock", origin="%1", on_failure="reopen")
-
-    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+def test_get_active_follower_relaunches_dead_nvim_via_resolve(tmp_path: Path) -> None:
+    # A dead nvim follower on on_failure=reopen relaunches a fresh, dedicated
+    # (never re-adopted) nvim via resolve_nvim_target(adopt=False).
+    state.FollowerState.set("@1", "nvim", "/tmp/old.sock", origin="%1", on_failure="reopen")
     with (
-        patch("vim_ai_follower.backends.nvim_rpc.pynvim.attach", side_effect=OSError("gone")),
-        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", side_effect=OSError("dead")),
+        patch(
+            "vim_ai_follower.hooks.resolve_nvim_target",
+            return_value=("/tmp/new.sock", True),
+        ) as resolve,
     ):
-        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        # get() returns None because the freshly launched socket is not alive
+        # yet in-test; the recovered STATE is what matters.
+        assert hooks._get_active_follower("@1") is None
+    resolve.assert_called_once_with("%1", "@1", adopt=False)
+    recovered = state.FollowerState.read("@1")
+    assert recovered is not None
+    assert recovered.backend == "nvim"
+    assert recovered.target == "/tmp/new.sock"
+    assert recovered.adopted is False
 
-    assert _split_calls(run) == []
+
+def test_get_active_follower_nvim_relaunch_failure_logs_and_returns_none(tmp_path: Path) -> None:
+    state.FollowerState.set("@1", "nvim", "/tmp/old.sock", origin="%1", on_failure="reopen")
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", side_effect=OSError("dead")),
+        patch(
+            "vim_ai_follower.hooks.resolve_nvim_target",
+            side_effect=subprocess.CalledProcessError(1, ["tmux", "split-window"]),
+        ),
+    ):
+        assert hooks._get_active_follower("@1") is None
+    # The dead follower's state is left untouched for the next attempt.
+    unchanged = state.FollowerState.read("@1")
+    assert unchanged is not None
+    assert unchanged.target == "/tmp/old.sock"
 
 
 def test_hook_post_stays_silent_when_reopen_has_no_origin(tmp_path: Path) -> None:

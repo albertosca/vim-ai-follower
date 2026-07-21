@@ -26,13 +26,14 @@ relocks (with a silent disk resync) when it finishes.
 ## Requirements
 
 - tmux, with `claude` running inside a tmux session
-- Vim (the default backend) or Neovim with an RPC socket (the `nvim_rpc` backend)
+- Vim (the default `tmux` backend) or Neovim ≥ 0.10 (the first-class `nvim` backend)
 - Python 3.11+
 
 ## Install
 
 ```sh
 pip install -e .          # from a clone; installs the `claude-follow` script
+pip install -e '.[nvim]'  # add the pynvim extra to use the nvim backend
 ```
 
 ### Wire the hooks
@@ -72,7 +73,7 @@ claude-follow stop       # tear the follower down and remove the keybindings
 
 `start` accepts:
 
-- `--backend {tmux,nvim_rpc}` — default `tmux`.
+- `--backend {tmux,nvim}` — default `tmux`.
 - `--on-failure {silent,reopen}` — what to do if the follower pane dies mid-session.
 - `--speed {instant,muito_rapido,rapido,normal,lento}` — initial animation pace.
 
@@ -86,6 +87,7 @@ default, and an invalid value silently falls back to it.
 
 | Key             | Values                                                    | Default    | Meaning                                                                                 |
 | --------------- | --------------------------------------------------------- | ---------- | --------------------------------------------------------------------------------------- |
+| `backend`       | `tmux`, `nvim`                                            | `tmux`     | `tmux`: drive an unmodified Vim in a tmux pane via `send-keys`. `nvim`: drive a real Neovim over msgpack-RPC (adopts a running nvim in the window, or launches a dedicated one — see Backends). Requires the `nvim` install extra. |
 | `open_policy`   | `always`, `code`, `manual`                                | `manual`   | `manual`: only `start` opens a follower. `code`: auto-open on edits/reads of code files; non-code files are also ignored (never animated) even for a manually started follower. `always`: auto-open on any file. |
 | `adopt_existing`| `true`, `false`                                           | `false`    | When opening automatically (or on `start`), reuse a Vim already running in the window instead of splitting a new pane. |
 | `max_tabs`      | integer ≥ 1                                                | `5`        | How many file tabs the follower keeps. The least-recently-touched tab is closed past this limit. |
@@ -167,11 +169,15 @@ editor:
 
 - **`tmux`** (default): drives an unmodified Vim in a tmux pane via `send-keys`.
   All tab-based multi-file behavior above is tmux-only.
-- **`nvim_rpc`**: talks to a running Neovim over msgpack-RPC (the same buffer you
-  are looking at). It has no tabs — it switches buffers instead — so per-file tab
-  tracking is a no-op there. The Neovim side must expose a socket via
-  `vim.fn.serverstart()` at the path `claude-follow` expects (printed by
-  `start --backend nvim_rpc`).
+- **`nvim`** (needs `pip install '.[nvim]'`, Neovim ≥ 0.10): drives a real Neovim
+  entirely over msgpack-RPC — no `send-keys`, so the keystroke-corruption bug
+  class the tmux backend has to fight simply does not exist. Every animation,
+  live-speed change, pause/interrupt, and des-interrupt hand-over works the same
+  as tmux. **Adopt-or-launch:** with `adopt_existing: true` (or `start --backend
+  nvim` in a window that already has a running nvim) it adopts that nvim — your
+  own editor, never locked read-only; otherwise it launches a dedicated headless
+  nvim for the window. Neovim has buffers rather than tabs, so it switches
+  buffers instead of opening tabs; per-file eviction still applies (`max_tabs`).
 
 ## Limitations
 

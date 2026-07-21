@@ -14,11 +14,13 @@ from typing import Any
 from vim_ai_follower import cache, config, control, keybindings, writer_cue
 from vim_ai_follower import diff as diff_module
 from vim_ai_follower.backends import Follower, get_follower
+from vim_ai_follower.backends.nvim_connect import resolve_nvim_target
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.snapshot import load as load_snapshot
 from vim_ai_follower.snapshot import save as save_snapshot
 from vim_ai_follower.state import FollowerState, touch_open_files
-from vim_ai_follower.tmux import TmuxPane, TmuxWindow, adopt_target, show_popup
+from vim_ai_follower.status_surface import status_surface_for
+from vim_ai_follower.tmux import TmuxWindow, adopt_target, show_popup
 
 LOG_PATH = cache.CACHE_DIR / "hook.log"
 
@@ -66,8 +68,29 @@ def _get_active_follower(window_id: str) -> FollowerState | None:
         return current
 
     raw = FollowerState.read(window_id)
-    if raw is None or raw.on_failure != "reopen" or raw.backend != "tmux" or not raw.origin:
+    if raw is None or raw.on_failure != "reopen" or not raw.origin:
         return None
+
+    if raw.backend == "nvim":
+        # Recovery never re-adopts: relaunch a fresh dedicated nvim (adopt=
+        # False) so a user who closed their own editor is not silently taken
+        # over again.
+        try:
+            sock, _launched = resolve_nvim_target(raw.origin, window_id, adopt=False)
+        except subprocess.CalledProcessError as exc:
+            logger.warning("failed to relaunch nvim from origin %s: %s", raw.origin, exc)
+            return None
+        FollowerState.set(
+            window_id,
+            "nvim",
+            sock,
+            current_file=None,
+            origin=raw.origin,
+            on_failure=raw.on_failure,
+            speed=raw.speed,
+            adopted=False,
+        )
+        return FollowerState.get(window_id)
 
     try:
         started = TmuxVimFollower.start(raw.origin)
@@ -101,6 +124,23 @@ def _maybe_auto_open(
         # same env dict, never mutated in between.
         return None
     keybindings.register()
+    if cfg.backend == "nvim":
+        # Same adopt-or-launch selection as cmd_start, but from the hook path.
+        try:
+            sock, launched = resolve_nvim_target(origin, window_id, adopt=cfg.adopt_existing)
+        except subprocess.CalledProcessError as exc:
+            logger.warning("nvim auto-open failed from origin %s: %s", origin, exc)
+            return None
+        FollowerState.set(
+            window_id,
+            "nvim",
+            sock,
+            origin=origin,
+            on_failure=cfg.on_failure,
+            speed=cfg.speed,
+            adopted=not launched,
+        )
+        return FollowerState.get(window_id)
     adopt = adopt_target(origin) if cfg.adopt_existing else None
     if adopt is not None:
         # shown_any=True from the first moment: an adopted Vim's current tab
@@ -148,19 +188,22 @@ def _touch_and_evict(
     window_id: str, follower: Follower, current: FollowerState, file_path: str, max_tabs: int
 ) -> None:
     """Bump file_path to most-recent in the tab list and close whatever now
-    falls past max_tabs. Eviction only means anything for the tab-based tmux
-    backend; on any other backend the close is skipped (nvim_rpc has no tabs)
-    rather than asserted, so a future backend can grow open_files without an
-    AssertionError crashing the hook."""
+    falls past max_tabs. close_tab wipes the buffer on nvim (it has buffers,
+    not tabs) and closes the tab on tmux — both backends implement the
+    Follower protocol's close_tab, so eviction is generic here."""
     new_open, evicted = touch_open_files(current.open_files, file_path, max_tabs)
     for old in evicted:
-        if isinstance(follower, TmuxVimFollower):
-            follower.close_tab(old)
+        follower.close_tab(old)
     FollowerState.update(window_id, open_files=new_open, shown_any=True)
 
 
 def _reconstruct_partial_fresh(content: str, completed_count: int) -> str:
-    return "\n".join(content.splitlines()[:completed_count])
+    # Terminate every line with "\n" instead of joining with it: the returned
+    # string is later `.splitlines()`'d again (by rewrite_buffer, and shown in
+    # the interrupt notification), and a "\n".join round-trip is LOSSY for
+    # trailing blank lines — ['a','',''] -> "a\n\n" -> ['a',''] drops one. The
+    # terminating form is lossless: ['a','',''] -> "a\n\n\n" -> ['a','',''].
+    return "".join(line + "\n" for line in content.splitlines()[:completed_count])
 
 
 def _print_hook_context(context: str) -> None:
@@ -217,11 +260,8 @@ def _await_user_handoff(
     # turn with no visible reason reads as Claude hanging. Put the release
     # instructions in the pane's border title for the whole wait (restored
     # on exit), and re-fire a popup reminder roughly every 30s.
-    pane = TmuxPane(pane_id=current.target)
-    saved_title = pane.title()
-    saved_border = pane.window_option("pane-border-status")
-    pane.set_title(_HANDOFF_CUE)
-    pane.set_window_option("pane-border-status", "top")
+    surface = status_surface_for(current)
+    surface.set_state(_HANDOFF_CUE)
     polls = 0
     try:
         while True:
@@ -230,19 +270,31 @@ def _await_user_handoff(
                 show_popup(current.target, _HANDOFF_CUE)
             signal = control.check_signal(window_id)
             if signal == "interrupt":
+                # switch the cue from "waiting" to the replay before it runs
+                surface.set_state("Writing...")
                 # the des-interrupt: discard the user's unsaved typing and
                 # put the show back on — rebuilding the interrupt-point
                 # buffer instantly, then REPLAYING the remaining animation
                 # at live pace. Without a stored remainder (stale state),
                 # fall back to reloading the finished file.
-                follower = TmuxVimFollower(pane_id=current.target, window_id=window_id)
+                follower = get_follower(current.backend, current.target, window_id=window_id)
                 pending = control.load_pending_animation(window_id)
                 if pending is None:
                     follower.reload_and_relock(file_path)
                     FollowerState.update_current_file(window_id, file_path)
                     return
                 rebuilt = follower.rewrite_buffer(file_path, partial_content)
-                result = follower.resume(pending) if rebuilt.outcome == "completed" else rebuilt
+                # rewrite_buffer rebuilds the buffer to EXACTLY the partial, so
+                # there is no seed to strip — EXCEPT when the partial is empty
+                # (interrupt before any line was typed): nvim can't hold a truly
+                # empty buffer, so rewrite_buffer forces a single blank line,
+                # which IS a seed the replay must type in front of and drop.
+                seeded = partial_content == ""
+                result = (
+                    follower.resume(pending, seeded=seeded)
+                    if rebuilt.outcome == "completed"
+                    else rebuilt
+                )
                 if result.outcome == "completed":
                     FollowerState.update_current_file(window_id, file_path)
                 else:
@@ -272,8 +324,7 @@ def _await_user_handoff(
                 pass  # mid-save or momentarily unreadable: check again
             time.sleep(_HANDOFF_POLL_SECONDS)
     finally:
-        pane.set_title(saved_title)
-        pane.set_window_option("pane-border-status", saved_border)
+        surface.clear()
         control.clear_animating(window_id)
 
 
@@ -318,19 +369,19 @@ def _register_writer(window_id: str, payload: dict[str, Any]) -> None:
 
 
 def _apply_writer_cue(window_id: str, target: str, payload: dict[str, Any]) -> None:
-    """When 2+ distinct writers have touched this window, tint the follower
-    pane's border with the animating writer's color and label. Best-effort:
-    a missing identity or a tmux failure never blocks the animation."""
+    """When 2+ distinct writers have touched this window, render the
+    animating writer's color and label on the window's status surface (a
+    tmux pane border, or an nvim floating window). Best-effort: a missing
+    identity or a surface failure never blocks the animation."""
     identity = writer_cue.writer_identity(payload)
     current = FollowerState.read(window_id)
     if identity is None or current is None or len(current.writers) < 2:
         return
     if identity not in current.writers:
         return
-    pane = TmuxPane(pane_id=target)
-    pane.set_border_color(writer_cue.color_for(current.writers, identity))
-    pane.set_window_option("pane-border-status", "top")
-    pane.set_title(writer_cue.writer_label(payload))
+    surface = status_surface_for(current, target=target)
+    color = writer_cue.color_for(current.writers, identity)
+    surface.set_writer(writer_cue.writer_label(payload), color)
 
 
 def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
@@ -402,8 +453,13 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         and not is_fresh
         and not binary
     ):
-        assert isinstance(follower, TmuxVimFollower)  # only tmux ever persists pending state
-        follower.resume(dataclasses.replace(pending, pace_seconds=0.0))
+        # Both backends persist pending state now, so route the pace-0 catch-up
+        # through the already-constructed backend follower (get_follower above).
+        # seeded=True: the live interrupted show_fresh buffer still carries the
+        # trailing seed blank (show_fresh only drops it on a completed outcome),
+        # so _resume_fresh must type in front of it and drop it. A PendingApply
+        # Edit ignores seeded entirely.
+        follower.resume(dataclasses.replace(pending, pace_seconds=0.0), seeded=True)
 
     if binary:
         # Binary files are never animated, so it's safe to just navigate to
