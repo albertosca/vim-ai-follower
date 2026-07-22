@@ -21,18 +21,30 @@ _KEYBINDINGS: tuple[tuple[str, str], ...] = (
 )
 
 
+def _bundled_wrapper() -> Path:
+    """The bundled bin/claude-follow wrapper, resolved relative to THIS
+    package's on-disk location (src/vim_ai_follower/keybindings.py ->
+    <root>/bin/claude-follow). Works for both the plugin and an editable clone
+    without depending on any environment variable."""
+    return Path(__file__).resolve().parents[2] / "bin" / "claude-follow"
+
+
 def _claude_follow_executable() -> str:
     """Absolute path to the claude-follow entry point. tmux run-shell commands
     execute with the tmux SERVER's environment, whose PATH never includes this
     project's virtualenv nor a plugin's PATH — a bare name exits 127 there, so
-    the keybinding must embed the resolved path.
+    the keybinding must embed the resolved path (never a bare name).
 
-    When running as a Claude Code plugin, CLAUDE_PLUGIN_ROOT points at the
-    plugin install; use its bundled bin/claude-follow wrapper. Otherwise fall
-    back to this venv's installed script, then PATH."""
+    Resolution order: the plugin install (CLAUDE_PLUGIN_ROOT) when set, else the
+    bundled wrapper resolved from this package's own location (covers a plugin
+    started outside a hook, and an editable clone), else this venv's installed
+    script, else PATH."""
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
     if plugin_root:
         return str(Path(plugin_root) / "bin" / "claude-follow")
+    bundled = _bundled_wrapper()
+    if bundled.exists():
+        return str(bundled)
     candidate = Path(sys.executable).parent / "claude-follow"
     if candidate.exists():
         return str(candidate)
