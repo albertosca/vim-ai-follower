@@ -229,10 +229,9 @@ def _unbind_calls(run_mock: MagicMock) -> list[list[str]]:
 def test_start_registers_keybindings_with_absolute_path_and_silenced_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    fake_bin = tmp_path / "venv-bin"
-    fake_bin.mkdir()
-    (fake_bin / "claude-follow").touch()
-    monkeypatch.setattr(sys, "executable", str(fake_bin / "python"))
+    monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+    exe = keybindings._claude_follow_executable()  # the resolved absolute path
+    assert Path(exe).is_absolute() and exe.endswith("claude-follow")
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
     binds = _bind_calls(run)
@@ -244,9 +243,9 @@ def test_start_registers_keybindings_with_absolute_path_and_silenced_output(
         # exits — a resume replay lasts tens of seconds, freezing the user
         assert cmd[6] == "-b"
         shell_command = cmd[-1]
-        # bare "claude-follow" resolves to nothing under the tmux server's
-        # PATH (exit 127) — the binding must embed the venv's absolute path
-        assert str(fake_bin / "claude-follow") in shell_command
+        # a bare "claude-follow" resolves to nothing under the tmux server's
+        # PATH (exit 127) — the binding must embed the resolved ABSOLUTE path
+        assert exe in shell_command
         # any stdout inside run-shell throws the pane into a view-mode overlay
         assert f" {subcommand} >/dev/null 2>&1" in shell_command
         # tmux pre-expands #{pane_id} in the run-shell string at keypress
@@ -287,10 +286,46 @@ def test_claude_follow_executable_prefers_the_plugin_wrapper_when_running_as_a_p
     assert keybindings._claude_follow_executable() == str(tmp_path / "bin" / "claude-follow")
 
 
+def test_claude_follow_executable_resolves_the_bundled_wrapper_without_the_plugin_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # No CLAUDE_PLUGIN_ROOT (started from the shell, not a plugin hook): the
+    # bundled bin/claude-follow, resolved from the package's own location, must
+    # still give the tmux server an ABSOLUTE, resolvable path — never a bare
+    # name it can't find. (Regression: a bare "claude-follow" binding was dead
+    # in the tmux server.)
+    monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+    result = keybindings._claude_follow_executable()
+    assert result.endswith("/bin/claude-follow")
+    assert Path(result).is_absolute()
+    assert Path(result).exists()  # the bundled wrapper really is in the repo
+
+
+def test_claude_follow_executable_uses_the_venv_script_when_no_bundled_wrapper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Non-editable install (no bundled bin/ next to the package): the pip
+    # console script next to the interpreter is the absolute path to embed.
+    monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+    monkeypatch.setattr(
+        keybindings, "_bundled_wrapper", lambda: tmp_path / "no-bin" / "claude-follow"
+    )
+    venv_bin = tmp_path / "venv-bin"
+    venv_bin.mkdir()
+    (venv_bin / "claude-follow").touch()
+    monkeypatch.setattr(sys, "executable", str(venv_bin / "python"))
+    assert keybindings._claude_follow_executable() == str(venv_bin / "claude-follow")
+
+
 def test_claude_follow_executable_falls_back_to_which_then_bare_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)  # not running as a plugin
+    # No bundled wrapper (e.g. an odd install layout) and no venv script:
+    # then, and only then, fall back to PATH, then a bare name.
+    monkeypatch.setattr(
+        keybindings, "_bundled_wrapper", lambda: tmp_path / "no-bin" / "claude-follow"
+    )
     monkeypatch.setattr(sys, "executable", str(tmp_path / "nowhere" / "python"))
     with patch("vim_ai_follower.keybindings.shutil.which", return_value="/opt/bin/claude-follow"):
         assert keybindings._claude_follow_executable() == "/opt/bin/claude-follow"
