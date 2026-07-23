@@ -572,13 +572,13 @@ def test_hook_post_first_open_interrupted_prints_notification_with_partial_lines
     _register_fake_follower("@1", "%2")
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
-    # line "a" fully types (4 checks: i, a, Escape, Escape); "interrupt" fires
-    # on the very first check of line "b"
+    # line "a" fully types (6 checks: i, a, Escape, Escape, C-\, C-n);
+    # "interrupt" fires on the very first check of line "b"
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
         patch(
             "vim_ai_follower.control.check_signal",
-            side_effect=_interrupt_then_user_saves(target, at_check=5),
+            side_effect=_interrupt_then_user_saves(target, at_check=7),
         ),
         patch("vim_ai_follower.hooks.time.sleep"),
     ):
