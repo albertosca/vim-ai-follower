@@ -91,6 +91,40 @@ def mark_animating(window_id: str, base_dir: Path | None = None, state: str = "r
     path.write_text(f"{os.getpid()} {state}")
 
 
+def try_acquire_animating(
+    window_id: str, base_dir: Path | None = None, state: str = "running"
+) -> bool:
+    """Atomically claim this window's animation slot for the current process.
+    Returns True when this process now owns it, False when a LIVE process
+    already holds it.
+
+    This replaces a check-then-act on animating_state at the hook guard: six
+    parallel Write tool calls fire six hooks near-simultaneously, and a plain
+    "read the marker, then later write it" lets them all pass the guard and
+    animate into the same pane at once — their unlock/wipe/opener keystrokes
+    interleave into garble (scripts/repro-concurrent-hooks.sh). The O_EXCL
+    create is the atomic winner-takes-it so exactly one hook animates and the
+    rest skip. A marker left by a crashed hook (dead PID) is reclaimed."""
+    path = _animating_path(window_id, base_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = f"{os.getpid()} {state}"
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        if animating_state(window_id, base_dir) is not None:
+            return False  # a live process is already animating this window
+        # Stale marker from a crashed hook: reclaim it atomically. If another
+        # hook reclaims first, its O_EXCL wins and ours raises again — skip.
+        try:
+            path.unlink()
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except (FileExistsError, FileNotFoundError):
+            return False
+    with os.fdopen(fd, "w") as handle:
+        handle.write(payload)
+    return True
+
+
 def clear_animating(window_id: str, base_dir: Path | None = None) -> None:
     _animating_path(window_id, base_dir).unlink(missing_ok=True)
 

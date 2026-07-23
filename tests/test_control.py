@@ -153,3 +153,30 @@ def test_animating_marker_ignores_garbage_content(tmp_path: Path) -> None:
     control.mark_animating("@1", tmp_path)
     (tmp_path / "@1.animating").write_text("not-a-pid")
     assert control.is_animating("@1", tmp_path) is False
+
+
+def test_try_acquire_animating_claims_the_slot_when_free(tmp_path: Path) -> None:
+    assert control.try_acquire_animating("@1", tmp_path) is True
+    assert control.animating_state("@1", tmp_path) == "running"
+
+
+def test_try_acquire_animating_rejects_a_second_live_holder(tmp_path: Path) -> None:
+    assert control.try_acquire_animating("@1", tmp_path) is True
+    # A second attempt while a live process (this one) still holds the slot
+    # loses — this is the atomic guard six parallel hooks race through.
+    assert control.try_acquire_animating("@1", tmp_path) is False
+
+
+def test_try_acquire_animating_reclaims_a_dead_holders_marker(tmp_path: Path) -> None:
+    (tmp_path / "@1.animating").write_text("99999999 running")  # crashed hook, dead pid
+    assert control.try_acquire_animating("@1", tmp_path) is True
+    assert control.animating_state("@1", tmp_path) == "running"  # now ours, alive
+
+
+def test_try_acquire_animating_loses_a_reclaim_race(tmp_path: Path) -> None:
+    (tmp_path / "@1.animating").write_text("99999999 running")  # stale, dead pid
+    # os.open always reports the file exists: the stale marker is detected and
+    # unlinked, but the O_EXCL recreate loses to a competitor that got there
+    # first, so acquire gives up instead of clobbering the winner.
+    with patch("vim_ai_follower.control.os.open", side_effect=FileExistsError):
+        assert control.try_acquire_animating("@1", tmp_path) is False
