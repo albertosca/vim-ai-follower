@@ -6,6 +6,7 @@ unset), so adoption globs by the pane's nvim pid."""
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -51,3 +52,32 @@ def resolve_nvim_target(origin_pane: str, window_id: str, adopt: bool) -> tuple[
     while not Path(sock).exists() and time.monotonic() < deadline:
         time.sleep(_SOCKET_POLL_INTERVAL_SECONDS)
     return sock, True
+
+
+def standalone_launch_command(sock: str, *, has_nvim_qt: bool, has_vimr: bool) -> list[str]:
+    """Argv to open a VISIBLE nvim listening on `sock`, preferring a native GUI
+    and falling back to a fresh Terminal.app window (always present on macOS)."""
+    if has_nvim_qt:
+        return ["nvim-qt", "--", "--listen", sock]
+    if has_vimr:
+        return ["open", "-a", "VimR", "--args", "--listen", sock]
+    script = f'tell app "Terminal" to do script "exec nvim --listen {sock}"'
+    return ["osascript", "-e", script]
+
+
+def _vimr_app_present() -> bool:
+    return Path("/Applications/VimR.app").exists()
+
+
+def launch_standalone_nvim(window_id: str) -> str:
+    sock = str(launch_socket_path(window_id))
+    cmd = standalone_launch_command(
+        sock,
+        has_nvim_qt=shutil.which("nvim-qt") is not None,
+        has_vimr=shutil.which("VimR") is not None or _vimr_app_present(),
+    )
+    subprocess.run(cmd, check=True)
+    deadline = time.monotonic() + _SOCKET_WAIT_SECONDS
+    while not Path(sock).exists() and time.monotonic() < deadline:
+        time.sleep(_SOCKET_POLL_INTERVAL_SECONDS)
+    return sock
