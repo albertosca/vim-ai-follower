@@ -397,13 +397,15 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
     cfg = config.load()
     if not _passes_policy(cfg, file_path):
         return 0
-    if control.animating_state(window.window_id) is not None:
-        # Another live hook owns this window's pane (parallel subagent or
-        # background agent). Animating concurrently would interleave
-        # keystrokes into one Vim, so skip this edit and drop the file
-        # from open_files (a no-op if it wasn't tracked): its next touch
-        # resyncs via a fresh retype instead of animating a diff over a
-        # buffer we never updated.
+    if not control.try_acquire_animating(window.window_id):
+        # Another live hook already owns this window's pane. Six parallel
+        # Write tool calls fire six hooks at once; the acquire is atomic, so
+        # exactly one wins and animates while the rest land here, skip this
+        # edit, and drop the file from open_files (a no-op if it wasn't
+        # tracked): its next touch resyncs via a fresh retype instead of
+        # animating a diff over a buffer we never updated. A plain
+        # check-then-act let all six pass and interleave keystrokes into
+        # garble (scripts/repro-concurrent-hooks.sh).
         _register_writer(window.window_id, payload)
         current_state = FollowerState.read(window.window_id)
         if current_state is not None:
@@ -418,6 +420,26 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
                 open_files=tuple(f for f in current_state.open_files if f != file_path),
             )
         return 0
+    try:
+        return _animate_edit(env, payload, window, file_path, cfg)
+    finally:
+        # Release this window's animation slot on every path — including the
+        # ones that never start an animation (no follower, unreadable/binary
+        # file), which would otherwise hold the marker until the process
+        # exits and needlessly block a concurrent hook in the meantime.
+        control.clear_animating(window.window_id)
+
+
+def _animate_edit(
+    env: dict[str, str],
+    payload: dict[str, Any],
+    window: TmuxWindow,
+    file_path: str,
+    cfg: config.Config,
+) -> int:
+    """Animate one edit (show_fresh for a new file, apply_edit for a diff).
+    The caller holds this window's animation slot for the whole call and
+    releases it in a finally, so no parallel hook animates the same pane."""
     current = _get_active_follower(window.window_id) or _maybe_auto_open(
         window.window_id, env, file_path, cfg
     )
