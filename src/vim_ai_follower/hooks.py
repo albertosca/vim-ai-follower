@@ -111,6 +111,18 @@ def _get_active_follower(window_id: str) -> FollowerState | None:
     return FollowerState.get(window_id)
 
 
+def _launch_standalone_or_log(window_id: str) -> str | None:
+    """Open a standalone nvim window, or log the failure and return None — the
+    launcher can exit non-zero (e.g. macOS Automation permission not yet granted
+    for Terminal.app), and the hook must degrade to a no-op like the tmux-split
+    path does, never raise an uncaught traceback into the tool run."""
+    try:
+        return launch_standalone_nvim(window_id)
+    except subprocess.CalledProcessError as exc:
+        logger.warning("standalone nvim launch failed for %s: %s", window_id, exc)
+        return None
+
+
 def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> FollowerState | None:
     if cfg.open_policy == "manual" or not _passes_policy(cfg, file_path):
         return None
@@ -125,7 +137,9 @@ def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> Fo
             return None
         if cfg.nvim_window == "never":
             return None
-        sock = launch_standalone_nvim(session.window_id)
+        sock = _launch_standalone_or_log(session.window_id)
+        if sock is None:
+            return None
         FollowerState.set(
             session.window_id,
             "nvim",
@@ -143,7 +157,9 @@ def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> Fo
         if cfg.nvim_window == "always":
             # nvim_window=always opens a standalone window even inside tmux —
             # honor it on the auto-open path too, matching cmd_start.
-            sock = launch_standalone_nvim(session.window_id)
+            sock = _launch_standalone_or_log(session.window_id)
+            if sock is None:
+                return None
             FollowerState.set(
                 session.window_id,
                 "nvim",

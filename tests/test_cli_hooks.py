@@ -1709,6 +1709,49 @@ def test_maybe_auto_open_standalone_tmux_backend_returns_none(
     assert state.FollowerState.read("term-x") is None
 
 
+def test_maybe_auto_open_standalone_launcher_failure_logs_and_noops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A launcher non-zero exit (e.g. osascript denied) must degrade the hook to
+    # a no-op (log + None), never raise a traceback into the tool run.
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"backend": "nvim", "nvim_window": "auto", "open_policy": "always"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    cfg = config.load()
+    standalone = Session(window_id="term-x", origin=None, in_tmux=False)
+
+    with patch(
+        "vim_ai_follower.hooks.launch_standalone_nvim",
+        side_effect=subprocess.CalledProcessError(1, ["osascript"]),
+    ):
+        result = hooks._maybe_auto_open(standalone, "/tmp/f.txt", cfg)
+
+    assert result is None
+    assert state.FollowerState.read("term-x") is None
+
+
+def test_maybe_auto_open_in_tmux_always_launcher_failure_logs_and_noops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Same guard on the nvim_window=always override taken while inside tmux.
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"backend": "nvim", "nvim_window": "always", "open_policy": "always"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    cfg = config.load()
+    in_tmux = Session(window_id="@1", origin="%1", in_tmux=True)
+
+    with (
+        patch("vim_ai_follower.hooks.keybindings.register"),
+        patch(
+            "vim_ai_follower.hooks.launch_standalone_nvim",
+            side_effect=subprocess.CalledProcessError(1, ["nvim-qt"]),
+        ),
+    ):
+        result = hooks._maybe_auto_open(in_tmux, "/tmp/f.txt", cfg)
+
+    assert result is None
+
+
 def test_hook_pre_dead_tmux_pane_returns_zero(monkeypatch: pytest.MonkeyPatch) -> None:
     # TMUX_PANE is set but tmux can't resolve a window for it (a dead pane)
     # — resolve_session returns None, treated exactly like the old

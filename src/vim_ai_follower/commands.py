@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 from typing import Literal
 
@@ -23,6 +24,19 @@ _NVIM_WINDOW_NEVER_WITHOUT_TMUX = (
     "claude-follow: nvim_window is 'never' but there is no tmux session — "
     "set nvim_window to auto/always, or start inside tmux"
 )
+
+
+def _launch_standalone_or_report(window_id: str) -> str | None:
+    """Open a standalone nvim window, or print the actionable error and return
+    None. The launcher shells out (osascript / nvim-qt / open -a VimR) and can
+    exit non-zero — most commonly when macOS Automation permission for
+    Terminal.app has not been granted yet — which must surface as the message
+    the spec promises, not a raw CalledProcessError traceback."""
+    try:
+        return launch_standalone_nvim(window_id)
+    except subprocess.CalledProcessError as exc:
+        print(f"claude-follow: could not open a standalone nvim window ({exc})", file=sys.stderr)
+        return None
 
 
 def cmd_start(
@@ -58,7 +72,9 @@ def cmd_start(
         if defaults.nvim_window == "never":
             print(_NVIM_WINDOW_NEVER_WITHOUT_TMUX)
             return 1
-        sock = launch_standalone_nvim(session.window_id)
+        sock = _launch_standalone_or_report(session.window_id)
+        if sock is None:
+            return 1
         FollowerState.set(
             session.window_id,
             "nvim",
@@ -79,7 +95,9 @@ def cmd_start(
         if defaults.nvim_window == "always":
             # nvim_window=always overrides the usual tmux split even though
             # we're inside tmux: open a visible standalone window instead.
-            sock = launch_standalone_nvim(session.window_id)
+            sock = _launch_standalone_or_report(session.window_id)
+            if sock is None:
+                return 1
             FollowerState.set(
                 session.window_id,
                 "nvim",
