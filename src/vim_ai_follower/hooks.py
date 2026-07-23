@@ -14,13 +14,14 @@ from typing import Any
 from vim_ai_follower import cache, config, control, keybindings, writer_cue
 from vim_ai_follower import diff as diff_module
 from vim_ai_follower.backends import Follower, get_follower
-from vim_ai_follower.backends.nvim_connect import resolve_nvim_target
+from vim_ai_follower.backends.nvim_connect import launch_standalone_nvim, resolve_nvim_target
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
+from vim_ai_follower.session import Session, resolve_session
 from vim_ai_follower.snapshot import load as load_snapshot
 from vim_ai_follower.snapshot import save as save_snapshot
 from vim_ai_follower.state import FollowerState, touch_open_files
 from vim_ai_follower.status_surface import status_surface_for
-from vim_ai_follower.tmux import TmuxWindow, adopt_target, show_popup
+from vim_ai_follower.tmux import adopt_target, show_popup
 
 LOG_PATH = cache.CACHE_DIR / "hook.log"
 
@@ -110,29 +111,45 @@ def _get_active_follower(window_id: str) -> FollowerState | None:
     return FollowerState.get(window_id)
 
 
-def _maybe_auto_open(
-    window_id: str, env: dict[str, str], file_path: str, cfg: config.Config
-) -> FollowerState | None:
+def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> FollowerState | None:
     if cfg.open_policy == "manual" or not _passes_policy(cfg, file_path):
         return None
-    origin = env.get("TMUX_PANE", "")
-    if not origin:  # pragma: no cover
-        # Genuinely unreachable: both callers (_handle_hook_post_edit,
-        # _handle_hook_post_read) only reach this function after
-        # TmuxWindow.from_env(env) already returned a non-None window,
-        # which itself required env.get("TMUX_PANE") to be truthy — the
-        # same env dict, never mutated in between.
-        return None
+    if not session.in_tmux:
+        # Standalone: same decisions cmd_start makes outside tmux. No tmux
+        # server to bind keys on (keybindings are tmux prefix-key bindings),
+        # so registration is skipped here — only the in-tmux path below
+        # registers them.
+        if cfg.backend != "nvim":
+            # The tmux backend drives a tmux split — nothing to attach to
+            # standalone, and no tmux session to fail gracefully into.
+            return None
+        if cfg.nvim_window == "never":
+            return None
+        sock = launch_standalone_nvim(session.window_id)
+        FollowerState.set(
+            session.window_id,
+            "nvim",
+            sock,
+            origin="",
+            on_failure=cfg.on_failure,
+            speed=cfg.speed,
+            adopted=False,
+        )
+        return FollowerState.get(session.window_id)
+    origin = session.origin
+    assert origin is not None  # in_tmux sessions always carry TMUX_PANE
     keybindings.register()
     if cfg.backend == "nvim":
         # Same adopt-or-launch selection as cmd_start, but from the hook path.
         try:
-            sock, launched = resolve_nvim_target(origin, window_id, adopt=cfg.adopt_existing)
+            sock, launched = resolve_nvim_target(
+                origin, session.window_id, adopt=cfg.adopt_existing
+            )
         except subprocess.CalledProcessError as exc:
             logger.warning("nvim auto-open failed from origin %s: %s", origin, exc)
             return None
         FollowerState.set(
-            window_id,
+            session.window_id,
             "nvim",
             sock,
             origin=origin,
@@ -140,13 +157,13 @@ def _maybe_auto_open(
             speed=cfg.speed,
             adopted=not launched,
         )
-        return FollowerState.get(window_id)
+        return FollowerState.get(session.window_id)
     adopt = adopt_target(origin) if cfg.adopt_existing else None
     if adopt is not None:
         # shown_any=True from the first moment: an adopted Vim's current tab
         # belongs to the user and must never be renamed over.
         FollowerState.set(
-            window_id,
+            session.window_id,
             "tmux",
             adopt,
             origin=origin,
@@ -162,14 +179,14 @@ def _maybe_auto_open(
             logger.warning("auto-open failed from origin %s: %s", origin, exc)
             return None
         FollowerState.set(
-            window_id,
+            session.window_id,
             "tmux",
             started.pane_id,
             origin=origin,
             on_failure=cfg.on_failure,
             speed=cfg.speed,
         )
-    return FollowerState.get(window_id)
+    return FollowerState.get(session.window_id)
 
 
 def _ensure_buffer(window_id: str, follower: Follower, file_path: str) -> None:
@@ -244,13 +261,14 @@ _HANDOFF_CUE = "Claude waiting \u2014 :w releases \u00b7 S discards"
 
 
 def _await_user_handoff(
-    current: FollowerState, window_id: str, file_path: str, after: str, partial_content: str
+    current: FollowerState, session: Session, file_path: str, after: str, partial_content: str
 ) -> None:
     """The user interrupted and owns the buffer: hold Claude's turn until
     they save their version (release Claude with it, via the notification)
     or press S again (discard their unsaved typing and resume following the
     file Claude wrote). A hook-timeout kill releases Claude without a
     notification — degraded but harmless."""
+    window_id = session.window_id
     control.mark_animating(window_id, state="handoff")
     try:
         initial_mtime = Path(file_path).stat().st_mtime_ns
@@ -259,14 +277,17 @@ def _await_user_handoff(
     # Durable cue: the 1.5s "Interrupted" popup is easy to miss, and a held
     # turn with no visible reason reads as Claude hanging. Put the release
     # instructions in the pane's border title for the whole wait (restored
-    # on exit), and re-fire a popup reminder roughly every 30s.
+    # on exit), and re-fire a popup reminder roughly every 30s. The popup
+    # itself is a tmux display-popup — there is no tmux pane to target
+    # standalone, so it's skipped there; the border/floating-window cue
+    # above still carries the message.
     surface = status_surface_for(current)
     surface.set_state(_HANDOFF_CUE)
     polls = 0
     try:
         while True:
             polls += 1
-            if polls % _HANDOFF_REMINDER_POLLS == 0:
+            if polls % _HANDOFF_REMINDER_POLLS == 0 and session.in_tmux:
                 show_popup(current.target, _HANDOFF_CUE)
             signal = control.check_signal(window_id)
             if signal == "interrupt":
@@ -332,10 +353,10 @@ def cmd_hook_pre(env: dict[str, str], payload: dict[str, Any]) -> int:
     _configure_logging()
     if payload.get("tool_name") not in _EDIT_TOOLS:
         return 0
-    window = TmuxWindow.from_env(env)
-    if window is None:
+    session = resolve_session(env)
+    if session is None:
         return 0
-    raw = FollowerState.read(window.window_id)
+    raw = FollowerState.read(session.window_id)
     if raw is not None and not raw.enabled:
         return 0
     file_path = _file_path(payload)
@@ -347,7 +368,7 @@ def cmd_hook_pre(env: dict[str, str], payload: dict[str, Any]) -> int:
         before = Path(file_path).read_text()
     except (OSError, UnicodeDecodeError):
         before = ""
-    save_snapshot(window.window_id, file_path, before)
+    save_snapshot(session.window_id, file_path, before)
     return 0
 
 
@@ -385,10 +406,10 @@ def _apply_writer_cue(window_id: str, target: str, payload: dict[str, Any]) -> N
 
 
 def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
-    window = TmuxWindow.from_env(env)
-    if window is None:
+    session = resolve_session(env)
+    if session is None:
         return 0
-    raw = FollowerState.read(window.window_id)
+    raw = FollowerState.read(session.window_id)
     if raw is not None and not raw.enabled:
         return 0
     file_path = _file_path(payload)
@@ -397,7 +418,7 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
     cfg = config.load()
     if not _passes_policy(cfg, file_path):
         return 0
-    if not control.try_acquire_animating(window.window_id):
+    if not control.try_acquire_animating(session.window_id):
         # Another live hook already owns this window's pane. Six parallel
         # Write tool calls fire six hooks at once; the acquire is atomic, so
         # exactly one wins and animates while the rest land here, skip this
@@ -406,8 +427,8 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         # animating a diff over a buffer we never updated. A plain
         # check-then-act let all six pass and interleave keystrokes into
         # garble (scripts/repro-concurrent-hooks.sh).
-        _register_writer(window.window_id, payload)
-        current_state = FollowerState.read(window.window_id)
+        _register_writer(session.window_id, payload)
+        current_state = FollowerState.read(session.window_id)
         if current_state is not None:
             # current_state can be None here: the .animating marker and the
             # .pane state file have decoupled lifecycles. A stop for this
@@ -416,37 +437,34 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
             # marker), or the animator can re-mark right after a stop
             # clears it. Either way there's nothing to update — skip.
             FollowerState.update(
-                window.window_id,
+                session.window_id,
                 open_files=tuple(f for f in current_state.open_files if f != file_path),
             )
         return 0
     try:
-        return _animate_edit(env, payload, window, file_path, cfg)
+        return _animate_edit(payload, session, file_path, cfg)
     finally:
         # Release this window's animation slot on every path — including the
         # ones that never start an animation (no follower, unreadable/binary
         # file), which would otherwise hold the marker until the process
         # exits and needlessly block a concurrent hook in the meantime.
-        control.clear_animating(window.window_id)
+        control.clear_animating(session.window_id)
 
 
 def _animate_edit(
-    env: dict[str, str],
     payload: dict[str, Any],
-    window: TmuxWindow,
+    session: Session,
     file_path: str,
     cfg: config.Config,
 ) -> int:
     """Animate one edit (show_fresh for a new file, apply_edit for a diff).
     The caller holds this window's animation slot for the whole call and
     releases it in a finally, so no parallel hook animates the same pane."""
-    current = _get_active_follower(window.window_id) or _maybe_auto_open(
-        window.window_id, env, file_path, cfg
-    )
+    current = _get_active_follower(session.window_id) or _maybe_auto_open(session, file_path, cfg)
     if current is None:
         return 0
-    _register_writer(window.window_id, payload)
-    _apply_writer_cue(window.window_id, current.target, payload)
+    _register_writer(session.window_id, payload)
+    _apply_writer_cue(session.window_id, current.target, payload)
     try:
         raw_after = Path(file_path).read_bytes()
     except OSError as exc:
@@ -457,7 +475,7 @@ def _animate_edit(
         current.backend,
         current.target,
         config.pace_seconds_for(current.speed),
-        window_id=window.window_id,
+        window_id=session.window_id,
     )
     is_fresh = file_path not in current.open_files
     binary = diff_module.is_binary(raw_after)
@@ -468,7 +486,7 @@ def _animate_edit(
     # file (a stale one this hook didn't leave behind), or a binary, the
     # buffer gets wiped/replaced (or isn't animated at all) anyway —
     # consuming without replaying is the correct discard.
-    pending = control.load_pending_animation(window.window_id)
+    pending = control.load_pending_animation(session.window_id)
     if (
         pending is not None
         and (pending.file_path == file_path or pending.file_path == "")
@@ -487,8 +505,8 @@ def _animate_edit(
         # Binary files are never animated, so it's safe to just navigate to
         # them normally (real content shown immediately, nothing to spoil).
         if is_fresh:
-            _ensure_buffer(window.window_id, follower, file_path)
-        _touch_and_evict(window.window_id, follower, current, file_path, cfg.max_tabs)
+            _ensure_buffer(session.window_id, follower, file_path)
+        _touch_and_evict(session.window_id, follower, current, file_path, cfg.max_tabs)
         return 0
 
     after = raw_after.decode("utf-8", errors="replace")
@@ -497,7 +515,7 @@ def _animate_edit(
     # mid-typing — touch_open_files never puts the just-touched file_path in
     # the evicted slice, so the file about to be animated can never be the
     # one just closed.
-    _touch_and_evict(window.window_id, follower, current, file_path, cfg.max_tabs)
+    _touch_and_evict(session.window_id, follower, current, file_path, cfg.max_tabs)
 
     if is_fresh:
         result = follower.show_fresh(file_path, after, in_new_tab=current.shown_any)
@@ -510,45 +528,45 @@ def _animate_edit(
             # buffer converges to disk at the next completed animation via
             # the `:silent! e!` relock.
             # (_await_user_handoff restores tracking on a des-interrupt.)
-            FollowerState.update_current_file(window.window_id, None)
+            FollowerState.update_current_file(session.window_id, None)
             partial = _reconstruct_partial_fresh(after, result.completed_count)
             # Keep the remainder around: a des-interrupt replays it from
             # the interrupt point instead of flashing the finished file.
             control.save_pending_show_fresh(
-                window.window_id,
+                session.window_id,
                 tuple(after.splitlines())[result.completed_count :],
                 config.pace_seconds_for(current.speed),
                 continuation=result.completed_count > 0,
                 file_path=file_path,
             )
-            _await_user_handoff(current, window.window_id, file_path, after, partial)
+            _await_user_handoff(current, session, file_path, after, partial)
         else:
-            FollowerState.update_current_file(window.window_id, file_path)
+            FollowerState.update_current_file(session.window_id, file_path)
         return 0
 
-    before = load_snapshot(window.window_id, file_path)
+    before = load_snapshot(session.window_id, file_path)
     ops = diff_module.compute_edit_script(before, after)
     result = follower.apply_edit(file_path, ops)
     if result.outcome == "interrupted":
-        FollowerState.update_current_file(window.window_id, None)
+        FollowerState.update_current_file(session.window_id, None)
         # completed_count indexes the very ops list the animation walked —
         # computing the script once keeps this reconstruction truthful.
         partial = diff_module.apply_ops(before, ops[: result.completed_count])
         control.save_pending_apply_edit(
-            window.window_id,
+            session.window_id,
             ops[result.completed_count :],
             config.pace_seconds_for(current.speed),
             file_path=file_path,
         )
-        _await_user_handoff(current, window.window_id, file_path, after, partial)
+        _await_user_handoff(current, session, file_path, after, partial)
     return 0
 
 
 def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
-    window = TmuxWindow.from_env(env)
-    if window is None:
+    session = resolve_session(env)
+    if session is None:
         return 0
-    raw = FollowerState.read(window.window_id)
+    raw = FollowerState.read(session.window_id)
     if raw is not None and not raw.enabled:
         return 0
     file_path = _file_path(payload)
@@ -557,18 +575,16 @@ def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
     cfg = config.load()
     if not _passes_policy(cfg, file_path):
         return 0
-    if control.animating_state(window.window_id) is not None:
+    if control.animating_state(session.window_id) is not None:
         # Another live hook owns this window's pane: navigating now would
         # interleave keystrokes with its animation. Skip; state untouched.
         return 0
-    current = _get_active_follower(window.window_id) or _maybe_auto_open(
-        window.window_id, env, file_path, cfg
-    )
+    current = _get_active_follower(session.window_id) or _maybe_auto_open(session, file_path, cfg)
     if current is None:
         return 0
     follower = get_follower(current.backend, current.target)
-    _ensure_buffer(window.window_id, follower, file_path)
-    _touch_and_evict(window.window_id, follower, current, file_path, cfg.max_tabs)
+    _ensure_buffer(session.window_id, follower, file_path)
+    _touch_and_evict(session.window_id, follower, current, file_path, cfg.max_tabs)
     offset = _tool_input(payload).get("offset")
     if isinstance(offset, int) and offset > 0:
         follower.goto_line(offset)

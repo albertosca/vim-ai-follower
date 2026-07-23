@@ -24,6 +24,7 @@ from vim_ai_follower import (
     writer_cue,
 )
 from vim_ai_follower.animate import AnimationResult
+from vim_ai_follower.session import Session
 
 
 def _literal_sends(run_mock: MagicMock) -> list[str]:
@@ -1076,7 +1077,9 @@ def test_des_interrupt_routes_through_the_backend_follower_for_nvim(
         patch("vim_ai_follower.control.check_signal", side_effect=["interrupt"] + [None] * 5),
         patch("vim_ai_follower.hooks.time.sleep"),
     ):
-        hooks._await_user_handoff(current, "@1", str(target), "a\nb\n", "a")
+        hooks._await_user_handoff(
+            current, Session(window_id="@1", origin="%1", in_tmux=True), str(target), "a\nb\n", "a"
+        )
 
     assert captured["backend"] == "nvim"
     assert captured["target"] == "/tmp/x.sock"
@@ -1570,3 +1573,134 @@ def test_apply_writer_cue_routes_nvim_backed_windows_to_the_nvim_status_surface(
     attach.assert_called_once_with("socket", path="/tmp/x.sock")
     border_calls = [c.args[0] for c in run.call_args_list if "pane-border-style" in c.args[0]]
     assert border_calls == []
+
+
+# --- standalone (no tmux) hook wiring -------------------------------------
+
+
+def test_standalone_post_edit_hook_animates_via_nvim_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No TMUX_PANE: the session resolves to a standalone identity keyed on
+    # TERM_SESSION_ID. An existing standalone nvim follower must still
+    # animate through the ordinary RPC path — the animation itself is
+    # backend-only (never tmux-only), and is driven with the session's
+    # (standalone) window_id, not a tmux #{window_id}.
+    target = tmp_path / "f.txt"
+    target.write_text("hello\n")
+    state.FollowerState.set(
+        "term-x",
+        "nvim",
+        "/tmp/standalone.sock",
+        open_files=(),
+        shown_any=True,
+    )
+    follower = MagicMock()
+    follower.show_fresh.return_value = AnimationResult("completed", 1)
+    captured: dict[str, object] = {}
+
+    def _fake_get_follower(
+        backend: str, follower_target: str, *args: object, **kwargs: object
+    ) -> MagicMock:
+        captured["backend"] = backend
+        captured["target"] = follower_target
+        captured["window_id"] = kwargs.get("window_id")
+        return follower
+
+    monkeypatch.setattr(hooks, "get_follower", _fake_get_follower)
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+
+    # FollowerState.get's own liveness probe uses the real nvim backend
+    # (not the hooks.get_follower fake above) to check is_alive() — give it
+    # a socket that answers.
+    with patch("pynvim.attach", return_value=MagicMock()):
+        assert hooks.cmd_hook_post({"TERM_SESSION_ID": "x"}, payload) == 0
+
+    assert captured == {"backend": "nvim", "target": "/tmp/standalone.sock", "window_id": "term-x"}
+    follower.show_fresh.assert_called_once_with(str(target), "hello\n", in_new_tab=True)
+    refreshed = state.FollowerState.read("term-x")
+    assert refreshed is not None
+    assert refreshed.current_file == str(target)
+
+
+def test_maybe_auto_open_standalone_nvim_auto_launches_and_persists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"backend": "nvim", "nvim_window": "auto", "open_policy": "always"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    cfg = config.load()
+    standalone = Session(window_id="term-x", origin=None, in_tmux=False)
+
+    with (
+        patch("vim_ai_follower.hooks.launch_standalone_nvim", return_value="/s.sock") as launch,
+        patch("pynvim.attach", return_value=MagicMock()),
+    ):
+        result = hooks._maybe_auto_open(standalone, "/tmp/f.txt", cfg)
+
+    launch.assert_called_once_with("term-x")
+    assert result is not None
+    assert result.backend == "nvim"
+    assert result.target == "/s.sock"
+    assert result.adopted is False
+    assert state.FollowerState.read("term-x") == result
+
+
+def test_maybe_auto_open_standalone_nvim_window_never_returns_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"backend": "nvim", "nvim_window": "never", "open_policy": "always"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    cfg = config.load()
+    standalone = Session(window_id="term-x", origin=None, in_tmux=False)
+
+    with patch("vim_ai_follower.hooks.launch_standalone_nvim") as launch:
+        result = hooks._maybe_auto_open(standalone, "/tmp/f.txt", cfg)
+
+    launch.assert_not_called()
+    assert result is None
+    assert state.FollowerState.read("term-x") is None
+
+
+def test_maybe_auto_open_standalone_tmux_backend_returns_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The tmux backend drives a tmux split — standalone has no tmux server
+    # to attach to, and no session to fail gracefully into either: the hook
+    # just silently does nothing (unlike cmd_start, which errors loudly).
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"open_policy": "always"}')  # backend defaults to tmux
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    cfg = config.load()
+    standalone = Session(window_id="term-x", origin=None, in_tmux=False)
+
+    with patch("vim_ai_follower.hooks.launch_standalone_nvim") as launch:
+        result = hooks._maybe_auto_open(standalone, "/tmp/f.txt", cfg)
+
+    launch.assert_not_called()
+    assert result is None
+    assert state.FollowerState.read("term-x") is None
+
+
+def test_hook_pre_dead_tmux_pane_returns_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    # TMUX_PANE is set but tmux can't resolve a window for it (a dead pane)
+    # — resolve_session returns None, treated exactly like the old
+    # TmuxWindow.from_env(env) is None case.
+    monkeypatch.setattr(hooks, "resolve_session", lambda env: None)
+    payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/f.txt"}}
+    assert hooks.cmd_hook_pre({"TMUX_PANE": "%1"}, payload) == 0
+
+
+def test_hook_post_dead_tmux_pane_returns_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(hooks, "resolve_session", lambda env: None)
+    edit_payload: dict[str, object] = {
+        "tool_name": "Edit",
+        "tool_input": {"file_path": "/tmp/f.txt"},
+    }
+    assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, edit_payload) == 0
+    read_payload: dict[str, object] = {
+        "tool_name": "Read",
+        "tool_input": {"file_path": "/tmp/f.txt"},
+    }
+    assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, read_payload) == 0
