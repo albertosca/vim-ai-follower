@@ -85,6 +85,23 @@ def test_stop_standalone_stops_the_backend_but_skips_tmux_side_effects() -> None
     assert state.FollowerState.get("term-x") is None
 
 
+def test_speed_standalone_updates_speed_but_skips_the_tmux_status_line() -> None:
+    # Standalone: cmd_speed must still persist the new speed, but must NOT flash
+    # the tmux status line — current.target is an nvim socket path, not a pane,
+    # so the show_status shell-out is gated on session.in_tmux.
+    standalone_session = session.Session(window_id="term-x", origin=None, in_tmux=False)
+    state.FollowerState.set("term-x", "nvim", "/tmp/standalone.sock", origin="", speed="rapido")
+    with (
+        patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session),
+        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.commands.tmux.show_status") as show_status,
+    ):
+        assert commands.cmd_speed({}, "up") == 0
+    show_status.assert_not_called()
+    updated = state.FollowerState.read("term-x")
+    assert updated is not None and updated.speed == "muito_rapido"
+
+
 def test_status_reports_no_follower(capsys: pytest.CaptureFixture[str]) -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
         commands.cmd_status({"TMUX_PANE": "%1"})

@@ -392,7 +392,8 @@ def cmd_speed(env: dict[str, str], direction: Literal["up", "down"]) -> int:
     # title/border, which is the right behavior for a persistent cue
     # (handoff) but would wrongly latch this transient status-line message
     # as something to restore later.
-    tmux.show_status(current.target, f"Speed: {label}")
+    if session.in_tmux:  # a standalone follower has no tmux status line to flash
+        tmux.show_status(current.target, f"Speed: {label}")
     return 0
 
 
