@@ -140,6 +140,20 @@ def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> Fo
     assert origin is not None  # in_tmux sessions always carry TMUX_PANE
     keybindings.register()
     if cfg.backend == "nvim":
+        if cfg.nvim_window == "always":
+            # nvim_window=always opens a standalone window even inside tmux —
+            # honor it on the auto-open path too, matching cmd_start.
+            sock = launch_standalone_nvim(session.window_id)
+            FollowerState.set(
+                session.window_id,
+                "nvim",
+                sock,
+                origin=origin,
+                on_failure=cfg.on_failure,
+                speed=cfg.speed,
+                adopted=False,
+            )
+            return FollowerState.get(session.window_id)
         # Same adopt-or-launch selection as cmd_start, but from the hook path.
         try:
             sock, launched = resolve_nvim_target(

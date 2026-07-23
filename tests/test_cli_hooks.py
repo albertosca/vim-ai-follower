@@ -1646,6 +1646,32 @@ def test_maybe_auto_open_standalone_nvim_auto_launches_and_persists(
     assert state.FollowerState.read("term-x") == result
 
 
+def test_maybe_auto_open_in_tmux_nvim_window_always_uses_standalone_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # nvim_window=always opens a standalone window even inside tmux — the
+    # auto-open path must honor it too (same as cmd_start), taking the
+    # standalone launcher instead of the tmux split.
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"backend": "nvim", "nvim_window": "always", "open_policy": "always"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    cfg = config.load()
+    in_tmux = Session(window_id="@1", origin="%1", in_tmux=True)
+
+    with (
+        patch("vim_ai_follower.hooks.launch_standalone_nvim", return_value="/s.sock") as launch,
+        patch("vim_ai_follower.hooks.resolve_nvim_target") as resolve,
+        patch("vim_ai_follower.hooks.keybindings.register"),
+        patch("pynvim.attach", return_value=MagicMock()),
+    ):
+        result = hooks._maybe_auto_open(in_tmux, "/tmp/f.txt", cfg)
+
+    launch.assert_called_once_with("@1")
+    resolve.assert_not_called()  # always overrides the tmux split
+    assert result is not None
+    assert result.backend == "nvim" and result.target == "/s.sock" and result.adopted is False
+
+
 def test_maybe_auto_open_standalone_nvim_window_never_returns_none(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
