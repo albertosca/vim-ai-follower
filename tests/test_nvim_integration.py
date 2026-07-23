@@ -630,6 +630,34 @@ def test_resume_persists_a_remainder_when_paused_mid_replay(
 
 
 @pytest.mark.integration
+def test_standalone_hook_post_edit_animates_a_headless_nvim_end_to_end(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Task 7 (nvim-standalone-no-tmux plan): a real (no-tmux) edit hook must
+    # resolve the standalone session id, find the follower registered under
+    # it, and drive a real headless nvim end to end — no TMUX_PANE anywhere.
+    from vim_ai_follower import cache, hooks
+
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    window_id = "term-qa"  # session._standalone_id("qa") -> "term-qa"
+    FollowerState.set(window_id, "nvim", headless_nvim, origin="", shown_any=False)
+
+    target = tmp_path / "standalone.py"
+    target.write_text("def f():\n    return 1\n")
+    env = {"TERM_SESSION_ID": "qa"}  # deliberately no TMUX_PANE
+    payload: dict[str, Any] = {
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(target)},
+    }
+
+    assert hooks.cmd_hook_post(env, payload) == 0
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    assert nvim.current.buffer[:] == ["def f():", "    return 1"]
+    assert nvim.current.buffer.name.endswith("/standalone.py")
+
+
+@pytest.mark.integration
 def test_resume_without_a_file_path_operates_on_the_current_buffer(
     headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
