@@ -7,11 +7,22 @@ from typing import Literal
 
 from vim_ai_follower import cache, config, control, keybindings, snapshot, tmux
 from vim_ai_follower.backends import get_follower
-from vim_ai_follower.backends.nvim_connect import resolve_nvim_target
+from vim_ai_follower.backends.nvim_connect import launch_standalone_nvim, resolve_nvim_target
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
+from vim_ai_follower.session import resolve_session
 from vim_ai_follower.state import FollowerState
 from vim_ai_follower.status_surface import status_surface_for
 from vim_ai_follower.tmux import TmuxPane, TmuxWindow, adopt_target
+
+VIM_NEEDS_TMUX = (
+    "claude-follow: the vim backend requires tmux — run inside a tmux session, "
+    "or set backend to nvim"
+)
+
+_NVIM_WINDOW_NEVER_WITHOUT_TMUX = (
+    "claude-follow: nvim_window is 'never' but there is no tmux session — "
+    "set nvim_window to auto/always, or start inside tmux"
+)
 
 
 def _require_window(env: dict[str, str]) -> TmuxWindow | None:
@@ -31,10 +42,11 @@ def cmd_start(
     on_failure: str | None = None,
     speed: str | None = None,
 ) -> int:
-    window = _require_window(env)
-    if window is None:
+    session = resolve_session(env)
+    if session is None:
+        print("claude-follow: not running inside tmux", file=sys.stderr)
         return 1
-    if FollowerState.get(window.window_id) is not None:
+    if FollowerState.get(session.window_id) is not None:
         print("claude-follow: follower already running for this window")
         return 0
 
@@ -43,18 +55,61 @@ def cmd_start(
     resolved_backend = backend if backend is not None else defaults.backend
     resolved_on_failure = on_failure if on_failure is not None else defaults.on_failure
     resolved_speed = speed if speed is not None else defaults.speed
-    origin = env["TMUX_PANE"]
+
+    if not session.in_tmux and resolved_backend == "tmux":
+        # The tmux backend drives a tmux split — nothing to attach to
+        # standalone, and no tmux session to fail gracefully into.
+        print(VIM_NEEDS_TMUX)
+        return 1
+
+    if not session.in_tmux:
+        # Standalone + nvim: no tmux server to bind keys on (keybindings are
+        # tmux prefix-key bindings), so registration is skipped here — only
+        # the in-tmux paths below register them.
+        if defaults.nvim_window == "never":
+            print(_NVIM_WINDOW_NEVER_WITHOUT_TMUX)
+            return 1
+        sock = launch_standalone_nvim(session.window_id)
+        FollowerState.set(
+            session.window_id,
+            "nvim",
+            sock,
+            origin="",
+            on_failure=resolved_on_failure,
+            speed=resolved_speed,
+            adopted=False,
+        )
+        print(f"claude-follow: attached to standalone Neovim at {sock}")
+        return 0
+
+    origin = session.origin
+    assert origin is not None  # in_tmux sessions always carry TMUX_PANE
     keybindings.register()
 
     if resolved_backend == "nvim":
+        if defaults.nvim_window == "always":
+            # nvim_window=always overrides the usual tmux split even though
+            # we're inside tmux: open a visible standalone window instead.
+            sock = launch_standalone_nvim(session.window_id)
+            FollowerState.set(
+                session.window_id,
+                "nvim",
+                sock,
+                origin=origin,
+                on_failure=resolved_on_failure,
+                speed=resolved_speed,
+                adopted=False,
+            )
+            print(f"claude-follow: attached to standalone Neovim at {sock}")
+            return 0
         # Adopt a running nvim's socket, or launch a dedicated one; either way
         # persist the socket to drive and whether we adopted (adopted nvims are
         # never relocked or killed).
         sock, launched = resolve_nvim_target(
-            origin, window.window_id, adopt=defaults.adopt_existing
+            origin, session.window_id, adopt=defaults.adopt_existing
         )
         FollowerState.set(
-            window.window_id,
+            session.window_id,
             "nvim",
             sock,
             origin=origin,
@@ -69,7 +124,7 @@ def cmd_start(
         adopt = adopt_target(origin)
         if adopt is not None:
             FollowerState.set(
-                window.window_id,
+                session.window_id,
                 "tmux",
                 adopt,
                 origin=origin,
@@ -83,7 +138,7 @@ def cmd_start(
 
     started = TmuxVimFollower.start(origin)
     FollowerState.set(
-        window.window_id,
+        session.window_id,
         "tmux",
         started.pane_id,
         origin=origin,
