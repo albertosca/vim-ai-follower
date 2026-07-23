@@ -12,7 +12,7 @@ from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.session import resolve_session
 from vim_ai_follower.state import FollowerState
 from vim_ai_follower.status_surface import status_surface_for
-from vim_ai_follower.tmux import TmuxPane, TmuxWindow, adopt_target
+from vim_ai_follower.tmux import TmuxPane, adopt_target
 
 VIM_NEEDS_TMUX = (
     "claude-follow: the vim backend requires tmux — run inside a tmux session, "
@@ -23,17 +23,6 @@ _NVIM_WINDOW_NEVER_WITHOUT_TMUX = (
     "claude-follow: nvim_window is 'never' but there is no tmux session — "
     "set nvim_window to auto/always, or start inside tmux"
 )
-
-
-def _require_window(env: dict[str, str]) -> TmuxWindow | None:
-    """Resolve the tmux window, or print the standard not-in-tmux error to
-    stderr and return None (callers that get None return exit code 1).
-    cmd_status deliberately does not use this: it reports absence on stdout
-    and exits 0, so it keeps its own inline check."""
-    window = TmuxWindow.from_env(env)
-    if window is None:
-        print("claude-follow: not running inside tmux", file=sys.stderr)
-    return window
 
 
 def cmd_start(
@@ -174,47 +163,58 @@ def _other_live_follower(window_id: str) -> bool:
 
 
 def cmd_stop(env: dict[str, str]) -> int:
-    window = _require_window(env)
-    if window is None:
+    session = resolve_session(env)
+    if session is None:
+        print("claude-follow: not running inside tmux", file=sys.stderr)
         return 1
-    existing = FollowerState.get(window.window_id)
+    existing = FollowerState.get(session.window_id)
     if existing is not None:
         # Restore the border BEFORE teardown, while the pane is still alive:
         # a non-adopted stop kills the follower pane, and pane-border-status
         # is a WINDOW option — `set-option -wu` aimed at the killed pane
         # fails to resolve its target, leaving the whole window's
         # pane-border-status stuck on "top". Unsetting it (and the per-pane
-        # color) while the pane still exists lands cleanly.
+        # color) while the pane still exists lands cleanly. This dispatches
+        # on existing.backend (TmuxStatusSurface vs NvimStatusSurface), so a
+        # standalone nvim follower's floating status window is still cleared
+        # here without touching tmux — no separate in_tmux gate needed.
         status_surface_for(existing).clear()
         if existing.adopted:
             # Adoption never took ownership of the pane — killing the
             # user's own Vim on stop would be destructive. Only close the
             # tabs the follower itself opened there.
-            follower = get_follower(existing.backend, existing.target, window_id=window.window_id)
+            follower = get_follower(existing.backend, existing.target, window_id=session.window_id)
             for path in existing.open_files:
                 follower.close_tab(path)
         else:
-            get_follower(existing.backend, existing.target, window_id=window.window_id).stop()
+            # Runs standalone too: nvim's stop() is an RPC `qall!`, not a
+            # tmux operation, so it must fire regardless of session.in_tmux.
+            get_follower(existing.backend, existing.target, window_id=session.window_id).stop()
     # Scan before clearing this window's own state: FollowerState.clear
     # below deletes this window's .pane, and scanning after that would make
     # the "skip my own key" check below unreachable — the glob would never
     # see it in the first place.
-    other_live = _other_live_follower(window.window_id)
-    FollowerState.clear(window.window_id)
-    control.clear_signals(window.window_id)
-    control.discard_pending_animation(window.window_id)
-    if not other_live:
+    other_live = _other_live_follower(session.window_id)
+    FollowerState.clear(session.window_id)
+    control.clear_signals(session.window_id)
+    control.discard_pending_animation(session.window_id)
+    if session.in_tmux and not other_live:
+        # Keybindings are tmux prefix-key bindings — standalone never
+        # registered them (cmd_start skips registration outside tmux), so
+        # unregistering here would either no-op against a foreign tmux
+        # server or, worse, unbind real keys on one that happens to be
+        # running on the machine.
         keybindings.unregister()
     print("claude-follow: stopped")
     return 0
 
 
 def cmd_status(env: dict[str, str]) -> int:
-    window = TmuxWindow.from_env(env)
-    if window is None:
+    session = resolve_session(env)
+    if session is None:
         print("claude-follow: not running inside tmux")
         return 0
-    existing = FollowerState.get(window.window_id)
+    existing = FollowerState.get(session.window_id)
     if existing is None:
         print("claude-follow: no follower active")
     else:
@@ -226,21 +226,22 @@ def cmd_status(env: dict[str, str]) -> int:
     return 0
 
 
-def _show_popup(current: FollowerState | None, message: str) -> None:
+def _show_popup(current: FollowerState | None, message: str, in_tmux: bool) -> None:
     """Popup on the follower pane confirming a pause/resume/interrupt —
     feedback for the keybinding press itself, not a guarantee that an
     animation was actually running to be affected. Only the tmux backend
-    has a pane to target."""
-    if current is None or current.backend != "tmux":
+    has a pane to target, and only when the run itself is inside tmux —
+    standalone has no tmux server to shell out to."""
+    if not in_tmux or current is None or current.backend != "tmux":
         return
     tmux.show_popup(current.target, message)
 
 
-def _pause_feedback(current: FollowerState | None, *, paused: bool) -> None:
+def _pause_feedback(current: FollowerState | None, in_tmux: bool, *, paused: bool) -> None:
     """Feedback for a pause/resume keypress. tmux flashes a popup on the
     follower pane; nvim has no pane to target (its target is an RPC socket),
     so it shows "Paused" in the floating status window instead, cleared on
-    resume."""
+    resume — that nvim path works standalone as well as in tmux."""
     if current is None:
         return
     if current.backend == "nvim":
@@ -248,7 +249,7 @@ def _pause_feedback(current: FollowerState | None, *, paused: bool) -> None:
         # the box, so a writer cue's title/border survive the pause.
         status_surface_for(current).set_state("Paused" if paused else "Writing...")
         return
-    _show_popup(current, "Paused" if paused else "Resuming")
+    _show_popup(current, "Paused" if paused else "Resuming", in_tmux)
 
 
 def _resave_pending(
@@ -272,27 +273,28 @@ def _resave_pending(
 
 
 def cmd_pause(env: dict[str, str]) -> int:
-    window = _require_window(env)
-    if window is None:
+    session = resolve_session(env)
+    if session is None:
+        print("claude-follow: not running inside tmux", file=sys.stderr)
         return 1
-    current = FollowerState.get(window.window_id)
+    current = FollowerState.get(session.window_id)
 
-    state = control.animating_state(window.window_id)
+    state = control.animating_state(session.window_id)
     if state == "running":
-        control.request_pause(window.window_id)
+        control.request_pause(session.window_id)
         print("claude-follow: pause requested")
-        _pause_feedback(current, paused=True)
+        _pause_feedback(current, session.in_tmux, paused=True)
         return 0
     if state == "paused":
-        control.request_pause(window.window_id)  # the toggle: resumes the waiting hook
+        control.request_pause(session.window_id)  # the toggle: resumes the waiting hook
         print("claude-follow: resume requested")
-        _pause_feedback(current, paused=False)
+        _pause_feedback(current, session.in_tmux, paused=False)
         return 0
     if state == "handoff":
         print("claude-follow: interrupted — save (:w!) to release Claude, or press S again")
         return 0
 
-    pending = control.load_pending_animation(window.window_id)
+    pending = control.load_pending_animation(session.window_id)
     if pending is None:
         # Nothing running and nothing recoverable — a pause press must not
         # fake feedback: no signal, no popup.
@@ -300,7 +302,7 @@ def cmd_pause(env: dict[str, str]) -> int:
         return 0
 
     if current is None:
-        _resave_pending(window.window_id, pending)
+        _resave_pending(session.window_id, pending)
         print("claude-follow: no follower registered to resume", file=sys.stderr)
         return 1
 
@@ -309,7 +311,7 @@ def cmd_pause(env: dict[str, str]) -> int:
         # crash-orphaned nvim pending has no keyboard resume path yet, so
         # discard it rather than crash on the tmux-only resume — mirrors the
         # backend guard cmd_interrupt already applies to this same path.
-        control.discard_pending_animation(window.window_id)
+        control.discard_pending_animation(session.window_id)
         print("claude-follow: nothing to resume")
         return 0
 
@@ -317,46 +319,47 @@ def cmd_pause(env: dict[str, str]) -> int:
         current.backend,
         current.target,
         config.pace_seconds_for(current.speed),
-        window_id=window.window_id,
+        window_id=session.window_id,
     )
     assert isinstance(follower, TmuxVimFollower)  # only tmux ever persists pending state
-    _show_popup(current, "Resuming")
+    _show_popup(current, "Resuming", session.in_tmux)
     result = follower.resume(pending)
     print(f"claude-follow: resumed ({result.outcome})")
     if result.outcome == "interrupted":
-        _show_popup(current, "Interrupted")
+        _show_popup(current, "Interrupted", session.in_tmux)
     return 0
 
 
 def cmd_interrupt(env: dict[str, str]) -> int:
-    window = _require_window(env)
-    if window is None:
+    session = resolve_session(env)
+    if session is None:
+        print("claude-follow: not running inside tmux", file=sys.stderr)
         return 1
-    current = FollowerState.get(window.window_id)
+    current = FollowerState.get(session.window_id)
 
-    state = control.animating_state(window.window_id)
+    state = control.animating_state(session.window_id)
     if state in ("running", "paused"):
-        control.request_interrupt(window.window_id)
+        control.request_interrupt(session.window_id)
         print("claude-follow: interrupt requested")
-        _show_popup(current, "Interrupted")
+        _show_popup(current, "Interrupted", session.in_tmux)
         return 0
     if state == "handoff":
         # the des-interrupt: discard the user's unsaved typing and release
         # Claude as if the interrupt had not happened
-        control.request_interrupt(window.window_id)
+        control.request_interrupt(session.window_id)
         print("claude-follow: hand-off cancelled, unsaved changes discarded")
-        _show_popup(current, "Discarded")
+        _show_popup(current, "Discarded", session.in_tmux)
         return 0
 
-    pending = control.load_pending_animation(window.window_id)
+    pending = control.load_pending_animation(session.window_id)
     if pending is not None:
         # A crash-orphaned remainder (its hook died): nothing to signal —
         # discard it and hand the buffer to the user, like a live interrupt.
         if current is not None and current.backend == "tmux":
-            TmuxVimFollower(pane_id=current.target, window_id=window.window_id).hand_over()
-        FollowerState.update_current_file(window.window_id, None)
+            TmuxVimFollower(pane_id=current.target, window_id=session.window_id).hand_over()
+        FollowerState.update_current_file(session.window_id, None)
         print("claude-follow: paused animation discarded, buffer handed over")
-        _show_popup(current, "Interrupted")
+        _show_popup(current, "Interrupted", session.in_tmux)
         return 0
 
     print("claude-follow: nothing to interrupt")
@@ -364,15 +367,16 @@ def cmd_interrupt(env: dict[str, str]) -> int:
 
 
 def cmd_speed(env: dict[str, str], direction: Literal["up", "down"]) -> int:
-    window = _require_window(env)
-    if window is None:
+    session = resolve_session(env)
+    if session is None:
+        print("claude-follow: not running inside tmux", file=sys.stderr)
         return 1
-    current = FollowerState.get(window.window_id)
+    current = FollowerState.get(session.window_id)
     if current is None:
         print("claude-follow: no follower active")
         return 0
     new_speed = config.next_speed(current.speed, direction)
-    FollowerState.update(window.window_id, speed=new_speed)
+    FollowerState.update(session.window_id, speed=new_speed)
     # Saturating scale: label the ends so a press that changed nothing
     # reads as "already at the limit", not as a silent miss.
     if new_speed == config.SPEED_ORDER[-1]:
@@ -393,15 +397,16 @@ def cmd_speed(env: dict[str, str], direction: Literal["up", "down"]) -> int:
 
 
 def cmd_toggle(env: dict[str, str]) -> int:
-    window = _require_window(env)
-    if window is None:
+    session = resolve_session(env)
+    if session is None:
+        print("claude-follow: not running inside tmux", file=sys.stderr)
         return 1
-    raw = FollowerState.read(window.window_id)
+    raw = FollowerState.read(session.window_id)
     if raw is None:
         print("claude-follow: no follower to toggle")
         return 0
     if raw.enabled:
-        FollowerState.update(window.window_id, enabled=False)
+        FollowerState.update(session.window_id, enabled=False)
         if raw.origin:
             TmuxPane(pane_id=raw.origin).set_zoomed(True)
         print("claude-follow: follower muted")
@@ -409,13 +414,13 @@ def cmd_toggle(env: dict[str, str]) -> int:
     # Re-enable. open_files is cleared so every next touch resyncs via a
     # fresh retype — the disk moved while we were muted, and animating a
     # diff over a stale buffer would produce garbage. Tabs stay for reading.
-    FollowerState.update(window.window_id, enabled=True, open_files=())
+    FollowerState.update(session.window_id, enabled=True, open_files=())
     if raw.origin:
         TmuxPane(pane_id=raw.origin).set_zoomed(False)
-    if raw.backend == "tmux" and FollowerState.get(window.window_id) is None and raw.origin:
+    if raw.backend == "tmux" and FollowerState.get(session.window_id) is None and raw.origin:
         started = TmuxVimFollower.start(raw.origin)
         FollowerState.set(
-            window.window_id,
+            session.window_id,
             "tmux",
             started.pane_id,
             origin=raw.origin,
