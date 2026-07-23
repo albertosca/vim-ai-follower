@@ -14,6 +14,7 @@ def test_load_returns_defaults_when_no_file(tmp_path: Path) -> None:
         adopt_existing=False,
         max_tabs=5,
         backend="tmux",
+        nvim_window="auto",
     )
 
 
@@ -83,3 +84,20 @@ def test_backend_defaults_to_tmux_and_validates(tmp_path: Path) -> None:
     assert config.load(tmp_path / "c.json").backend == "nvim"
     (tmp_path / "bad.json").write_text('{"backend": "emacs"}')
     assert config.load(tmp_path / "bad.json").backend == "tmux"
+
+
+def test_nvim_window_defaults_to_auto(tmp_path: Path) -> None:
+    cfg = config.load(tmp_path / "absent.json")
+    assert cfg.nvim_window == "auto"
+
+
+def test_nvim_window_reads_valid_value(tmp_path: Path) -> None:
+    p = tmp_path / "c.json"
+    p.write_text('{"nvim_window": "always"}')
+    assert config.load(p).nvim_window == "always"
+
+
+def test_nvim_window_invalid_falls_back_to_auto(tmp_path: Path) -> None:
+    p = tmp_path / "c.json"
+    p.write_text('{"nvim_window": "sometimes"}')
+    assert config.load(p).nvim_window == "auto"
