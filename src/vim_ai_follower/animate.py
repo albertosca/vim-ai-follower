@@ -35,6 +35,16 @@ class KeySequence:
 _EXIT_INSERT: tuple[KeySequence, ...] = (
     KeySequence("Escape", literal=False),
     KeySequence("Escape", literal=False),
+    # A remapped insert-mode <Esc> that stays in insert (vim-ai-autocomplete's
+    # EscHandler, CoC's popup close) can consume BOTH Escapes when the popup
+    # re-appears async, leaving the follower in insert so the next opener (o/i)
+    # is typed as LITERAL text on every line. <C-\><C-n> is Vim's built-in
+    # force-normal-mode; it ignores every insert-mode mapping, so it guarantees
+    # the exit. It runs AFTER the two Escapes (not instead of them): the Escapes
+    # first let CoC/vim-visual-multi settle their popup / hit-enter state, which
+    # is what made a bare <C-\><C-n> corrupt VM (see repro-plugin-preamble.sh).
+    KeySequence("C-\\", literal=False),
+    KeySequence("C-n", literal=False),
 )
 
 
