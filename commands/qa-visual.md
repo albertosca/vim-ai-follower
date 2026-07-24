@@ -26,18 +26,30 @@ disagree with it.
   specific check's script explicitly says it will — Checks 9 and 10 write to
   `~/.config/claude-vim-follower/config.json`, and their own scripts
   (`scripts/qa-check-9-nvim-standalone.sh`, `scripts/qa-check-10-vim-without-tmux.sh`)
-  already handle backup/restore of that file. Checks 4 and 7 create their
-  own isolated `vaf-smoke` / private tmux sessions and never touch Alberto's
-  real server.
+  already handle backup/restore of that file (auto-restoring on any crash).
+  Checks 4 and 7 create their own isolated `vaf-smoke` / private tmux
+  sessions and never touch Alberto's real server.
+- **Checks 9 and 10 must run OUTSIDE tmux — their scripts refuse to run
+  inside one.** Your own Bash tool almost certainly runs inside the same
+  tmux session Alberto's `claude` is running in (his normal Vim+tmux setup),
+  so you likely CANNOT run these two yourself. Before reaching Check 9,
+  check with `echo "$TMUX"` (or just try the script — it self-detects and
+  exits 1 with a clear error if it can't run). If you're inside tmux, tell
+  Alberto Checks 9 and 10 need to be run by him from a plain terminal window
+  (not a tmux pane), give him the two commands
+  (`zsh scripts/qa-check-9-nvim-standalone.sh`, `zsh scripts/qa-check-10-vim-without-tmux.sh`)
+  and the LOOK AT text from `qa/visual-battery.md`, and record his reported
+  verdict + notes the same way as any other check. This is the one
+  documented exception to "Claude drives, Alberto watches."
 
 ## Setup — before Check 1
 
 1. Confirm the current commit: `git rev-parse HEAD`.
 2. Copy the results template to today's ledger:
    `cp qa/results/TEMPLATE.md qa/results/<YYYY-MM-DD>.md` (use today's actual
-   date). If a file for today already exists, append a new dated run block
-   below the existing one instead of overwriting it (per the template's own
-   instructions).
+   date). If a file for today already exists, insert a new dated run block
+   ABOVE the existing content instead of overwriting it — newest run at the
+   TOP of the file (per the template's own instructions and the design spec).
 3. Fill in the ledger's header line (`# Visual Battery Run — <DATE> — commit
    <SHA>`) with today's date and the commit SHA from step 1.
 4. Run the Prep step from `qa/visual-battery.md` ("Prep (once, checks

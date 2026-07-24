@@ -3,8 +3,10 @@
 # OUTSIDE any tmux session. Sets config to the nvim backend, starts a
 # follower (which opens a real standalone window, not a tmux pane), and
 # fires the standalone-demo.py fixture over a hook pre/post pair. Backs up
-# any real config.json first and prints how to restore it — this is the only
-# check that touches ~/.config/claude-vim-follower/config.json.
+# any real config.json first via qa_protect_config (auto-restores on any
+# crash; the driver's printed cleanup command restores it once Alberto is
+# done watching) — this is the only check that touches
+# ~/.config/claude-vim-follower/config.json.
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/.." && pwd)
@@ -20,23 +22,12 @@ RUN_ID=$(qa_run_id)
 qa_snapshot_cache
 echo "QA run id: $RUN_ID"
 
-CONFIG_DIR=~/.config/claude-vim-follower
-CONFIG="$CONFIG_DIR/config.json"
-BACKUP="/tmp/vaf-qa-${RUN_ID}-config-backup.json"
-mkdir -p "$CONFIG_DIR"
-
-if [[ -f "$CONFIG" ]]; then
-  cp "$CONFIG" "$BACKUP"
-  echo ">>> Backed up your real config to $BACKUP"
-  HAD_CONFIG=1
-else
-  HAD_CONFIG=0
-fi
-
-cat > "$CONFIG" <<'EOF'
+qa_protect_config
+trap '_qa_restore_config_on_exit' EXIT
+qa_write_test_config <<'EOF'
 {"backend": "nvim", "nvim_window": "auto"}
 EOF
-echo ">>> Wrote nvim-backend config to $CONFIG"
+echo ">>> Wrote nvim-backend config to $QA_CONFIG_PATH"
 
 CF="$REPO/bin/claude-follow"
 
@@ -51,12 +42,7 @@ if [[ "$CODE" -ne 0 ]]; then
   echo "claude-follow start failed (exit $CODE) — see its error above. Not a QA"
   echo "PASS/FAIL by itself (Check 9's FAIL case is 'no window opens' with a"
   echo "traceback, which this could be) but nothing was set up to watch."
-  echo "Cleanup: restoring your config now."
-  if [[ "$HAD_CONFIG" -eq 1 ]]; then
-    cp "$BACKUP" "$CONFIG"
-  else
-    rm -f "$CONFIG"
-  fi
+  echo "Your real config is being restored automatically now."
   exit "$CODE"
 fi
 
@@ -66,6 +52,11 @@ P="{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$F\"},\"session_id\"
 echo "$P" | "$CF" hook pre
 echo ">>> Firing hook post — should animate into a separate, visible window."
 echo "$P" | "$CF" hook post &
+
+# From here on, the follower is live and Alberto needs the test config to
+# stay in place while he watches — disarm the exit-trap's auto-restore so it
+# doesn't fire the moment this script's own shell falls off the end.
+qa_config_handoff
 
 echo
 echo "LOOK AT: whether a separate, visible window opens (GUI nvim-qt/VimR if"
@@ -79,8 +70,8 @@ echo "standalone window cleanly."
 echo
 echo "Cleanup when done:"
 echo "  rm -f $F"
-if [[ "$HAD_CONFIG" -eq 1 ]]; then
-  echo "  cp $BACKUP $CONFIG   # restore your real config"
+if [[ "$QA_CONFIG_HAD_REAL" -eq 1 ]]; then
+  echo "  cp $QA_CONFIG_BACKUP $QA_CONFIG_PATH   # restore your real config"
 else
-  echo "  rm -f $CONFIG   # no real config existed before this check"
+  echo "  rm -f $QA_CONFIG_PATH   # no real config existed before this check"
 fi

@@ -4,7 +4,8 @@
 # follower, which must fail loudly and actionably instead of no-opping or
 # crashing. Trivial by design (a pure inline command sequence per the
 # runbook) — this thin script exists only for consistency with the other
-# checks (run-id bookkeeping, config backup/restore, LOOK AT summary).
+# checks (run-id bookkeeping, config backup/restore via qa_protect_config,
+# LOOK AT summary).
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO=$(cd "$HERE/.." && pwd)
@@ -19,23 +20,12 @@ RUN_ID=$(qa_run_id)
 qa_snapshot_cache
 echo "QA run id: $RUN_ID"
 
-CONFIG_DIR=~/.config/claude-vim-follower
-CONFIG="$CONFIG_DIR/config.json"
-BACKUP="/tmp/vaf-qa-${RUN_ID}-config-backup.json"
-mkdir -p "$CONFIG_DIR"
-
-if [[ -f "$CONFIG" ]]; then
-  cp "$CONFIG" "$BACKUP"
-  echo ">>> Backed up your real config to $BACKUP"
-  HAD_CONFIG=1
-else
-  HAD_CONFIG=0
-fi
-
-cat > "$CONFIG" <<'EOF'
+qa_protect_config
+trap '_qa_restore_config_on_exit' EXIT
+qa_write_test_config <<'EOF'
 {"backend": "tmux"}
 EOF
-echo ">>> Wrote tmux-backend config to $CONFIG"
+echo ">>> Wrote tmux-backend config to $QA_CONFIG_PATH"
 
 CF="$REPO/bin/claude-follow"
 
@@ -47,6 +37,11 @@ CODE=$?
 set -e
 echo "exit code: $CODE"
 
+# The check is fully done at this point (no live follower to keep watching),
+# but hand off restore-timing to the driver anyway for consistency with
+# Check 9's config-touching checks — same printed cleanup step either way.
+qa_config_handoff
+
 echo
 echo "LOOK AT: the terminal output and the exit code above; whether any"
 echo "pane/window opened anywhere. Expect the exact message"
@@ -55,8 +50,8 @@ echo "printed to stdout, exit code non-zero (observed: 1), and no follower"
 echo "pane/window opening anywhere."
 echo
 echo "Cleanup when done:"
-if [[ "$HAD_CONFIG" -eq 1 ]]; then
-  echo "  cp $BACKUP $CONFIG   # restore your real config"
+if [[ "$QA_CONFIG_HAD_REAL" -eq 1 ]]; then
+  echo "  cp $QA_CONFIG_BACKUP $QA_CONFIG_PATH   # restore your real config"
 else
-  echo "  rm -f $CONFIG   # no real config existed before this check"
+  echo "  rm -f $QA_CONFIG_PATH   # no real config existed before this check"
 fi
