@@ -16,10 +16,12 @@ DEFAULT_OPEN_POLICY = "manual"
 DEFAULT_ADOPT_EXISTING = False
 DEFAULT_MAX_TABS = 5
 DEFAULT_BACKEND = "tmux"
+DEFAULT_NVIM_WINDOW = "auto"
 
 _VALID_ON_FAILURE = ("silent", "reopen")
 _VALID_OPEN_POLICY = ("always", "code", "manual")
 _VALID_BACKEND = ("tmux", "nvim")
+_VALID_NVIM_WINDOW = ("auto", "always", "never")
 
 SPEED_PACE_SECONDS: dict[str, float] = {
     "instant": 0.0,
@@ -73,6 +75,7 @@ class Config:
     adopt_existing: bool
     max_tabs: int
     backend: str
+    nvim_window: str
 
 
 def load(config_path: Path | None = None) -> Config:
@@ -84,6 +87,7 @@ def load(config_path: Path | None = None) -> Config:
     adopt_existing = data.get("adopt_existing", DEFAULT_ADOPT_EXISTING)
     max_tabs = data.get("max_tabs", DEFAULT_MAX_TABS)
     backend = data.get("backend", DEFAULT_BACKEND)
+    nvim_window = data.get("nvim_window", DEFAULT_NVIM_WINDOW)
     if on_failure not in _VALID_ON_FAILURE:
         on_failure = DEFAULT_ON_FAILURE
     if speed not in SPEED_PACE_SECONDS:
@@ -96,7 +100,9 @@ def load(config_path: Path | None = None) -> Config:
         max_tabs = DEFAULT_MAX_TABS
     if backend not in _VALID_BACKEND:
         backend = DEFAULT_BACKEND
-    return Config(on_failure, speed, open_policy, adopt_existing, max_tabs, backend)
+    if nvim_window not in _VALID_NVIM_WINDOW:
+        nvim_window = DEFAULT_NVIM_WINDOW
+    return Config(on_failure, speed, open_policy, adopt_existing, max_tabs, backend, nvim_window)
 
 
 def next_speed(speed: str, direction: Literal["up", "down"]) -> str:

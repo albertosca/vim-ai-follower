@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -10,7 +11,7 @@ import pytest
 from helpers import make_mock_tmux_run
 from helpers import register_fake_follower as _register_fake_follower
 
-from vim_ai_follower import commands, config, control, keybindings, snapshot, state
+from vim_ai_follower import commands, config, control, keybindings, session, snapshot, state
 
 _mock_tmux_run = functools.partial(make_mock_tmux_run, pane_id="%9", other_panes=("%1", "%2"))
 
@@ -46,13 +47,60 @@ def test_stop_kills_pane_and_clears_state() -> None:
     assert result is None
 
 
-def test_stop_without_tmux_env_fails() -> None:
-    assert commands.cmd_stop({}) == 1
+def test_stop_dead_tmux_pane_fails() -> None:
+    # {} alone no longer means "fail" — no TMUX_PANE now resolves to the
+    # standalone session. A dead-pane resolve_session() -> None is the case
+    # that must still fail, mirroring the old _require_window(env) is None.
+    with patch("vim_ai_follower.commands.resolve_session", return_value=None):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 1
 
 
 def test_stop_without_active_follower_is_a_noop() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+
+
+def test_stop_standalone_stops_the_backend_but_skips_tmux_side_effects() -> None:
+    # Standalone (no TMUX_PANE): resolve_session() returns a Session with
+    # in_tmux=False. cmd_stop must still drive the backend's stop() (an nvim
+    # RPC qall!, not a tmux operation) and clear the follower's own status
+    # surface, but must NOT touch tmux at all — no border restore shell-out,
+    # no keybindings.unregister() (standalone never registered tmux keys).
+    standalone_session = session.Session(window_id="term-x", origin=None, in_tmux=False)
+    state.FollowerState.set("term-x", "nvim", "/tmp/standalone.sock", origin="")
+    with (
+        patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session),
+        patch("pynvim.attach", return_value=MagicMock()) as attach,
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+        patch("vim_ai_follower.commands.keybindings.unregister") as mock_unregister,
+    ):
+        assert commands.cmd_stop({}) == 0
+    attach.assert_called()  # the nvim backend's stop() (qall!) actually ran
+    mock_unregister.assert_not_called()
+    border_calls = [
+        c.args[0]
+        for c in run.call_args_list
+        if c.args[0][:2] == ["tmux", "set-option"] and "pane-border-style" in c.args[0]
+    ]
+    assert border_calls == []
+    assert state.FollowerState.get("term-x") is None
+
+
+def test_speed_standalone_updates_speed_but_skips_the_tmux_status_line() -> None:
+    # Standalone: cmd_speed must still persist the new speed, but must NOT flash
+    # the tmux status line — current.target is an nvim socket path, not a pane,
+    # so the show_status shell-out is gated on session.in_tmux.
+    standalone_session = session.Session(window_id="term-x", origin=None, in_tmux=False)
+    state.FollowerState.set("term-x", "nvim", "/tmp/standalone.sock", origin="", speed="rapido")
+    with (
+        patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session),
+        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.commands.tmux.show_status") as show_status,
+    ):
+        assert commands.cmd_speed({}, "up") == 0
+    show_status.assert_not_called()
+    updated = state.FollowerState.read("term-x")
+    assert updated is not None and updated.speed == "muito_rapido"
 
 
 def test_status_reports_no_follower(capsys: pytest.CaptureFixture[str]) -> None:
@@ -68,8 +116,18 @@ def test_status_reports_active_follower(capsys: pytest.CaptureFixture[str]) -> N
     assert "%9" in capsys.readouterr().out
 
 
-def test_status_without_tmux_env(capsys: pytest.CaptureFixture[str]) -> None:
-    assert commands.cmd_status({}) == 0
+def test_status_standalone_reports_no_follower(capsys: pytest.CaptureFixture[str]) -> None:
+    # {} with no TMUX_PANE resolves to the standalone session now, not a
+    # failure — a plain "not running inside tmux" no longer applies here.
+    standalone_session = session.Session(window_id="term-x", origin=None, in_tmux=False)
+    with patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session):
+        assert commands.cmd_status({}) == 0
+    assert "no follower active" in capsys.readouterr().out
+
+
+def test_status_dead_tmux_pane(capsys: pytest.CaptureFixture[str]) -> None:
+    with patch("vim_ai_follower.commands.resolve_session", return_value=None):
+        assert commands.cmd_status({"TMUX_PANE": "%1"}) == 0
     assert "not running inside tmux" in capsys.readouterr().out
 
 
@@ -216,6 +274,114 @@ def test_start_falls_back_to_a_split_when_adoption_finds_nothing_to_adopt(
     assert len(splits) == 1
     assert result is not None
     assert result.adopted is False
+
+
+def test_start_nvim_standalone_launches_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"backend": "nvim", "nvim_window": "auto"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    standalone_session = session.Session(window_id="term-x", origin=None, in_tmux=False)
+    with (
+        patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session),
+        patch("vim_ai_follower.commands.launch_standalone_nvim", return_value="/s.sock") as launch,
+    ):
+        assert commands.cmd_start({}) == 0
+    launch.assert_called_once_with("term-x")
+    result = state.FollowerState.read("term-x")
+    assert result is not None
+    assert result.backend == "nvim"
+    assert result.target == "/s.sock"
+    assert result.adopted is False
+
+
+def test_start_standalone_nvim_launcher_failure_reports_and_exits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The launcher shells out (osascript / nvim-qt); a non-zero exit — e.g.
+    # macOS Automation permission not yet granted — must surface as the
+    # actionable message and rc 1, never a raw traceback, and persist nothing.
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"backend": "nvim", "nvim_window": "auto"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    standalone_session = session.Session(window_id="term-x", origin=None, in_tmux=False)
+    with (
+        patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session),
+        patch(
+            "vim_ai_follower.commands.launch_standalone_nvim",
+            side_effect=subprocess.CalledProcessError(1, ["osascript"]),
+        ),
+    ):
+        assert commands.cmd_start({}) == 1
+    assert "could not open a standalone nvim window" in capsys.readouterr().err
+    assert state.FollowerState.read("term-x") is None
+
+
+def test_start_in_tmux_nvim_window_always_launcher_failure_reports_and_exits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Same guard on the nvim_window=always override taken while inside tmux.
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"backend": "nvim", "nvim_window": "always"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    in_tmux = session.Session(window_id="@1", origin="%1", in_tmux=True)
+    with (
+        patch("vim_ai_follower.commands.resolve_session", return_value=in_tmux),
+        patch("vim_ai_follower.commands.keybindings.register"),
+        patch(
+            "vim_ai_follower.commands.launch_standalone_nvim",
+            side_effect=subprocess.CalledProcessError(1, ["nvim-qt"]),
+        ),
+    ):
+        assert commands.cmd_start({}) == 1
+    assert "could not open a standalone nvim window" in capsys.readouterr().err
+
+
+def test_start_vim_backend_without_tmux_errors(capsys: pytest.CaptureFixture[str]) -> None:
+    standalone_session = session.Session(window_id="term-x", origin=None, in_tmux=False)
+    with patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session):
+        rc = commands.cmd_start({}, backend="tmux")
+    assert rc == 1
+    assert "requires tmux" in capsys.readouterr().out
+
+
+def test_start_nvim_window_never_without_tmux_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"nvim_window": "never"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    standalone_session = session.Session(window_id="term-x", origin=None, in_tmux=False)
+    with patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session):
+        rc = commands.cmd_start({}, backend="nvim")
+    assert rc == 1
+    assert "nvim_window" in capsys.readouterr().out
+
+
+def test_start_nvim_window_always_uses_standalone_launcher_in_tmux(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"nvim_window": "always"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.commands.launch_standalone_nvim", return_value="/s.sock") as launch,
+        patch("vim_ai_follower.commands.resolve_nvim_target") as split_target,
+    ):
+        assert commands.cmd_start({"TMUX_PANE": "%1"}, backend="nvim") == 0
+    launch.assert_called_once_with("@1")
+    split_target.assert_not_called()
+    result = state.FollowerState.read("@1")
+    assert result is not None
+    assert result.backend == "nvim"
+    assert result.target == "/s.sock"
+
+
+def test_start_dead_tmux_pane_fails() -> None:
+    with patch("vim_ai_follower.commands.resolve_session", return_value=None):
+        assert commands.cmd_start({"TMUX_PANE": "%1"}) == 1
 
 
 def _bind_calls(run_mock: MagicMock) -> list[list[str]]:
@@ -605,8 +771,9 @@ def test_speed_clamps_at_the_slow_end_and_says_so(capsys: pytest.CaptureFixture[
     assert "speed lento (slowest)" in capsys.readouterr().out
 
 
-def test_speed_without_tmux_env_fails() -> None:
-    assert commands.cmd_speed({}, "up") == 1
+def test_speed_dead_tmux_pane_fails() -> None:
+    with patch("vim_ai_follower.commands.resolve_session", return_value=None):
+        assert commands.cmd_speed({"TMUX_PANE": "%1"}, "up") == 1
 
 
 def test_speed_without_follower_is_honest_noop(capsys: pytest.CaptureFixture[str]) -> None:
@@ -640,8 +807,9 @@ def _resize_pane_calls(run_mock: MagicMock) -> list[list[str]]:
     ]
 
 
-def test_toggle_without_tmux_env_fails() -> None:
-    assert commands.cmd_toggle({}) == 1
+def test_toggle_dead_tmux_pane_fails() -> None:
+    with patch("vim_ai_follower.commands.resolve_session", return_value=None):
+        assert commands.cmd_toggle({"TMUX_PANE": "%1"}) == 1
 
 
 def test_toggle_without_a_registered_follower_is_a_noop(

@@ -6,7 +6,7 @@ import pytest
 from helpers import make_mock_tmux_run as _mock_tmux_run
 from helpers import register_fake_follower as _register_fake_follower
 
-from vim_ai_follower import cli, commands, control, state
+from vim_ai_follower import cli, commands, control, session, state
 from vim_ai_follower.diff import EditOp
 
 
@@ -16,12 +16,41 @@ def _popup_calls(popen_mock: MagicMock) -> list[list[str]]:
     ]
 
 
-def test_pause_without_tmux_env_fails() -> None:
-    assert commands.cmd_pause({}) == 1
+def test_pause_dead_tmux_pane_fails() -> None:
+    # {} alone no longer means "fail" — no TMUX_PANE now resolves to the
+    # standalone session. A dead-pane resolve_session() -> None is the case
+    # that must still fail, mirroring the old _require_window(env) is None.
+    with patch("vim_ai_follower.commands.resolve_session", return_value=None):
+        assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 1
 
 
-def test_interrupt_without_tmux_env_fails() -> None:
-    assert commands.cmd_interrupt({}) == 1
+def test_interrupt_dead_tmux_pane_fails() -> None:
+    with patch("vim_ai_follower.commands.resolve_session", return_value=None):
+        assert commands.cmd_interrupt({"TMUX_PANE": "%1"}) == 1
+
+
+def test_pause_standalone_writes_signal_but_skips_the_tmux_popup(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Standalone (no TMUX_PANE): resolve_session() returns in_tmux=False. A
+    # pause press must still request the pause (the control signal keys on
+    # window_id and already works standalone) but must never shell out to
+    # tmux display-popup — there is no tmux server to target. A "tmux"
+    # backend is registered under the standalone id on purpose, to prove the
+    # skip is driven by session.in_tmux and not merely by current being None
+    # or the backend being nvim.
+    _register_fake_follower("term-x", "%2")
+    standalone_session = session.Session(window_id="term-x", origin=None, in_tmux=False)
+    control.mark_animating("term-x")
+    with (
+        patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session),
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
+    ):
+        assert commands.cmd_pause({}) == 0
+    assert control.check_signal("term-x") == "pause"
+    assert "pause requested" in capsys.readouterr().out
+    assert _popup_calls(popen) == []
 
 
 def test_pause_requests_pause_while_an_animation_is_running(

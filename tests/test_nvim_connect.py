@@ -129,6 +129,89 @@ def test_resolve_launched_waits_for_socket_to_appear(tmp_path: Path) -> None:
     fake_sleep.assert_called()  # it actually waited, not just checked once
 
 
+def test_standalone_command_prefers_nvim_qt() -> None:
+    cmd = nvim_connect.standalone_launch_command("/s.sock", has_nvim_qt=True, has_vimr=True)
+    assert cmd == ["nvim-qt", "--", "--listen", "/s.sock"]
+
+
+def test_standalone_command_uses_vimr_when_no_nvim_qt() -> None:
+    cmd = nvim_connect.standalone_launch_command("/s.sock", has_nvim_qt=False, has_vimr=True)
+    assert cmd[:3] == ["open", "-a", "VimR"]  # + the file/socket wiring
+
+
+def test_standalone_command_falls_back_to_terminal_app() -> None:
+    cmd = nvim_connect.standalone_launch_command("/s.sock", has_nvim_qt=False, has_vimr=False)
+    assert cmd[0] == "osascript"
+    assert any("nvim --listen /s.sock" in part for part in cmd)
+
+
+def test_launch_standalone_nvim_waits_for_socket_to_appear(tmp_path: Path) -> None:
+    sock_path = tmp_path / "nvim-@1.sock"
+    poll_count = 0
+
+    class _FakePath:
+        def __init__(self, raw: str) -> None:
+            self._raw = raw
+
+        def exists(self) -> bool:
+            nonlocal poll_count
+            poll_count += 1
+            if poll_count >= 3:
+                sock_path.write_text("")
+                return True
+            return False
+
+        def __str__(self) -> str:
+            return self._raw
+
+    with (
+        patch(
+            "vim_ai_follower.backends.nvim_connect.state.nvim_socket_path",
+            return_value=sock_path,
+        ),
+        patch("vim_ai_follower.backends.nvim_connect.subprocess.run") as run,
+        patch("vim_ai_follower.backends.nvim_connect.time.sleep") as fake_sleep,
+        patch("vim_ai_follower.backends.nvim_connect.Path", side_effect=_FakePath),
+        patch("vim_ai_follower.backends.nvim_connect.shutil.which", return_value=None),
+        patch("vim_ai_follower.backends.nvim_connect._vimr_app_present", return_value=False),
+    ):
+        sock = nvim_connect.launch_standalone_nvim("@1")
+    assert sock == str(sock_path)
+    assert poll_count >= 3
+    fake_sleep.assert_called()
+    args = run.call_args_list[0].args[0]
+    assert args[0] == "osascript"
+
+
+def test_launch_standalone_nvim_gives_up_after_bounded_wait_when_socket_never_appears(
+    tmp_path: Path,
+) -> None:
+    sock_path = tmp_path / "nvim-@1.sock"  # deliberately never created
+
+    fake_now = [0.0]
+
+    def _fake_monotonic() -> float:
+        fake_now[0] += 10.0
+        return fake_now[0]
+
+    with (
+        patch(
+            "vim_ai_follower.backends.nvim_connect.state.nvim_socket_path",
+            return_value=sock_path,
+        ),
+        patch("vim_ai_follower.backends.nvim_connect.subprocess.run"),
+        patch("vim_ai_follower.backends.nvim_connect.time.sleep"),
+        patch("vim_ai_follower.backends.nvim_connect.time.monotonic", side_effect=_fake_monotonic),
+        patch(
+            "vim_ai_follower.backends.nvim_connect.shutil.which", return_value="/usr/bin/nvim-qt"
+        ),
+        patch("vim_ai_follower.backends.nvim_connect._vimr_app_present", return_value=False),
+    ):
+        sock = nvim_connect.launch_standalone_nvim("@1")
+    assert sock == str(sock_path)
+    assert not sock_path.exists()
+
+
 def test_resolve_launched_gives_up_after_bounded_wait_when_socket_never_appears(
     tmp_path: Path,
 ) -> None:
@@ -159,3 +242,10 @@ def test_resolve_launched_gives_up_after_bounded_wait_when_socket_never_appears(
         sock, launched = nvim_connect.resolve_nvim_target("%1", "@1", adopt=False)
     assert (sock, launched) == (str(sock_path), True)
     assert not sock_path.exists()
+
+
+def test_vimr_app_present_reflects_the_applications_bundle() -> None:
+    with patch("vim_ai_follower.backends.nvim_connect.Path.exists", return_value=True):
+        assert nvim_connect._vimr_app_present() is True
+    with patch("vim_ai_follower.backends.nvim_connect.Path.exists", return_value=False):
+        assert nvim_connect._vimr_app_present() is False
