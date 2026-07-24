@@ -25,7 +25,7 @@
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 FIX="$HERE/../qa/fixtures"
-CF=claude-follow
+CF="$(cd "$HERE/.." && pwd)/bin/claude-follow"
 F=/tmp/vaf-nvim-smoke.py
 if [[ -z "$TMUX_PANE" ]]; then
   echo "ERROR: run this from inside your tmux pane (the one where you ran 'claude-follow start --backend nvim')."
