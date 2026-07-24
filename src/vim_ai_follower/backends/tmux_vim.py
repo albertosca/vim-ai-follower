@@ -22,6 +22,22 @@ _UNLOCK_FOR_ANIMATION = ":setlocal modifiable paste"
 _RELOCK_SYNCED = ":silent! e! | setlocal nomodifiable nopaste"
 _RELOCK_READONLY_SYNCED = ":silent! e! | setlocal readonly nomodifiable nopaste"
 
+# CoC's inlay hints (parameter names, inferred return types — coc-pyright's
+# pyright.inlayHints.* etc.) render as virtual text once the follower's
+# scratch buffer becomes a real, disk-backed one for the first time (the
+# relock's `:e!`) and CoC attaches to it. The final buffer/file content is
+# always correct — this is purely a rendering overlay CoC draws on top — but
+# it makes the animation itself look like it typed garbage (live report,
+# 2026-07-24: `os.listdir(root)` rendered as `os.listdir(path: root)`).
+# `:CocDisable` stops the follower's OWN Vim process (a separate OS process
+# per pane, never Alberto's real editing Vim) from handling Vim events at
+# all, so CoC never attaches/computes hints for a buffer only the follower is
+# driving. `:silent!` makes both commands a safe no-op for a Vim without CoC
+# installed. Re-enabled only in hand_over(): that is the one place a human
+# actually gets to type into the buffer themselves and wants real completion.
+_COC_DISABLE = ":silent! CocDisable"
+_COC_ENABLE = ":silent! CocEnable"
+
 
 @dataclass(frozen=True)
 class TmuxVimFollower:
@@ -136,6 +152,8 @@ class TmuxVimFollower:
         timestamp and clears the W11 staleness that an unsynced retype
         would otherwise leave behind."""
         pane = TmuxPane(pane_id=self.pane_id)
+        pane.send_text(_COC_DISABLE)
+        pane.send_key("Enter")
         pane.send_text(_UNLOCK_FOR_ANIMATION)
         pane.send_key("Enter")
         result = run(pane)
@@ -243,8 +261,13 @@ class TmuxVimFollower:
         )
 
     def hand_over(self) -> None:
-        """Unlock the buffer for direct user editing (interrupt semantics)."""
+        """Unlock the buffer for direct user editing (interrupt semantics).
+        The one place CoC is turned back on — this is the one point a human
+        actually gets to type into the buffer themselves and wants real
+        completion/hints (see _COC_DISABLE for why it's off otherwise)."""
         pane = TmuxPane(pane_id=self.pane_id)
+        pane.send_text(_COC_ENABLE)
+        pane.send_key("Enter")
         pane.send_text(":setlocal modifiable nopaste")
         pane.send_key("Enter")
 

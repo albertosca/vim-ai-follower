@@ -61,8 +61,10 @@ def test_apply_edit_unlocks_the_buffer_only_for_the_animation(tmp_path: Path) ->
     assert commands[1] == ("Escape", False)
     assert commands[2] == (":tab drop /tmp/f.txt", True)
     assert commands[3] == ("Enter", False)
-    assert commands[4] == (":setlocal modifiable paste", True)
+    assert commands[4] == (":silent! CocDisable", True)
     assert commands[5] == ("Enter", False)
+    assert commands[6] == (":setlocal modifiable paste", True)
+    assert commands[7] == ("Enter", False)
     assert commands[-2] == (":silent! e! | setlocal nomodifiable nopaste", True)
     assert commands[-1] == ("Enter", False)
     assert result == AnimationResult("completed", 1)
@@ -227,11 +229,13 @@ def test_show_fresh_renames_current_buffer_without_ever_loading_the_real_file(
     # buftype=nofile — inherited, it makes the user's :w fail with E382
     assert commands[8] == (":setlocal buftype=", True)
     assert commands[9] == ("Enter", False)
-    assert commands[10] == (":setlocal modifiable paste", True)
+    assert commands[10] == (":silent! CocDisable", True)
     assert commands[11] == ("Enter", False)
-    assert commands[12] == (":%d", True)
+    assert commands[12] == (":setlocal modifiable paste", True)
     assert commands[13] == ("Enter", False)
-    assert commands[14] == ("i", True)
+    assert commands[14] == (":%d", True)
+    assert commands[15] == ("Enter", False)
+    assert commands[16] == ("i", True)
     assert commands[-2] == (":silent! e! | setlocal readonly nomodifiable nopaste", True)
     assert commands[-1] == ("Enter", False)
     typed = [text for text, literal in commands if literal]
@@ -260,6 +264,8 @@ def test_show_fresh_with_empty_content_still_wipes_and_relocks(tmp_path: Path) -
         (":filetype detect", True),
         ("Enter", False),
         (":setlocal buftype=", True),
+        ("Enter", False),
+        (":silent! CocDisable", True),
         ("Enter", False),
         (":setlocal modifiable paste", True),
         ("Enter", False),
@@ -346,8 +352,10 @@ def test_resume_apply_edit_replays_remaining_ops_and_relocks(tmp_path: Path) -> 
     ):
         result = follower.resume(pending)
     commands = _sent_commands(run)
-    assert commands[0] == (":setlocal modifiable paste", True)
+    assert commands[0] == (":silent! CocDisable", True)
     assert commands[1] == ("Enter", False)
+    assert commands[2] == (":setlocal modifiable paste", True)
+    assert commands[3] == ("Enter", False)
     assert commands[-2] == (":silent! e! | setlocal nomodifiable nopaste", True)
     assert commands[-1] == ("Enter", False)
     assert result == AnimationResult("completed", 1)
@@ -365,7 +373,8 @@ def test_resume_show_fresh_replays_remaining_lines_and_relocks_with_readonly(
     ):
         result = follower.resume(pending)
     commands = _sent_commands(run)
-    assert commands[0] == (":setlocal modifiable paste", True)
+    assert commands[0] == (":silent! CocDisable", True)
+    assert commands[2] == (":setlocal modifiable paste", True)
     assert commands[-2] == (":silent! e! | setlocal readonly nomodifiable nopaste", True)
     assert commands[-1] == ("Enter", False)
     assert result == AnimationResult("completed", 2)
@@ -424,6 +433,8 @@ def test_hand_over_unlocks_the_buffer() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.hand_over()
     assert _sent_commands(run) == [
+        (":silent! CocEnable", True),
+        ("Enter", False),
         (":setlocal modifiable nopaste", True),
         ("Enter", False),
     ]
