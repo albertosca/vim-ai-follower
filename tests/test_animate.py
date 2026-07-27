@@ -22,6 +22,21 @@ from vim_ai_follower.diff import EditOp
 from vim_ai_follower.tmux import TmuxPane
 
 
+def test_exit_insert_is_two_escapes_and_nothing_else() -> None:
+    # Load-bearing invariant, not a restatement of the constant: appending
+    # <C-\><C-n> here corrupted the buffer on every animation. send_paced puts
+    # the pace between every sequence, which splits that atomic pair so <C-N>
+    # runs as insert-mode keyword completion; and after the Escapes it lands in
+    # Normal mode, where <C-\> can be a real user mapping. Two Escapes measure
+    # clean against the real config that motivated the insurance.
+    # See the comment on _EXIT_INSERT and scripts/repro-exit-insert-matrix.sh.
+    two_escapes = (
+        KeySequence("Escape", literal=False),
+        KeySequence("Escape", literal=False),
+    )
+    assert two_escapes == _EXIT_INSERT
+
+
 def test_delete_only_op_deletes_line_by_line_for_the_animation() -> None:
     # One :Nd per line, all at start_line (lines shift up after each), so
     # deletions are paced and visible like insertions instead of vanishing
@@ -512,12 +527,12 @@ def test_run_lines_interrupted_after_text_undoes_the_partial_line(tmp_path: Path
 
 def test_run_lines_interrupted_after_bare_o_undoes_the_opened_line(tmp_path: Path) -> None:
     pane = cast(TmuxPane, MagicMock())
-    # line "a" completes (6 checks: i, text, Esc, Esc, C-\, C-n); line "b"'s
-    # opener "o" goes through and the interrupt fires before its text — 'o'
-    # alone already opened a line (a real change), so it must be undone
+    # line "a" completes (4 checks: i, text, Esc, Esc); line "b"'s opener "o"
+    # goes through and the interrupt fires before its text — 'o' alone already
+    # opened a line (a real change), so it must be undone
     with patch(
         "vim_ai_follower.control.check_signal",
-        side_effect=[None] * 7 + ["interrupt"],
+        side_effect=[None] * 5 + ["interrupt"],
     ):
         result = run_lines(pane, "@1", ("a", "b"), pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("interrupted", 1)

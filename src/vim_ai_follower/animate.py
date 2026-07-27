@@ -30,21 +30,37 @@ class KeySequence:
 # the delete does not happen and the command text is written into the file
 # (empirically confirmed under a real popup; scripts/repro-mode-escape.sh).
 # The second Escape lands whatever consumed the first, the same guarantee
-# TmuxVimFollower._normal_mode relies on. `:set paste` suppresses autoindent
-# but NOT an insert-mode <Esc> mapping, so paste alone does not cover this.
+# TmuxVimFollower._normal_mode relies on.
+#
+# NEVER append <C-\><C-n> here. It was added once as extra insurance against a
+# remapped insert-mode <Esc> and it CORRUPTED THE BUFFER ON EVERY ANIMATION, in
+# two independent ways (scripts/repro-exit-insert-matrix.sh measures both, with
+# Vim reporting its own mode via a ModeChanged autocmd):
+#   1. send_paced sleeps pace_seconds between every KeySequence, so the pair is
+#      split by the pace. <C-\> and <C-N> are the two halves of ONE atomic Vim
+#      command: with a gap, Vim expires the pending <C-\> and runs <C-N> as
+#      plain insert-mode keyword completion, replacing the word under the cursor
+#      with the first keyword in the buffer.
+#   2. Sent after the Escapes, it arrives in NORMAL mode, where <C-\> may be a
+#      real user mapping — vim-tmux-navigator binds it to :TmuxNavigatePrevious
+#      in the config this was found on — and the trailing <C-N> then moves the
+#      cursor down a line, drifting the insert point. (In INSERT mode <C-\> is
+#      unmapped, which is why the failure looks order-dependent but is not
+#      fixable by reordering: every variant containing the pair corrupts.)
+# Two Escapes alone measure clean: against the real config that motivated the
+# insurance — which DOES remap insert <Esc>, to vim_ai_autocomplete#EscHandler —
+# a full animation leaves Insert once per line, every line, and the buffer comes
+# out byte-identical to the source (repro-exit-insert-matrix.sh asserts exactly
+# this). WHY the remapped <Esc> does not eat them is NOT established: 'paste' is
+# documented to disable insert-mode mappings, and EscHandler may simply pass
+# <Esc> through when no suggestion is pending, but probes of the synthetic worst
+# case (`inoremap <Esc> <Nop>`) disagreed across runs and several of those
+# disagreements traced to harness artifacts rather than to Vim. So treat the
+# mechanism as open and the measurement as the ground: if a remapped-<Esc>
+# garble ever reappears, re-open that question — do NOT reach for <C-\><C-n>.
 _EXIT_INSERT: tuple[KeySequence, ...] = (
     KeySequence("Escape", literal=False),
     KeySequence("Escape", literal=False),
-    # A remapped insert-mode <Esc> that stays in insert (vim-ai-autocomplete's
-    # EscHandler, CoC's popup close) can consume BOTH Escapes when the popup
-    # re-appears async, leaving the follower in insert so the next opener (o/i)
-    # is typed as LITERAL text on every line. <C-\><C-n> is Vim's built-in
-    # force-normal-mode; it ignores every insert-mode mapping, so it guarantees
-    # the exit. It runs AFTER the two Escapes (not instead of them): the Escapes
-    # first let CoC/vim-visual-multi settle their popup / hit-enter state, which
-    # is what made a bare <C-\><C-n> corrupt VM (see repro-plugin-preamble.sh).
-    KeySequence("C-\\", literal=False),
-    KeySequence("C-n", literal=False),
 )
 
 
