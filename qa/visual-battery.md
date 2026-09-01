@@ -38,7 +38,7 @@ command; it is not repeated per check here.
 | 5 | nvim backend: char-by-char animation + floating writer cue | shipped 2026-07-19 |
 | 6 | nvim backend: pause/interrupt/des-interrupt | shipped 2026-07-19 |
 | 7 | Parallel-hook serialization | fixed 2026-07-23 (`e51071e`) |
-| 8 | Remapped-`<Esc>` insert-exit | fixed 2026-07-23 (`b8f43e8`) |
+| 8 | Insert-exit under a remapped `<Esc>` | `b8f43e8` 2026-07-23, superseded by `a5f6660` 2026-07-27 |
 | 9 | nvim standalone (no tmux) | shipped 2026-07-23 (`fe87f5b`) |
 | 10 | vim-without-tmux error | shipped 2026-07-23 (`fe87f5b`) |
 
@@ -357,56 +357,65 @@ isolated `$HOME`/`$TMUX_TMPDIR` and kills its private tmux server.
 
 ---
 
-## Check 8 — Remapped-`<Esc>` insert-exit
+## Check 8 — Insert-exit under a remapped `<Esc>`
 
-**Purpose:** confirm the animation's insert-mode exit survives a remapped
-`<Esc>` that stays in insert mode (the class of vim-ai-autocomplete's
-`EscHandler`, or CoC's popup-close mapping) — before the fix (commit
-`b8f43e8`), a plain two-Escape exit left Vim stuck in insert when a mapping
-consumed both Escapes, so the next line's opener (`o`/`i`) was typed as
-literal text on every subsequent line. The fix appends `<C-\><C-n>` (Vim's
-built-in force-normal-mode, which ignores every insert-mode mapping) after
-the two Escapes.
+**Purpose:** confirm the animation reliably leaves insert mode on every line,
+in a config whose insert-mode `<Esc>` is remapped to something that can stay
+in insert (vim-ai-autocomplete's `EscHandler`, CoC's popup close). When an
+exit fails, the next line's opener (`o`/`i`) or an ex-command (`:Nd`) is typed
+as LITERAL text and garbles the buffer.
 
-**Setup — hermetic proof (worst case, no popup luck needed):**
+> **History — read before judging this check.** Until `a5f6660` the exit was
+> two Escapes plus `<C-\><C-n>`, added as insurance against exactly that
+> remapped `<Esc>`. The insurance was itself corrupting the buffer on EVERY
+> animation, two ways: `send_paced` puts the pace between every key, splitting
+> `<C-\><C-n>` (one atomic Vim command) so `<C-N>` ran as insert-mode keyword
+> completion; and after the Escapes it landed in Normal mode, where `<C-\>`
+> can be a real user mapping (vim-tmux-navigator's `:TmuxNavigatePrevious`).
+> The exit is now two Escapes and nothing else. Do NOT "fix" a future
+> remapped-`<Esc>` garble by re-adding `<C-\><C-n>`.
+
+**Setup — hermetic (the hazard, not the product):**
 
 ```sh
 zsh scripts/repro-remapped-esc.sh
 ```
 
-It models `inoremap <Esc> <Nop>` (the worst case: `<Esc>` does nothing) and
-compares two-Escapes-alone (bug) against the shipped
-two-Escapes-plus-`<C-\><C-n>` exit (fix) on the same buffer.
+It proves an ACTIVE insert-mode `<Esc>` mapping really can swallow both
+Escapes. It deliberately does NOT claim that reaches the product.
 
-**Setup — Alberto's real-world variant (his own completion plugin
-active):** restart the follower slow, then trigger a real completion popup
-using the existing pause fixture:
+**Setup — the regression guard (this is the one that judges the product):**
+
+```sh
+zsh scripts/repro-exit-insert-matrix.sh
+```
+
+Runs a full animation against your REAL config and dumps the buffer **before**
+the relock — necessary because the relock's `:silent! e!` reloads the correct
+file from disk and would hide any corruption. Compares the shipped two-Escape
+exit against the old four-key one.
+
+**Setup — real-world eyeball (optional, alongside Check 3):**
 
 ```sh
 claude-follow stop 2>/dev/null; claude-follow start --speed lento
 cp qa/fixtures/pause-trigger.py /tmp/vaf-qa-esc.py
 P='{"tool_name":"Write","tool_input":{"file_path":"/tmp/vaf-qa-esc.py"},"session_id":"me"}'
 echo "$P" | claude-follow hook pre
-echo "$P" | claude-follow hook post   # animates slowly, popups appear on os./ .strip()/ sorted(
+echo "$P" | claude-follow hook post
 ```
 
-Watch every line boundary while the popup is up — with a real
-vim-ai-autocomplete/CoC config active, this is where a remapped `<Esc>`
-would previously leak text.
+**What Alberto looks at:** the two scripts' verdict lines; for the eyeball
+variant, every line boundary, looking for a leaked `o`/`i` opener or a `:Nd`
+fragment landing as text.
 
-**What Alberto looks at:**
+**PASS:**
 
-- Hermetic script: its printed `== two Escapes only ==` / `== shipped-exit
-  ==` blocks and final verdict line.
-- Real-world variant: every line of the animated buffer, looking
-  specifically for a leaked opener or a stray `:Nd`-style command fragment.
-
-**PASS:** hermetic script prints
-`PASS: two-Escape left ':2d' literal (bug); <C-\><C-n> exit executed it
-(fix)`. Real-world variant: no literal `o`/`:Nd` text leaking into the
-buffer — clean insert on every line, content matches `pause-trigger.py`
-exactly. **FAIL:** script prints `INCONCLUSIVE` (behavior changed, re-check
-manually), or the real-world buffer has leaked opener/command text.
+| | PASS | FAIL |
+| --- | --- | --- |
+| `repro-remapped-esc.sh` | `PASS: an active insert-<Esc> mapping swallowed both Escapes, ':2d' landed as text` | `INCONCLUSIVE` (Vim behavior changed — re-check by hand) |
+| `repro-exit-insert-matrix.sh` | `PASS: the two-Escape exit is clean; re-adding <C-\><C-n> corrupts the buffer` | `FAIL` (the shipped exit dirtied the buffer) or `INCONCLUSIVE` (your config lacks a Normal-mode `<C-\>` mapping, so the old variant cannot fail here — check with `:verbose map <C-Bslash>`) |
+| Eyeball variant | Clean insert on every line; content matches the fixture exactly | Leaked opener/command text in the buffer |
 
 **Cleanup:**
 
