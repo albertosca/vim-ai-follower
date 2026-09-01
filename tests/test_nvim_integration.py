@@ -220,7 +220,9 @@ def test_set_writer_opens_a_floating_window_with_the_label_then_clear_closes_it(
     assert any("code-reviewer" in chunk[0] for chunk in title)
     buf = nvim.api.win_get_buf(floating[0])
     lines = nvim.api.buf_get_lines(buf, 0, -1, True)
-    assert any("Writing..." in line for line in lines)
+    # Identity only — no activity line: "Writing..." here outlived the
+    # animation and lied (2026-08-25 battery Check 5 finding).
+    assert not any("Writing..." in line for line in lines)
 
     surface.set_state("Claude waiting — :w releases · S discards")
     lines_with_state = nvim.api.buf_get_lines(buf, 0, -1, True)

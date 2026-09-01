@@ -435,6 +435,23 @@ def _apply_writer_cue(window_id: str, target: str, payload: dict[str, Any]) -> N
     surface.set_writer(writer_cue.writer_label(payload), color)
 
 
+def _refresh_writer_cue(window_id: str, target: str, payload: dict[str, Any]) -> None:
+    """Re-assert the surface after a COMPLETED animation. Stateless on
+    purpose: pause/resume runs in another process (cmd_pause), whose surface
+    save/restore dies with that process, so a stale transient body
+    ("Paused", "Writing...") can outlive the animation on both backends.
+    With 2+ writers the idempotent set_writer redraw wipes the transient
+    while keeping the identity cue; with fewer there is no cue to keep, so
+    clear the surface outright (a no-op on an already-neutral pane)."""
+    current = FollowerState.read(window_id)
+    if current is None:
+        return
+    if len(current.writers) >= 2:
+        _apply_writer_cue(window_id, target, payload)
+        return
+    status_surface_for(current, target=target).clear()
+
+
 def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
     session = resolve_session(env)
     if session is None:
@@ -572,6 +589,7 @@ def _animate_edit(
             _await_user_handoff(current, session, file_path, after, partial)
         else:
             FollowerState.update_current_file(session.window_id, file_path)
+            _refresh_writer_cue(session.window_id, current.target, payload)
         return 0
 
     before = load_snapshot(session.window_id, file_path)
@@ -589,6 +607,8 @@ def _animate_edit(
             file_path=file_path,
         )
         _await_user_handoff(current, session, file_path, after, partial)
+    else:
+        _refresh_writer_cue(session.window_id, current.target, payload)
     return 0
 
 

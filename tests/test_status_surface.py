@@ -174,14 +174,20 @@ def test_set_writer_creates_a_floating_window_when_none_exists() -> None:
     nvim.api.create_buf.assert_called_once_with(False, True)
     nvim.api.buf_set_name.assert_called_once()
     nvim.api.open_win.assert_called_once()
-    nvim.api.buf_set_lines.assert_any_call(7, 0, -1, True, _centered_box(["Writing..."]))
+    # The body is BLANK: the box is pure identity (label lives in the title).
+    # An activity line here would outlive the animation and lie ("Writing..."
+    # forever after completion — live finding, 2026-08-25 battery Check 5);
+    # transient text is set_state's job, asserted separately.
+    nvim.api.buf_set_lines.assert_any_call(7, 0, -1, True, _centered_box([]))
     # cterm AND gui, so the cue shows under termguicolors too (colour78 -> #5fd787)
     nvim.command.assert_any_call(f"highlight VafWriterCue ctermfg=78 guifg={_cterm_to_hex(78)}")
     nvim.api.win_set_config.assert_any_call(
         3, {"title": [[" code-reviewer ", "VafWriterCue"]], "title_pos": "center"}
     )
     nvim.api.win_set_option.assert_any_call(3, "winhighlight", "FloatBorder:VafWriterCue")
-    nvim.api.buf_add_highlight.assert_called_once()
+    # Blank body -> nothing to highlight in it (the colored title and border
+    # carry the identity; the cursor extmark below carries it inline).
+    nvim.api.buf_add_highlight.assert_not_called()
     nvim.api.buf_set_extmark.assert_called_once()
     extmark_call = nvim.api.buf_set_extmark.call_args
     assert extmark_call.args[2] == 4  # row - 1, from win_get_cursor's (5, 0)
@@ -201,9 +207,9 @@ def test_set_writer_reuses_an_existing_floating_window_and_clears_the_color_when
 
     nvim.api.create_buf.assert_not_called()
     nvim.api.open_win.assert_not_called()
-    # Body is the centered name; the state line is not preserved (state lives
-    # in the title now, and set_state owns the body).
-    nvim.api.buf_set_lines.assert_any_call(7, 0, -1, True, _centered_box(["Writing..."]))
+    # Body resets to blank; transient state is not preserved (identity lives
+    # in the title, and set_state owns any transient body text).
+    nvim.api.buf_set_lines.assert_any_call(7, 0, -1, True, _centered_box([]))
     nvim.api.win_set_config.assert_any_call(
         3, {"title": [[" new-writer ", "Title"]], "title_pos": "center"}
     )

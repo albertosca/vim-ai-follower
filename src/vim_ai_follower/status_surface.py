@@ -202,10 +202,13 @@ class NvimStatusSurface:
         )
 
     def set_writer(self, label: str, color: str | None) -> None:
-        """Writer cue: the agent's name in the box title (colored by identity),
-        the border tinted to match, and a "Writing..." activity line centered
-        in the body. The identity color is set for both cterm and gui (guifg),
-        so it shows under termguicolors too."""
+        """Writer cue: the agent's name in the box title (colored by identity)
+        and the border tinted to match — identity only, body blank. Never put
+        an activity line here: this cue persists after the animation, so a
+        "Writing..." body kept claiming progress forever once the edit was
+        done (live finding, 2026-08-25 battery Check 5). Transient text is
+        set_state's job. The identity color is set for both cterm and gui
+        (guifg), so it shows under termguicolors too."""
         with contextlib.suppress(Exception):
             nvim = self._connect()
             win, buf = self._ensure_window(nvim)
@@ -222,14 +225,10 @@ class NvimStatusSurface:
             nvim.api.win_set_config(
                 win, {"title": [[f" {label} ", title_hl]], "title_pos": "center"}
             )
-            # The identity lives in the title now; the body shows the activity.
-            body = _centered_box(["Writing..."])
-            nvim.api.buf_set_lines(buf, 0, -1, True, body)
+            # Identity lives in the title; the body stays blank (docstring).
+            nvim.api.buf_set_lines(buf, 0, -1, True, _centered_box([]))
             ns = nvim.api.create_namespace(_STATUS_NAMESPACE)
             nvim.api.buf_clear_namespace(buf, ns, 0, -1)
-            if color is not None:
-                activity_row = next((i for i, line in enumerate(body) if line.strip()), 0)
-                nvim.api.buf_add_highlight(buf, ns, _HIGHLIGHT_GROUP, activity_row, 0, -1)
             self._mark_cursor(nvim, label, color)
 
     def set_state(self, text: str | None) -> None:

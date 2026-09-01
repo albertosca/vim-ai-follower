@@ -249,8 +249,9 @@ moments — during writer 1's edit, and during writer 2's.
 | Writer 1 (no `agent_id`) | Content **types in char-by-char** — current line highlighted, cursor following. No floating window yet. | Content flashes in whole, or no highlight/cursor motion |
 | Writer 2 (`agent_type=code-reviewer`) | A small **floating window** appears with the label **`code-reviewer`** in a color | No floating window, or no label/color |
 
-**Cleanup:** close the leftover nvim pane/split yourself with `:q` — a
-launched nvim follower is never killed by `stop` (by design; see Check 6).
+**Cleanup:** `claude-follow stop` — a **launched** nvim pane is owned by the
+follower and stop kills it (verified live, 2026-08-25). Only an **adopted**
+nvim (`adopt_existing`) is never killed; close that one yourself with `:q`.
 
 ---
 
@@ -267,9 +268,9 @@ driven over RPC, no `send-keys`.
 claude-follow stop 2>/dev/null; claude-follow start --backend nvim --speed lento
 ```
 
-> `stop` on a **launched** nvim is a no-op by design (it never kills your
-> editor), so a previous nvim pane from Check 5 stays open — close it with
-> `:q` first if it's cluttering.
+> `stop` kills a **launched** nvim pane (the follower owns it), so this also
+> cleans up Check 5's leftover. Only an **adopted** nvim (your own editor,
+> `adopt_existing`) is spared — that one you close with `:q` yourself.
 
 Drive a slow edit from the origin pane:
 

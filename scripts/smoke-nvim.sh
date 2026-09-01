@@ -32,25 +32,32 @@ if [[ -z "$TMUX_PANE" ]]; then
   exit 1
 fi
 
-pre_post() {  # $1 = extra JSON identity fields
-  local id="$1"
-  echo "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$F\"}${id}}" | "$CF" hook pre
-  echo "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$F\"}${id}}" | "$CF" hook post
+rm -f "$F"   # writer 1 must be a FRESH file (full retype)
+
+fire() {  # $1 = fixture filename, $2 = extra JSON identity fields
+  local fixture="$1" id="$2"
+  local payload="{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$F\"}${id}}"
+  # Order matters: `hook pre` snapshots the CURRENT file, the new content
+  # lands after it, and `hook post` animates the diff. Copying the fixture
+  # first made the pre snapshot identical to the post content, so an
+  # existing file's "edit" diffed empty and animated NOTHING — the second
+  # writer of this script never actually animated (2026-08-25 battery,
+  # Check 5 finding).
+  echo "$payload" | "$CF" hook pre
+  cp "$FIX/$fixture" "$F"
+  echo "$payload" | "$CF" hook post
 }
 
 echo ">>> Writer 1 (you, no agent_id) — watch it TYPE char-by-char into nvim; NO floating window yet."
-cp "$FIX/cue-writer1.py" "$F"
-pre_post ',"session_id":"you-foreground"'
+fire cue-writer1.py ',"session_id":"you-foreground"'
 echo ">>> Did the content type in char-by-char (line highlighted, cursor following)? (expected: YES)"
 echo "    Press Enter to fire writer 2..."
 read _
 
 echo ">>> Writer 2 (agent_id=rev1, agent_type=code-reviewer) — a FLOATING window with a colored 'code-reviewer' label should appear."
-cp "$FIX/cue-writer2.py" "$F"
-pre_post ',"session_id":"you-foreground","agent_id":"rev1","agent_type":"code-reviewer"'
+fire cue-writer2.py ',"session_id":"you-foreground","agent_id":"rev1","agent_type":"code-reviewer"'
 echo ">>> Look now: floating window with the label 'code-reviewer' in a color? (expected: YES)"
 echo
 echo "Cleanup when done:  $CF stop"
-echo "  NOTE: stop() is a no-op for a LAUNCHED nvim by design (it never kills your editor),"
-echo "  so the nvim pane STAYS OPEN — close it yourself with :q in that pane. State/keybindings"
-echo "  are cleared. (Killing a launched follower is a documented later-phase item.)"
+echo "  NOTE: stop kills a LAUNCHED nvim pane (the follower owns it); only an ADOPTED"
+echo "  nvim (adopt_existing) is never killed — that one you close yourself with :q."

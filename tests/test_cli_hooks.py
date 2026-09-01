@@ -1476,8 +1476,15 @@ def test_single_writer_leaves_the_border_neutral(tmp_path: Path) -> None:
     _register_fake_follower("@1", "%2", shown_any=True)
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _edit_payload(target, session_id="$1"))
-    border_calls = [c.args[0] for c in run.call_args_list if "pane-border-style" in c.args[0]]
-    assert border_calls == []  # one writer: never tinted
+    # One writer: never TINTED. The completion refresh may issue a clear
+    # (reset-to-default) border call — that is not a tint, so filter on the
+    # fg= payload rather than any mention of the option.
+    tint_calls = [
+        c.args[0]
+        for c in run.call_args_list
+        if "pane-border-style" in c.args[0] and any(str(a).startswith("fg=") for a in c.args[0])
+    ]
+    assert tint_calls == []
     assert state.FollowerState.read("@1").writers == ("$1",)  # type: ignore[union-attr]
 
 
@@ -1773,3 +1780,64 @@ def test_hook_post_dead_tmux_pane_returns_zero(monkeypatch: pytest.MonkeyPatch) 
         "tool_input": {"file_path": "/tmp/f.txt"},
     }
     assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, read_payload) == 0
+
+
+def test_completed_animation_rerenders_the_writer_cue_over_any_stale_transient(
+    tmp_path: Path,
+) -> None:
+    # A pause/resume runs in ANOTHER process (cmd_pause), and that process's
+    # surface save/restore dies with it — so a completed animation must
+    # re-assert the persistent cue from FollowerState, wiping any stale
+    # "Paused"/"Writing..." body it may have left behind. Concretely: the
+    # border tint fires once before animating and AGAIN at completion.
+    target = tmp_path / "a.py"
+    target.write_text("x\n")
+    _register_fake_follower("@1", "%2", shown_any=True)
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _edit_payload(target, session_id="$1"))
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        hooks.cmd_hook_post(
+            {"TMUX_PANE": "%1"},
+            _edit_payload(target, session_id="$1", agent_id="a9", agent_type="code-reviewer"),
+        )
+    tint = [
+        "tmux",
+        "set-option",
+        "-p",
+        "-t",
+        "%2",
+        "pane-border-style",
+        f"fg={writer_cue.PALETTE[1]}",
+    ]
+    calls = [c.args[0] for c in run.call_args_list]
+    assert calls.count(tint) == 2  # once entering the edit, once at completion
+
+
+def test_completed_single_writer_animation_clears_any_stale_transient_surface(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # With fewer than two writers there is no persistent cue to re-render,
+    # but a cross-process pause may still have left a transient body (the
+    # nvim float saying "Paused"/"Writing...") — completion clears it.
+    target = tmp_path / "a.py"
+    target.write_text("x\n")
+    _register_fake_follower("@1", "%2", shown_any=True)
+    surface = MagicMock()
+    monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: surface)
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _edit_payload(target, session_id="$1"))
+    surface.clear.assert_called_once()
+    surface.set_writer.assert_not_called()  # one writer: never a persistent cue
+
+
+def test_refresh_writer_cue_is_a_noop_when_state_vanished(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A concurrent `stop` can delete the window's state between the animation
+    # completing and the cue refresh (the decoupled-lifecycle race this
+    # project already defends elsewhere): nothing to render, touch no surface.
+    surface = MagicMock()
+    monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: surface)
+    hooks._refresh_writer_cue("@gone", "%2", {"session_id": "$1"})
+    surface.clear.assert_not_called()
+    surface.set_writer.assert_not_called()

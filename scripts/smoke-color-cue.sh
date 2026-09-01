@@ -25,22 +25,30 @@ if [[ -z "$TMUX_PANE" ]]; then
   exit 1
 fi
 
-pre_post() {  # $1 = extra JSON identity fields
-  local id="$1"
-  echo "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$F\"}${id}}" | "$CF" hook pre
-  echo "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$F\"}${id}}" | "$CF" hook post
+rm -f "$F"   # writer 1 must be a FRESH file (full retype)
+
+fire() {  # $1 = fixture filename, $2 = extra JSON identity fields
+  local fixture="$1" id="$2"
+  local payload="{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$F\"}${id}}"
+  # Order matters: `hook pre` snapshots the CURRENT file, the new content
+  # lands after it, and `hook post` animates the diff. Copying the fixture
+  # first made the pre snapshot identical to the post content, so an
+  # existing file's "edit" diffed empty and animated NOTHING — the second
+  # writer of this script never actually animated (2026-08-25 battery,
+  # Check 5 finding).
+  echo "$payload" | "$CF" hook pre
+  cp "$FIX/$fixture" "$F"
+  echo "$payload" | "$CF" hook post
 }
 
 echo ">>> Writer 1 (you, no agent_id) — border should stay NEUTRAL. Watch the follower."
-cp "$FIX/cue-writer1.py" "$F"
-pre_post ',"session_id":"you-foreground"'
+fire cue-writer1.py ',"session_id":"you-foreground"'
 echo ">>> Look now: border still default? (expected: YES)"
 echo "    Press Enter to fire writer 2..."
 read _
 
 echo ">>> Writer 2 (agent_id=rev1, agent_type=code-reviewer) — border should TINT + label 'code-reviewer'."
-cp "$FIX/cue-writer2.py" "$F"
-pre_post ',"session_id":"you-foreground","agent_id":"rev1","agent_type":"code-reviewer"'
+fire cue-writer2.py ',"session_id":"you-foreground","agent_id":"rev1","agent_type":"code-reviewer"'
 echo ">>> Look now: border tinted to a color AND the border title reads 'code-reviewer'? (expected: YES)"
 echo
 echo "Cleanup when done:  $CF stop   (border must return to default)"
