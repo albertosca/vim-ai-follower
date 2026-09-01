@@ -149,9 +149,14 @@ echo "$P" | claude-follow hook pre
 echo "$P" | claude-follow hook post   # animates slowly — press `prefix P` mid-line
 ```
 
-While a line with `os.` / `.strip()` / `sorted(` is animating and a
-completion popup is visible, press **`prefix P`** (pause), then
-**`prefix P`** again to resume (or let it finish).
+Press **`prefix P`** (pause) at any moment while it types, then
+**`prefix P`** again to resume (or let it finish). Do not try to aim
+"mid-line": the tmux/vim backend types **line by line** by design (only the
+nvim backend is char-by-char), so visually a pause always lands at a line
+boundary. The race this check guards lives one level down — each line is
+four key sends (opener, text, Escape, Escape) and the pause can land between
+any two of them, e.g. after the `o` opened a line but before its text — and
+that is exactly the case the rollback must undo cleanly.
 
 **What Alberto looks at:** the final buffer content, line by line, focused
 on the lines that were mid-type when the popup was up.
