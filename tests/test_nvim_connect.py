@@ -143,6 +143,12 @@ def test_standalone_command_falls_back_to_terminal_app() -> None:
     cmd = nvim_connect.standalone_launch_command("/s.sock", has_nvim_qt=False, has_vimr=False)
     assert cmd[0] == "osascript"
     assert any("nvim --listen /s.sock" in part for part in cmd)
+    # `do script` alone can create an invisible, backgrounded window when
+    # Terminal.app is already running (live finding, 2026-09-03: two windows
+    # created by `do script` both came back `visible=false` with Terminal not
+    # frontmost — nothing appeared on screen even though the command
+    # "succeeded"). `activate` is what makes the window actually show up.
+    assert any("activate" in part for part in cmd)
 
 
 def test_launch_standalone_nvim_waits_for_socket_to_appear(tmp_path: Path) -> None:

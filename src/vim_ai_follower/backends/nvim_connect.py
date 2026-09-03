@@ -61,7 +61,16 @@ def standalone_launch_command(sock: str, *, has_nvim_qt: bool, has_vimr: bool) -
         return ["nvim-qt", "--", "--listen", sock]
     if has_vimr:
         return ["open", "-a", "VimR", "--args", "--listen", sock]
-    script = f'tell app "Terminal" to do script "exec nvim --listen {sock}"'
+    # `do script` alone can create the window WITHOUT bringing it on screen: if
+    # Terminal.app is already running (even with no windows, or backgrounded on
+    # another Space), the new window comes back `visible=false` and Terminal
+    # never becomes frontmost — the command reports success but nothing is
+    # visible to the user (live finding, 2026-09-03). `activate` first is what
+    # actually shows the window.
+    script = (
+        'tell app "Terminal" to activate\n'
+        f'tell app "Terminal" to do script "exec nvim --listen {sock}"'
+    )
     return ["osascript", "-e", script]
 
 
