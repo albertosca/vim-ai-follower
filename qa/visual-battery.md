@@ -441,8 +441,10 @@ no GUI app is installed), or a fresh Terminal.app window (last resort for
 anyone not on iTerm2) — and that it survives independently of the edit
 that triggered it.
 
-**Setup:** from a plain terminal window (Terminal.app / iTerm) **outside
-any tmux session**, set config to the nvim backend with the default
+**Setup:** from **iTerm2**, outside any tmux session, to exercise the new
+default fallback tier (running from Terminal.app instead only exercises
+the older last-resort branch — the script below warns if `$TERM_PROGRAM`
+isn't iTerm2). Set config to the nvim backend with the default
 `nvim_window: auto`:
 
 ```sh
@@ -455,6 +457,10 @@ EOF
 > ⚠️ This touches your **real** config file — back up
 > `~/.config/claude-vim-follower/config.json` first if you have one, and
 > restore it in Cleanup below.
+
+> ⚠️ On the first run from iTerm2, macOS may show an Automation permission
+> prompt asking to let iTerm2 (or vim-ai-follower) control iTerm2 — approve
+> it, or the split silently fails and nothing opens.
 
 Then, still outside tmux:
 

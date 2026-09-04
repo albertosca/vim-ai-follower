@@ -237,6 +237,42 @@ def test_launch_standalone_nvim_gives_up_after_bounded_wait_when_socket_never_ap
     assert not sock_path.exists()
 
 
+def test_launch_standalone_nvim_detects_iterm_from_term_program(tmp_path: Path) -> None:
+    sock_path = tmp_path / "nvim-@1.sock"
+    sock_path.write_text("")  # pre-created so the readiness poll returns immediately
+    with (
+        patch(
+            "vim_ai_follower.backends.nvim_connect.state.nvim_socket_path",
+            return_value=sock_path,
+        ),
+        patch("vim_ai_follower.backends.nvim_connect.subprocess.run") as run,
+        patch("vim_ai_follower.backends.nvim_connect.shutil.which", return_value=None),
+        patch("vim_ai_follower.backends.nvim_connect._vimr_app_present", return_value=False),
+        patch.dict("os.environ", {"TERM_PROGRAM": "iTerm.app"}, clear=False),
+    ):
+        nvim_connect.launch_standalone_nvim("@1")
+    script = run.call_args_list[0].args[0][2]
+    assert 'application id "com.googlecode.iterm2"' in script
+
+
+def test_launch_standalone_nvim_falls_back_to_terminal_when_not_iterm(tmp_path: Path) -> None:
+    sock_path = tmp_path / "nvim-@1.sock"
+    sock_path.write_text("")
+    with (
+        patch(
+            "vim_ai_follower.backends.nvim_connect.state.nvim_socket_path",
+            return_value=sock_path,
+        ),
+        patch("vim_ai_follower.backends.nvim_connect.subprocess.run") as run,
+        patch("vim_ai_follower.backends.nvim_connect.shutil.which", return_value=None),
+        patch("vim_ai_follower.backends.nvim_connect._vimr_app_present", return_value=False),
+        patch.dict("os.environ", {"TERM_PROGRAM": "Apple_Terminal"}, clear=False),
+    ):
+        nvim_connect.launch_standalone_nvim("@1")
+    script = run.call_args_list[0].args[0][2]
+    assert 'tell app "Terminal"' in script
+
+
 def test_resolve_launched_gives_up_after_bounded_wait_when_socket_never_appears(
     tmp_path: Path,
 ) -> None:

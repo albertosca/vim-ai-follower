@@ -18,6 +18,19 @@ if [[ -n "$TMUX" ]]; then
   exit 1
 fi
 
+if [[ "$TERM_PROGRAM" != "iTerm.app" ]]; then
+  echo "WARNING: \$TERM_PROGRAM is '$TERM_PROGRAM', not iTerm.app — this run"
+  echo "will exercise the Terminal.app fallback, NOT the new iTerm2"
+  echo "split-pane tier added 2026-09-04. Run this from iTerm2 to test that"
+  echo "tier."
+  echo
+fi
+
+echo "NOTE: on the first run from iTerm2, macOS may prompt to allow"
+echo "iTerm2/vim-ai-follower to control iTerm2 via Automation — approve it,"
+echo "or the split silently fails."
+echo
+
 RUN_ID=$(qa_run_id)
 qa_snapshot_cache
 echo "QA run id: $RUN_ID"
