@@ -10,6 +10,18 @@ def test_nvim_socket_path_is_window_scoped(tmp_path: Path) -> None:
     assert nvim_socket_path("@3", tmp_path) == tmp_path / "nvim-@3.sock"
 
 
+def test_nvim_socket_path_sanitizes_colons_for_nvim_listen(tmp_path: Path) -> None:
+    # nvim's --listen treats ANY colon in the address as a TCP host:port
+    # (parsed via getaddrinfo), so a raw iTerm TERM_SESSION_ID like
+    # "term-w0t0p0:404B7BFA-65CF" must not reach the filename with its
+    # colon intact — confirmed live 2026-09-03 ("unknown node or service"),
+    # confirmed in isolation 2026-09-04 (nvim --listen against a plain-name
+    # socket succeeds; the identical path with a colon reproduces the
+    # exact same error verbatim).
+    result = nvim_socket_path("term-w0t0p0:404B7BFA-65CF", tmp_path)
+    assert result == tmp_path / "nvim-term-w0t0p0_404B7BFA-65CF.sock"
+
+
 def test_set_writes_the_pane_atomically_via_rename(tmp_path: Path) -> None:
     # Atomicity is the property under test: the .pane is replaced by an
     # os-level rename of a fully-written temp file, never opened for an

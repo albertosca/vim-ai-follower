@@ -24,10 +24,17 @@ def _state_path(window_id: str, base_dir: Path | None) -> Path:
 
 
 def nvim_socket_path(window_id: str, base_dir: Path | None = None) -> Path:
-    """Deterministic per-tmux-window RPC socket path. The Neovim side must
-    call vim.fn.serverstart() at this exact path (see integração no README)."""
+    """Deterministic per-window RPC socket path. The Neovim side must call
+    vim.fn.serverstart() at this exact path (see integração no README).
+    Colons in window_id (present in iTerm's TERM_SESSION_ID, shaped like
+    "term-w0t0p0:UUID") are replaced with underscores: nvim's --listen
+    parses ANY address containing a colon as a TCP host:port via
+    getaddrinfo, so a literal colon here makes nvim reject the path with
+    "unknown node or service" instead of treating it as a unix socket
+    (live finding 2026-09-03, confirmed in isolation 2026-09-04)."""
     directory = base_dir if base_dir is not None else cache.CACHE_DIR
-    return directory / f"nvim-{window_id}.sock"
+    safe_window_id = window_id.replace(":", "_")
+    return directory / f"nvim-{safe_window_id}.sock"
 
 
 @dataclass(frozen=True)
