@@ -59,11 +59,12 @@ echo "$P" | "$CF" hook post &
 qa_config_handoff
 
 echo
-echo "LOOK AT: whether a separate, visible window opens (GUI nvim-qt/VimR if"
-echo "installed, else a fresh Terminal.app window) beside — not inside — the"
-echo "origin terminal; whether the origin terminal keeps working while it"
-echo "animates; whether the window is still open once the edit finishes"
-echo "(it must NOT auto-close)."
+echo "LOOK AT: whether a new nvim surface opens beside your current work — a"
+echo "GUI window (nvim-qt/VimR if installed), a split pane inside your"
+echo "current iTerm tab (iTerm2 default fallback), or a fresh Terminal.app"
+echo "window (last-resort fallback) — whether the origin terminal/pane keeps"
+echo "working while it animates, and whether it's still there once the edit"
+echo "finishes (it must NOT auto-close)."
 echo
 echo "Then run 'claude-follow stop' from this terminal — it should quit the"
 echo "standalone window cleanly."

@@ -39,7 +39,7 @@ command; it is not repeated per check here.
 | 6 | nvim backend: pause/interrupt/des-interrupt | shipped 2026-07-19 |
 | 7 | Parallel-hook serialization | fixed 2026-07-23 (`e51071e`) |
 | 8 | Insert-exit under a remapped `<Esc>` | `b8f43e8` 2026-07-23, superseded by `a5f6660` 2026-07-27 |
-| 9 | nvim standalone (no tmux) | shipped 2026-07-23 (`fe87f5b`) |
+| 9 | nvim standalone (no tmux) | shipped 2026-07-23 (`fe87f5b`), iTerm2 split-pane fallback added 2026-09-04 |
 | 10 | vim-without-tmux error | shipped 2026-07-23 (`fe87f5b`) |
 
 ---
@@ -434,9 +434,12 @@ rm -f /tmp/vaf-qa-esc.py
 ## Check 9 — nvim standalone (no tmux)
 
 **Purpose:** confirm the no-tmux path (merge `fe87f5b`, "no-tmux support:
-standalone nvim follower") opens a real, visible window from a plain
-terminal — not a pane inside the origin terminal — and that it survives
-independently of the edit that triggered it.
+standalone nvim follower", extended 2026-09-04 with the iTerm2 split-pane
+fallback) opens a real, visible nvim surface from a plain terminal — a GUI
+window, a split pane beside your shell (iTerm2, the default fallback when
+no GUI app is installed), or a fresh Terminal.app window (last resort for
+anyone not on iTerm2) — and that it survives independently of the edit
+that triggered it.
 
 **Setup:** from a plain terminal window (Terminal.app / iTerm) **outside
 any tmux session**, set config to the nvim backend with the default
@@ -476,24 +479,28 @@ echo "$P" | claude-follow hook pre
 echo "$P" | claude-follow hook post
 ```
 
-**What Alberto looks at:** whether a separate, visible window opens (GUI
-nvim-qt or VimR if installed, else a fresh Terminal.app window) beside — not
-inside — the origin terminal; whether the origin terminal keeps working
-while it animates; whether the window is still open once the edit finishes.
+**What Alberto looks at:** whether a new nvim surface opens beside your
+current work — a GUI window (nvim-qt or VimR, if installed), a **split
+pane inside your current iTerm tab** (the default when running iTerm2 with
+neither GUI app installed — nvim opens right next to your shell instead of
+a disconnected window), or a fresh Terminal.app window (last-resort
+fallback, only when neither a GUI app nor iTerm2 is available); whether
+the origin terminal/pane keeps working while it animates; whether the
+surface is still there once the edit finishes.
 
-**PASS:** a visible standalone window opens, animates the content
-char-by-char, and stays open after the edit completes (does not
-auto-close); the origin terminal remains fully usable throughout; running
-`claude-follow stop` from the origin terminal quits the standalone window
-cleanly.
+**PASS:** a visible nvim surface opens (GUI window, iTerm split pane, or
+Terminal.app window, depending on what's installed/detected), animates the
+content char-by-char, and stays open after the edit completes (does not
+auto-close); the origin terminal/pane remains fully usable throughout;
+running `claude-follow stop` from the origin terminal quits the standalone
+nvim cleanly.
 
 ```sh
 claude-follow stop
 ```
 
-**FAIL:** no window opens, a traceback appears, the window closes itself
-when the edit finishes, or the origin terminal is blocked/frozen while the
-window is open.
+**FAIL:** nothing opens, a traceback appears, it closes itself when the
+edit finishes, or the origin terminal is blocked/frozen while it's open.
 
 **Cleanup:**
 
