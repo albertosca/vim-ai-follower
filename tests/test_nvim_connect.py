@@ -130,17 +130,36 @@ def test_resolve_launched_waits_for_socket_to_appear(tmp_path: Path) -> None:
 
 
 def test_standalone_command_prefers_nvim_qt() -> None:
-    cmd = nvim_connect.standalone_launch_command("/s.sock", has_nvim_qt=True, has_vimr=True)
+    cmd = nvim_connect.standalone_launch_command(
+        "/s.sock", has_nvim_qt=True, has_vimr=True, is_iterm=True
+    )
     assert cmd == ["nvim-qt", "--", "--listen", "/s.sock"]
 
 
 def test_standalone_command_uses_vimr_when_no_nvim_qt() -> None:
-    cmd = nvim_connect.standalone_launch_command("/s.sock", has_nvim_qt=False, has_vimr=True)
+    cmd = nvim_connect.standalone_launch_command(
+        "/s.sock", has_nvim_qt=False, has_vimr=True, is_iterm=True
+    )
     assert cmd[:3] == ["open", "-a", "VimR"]  # + the file/socket wiring
 
 
-def test_standalone_command_falls_back_to_terminal_app() -> None:
-    cmd = nvim_connect.standalone_launch_command("/s.sock", has_nvim_qt=False, has_vimr=False)
+def test_standalone_command_uses_iterm_split_when_no_gui_app() -> None:
+    cmd = nvim_connect.standalone_launch_command(
+        "/s.sock", has_nvim_qt=False, has_vimr=False, is_iterm=True
+    )
+    assert cmd[0] == "osascript"
+    script = cmd[2]
+    # bundle id, not display name — immune to a future app rename
+    assert 'application id "com.googlecode.iterm2"' in script
+    assert "current session of current window" in script
+    assert "split vertically with default profile" in script
+    assert "nvim --listen /s.sock" in script
+
+
+def test_standalone_command_falls_back_to_terminal_app_when_not_iterm() -> None:
+    cmd = nvim_connect.standalone_launch_command(
+        "/s.sock", has_nvim_qt=False, has_vimr=False, is_iterm=False
+    )
     assert cmd[0] == "osascript"
     assert any("nvim --listen /s.sock" in part for part in cmd)
     # `do script` alone can create an invisible, backgrounded window when

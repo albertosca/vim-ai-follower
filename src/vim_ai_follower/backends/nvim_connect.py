@@ -54,13 +54,34 @@ def resolve_nvim_target(origin_pane: str, window_id: str, adopt: bool) -> tuple[
     return sock, True
 
 
-def standalone_launch_command(sock: str, *, has_nvim_qt: bool, has_vimr: bool) -> list[str]:
-    """Argv to open a VISIBLE nvim listening on `sock`, preferring a native GUI
-    and falling back to a fresh Terminal.app window (always present on macOS)."""
+def standalone_launch_command(
+    sock: str, *, has_nvim_qt: bool, has_vimr: bool, is_iterm: bool
+) -> list[str]:
+    """Argv to open a VISIBLE nvim listening on `sock`, preferring a native
+    GUI, then a split pane inside the user's own iTerm2 window/tab (so it
+    lands beside their existing work instead of a disconnected process),
+    and only falling back to a fresh Terminal.app window (always present
+    on macOS) when neither a GUI app nor iTerm2 is available."""
     if has_nvim_qt:
         return ["nvim-qt", "--", "--listen", sock]
     if has_vimr:
         return ["open", "-a", "VimR", "--args", "--listen", sock]
+    if is_iterm:
+        # Verified against the installed iTerm2.sdef (2026-09-04): `split
+        # vertically with default profile` is a command on the `session`
+        # class, taking an optional `command` parameter. Targeting the
+        # bundle id (not "iTerm2" by name) is immune to a future app
+        # rename. This puts nvim in a NEW pane beside the user's current
+        # work, in the SAME window/tab — the thing Alberto asked for
+        # instead of a disconnected Terminal.app window (2026-09-03).
+        script = (
+            'tell application id "com.googlecode.iterm2"\n'
+            "  tell current session of current window\n"
+            f'    split vertically with default profile command "nvim --listen {sock}"\n'
+            "  end tell\n"
+            "end tell"
+        )
+        return ["osascript", "-e", script]
     # `do script` alone can create the window WITHOUT bringing it on screen: if
     # Terminal.app is already running (even with no windows, or backgrounded on
     # another Space), the new window comes back `visible=false` and Terminal
@@ -84,6 +105,7 @@ def launch_standalone_nvim(window_id: str) -> str:
         sock,
         has_nvim_qt=shutil.which("nvim-qt") is not None,
         has_vimr=shutil.which("VimR") is not None or _vimr_app_present(),
+        is_iterm=os.environ.get("TERM_PROGRAM") == "iTerm.app",
     )
     subprocess.run(cmd, check=True)
     deadline = time.monotonic() + _SOCKET_WAIT_SECONDS
