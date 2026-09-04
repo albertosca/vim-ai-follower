@@ -40,7 +40,7 @@ set -e
 if [[ "$CODE" -ne 0 ]]; then
   echo
   echo "claude-follow start failed (exit $CODE) — see its error above. Not a QA"
-  echo "PASS/FAIL by itself (Check 9's FAIL case is 'no window opens' with a"
+  echo "PASS/FAIL by itself (Check 9's FAIL case is 'nothing opens' with a"
   echo "traceback, which this could be) but nothing was set up to watch."
   echo "Your real config is being restored automatically now."
   exit "$CODE"
@@ -50,7 +50,7 @@ F=/tmp/vaf-qa-standalone.py
 cp "$FIX/standalone-demo.py" "$F"
 P="{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$F\"},\"session_id\":\"me\"}"
 echo "$P" | "$CF" hook pre
-echo ">>> Firing hook post — should animate into a separate, visible window."
+echo ">>> Firing hook post — should animate into a new nvim surface beside your work."
 echo "$P" | "$CF" hook post &
 
 # From here on, the follower is live and Alberto needs the test config to
@@ -67,7 +67,7 @@ echo "working while it animates, and whether it's still there once the edit"
 echo "finishes (it must NOT auto-close)."
 echo
 echo "Then run 'claude-follow stop' from this terminal — it should quit the"
-echo "standalone window cleanly."
+echo "standalone nvim cleanly."
 echo
 echo "Cleanup when done:"
 echo "  rm -f $F"
