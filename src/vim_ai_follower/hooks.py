@@ -558,6 +558,12 @@ def _animate_edit(
 
     after = raw_after.decode("utf-8", errors="replace")
 
+    # Show the "Writing..." cue for the whole animation, not just the
+    # pause-resume/des-interrupt-replay special cases that happened to set
+    # this string already. The completion refresh (_refresh_writer_cue,
+    # already correct) clears it or re-asserts the writer cue once done.
+    status_surface_for(current).set_state("Writing...")
+
     # Evict/persist BEFORE animating so the tab shuffle never lands
     # mid-typing — touch_open_files never puts the just-touched file_path in
     # the evicted slice, so the file about to be animated can never be the

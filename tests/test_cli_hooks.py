@@ -1830,6 +1830,24 @@ def test_completed_single_writer_animation_clears_any_stale_transient_surface(
     surface.set_writer.assert_not_called()  # one writer: never a persistent cue
 
 
+def test_animation_shows_writing_state_before_typing_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The float/border body must say "Writing..." while an ordinary
+    # animation is in flight. Before this fix, only the pause-resume and
+    # des-interrupt-replay paths ever called set_state("Writing...") — a
+    # ordinary first-time edit with no pause/interrupt left the body blank
+    # for the whole animation.
+    target = tmp_path / "a.py"
+    target.write_text("x\n")
+    _register_fake_follower("@1", "%2", shown_any=True)
+    surface = MagicMock()
+    monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: surface)
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _edit_payload(target, session_id="$1"))
+    surface.set_state.assert_called_once_with("Writing...")
+
+
 def test_refresh_writer_cue_is_a_noop_when_state_vanished(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
