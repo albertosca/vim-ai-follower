@@ -141,11 +141,11 @@ def _animate_lines(
 class NvimFollower:
     """Follower backend that animates edits in a real Neovim over the RPC API.
 
-    Real-tab navigation (goto_file/ensure_showing, via `:tab drop`) gives
-    multi-file parity with the tmux backend; this class also owns the
-    connection, show_fresh, apply_edit, the per-line driver, full
-    pause/resume + live-speed parity, and the launched-vs-adopted relock
-    distinction."""
+    Real-tab navigation (goto_file/ensure_showing, via pure API tabpage/
+    window lookups — never an Ex command) gives multi-file parity with the
+    tmux backend; this class also owns the connection, show_fresh,
+    apply_edit, the per-line driver, full pause/resume + live-speed parity,
+    and the launched-vs-adopted relock distinction."""
 
     socket_path: str
     window_id: str = ""
