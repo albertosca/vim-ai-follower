@@ -41,17 +41,21 @@ def test_animate_lines_types_each_line_char_by_char() -> None:
     ]
 
 
-def test_animate_lines_forces_the_static_default_colorscheme() -> None:
-    # Alberto's request (2026-09-15): a static, hardcoded colorscheme so
-    # the animation never looks different from his own — his real
-    # ~/.config/nvim/init.vim sources ~/.vimrc (gruvbox/dark), but that
-    # config's own plugin loading can still be mid-flight when the
-    # follower starts typing. Force it explicitly instead of racing it.
+def test_animate_lines_forces_the_static_default_colorscheme_before_the_typing_highlight() -> None:
+    # Order matters: `:colorscheme` runs `hi clear` first, which wipes any
+    # highlight group already defined (VafTypingLine here, VafWriterCue
+    # elsewhere) — so background+colorscheme must run BEFORE the typing
+    # highlight is defined, not after. A prior commit had this backwards;
+    # reverting the reorder makes this test fail (verified 2026-09-15).
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", return_value=None):
         _animate_lines(nvim, 7, ("a",), 0, lambda: 0.05, "@1", ns=3, base_dir=Path("/tmp/x"))
-    assert call("silent! colorscheme gruvbox") in nvim.command.call_args_list
-    assert call("set background=dark") in nvim.command.call_args_list
+    cmds = [c.args[0] for c in nvim.command.call_args_list]
+    assert "set background=dark" in cmds
+    background_idx = cmds.index("set background=dark")
+    colorscheme_idx = next(i for i, c in enumerate(cmds) if "colorscheme gruvbox" in c)
+    highlight_idx = next(i for i, c in enumerate(cmds) if c.startswith("highlight default"))
+    assert background_idx < colorscheme_idx < highlight_idx
 
 
 def test_animate_lines_pace_zero_types_the_whole_line_at_once() -> None:

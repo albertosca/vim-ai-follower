@@ -64,16 +64,33 @@ def _animate_lines(
     line so a live Ctrl+a +/- takes effect at the next line; a zero pace types
     the whole line at once (the pace-0 catch-up must not animate).
     `save_pending(index)` persists the crash-fallback remainder while paused."""
-    nvim.command(f"highlight default {_TYPING_HL} ctermbg=237 guibg=#3a3a3a")
     # Static default (2026-09-15, Alberto's request): his real nvim config
     # loads gruvbox via ~/.vimrc, but that config's own plugin loading can
     # still be mid-flight when typing starts, so force it explicitly and
-    # synchronously here instead of racing load order. `silent!` swallows
+    # synchronously here instead of racing load order. Order matters twice
+    # over: `set background=dark` must run BEFORE `colorscheme` (gruvbox
+    # reads &background at source time; setting it after forces a second,
+    # redundant re-source), and BOTH must run before `highlight default
+    # {_TYPING_HL}` below — `:colorscheme` always runs `hi clear` first,
+    # which wipes every Vaf* highlight group already defined (VafTypingLine
+    # here, and VafWriterCue from hooks._apply_writer_cue), silently and
+    # invisibly disabling the typing cue and transiently blanking the
+    # writer-cue border. The g:colors_name guard makes this a true no-op
+    # after the first animation on this nvim process, so only the very
+    # first call pays the hi clear cost (both self-heal afterward via
+    # hooks._refresh_writer_cue's completion re-render). `silent!` swallows
     # "E185: Cannot find color scheme" in hermetic test/CI nvims that don't
     # have the gruvbox plugin at all; `background` is a built-in option and
-    # needs no guard.
-    nvim.command("silent! colorscheme gruvbox")
+    # needs no guard. `silent!` must sit directly before `colorscheme`, not
+    # before `if` — a modifier on `if` does NOT propagate to guard the
+    # command(s) it guards (verified against real nvim: `silent! if 1 |
+    # colorscheme bogus | endif` still raises E185, while `if 1 | silent!
+    # colorscheme bogus | endif` swallows it).
     nvim.command("set background=dark")
+    nvim.command(
+        "if get(g:, 'colors_name', '') !=# 'gruvbox' | silent! colorscheme gruvbox | endif"
+    )
+    nvim.command(f"highlight default {_TYPING_HL} ctermbg=237 guibg=#3a3a3a")
     index = 0
     while index < len(lines):
         signal = control.check_signal(window_id, base_dir)
