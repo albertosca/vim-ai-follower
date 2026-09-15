@@ -141,10 +141,11 @@ def _animate_lines(
 class NvimFollower:
     """Follower backend that animates edits in a real Neovim over the RPC API.
 
-    Buffer-per-file navigation (goto_file/ensure_showing) lands in Phase 3;
-    this backend owns the connection, show_fresh, apply_edit, the per-line
-    driver, full pause/resume + live-speed parity, and the launched-vs-adopted
-    relock distinction."""
+    Real-tab navigation (goto_file/ensure_showing, via `:tab drop`) gives
+    multi-file parity with the tmux backend; this class also owns the
+    connection, show_fresh, apply_edit, the per-line driver, full
+    pause/resume + live-speed parity, and the launched-vs-adopted relock
+    distinction."""
 
     socket_path: str
     window_id: str = ""
@@ -209,12 +210,16 @@ class NvimFollower:
         Deliberately never `:e`/`:edit` here: that would load the file's real
         (already-written) content and flash the finished result before the
         retype. The buffer is wiped and renamed in place, seeded with a single
-        blank line, then each content line is animated in. in_new_tab is
-        accepted for protocol parity but multi-buffer layout is Task 6."""
+        blank line, then each content line is animated in. in_new_tab opens a
+        fresh tab first (:tabnew, no disk read) instead of reusing the
+        current window — real multi-file parity with the tmux backend."""
         nvim = self._connect()
         ns = nvim.api.create_namespace(_NAMESPACE)
         nvim.command(f"silent! bwipeout! {file_path}")
-        nvim.command("enew")
+        if in_new_tab:
+            nvim.command("tabnew")
+        else:
+            nvim.command("enew")
         nvim.command(f"file {file_path}")
         nvim.command("filetype detect")
         nvim.command("setlocal buftype=")
@@ -452,25 +457,34 @@ class NvimFollower:
         nvim.api.buf_set_option(buf, "modifiable", True)
 
     def goto_file(self, file_path: str) -> None:
-        """Switch to the buffer named `file_path`, creating it (unnamed,
-        listed) if it doesn't exist yet. Never `:e` the real file here — that
-        would flash disk content before a retype. Looked up via
-        nvim.funcs.bufnr rather than a hand-rolled nvim_list_bufs + string
-        compare: nvim CANONICALIZES buffer names (resolves symlinks — e.g.
-        macOS /tmp -> /private/tmp), so a raw string compare of file_path
-        against nvim_buf_get_name misses an existing buffer whenever a path
-        component is a symlink, and the followup buf_set_name then blows up
-        with E95 (buffer with that resolved name already exists) instead of
-        finding it. bufnr() applies nvim's own normalization, so it agrees
-        with whatever name nvim actually gave the buffer."""
+        """Switch to the tab showing file_path (by name, immune to the user
+        closing/reordering tabs), opening one if missing. Pure API calls only
+        — never an Ex :edit/:drop/:buffer, which would trigger Vim's "abandon
+        unsaved changes" guard (E37) or silently discard typed-but-unsaved
+        content and reload from disk, exactly what this backend must never
+        do (its buffers are never written; see show_fresh). Looked up via
+        nvim.funcs.bufnr rather than a hand-rolled compare, for the same
+        canonicalization reason as before (macOS /tmp -> /private/tmp)."""
         nvim = self._connect()
         bufnr = nvim.funcs.bufnr(file_path)
         if bufnr != -1:
-            nvim.api.set_current_buf(bufnr)
-        else:
-            buf = nvim.api.create_buf(True, False)
-            nvim.api.buf_set_name(buf, file_path)
-            nvim.api.set_current_buf(buf)
+            for tabpage in nvim.api.list_tabpages():
+                win = nvim.api.tabpage_get_win(tabpage)
+                if nvim.api.win_get_buf(win).number == bufnr:
+                    nvim.api.set_current_tabpage(tabpage)
+                    return
+            # Buffer exists but isn't shown in any tab — shouldn't normally
+            # happen (every open file gets its own tab from show_fresh), but
+            # show it in a new tab via API rather than risk any Ex command's
+            # unsaved-changes guard.
+            nvim.command("tabnew")
+            nvim.api.win_set_buf(0, bufnr)
+            return
+        # No such buffer at all — create one fresh, in a new tab.
+        nvim.command("tabnew")
+        buf = nvim.api.create_buf(True, False)
+        nvim.api.buf_set_name(buf, file_path)
+        nvim.api.win_set_buf(0, buf)
 
     def ensure_showing(self, file_path: str) -> None:
         self.goto_file(file_path)
@@ -478,7 +492,10 @@ class NvimFollower:
     def close_tab(self, file_path: str) -> None:
         # bufnr() here too, for the same reason as goto_file: bwipeout by a
         # raw (unresolved) name is a no-op if nvim canonicalized the buffer's
-        # actual name, silently leaving the "evicted" buffer alive.
+        # actual name, silently leaving the "evicted" buffer alive. goto_file
+        # first (same pattern as reload_and_relock/rewrite_buffer) so the tab
+        # showing this file is current before it's wiped out from under it.
+        self.goto_file(file_path)
         nvim = self._connect()
         bufnr = nvim.funcs.bufnr(file_path)
         if bufnr != -1:
