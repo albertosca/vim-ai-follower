@@ -65,6 +65,15 @@ def _animate_lines(
     the whole line at once (the pace-0 catch-up must not animate).
     `save_pending(index)` persists the crash-fallback remainder while paused."""
     nvim.command(f"highlight default {_TYPING_HL} ctermbg=237 guibg=#3a3a3a")
+    # Static default (2026-09-15, Alberto's request): his real nvim config
+    # loads gruvbox via ~/.vimrc, but that config's own plugin loading can
+    # still be mid-flight when typing starts, so force it explicitly and
+    # synchronously here instead of racing load order. `silent!` swallows
+    # "E185: Cannot find color scheme" in hermetic test/CI nvims that don't
+    # have the gruvbox plugin at all; `background` is a built-in option and
+    # needs no guard.
+    nvim.command("silent! colorscheme gruvbox")
+    nvim.command("set background=dark")
     index = 0
     while index < len(lines):
         signal = control.check_signal(window_id, base_dir)

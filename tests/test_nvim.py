@@ -41,6 +41,19 @@ def test_animate_lines_types_each_line_char_by_char() -> None:
     ]
 
 
+def test_animate_lines_forces_the_static_default_colorscheme() -> None:
+    # Alberto's request (2026-09-15): a static, hardcoded colorscheme so
+    # the animation never looks different from his own — his real
+    # ~/.config/nvim/init.vim sources ~/.vimrc (gruvbox/dark), but that
+    # config's own plugin loading can still be mid-flight when the
+    # follower starts typing. Force it explicitly instead of racing it.
+    nvim = MagicMock()
+    with patch("vim_ai_follower.control.check_signal", return_value=None):
+        _animate_lines(nvim, 7, ("a",), 0, lambda: 0.05, "@1", ns=3, base_dir=Path("/tmp/x"))
+    assert call("silent! colorscheme gruvbox") in nvim.command.call_args_list
+    assert call("set background=dark") in nvim.command.call_args_list
+
+
 def test_animate_lines_pace_zero_types_the_whole_line_at_once() -> None:
     # The pace-0 catch-up (des-interrupt / crash replay) must not animate: one
     # whole-line insert per line, no per-char loop.
