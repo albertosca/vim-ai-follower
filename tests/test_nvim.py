@@ -498,6 +498,27 @@ def test_apply_edit_deletes_then_animates_each_op(tmp_path: Path) -> None:
     nvim.api.buf_set_text.assert_any_call(7, 1, 0, 1, 0, ["vim ai follower"])
 
 
+def test_apply_edit_navigates_to_the_tab_showing_file_path(tmp_path: Path) -> None:
+    # Regression guard: apply_edit used to operate on whatever tab happened
+    # to be active instead of switching to file_path's own tab first, unlike
+    # goto_file/close_tab/reload_and_relock/resume, which all do. Harmless
+    # with a single tab, but live content corruption once multiple real
+    # tabs exist: editing file A while file B's tab is active would type
+    # A's diff into B's buffer, leaving A untouched.
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
+    nvim = MagicMock()
+    nvim.api.get_current_buf.return_value.handle = 7
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch.object(NvimFollower, "goto_file") as goto_file,
+    ):
+        follower.apply_edit("/tmp/f.py", [op])
+    goto_file.assert_called_once_with("/tmp/f.py")
+
+
 def test_apply_edit_interrupted_reports_completed_op_index(tmp_path: Path) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()

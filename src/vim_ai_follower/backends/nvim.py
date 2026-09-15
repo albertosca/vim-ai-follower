@@ -319,6 +319,7 @@ class NvimFollower:
         """Apply an edit script to the current buffer: each op deletes its
         old range (instant, via nvim_buf_set_lines) and animates its new lines
         in, checking for a signal at every op and line boundary."""
+        self.goto_file(file_path)
         nvim = self._connect()
         ns = nvim.api.create_namespace(_NAMESPACE)
         buf = nvim.api.get_current_buf().handle
