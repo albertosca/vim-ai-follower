@@ -4,17 +4,27 @@ fresh-file retypes, checking for pause/interrupt at each line boundary."""
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
 from vim_ai_follower import control
-from vim_ai_follower.diff import EditOp
+from vim_ai_follower.diff import EditOp, apply_ops
 from vim_ai_follower.tmux import TmuxPane
 
 DEFAULT_PACE_SECONDS = 0.05
 MAX_ANIMATION_SECONDS = 60.0
+
+
+def _terminated(lines: Sequence[str]) -> str:
+    """The buffer content of `lines` in the terminated-newline form every
+    persisted partial uses. Duplicated from hooks._terminated / nvim._terminated
+    rather than shared: hooks imports the backends which import this module, so
+    animate cannot import either of them. Terminating beats joining — a
+    "\\n".join round-trip through splitlines drops a trailing blank line, this
+    one is lossless."""
+    return "".join(line + "\n" for line in lines)
 
 
 @dataclass(frozen=True)
@@ -165,7 +175,16 @@ def run_ops(
     base_dir: Path | None = None,
     file_path: str = "",
     on_resume: Callable[[], None] | None = None,
+    base_content: str | None = None,
 ) -> AnimationResult:
+    """base_content is what the buffer held when this run started — the base the
+    crash-fallback `partial` is computed from, since this driver only sends
+    keystrokes and can never read the screen back. On a pause at op k the
+    partly-typed op has already been rolled back (both halves, see below), so
+    the buffer sits at exactly apply_ops(base_content, ops[:k]) and that is what
+    gets persisted. None means the caller genuinely could not supply a base (a
+    legacy pending with no partial of its own); the remainder is then saved with
+    partial=None and the consumer falls back to the live buffer."""
     provider: Callable[[], float] = (
         pace_seconds if callable(pace_seconds) else (lambda: pace_seconds)
     )
@@ -182,7 +201,19 @@ def run_ops(
 
             def save_pending(index: int = index, current_pace: float = current_pace) -> None:
                 control.save_pending_apply_edit(
-                    window_id, ops[index:], current_pace, base_dir, file_path=file_path
+                    window_id,
+                    ops[index:],
+                    current_pace,
+                    base_dir,
+                    file_path=file_path,
+                    # Op-granular, matching the remainder: each op's line
+                    # numbers are relative to the state its predecessors
+                    # produced, so replaying the prefix onto base_content
+                    # reproduces the buffer without reading it. Same
+                    # computation the nvim backend's _run_ops saver does.
+                    partial=(
+                        None if base_content is None else apply_ops(base_content, ops[:index])
+                    ),
                 )
 
             delete_seq = _delete_sequences(op)
@@ -267,7 +298,20 @@ def run_lines(
     continuation: bool = False,
     file_path: str = "",
     on_resume: Callable[[], None] | None = None,
+    base_content: str | None = None,
 ) -> AnimationResult:
+    """base_content is the content already on screen ABOVE the lines this run
+    types — "" for a retype into a freshly wiped buffer, the partial being
+    continued for a resume — in the same terminated-newline form a persisted
+    partial uses. It is the base the crash-fallback `partial` is computed from,
+    since this driver only sends keystrokes and can never read the screen back.
+    On a pause at line k the half-typed line has already been undone, so the
+    buffer sits at exactly base_content + lines[:k]; the line being typed is
+    deliberately excluded, because it is the remainder's first entry and gets
+    retyped from scratch (counting it twice is what duplicated it on the nvim
+    side). None means the caller genuinely could not supply a base (a legacy
+    pending with no partial of its own); the remainder is then saved with
+    partial=None and the consumer falls back to the live buffer."""
     provider: Callable[[], float] = (
         pace_seconds if callable(pace_seconds) else (lambda: pace_seconds)
     )
@@ -301,6 +345,11 @@ def run_lines(
                         continuation=continuation or index > 0,
                         base_dir=base_dir,
                         file_path=file_path,
+                        partial=(
+                            None
+                            if base_content is None
+                            else _terminated([*base_content.splitlines(), *lines[:index]])
+                        ),
                     )
 
                 if not _wait_while_paused(window_id, save_pending, base_dir):

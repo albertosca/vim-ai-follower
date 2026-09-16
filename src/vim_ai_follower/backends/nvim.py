@@ -404,10 +404,18 @@ class NvimFollower:
             index += 1
         return AnimationResult("completed", len(ops))
 
-    def apply_edit(self, file_path: str, ops: list[EditOp]) -> AnimationResult:
+    def apply_edit(
+        self, file_path: str, ops: list[EditOp], before: str | None = None
+    ) -> AnimationResult:
         """Apply an edit script to file_path's buffer: each op deletes its
         old range (instant, via nvim_buf_set_lines) and animates its new lines
         in, checking for a signal at every op and line boundary.
+
+        `before` is part of the Follower protocol for the tmux backend, which
+        sends keystrokes and can never read the buffer back, so it must be told
+        the base its crash-fallback `partial` is computed from. _run_ops reads
+        this buffer directly at run start (the one honest reading of what was
+        on screen), so the argument is redundant here — ignored.
 
         The ops were computed against a SNAPSHOT of that buffer, so they are
         meaningless without it. When the buffer is gone (an adopted nvim
@@ -425,6 +433,7 @@ class NvimFollower:
         leaves the buffer locked on both backends, and this is the one path
         that returns "completed" without going through the machinery that
         normally guarantees it."""
+        del before
         nvim = self._connect()
         if nvim.funcs.bufnr(file_path) == -1:
             self._open_from_disk(nvim, file_path)

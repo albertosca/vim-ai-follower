@@ -728,7 +728,11 @@ def _animate_edit(
 
     before = load_snapshot(session.window_id, file_path)
     ops = diff_module.compute_edit_script(before, after)
-    result = follower.apply_edit(file_path, ops)
+    # `before` goes along for the tmux backend: its driver cannot read the
+    # buffer, so this is the only way its pause-time crash fallback can record
+    # the applied prefix. It is the same string the interrupt path below
+    # replays the ops onto, so the two can never disagree.
+    result = follower.apply_edit(file_path, ops, before=before)
     if result.outcome == "interrupted":
         FollowerState.update_current_file(session.window_id, None)
         # completed_count indexes the very ops list the animation walked —

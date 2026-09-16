@@ -24,7 +24,16 @@ class Follower(Protocol):
 
     def close_tab(self, file_path: str) -> None: ...
 
-    def apply_edit(self, file_path: str, ops: list[EditOp]) -> AnimationResult: ...
+    # `before` is the content these ops were computed against. It exists for
+    # the tmux backend, whose driver sends keystrokes and can never read the
+    # buffer back, so it cannot compute the crash-fallback `partial` a pause
+    # persists without being told the base. The nvim backend reads its own
+    # buffer at run start and ignores the argument. Optional so a caller with
+    # no snapshot can still animate — the pending is then saved with
+    # partial=None and the consumer falls back to the live buffer.
+    def apply_edit(
+        self, file_path: str, ops: list[EditOp], before: str | None = None
+    ) -> AnimationResult: ...
 
     def show_fresh(
         self, file_path: str, content: str, in_new_tab: bool = False

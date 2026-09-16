@@ -112,7 +112,8 @@ class TmuxVimFollower:
         lines = tuple(content.splitlines())
         if not lines:
             return AnimationResult("completed", 0)
-        return run_lines(pane, self.window_id, lines, 0.0, file_path=file_path)
+        # `:%d` above wiped the buffer, so this rebuild starts from nothing.
+        return run_lines(pane, self.window_id, lines, 0.0, file_path=file_path, base_content="")
 
     def close_tab(self, file_path: str) -> None:
         pane = TmuxPane(pane_id=self.pane_id)
@@ -162,7 +163,25 @@ class TmuxVimFollower:
             pane.send_key("Enter")
         return result
 
-    def apply_edit(self, file_path: str, ops: list[EditOp]) -> AnimationResult:
+    def apply_edit(
+        self, file_path: str, ops: list[EditOp], before: str | None = None
+    ) -> AnimationResult:
+        """`before` is the buffer content these ops were computed against — the
+        base run_ops needs to record the crash-fallback `partial` on a pause.
+
+        Why the caller passes it instead of this backend reading it: the tmux
+        backend drives Vim through `tmux send-keys` only. TmuxPane is
+        write-only for buffer content (send_text/send_key/kill/title — there is
+        no buffer-dump helper and none of `:redir`, `capture-pane` or a
+        temp-file round-trip exists anywhere in src/), so reading the buffer
+        back would mean inventing a blocking read against a keystroke-driven
+        editor mid-animation. hooks._animate_edit already holds the exact value
+        (`load_snapshot`, the same string it diffs `after` against and the same
+        one its own interrupt path persists), so it hands it over.
+
+        None keeps the old behavior — the pending is saved with partial=None
+        and the consumer falls back to the live buffer — for any caller that
+        genuinely has no snapshot."""
         self.goto_file(file_path)
         return self._with_unlocked(
             _RELOCK_SYNCED,
@@ -173,6 +192,7 @@ class TmuxVimFollower:
                 self._live_pace,
                 file_path=file_path,
                 on_resume=lambda: self.goto_file(file_path),
+                base_content=before,
             ),
         )
 
@@ -217,6 +237,10 @@ class TmuxVimFollower:
                 self._live_pace,
                 file_path=file_path,
                 on_resume=lambda: self.goto_file(file_path),
+                # The `:%d` just above wiped the buffer down to its seed
+                # blank, so nothing of the content is on screen yet: the
+                # partial is whatever this run has typed and nothing more.
+                base_content="",
             )
 
         return self._with_unlocked(_RELOCK_READONLY_SYNCED, run)
@@ -235,6 +259,13 @@ class TmuxVimFollower:
         # with pace_seconds=0.0) must stay silent forever — it must never
         # re-read live state and start pacing again mid-catch-up.
         provider = (lambda: 0.0) if pending.pace_seconds == 0.0 else self._live_pace
+        # What is on screen when a resume starts IS the pending's own partial:
+        # every caller that reaches here on a non-None partial ran
+        # rewrite_buffer(file_path, pending.partial) first (hooks'
+        # _consume_pending_catchup and _replay_remainder both do), which rebuilt
+        # the buffer to exactly that. A None partial stays None, so a re-pause
+        # of a legacy pending keeps saying "not recorded" instead of inventing
+        # a base — the consumer's live-buffer fallback must stay meaningful.
         if isinstance(pending, PendingApplyEdit):
             return self._with_unlocked(
                 _RELOCK_SYNCED,
@@ -245,6 +276,7 @@ class TmuxVimFollower:
                     provider,
                     file_path=pending.file_path,
                     on_resume=on_resume,
+                    base_content=pending.partial,
                 ),
             )
         return self._with_unlocked(
@@ -257,6 +289,7 @@ class TmuxVimFollower:
                 continuation=pending.continuation,
                 file_path=pending.file_path,
                 on_resume=on_resume,
+                base_content=pending.partial,
             ),
         )
 
