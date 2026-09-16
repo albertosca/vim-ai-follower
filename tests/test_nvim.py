@@ -590,6 +590,7 @@ def test_pace_provider_reads_live_speed_from_state(tmp_path: Path) -> None:
 def test_goto_line_sets_cursor() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
+    nvim.api.buf_line_count.return_value = 80
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.goto_line(3)
     assert nvim.current.window.cursor == (3, 0)
@@ -688,9 +689,16 @@ def test_goto_file_creates_a_new_buffer_in_a_new_tab_when_none_exists() -> None:
     nvim.api.win_set_buf.assert_called_once_with(0, 42)
 
 
-def test_ensure_showing_delegates_to_goto_file() -> None:
+def test_ensure_showing_delegates_to_goto_file_when_the_buffer_exists() -> None:
+    # ensure_showing only delegates when there IS a buffer; with none it
+    # loads the real disk content instead (tests/test_nvim_missing_buffer.py).
     follower = NvimFollower(socket_path="/tmp/x.sock")
-    with patch.object(NvimFollower, "goto_file") as goto_file:
+    nvim = MagicMock()
+    nvim.funcs.bufnr.return_value = 9
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch.object(NvimFollower, "goto_file") as goto_file,
+    ):
         follower.ensure_showing("/tmp/f.py")
     goto_file.assert_called_once_with("/tmp/f.py")
 

@@ -316,11 +316,27 @@ class NvimFollower:
         return AnimationResult("completed", len(ops))
 
     def apply_edit(self, file_path: str, ops: list[EditOp]) -> AnimationResult:
-        """Apply an edit script to the current buffer: each op deletes its
+        """Apply an edit script to file_path's buffer: each op deletes its
         old range (instant, via nvim_buf_set_lines) and animates its new lines
-        in, checking for a signal at every op and line boundary."""
-        self.goto_file(file_path)
+        in, checking for a signal at every op and line boundary.
+
+        The ops were computed against a SNAPSHOT of that buffer, so they are
+        meaningless without it. When the buffer is gone (an adopted nvim
+        restarted on the same socket, or the user :bwipeout'd it) goto_file
+        would hand us a brand-new EMPTY buffer and the op-loop would either
+        fabricate wrong content (small ops "succeed") or raise nvim's "Index
+        out of bounds" on any op touching a later line — uncaught, that
+        escapes the hook process. Show the real on-disk content instead: this
+        runs from PostToolUse, after Claude's write, so disk already holds
+        exactly the post-edit content. Reported as completed(len(ops)) so the
+        caller's bookkeeping (writer-cue refresh, open-file tracking) runs its
+        normal non-interrupted path — nothing downstream assumes the
+        animation actually typed."""
         nvim = self._connect()
+        if nvim.funcs.bufnr(file_path) == -1:
+            self._open_from_disk(nvim, file_path)
+            return AnimationResult("completed", len(ops))
+        self.goto_file(file_path)
         ns = nvim.api.create_namespace(_NAMESPACE)
         buf = nvim.api.get_current_buf().handle
         return self._drive(
@@ -472,7 +488,11 @@ class NvimFollower:
         would trigger Vim's "abandon unsaved changes" guard (E37) or
         silently discard typed-but-unsaved content and reload from disk,
         exactly what this backend must never do (its buffers are never
-        written; see show_fresh). Looked up via nvim.funcs.bufnr rather
+        written; see show_fresh). This is the entry point that NEVER reads
+        disk — a missing buffer is created EMPTY here, because show_fresh's
+        callers must not see the finished file flashed before it is typed.
+        ensure_showing is the sibling that does read disk. Looked up via
+        nvim.funcs.bufnr rather
         than a hand-rolled compare, for the same canonicalization reason as
         before (macOS /tmp -> /private/tmp)."""
         nvim = self._connect()
@@ -497,8 +517,46 @@ class NvimFollower:
         nvim.api.buf_set_name(buf, file_path)
         nvim.api.win_set_buf(0, buf)
 
+    def _open_from_disk(self, nvim: pynvim.Nvim, file_path: str) -> None:
+        """Open file_path's REAL on-disk content in a new tab.
+
+        Pure API (bufadd + bufload + win_set_buf) rather than `:edit`, for two
+        measured reasons (2026-09-16, real headless nvim). First, `:edit`
+        needs the path escaped: a perfectly ordinary name containing `#` or
+        `%` raises E499 ("Empty file name for '%' or '#'"), while bufadd takes
+        the path as data. Second, bufload only loads a buffer that is NOT
+        already loaded, so it can never discard typed-but-unsaved content —
+        no "abandon changes" guard (E37) is even in play, whereas `:edit`'s
+        safety relies on the argument that tabnew's scratch window makes E37
+        unreachable. bufadd applies nvim's own name canonicalization (macOS
+        /tmp -> /private/tmp), so a later bufnr(file_path) finds this very
+        buffer — same reason goto_file uses bufnr. bufadd creates the buffer
+        unlisted; list it, for parity with goto_file's create_buf(True, ...).
+        A file that does not exist on disk is fine: the buffer opens empty,
+        exactly as `:edit` on a new file would."""
+        bufnr = nvim.funcs.bufadd(file_path)
+        nvim.funcs.bufload(bufnr)
+        nvim.api.buf_set_option(bufnr, "buflisted", True)
+        nvim.command("tabnew")
+        nvim.api.win_set_buf(0, bufnr)
+        nvim.command("filetype detect")
+
     def ensure_showing(self, file_path: str) -> None:
-        self.goto_file(file_path)
+        """Show file_path with its REAL on-disk content — the Read-navigation
+        and binary-file entry point, where the finished content is exactly
+        what should appear because nothing is animated afterwards (parity
+        with the tmux backend's `:tab drop`).
+
+        This is THE disk-reading entry point of this backend; goto_file is
+        the one that NEVER reads disk, because show_fresh's callers rely on
+        the finished file not being flashed before it is typed. An existing
+        buffer is therefore switched to and never reloaded: it may hold
+        typed-but-unsaved content, which in this backend is the norm."""
+        nvim = self._connect()
+        if nvim.funcs.bufnr(file_path) != -1:
+            self.goto_file(file_path)
+            return
+        self._open_from_disk(nvim, file_path)
 
     def close_tab(self, file_path: str) -> None:
         # bufnr() here too, for the same reason as goto_file: bwipeout by a
@@ -515,7 +573,14 @@ class NvimFollower:
             nvim.command(f"silent! bwipeout! {bufnr}")
 
     def goto_line(self, offset: int) -> None:
-        self._connect().current.window.cursor = (offset, 0)
+        """Move the cursor to line `offset`, CLAMPED to the buffer's last
+        line. An out-of-range Read offset is normal — Claude can read a file
+        at an offset that a later edit made shorter — and nvim's cursor
+        setter answers it with "Invalid cursor line: out of range", which
+        escapes the hook process uncaught. The caller only ever passes
+        offset > 0, so a lower clamp would be dead code."""
+        nvim = self._connect()
+        nvim.current.window.cursor = (min(offset, nvim.api.buf_line_count(0)), 0)
 
     def stop(self) -> None:
         # Quit the dedicated nvim this follower launched — its tmux split
