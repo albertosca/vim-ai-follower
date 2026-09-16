@@ -327,9 +327,17 @@ def test_show_fresh_pause_saves_show_fresh_remainder_then_resumes(tmp_path: Path
         continuation: bool = False,
         base_dir: Path | None = None,
         file_path: str = "",
+        partial: str | None = None,
     ) -> None:
         saved.append((lines, continuation, file_path))
-        real_save(window_id, lines, pace, continuation=continuation, file_path=file_path)
+        real_save(
+            window_id,
+            lines,
+            pace,
+            continuation=continuation,
+            file_path=file_path,
+            partial=partial,
+        )
 
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -364,9 +372,10 @@ def test_apply_edit_pause_at_op_boundary_saves_ops_and_resumes(tmp_path: Path) -
         pace: float,
         base_dir: Path | None = None,
         file_path: str = "",
+        partial: str | None = None,
     ) -> None:
         saved.append(len(ops))
-        real_save(window_id, ops, pace, file_path=file_path)
+        real_save(window_id, ops, pace, file_path=file_path, partial=partial)
 
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -410,6 +419,7 @@ def test_apply_edit_pause_inside_an_ops_lines_saves_and_resumes(tmp_path: Path) 
         pace: float,
         base_dir: Path | None = None,
         file_path: str = "",
+        partial: str | None = None,
     ) -> None:
         saved.append(len(ops))
 

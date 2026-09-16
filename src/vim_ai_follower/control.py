@@ -156,23 +156,36 @@ def is_animating(window_id: str, base_dir: Path | None = None) -> bool:
 @dataclass(frozen=True)
 class PendingApplyEdit:
     """Resumable remainder of a diff animation. file_path records which tab
-    the resume must re-select first (empty only for legacy/unknown state)."""
+    the resume must re-select first (empty only for legacy/unknown state).
+    partial is the already-applied prefix — see PendingShowFresh."""
 
     ops: list[EditOp]
     pace_seconds: float
     file_path: str = ""
+    partial: str | None = None
 
 
 @dataclass(frozen=True)
 class PendingShowFresh:
     """Resumable remainder of a fresh-file retype. continuation marks that
     earlier lines already landed (so resume opens lines instead of typing
-    into the wiped buffer's first line); file_path is the tab to re-select."""
+    into the wiped buffer's first line); file_path is the tab to re-select.
+
+    partial is the content the buffer held when this remainder was persisted
+    — the counterpart the crash-fallback catch-up rebuilds from instead of
+    trusting the live buffer's shape (which, since an interrupt stopped
+    snapping the current line, routinely ends on a HALF-TYPED line the row
+    math would then push down instead of replace). None means "not recorded":
+    a pending file written before this field existed, or one saved by a call
+    site that cannot compute it (the tmux animation drivers, which never see
+    the content already on screen). A consumer reading None must fall back to
+    the live buffer — degraded, but exactly the behavior that preceded it."""
 
     lines: tuple[str, ...]
     pace_seconds: float
     continuation: bool = False
     file_path: str = ""
+    partial: str | None = None
 
 
 def _write_pending(window_id: str, payload: dict[str, Any], base_dir: Path | None) -> None:
@@ -189,6 +202,7 @@ def save_pending_apply_edit(
     pace_seconds: float,
     base_dir: Path | None = None,
     file_path: str = "",
+    partial: str | None = None,
 ) -> None:
     _write_pending(
         window_id,
@@ -197,6 +211,7 @@ def save_pending_apply_edit(
             "remaining_ops": [asdict(op) for op in ops],
             "pace_seconds": pace_seconds,
             "file_path": file_path,
+            "partial": partial,
         },
         base_dir,
     )
@@ -209,6 +224,7 @@ def save_pending_show_fresh(
     continuation: bool = False,
     base_dir: Path | None = None,
     file_path: str = "",
+    partial: str | None = None,
 ) -> None:
     _write_pending(
         window_id,
@@ -218,6 +234,7 @@ def save_pending_show_fresh(
             "pace_seconds": pace_seconds,
             "continuation": continuation,
             "file_path": file_path,
+            "partial": partial,
         },
         base_dir,
     )
@@ -246,12 +263,14 @@ def load_pending_animation(
             ops=ops,
             pace_seconds=data["pace_seconds"],
             file_path=data.get("file_path", ""),
+            partial=data.get("partial"),
         )
     return PendingShowFresh(
         lines=tuple(data["remaining_lines"]),
         pace_seconds=data["pace_seconds"],
         continuation=data.get("continuation", False),
         file_path=data.get("file_path", ""),
+        partial=data.get("partial"),
     )
 
 

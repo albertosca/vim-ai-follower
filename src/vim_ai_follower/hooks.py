@@ -358,6 +358,7 @@ def _rearm_handoff(
             # the `seeded` the next rewrite_buffer/resume pair will compute.
             continuation=partial_content != "",
             file_path=pending.file_path,
+            partial=partial_content,
         )
     else:
         # A resumed apply_edit counts OPS of the remainder, and each op's line
@@ -370,6 +371,7 @@ def _rearm_handoff(
             pending.ops[completed_count:],
             pending.pace_seconds,
             file_path=pending.file_path,
+            partial=partial_content,
         )
     follower.hand_over()
     FollowerState.update_current_file(window_id, None)
@@ -583,6 +585,52 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         control.clear_animating(session.window_id)
 
 
+def _consume_pending_catchup(
+    follower: Follower,
+    file_path: str,
+    pending: control.PendingApplyEdit | control.PendingShowFresh,
+) -> None:
+    """Silently fast-forward a crash-fallback remainder so the buffer holds
+    the state the new edit's ops were computed against.
+
+    Both backends persist pending state now, so this routes through whatever
+    backend follower the caller built.
+
+    Rebuilds from the PERSISTED partial first, exactly like the des-interrupt
+    path (_replay_remainder) — never from the live buffer's shape. The hook
+    that saved the remainder was killed, so nothing repaired the buffer: its
+    tail is routinely a HALF-TYPED line (an interrupt no longer snaps the
+    current line to its full text, and a kill mid-pause never could). Trusting
+    that shape is what broke — _resume_fresh's `start_row = len(existing) - 1`
+    targeted the seed blank instead of the partial line and pushed the
+    leftover down (measured: ['ab','wx','wxyz','q'] for a 3-line file), and
+    _run_ops's range delete, sized to the op's ORIGINAL range, stranded every
+    extra row a partly-typed multi-line op had left (['a','WW','XX','YY','X',
+    'c']). rewrite_buffer discards all of it and puts back exactly the prefix
+    that was really shown.
+
+    Deriving the partial here instead of persisting it does not work: for a
+    PendingShowFresh, disk now holds the NEW edit's content, not the one the
+    interrupted retype was typing, so "disk minus remainder" is the wrong
+    prefix; for a PendingApplyEdit, only the remainder is persisted, so the
+    applied prefix cannot be recomputed at all.
+
+    partial=None means the saver could not record it (an older on-disk
+    pending file, or the tmux animation drivers) — fall back to the previous
+    live-buffer behavior rather than rebuilding to a partial we do not have.
+
+    seeded says whether the buffer the replay starts on carries a trailing
+    blank the replay must type in FRONT of and then drop. Both cases that
+    reach it are falsy partials: None leaves the live interrupted show_fresh
+    buffer, which still carries its seed blank (show_fresh only drops that on
+    a completed outcome); an empty partial makes rewrite_buffer force a single
+    blank line, since nvim cannot hold a truly empty buffer. A non-empty
+    partial rebuilds seedless. (A PendingApplyEdit ignores seeded entirely.)"""
+    if pending.partial is not None:
+        follower.rewrite_buffer(file_path, pending.partial)
+    follower.resume(dataclasses.replace(pending, pace_seconds=0.0), seeded=not pending.partial)
+
+
 def _animate_edit(
     payload: dict[str, Any],
     session: Session,
@@ -625,13 +673,7 @@ def _animate_edit(
         and not is_fresh
         and not binary
     ):
-        # Both backends persist pending state now, so route the pace-0 catch-up
-        # through the already-constructed backend follower (get_follower above).
-        # seeded=True: the live interrupted show_fresh buffer still carries the
-        # trailing seed blank (show_fresh only drops it on a completed outcome),
-        # so _resume_fresh must type in front of it and drop it. A PendingApply
-        # Edit ignores seeded entirely.
-        follower.resume(dataclasses.replace(pending, pace_seconds=0.0), seeded=True)
+        _consume_pending_catchup(follower, file_path, pending)
 
     if binary:
         # Binary files are never animated, so it's safe to just navigate to
@@ -676,6 +718,7 @@ def _animate_edit(
                 config.pace_seconds_for(current.speed),
                 continuation=result.completed_count > 0,
                 file_path=file_path,
+                partial=partial,
             )
             _await_user_handoff(current, session, file_path, after, partial)
         else:
@@ -696,6 +739,7 @@ def _animate_edit(
             ops[result.completed_count :],
             config.pace_seconds_for(current.speed),
             file_path=file_path,
+            partial=partial,
         )
         _await_user_handoff(current, session, file_path, after, partial)
     else:
