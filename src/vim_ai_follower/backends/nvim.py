@@ -56,13 +56,22 @@ def _animate_lines(
     flushes the terminal UI so the typing shows smoothly instead of in
     coalesced bursts.
 
-    On interrupt the current line is snapped to its full text — leaving the
-    buffer at a clean line boundary, since the partial/resume machinery is
-    whole-line — and the run returns "interrupted" with that line counted. A
-    pause blocks in place via animate._wait_while_paused until the user resumes
-    (retyping from the same character) or interrupts. The pace is re-read per
-    line so a live Ctrl+a +/- takes effect at the next line; a zero pace types
-    the whole line at once (the pace-0 catch-up must not animate).
+    On interrupt mid-line, the buffer is left exactly as far as it was typed —
+    no snap to the line's full text. Alberto's report (2026-09-16): with the
+    old snap, interrupting mid-line "finished writing the line" before handing
+    the buffer over, which is precisely what he does not want. The line is NOT
+    counted as shown (the run returns "interrupted" with the line's own index,
+    not index + 1), so it is the first entry of the saved remainder and gets
+    retyped from its start on resume — the whole-line partial/resume machinery
+    stays coherent (it always retypes a stored remainder line from scratch,
+    never mid-character) without any consumer needing to know a line was ever
+    half-typed. This mirrors the mid-char PAUSE crash-fallback below
+    (`save_pending(index)`), which already treats the in-progress line as not
+    yet shown for the same reason. A pause blocks in place via
+    animate._wait_while_paused until the user resumes (retyping from the same
+    character) or interrupts. The pace is re-read per line so a live Ctrl+a
+    +/- takes effect at the next line; a zero pace types the whole line at
+    once (the pace-0 catch-up must not animate).
     `save_pending(index)` persists the crash-fallback remainder while paused."""
     # Static default (2026-09-15, Alberto's request): his real nvim config
     # loads gruvbox via ~/.vimrc, but that config's own plugin loading can
@@ -128,11 +137,11 @@ def _animate_lines(
                 nvim.api.win_set_cursor(0, [row + 1, char])
             nvim.command("redraw")
             time.sleep(pace)
-        if char < len(line):  # snap the untyped remainder on interrupt
-            nvim.api.buf_set_text(buf, row, char, row, char, [line[char:]])
         nvim.api.buf_del_extmark(buf, ns, mark)
         if interrupted:
-            return AnimationResult("interrupted", index + 1)
+            # Leave the line exactly as far as it was typed (no snap) and
+            # don't count it as shown — see the docstring above.
+            return AnimationResult("interrupted", index)
         index += 1
     return AnimationResult("completed", len(lines))
 
