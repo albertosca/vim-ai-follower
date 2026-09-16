@@ -127,7 +127,10 @@ def test_apply_edit_des_interrupt_after_mid_op_mid_line_stop_lands_at_full_conte
     # mid-line when interrupted is discarded wholesale (op-level bookkeeping
     # already treats a not-fully-typed op as not completed, unaffected by
     # this change — see _run_ops), rewrite_buffer rebuilds the pre-op state,
-    # and resume replays that whole op again from scratch.
+    # and resume replays that whole op again from scratch. Since the rollback
+    # landed (test_nvim_integration_rollback.py), _run_ops itself already
+    # restores that pre-op state on the way out, so rewrite_buffer here is a
+    # no-op in content terms rather than a repair.
     from vim_ai_follower import cache
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
@@ -147,9 +150,10 @@ def test_apply_edit_des_interrupt_after_mid_op_mid_line_stop_lands_at_full_conte
     assert result == AnimationResult("interrupted", 0)  # op0 not counted as done
 
     nvim = pynvim.attach("socket", path=headless_nvim)
-    # "WX" typed in place of "b", "QR" (op0's second line) never started, "c"
-    # untouched — the mid-op mid-line stop, no snap of "YZ".
-    assert nvim.current.buffer[:] == ["a", "WX", "c"]
+    # The half-typed "WX" and the row holding it are gone and the "b" the op
+    # had deleted is back: _run_ops rolls an interrupted op back to its clean
+    # boundary, so the buffer matches what completed_count == 0 claims.
+    assert nvim.current.buffer[:] == ["a", "b", "c"]
 
     monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
     partial = apply_ops(before, ops[: result.completed_count])

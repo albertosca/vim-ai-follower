@@ -106,27 +106,29 @@ def test_apply_edit_pure_delete_that_empties_the_buffer_leaves_the_implicit_blan
     nvim.api.buf_set_lines.assert_called_once_with(7, 0, 1, True, [])
 
 
-def test_apply_edit_interrupted_mid_wipe_does_not_drop_anything(tmp_path: Path) -> None:
-    # An interrupt inside the op's animation returns immediately: whatever
-    # partial state the buffer is in is superseded by the higher-level
-    # rewrite_buffer + resume replay (hooks.py), so _run_ops must not try to
-    # clean up the implicit blank itself on this path.
+def test_apply_edit_interrupted_mid_wipe_rolls_back_instead_of_dropping(tmp_path: Path) -> None:
+    # An interrupt inside the op's animation never reaches the implicit-blank
+    # drop: the op is rolled back wholesale instead (see _run_ops and
+    # test_nvim_rollback.py), and that single restoring write is what
+    # swallows the implicit blank here — no separate drop call.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
     nvim.api.get_current_buf.return_value.handle = 7
-    nvim.api.buf_line_count.return_value = 1
+    # pre-delete (1 = the sole line "z"), post-delete (1 = the implicit blank
+    # alone), interrupt (2 = the row inserted for "a" plus that blank).
+    nvim.api.buf_line_count.side_effect = [1, 1, 2]
+    nvim.api.buf_get_lines.return_value = ["z"]
     op = EditOp(kind="replace", start_line=1, end_line=1, new_lines=("a", "b"))
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
-        # op boundary (None), line0 (None, typed), line1 boundary -> interrupt.
+        # op boundary (None), line0 boundary (None), char 0 of "a" -> interrupt.
         patch("vim_ai_follower.control.check_signal", side_effect=[None, None, "interrupt"]),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", [op])
     assert result == AnimationResult("interrupted", 0)
-    # only the op's own delete and the one inserted-then-typed line — no
-    # trailing drop call was issued on the interrupted path.
     assert nvim.api.buf_set_lines.call_args_list == [
-        call(7, 0, 1, True, []),
-        call(7, 0, 0, True, [""]),
+        call(7, 0, 1, True, []),  # the op's delete
+        call(7, 0, 0, True, [""]),  # _animate_lines' row for "a"
+        call(7, 0, 2, True, ["z"]),  # rollback over that row AND the blank
     ]
