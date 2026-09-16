@@ -116,7 +116,13 @@ def test_catchup_after_a_mid_op_mid_line_apply_edit_stop_lands_at_full_content(
     assert result == AnimationResult("interrupted", 0)
 
     nvim = pynvim.attach("socket", path=headless_nvim)
-    assert nvim.current.buffer[:] == ["a", "WW", "X", "c"]  # two leftover rows
+    # An INTERRUPT inside the op now rolls the op back (_run_ops restores
+    # the deleted range), so the live buffer is clean here. The stranded
+    # shape this test exists for is what a hook killed mid-PAUSE leaves —
+    # no rollback runs when the process dies — so put that shape in place
+    # by hand: op 0's "b" gone, "WW" typed, "X" half-typed.
+    assert nvim.current.buffer[:] == ["a", "b", "c"]
+    nvim.current.buffer[:] = ["a", "WW", "X", "c"]  # two leftover rows
 
     monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
     control.save_pending_apply_edit(
