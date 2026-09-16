@@ -278,7 +278,11 @@ def _resave_pending(
     their resumable state)."""
     if isinstance(pending, control.PendingApplyEdit):
         control.save_pending_apply_edit(
-            window_id, pending.ops, pending.pace_seconds, file_path=pending.file_path
+            window_id,
+            pending.ops,
+            pending.pace_seconds,
+            file_path=pending.file_path,
+            partial=pending.partial,
         )
     else:
         control.save_pending_show_fresh(
@@ -287,6 +291,7 @@ def _resave_pending(
             pending.pace_seconds,
             continuation=pending.continuation,
             file_path=pending.file_path,
+            partial=pending.partial,
         )
 
 

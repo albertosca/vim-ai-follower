@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,11 +20,20 @@ import pynvim
 from vim_ai_follower import config, control
 from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult, _wait_while_paused
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
-from vim_ai_follower.diff import EditOp
+from vim_ai_follower.diff import EditOp, apply_ops
 from vim_ai_follower.state import FollowerState
 
 _NAMESPACE = "vaf"
 _TYPING_HL = "VafTypingLine"
+
+
+def _terminated(lines: Sequence[str]) -> str:
+    """The buffer content of `lines` in the terminated-newline form every
+    persisted partial uses (hooks._terminated is the same function on the hook
+    side; duplicated rather than imported because hooks imports this module).
+    Terminating beats joining: a "\\n".join round-trip through splitlines
+    drops a trailing blank line, this one is lossless."""
+    return "".join(line + "\n" for line in lines)
 
 
 def _bind_save(save_pending: Callable[[int], None] | None, index: int) -> Callable[[], None]:
@@ -245,6 +254,13 @@ class NvimFollower:
                     self._pace_provider(),
                     continuation=index > 0,
                     file_path=file_path,
+                    # The buffer was wiped to a bare seed blank before this
+                    # run, so the fully-typed lines ARE the whole partial. The
+                    # line being typed when a pause lands is deliberately
+                    # absent: it is the remainder's first entry and gets
+                    # retyped from scratch, so counting it here too is exactly
+                    # what duplicated it on the later catch-up.
+                    partial=_terminated(lines[:index]),
                 )
 
             result = _animate_lines(
@@ -280,6 +296,12 @@ class NvimFollower:
         op and line boundary. On a pause it persists the op-granular remainder
         (the current op onward) as the crash fallback and blocks until resume
         or interrupt — the same contract as animate.run_ops."""
+        # The buffer is still clean here (nothing typed yet), so this is the
+        # one honest reading of "what was on screen before this run" — the
+        # base every persisted partial below is computed from. Read once:
+        # mid-run the buffer may end on a half-typed line, which is precisely
+        # the shape a crash-fallback consumer must not have to interpret.
+        initial = _terminated(nvim.api.buf_get_lines(buf, 0, -1, True))
         index = 0
         while index < len(ops):
             op = ops[index]
@@ -296,6 +318,12 @@ class NvimFollower:
                     ops[_op:],
                     self._pace_provider(),
                     file_path=file_path,
+                    # Op-granular on this side too: the partly-typed op
+                    # contributes nothing, exactly as the remainder replays it
+                    # whole. Each op's line numbers are relative to the state
+                    # its predecessors produced, so replaying the prefix onto
+                    # `initial` reproduces the buffer without reading it.
+                    partial=apply_ops(initial, ops[:_op]),
                 )
 
             signal = control.check_signal(self.window_id)
@@ -466,6 +494,11 @@ class NvimFollower:
         exactly as show_fresh does."""
         existing = nvim.api.buf_get_lines(buf, 0, -1, True)
         start_row = len(existing) - 1 if seeded else len(existing)
+        # Everything above start_row is the partial this replay is continuing
+        # from — the seed blank, when there is one, sits below it and is not
+        # part of the content. _animate_lines only ever inserts at or after
+        # start_row, so these rows stay valid for the whole run.
+        prefix = existing[:start_row]
 
         def save_pending(index: int) -> None:
             control.save_pending_show_fresh(
@@ -474,6 +507,7 @@ class NvimFollower:
                 self._pace_provider(),
                 continuation=start_row + index > 0,
                 file_path=file_path,
+                partial=_terminated([*prefix, *lines[:index]]),
             )
 
         result = _animate_lines(

@@ -60,9 +60,10 @@ def _spy_saves(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Any, float, A
         continuation: bool = False,
         base_dir: Path | None = None,
         file_path: str = "",
+        partial: str | None = None,
     ) -> None:
         saved.append(("show_fresh", lines, pace_seconds, continuation))
-        real_fresh(window_id, lines, pace_seconds, continuation, base_dir, file_path)
+        real_fresh(window_id, lines, pace_seconds, continuation, base_dir, file_path, partial)
 
     def _ops(
         window_id: str,
@@ -70,9 +71,10 @@ def _spy_saves(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Any, float, A
         pace_seconds: float,
         base_dir: Path | None = None,
         file_path: str = "",
+        partial: str | None = None,
     ) -> None:
         saved.append(("apply_edit", list(ops), pace_seconds, file_path))
-        real_ops(window_id, ops, pace_seconds, base_dir, file_path)
+        real_ops(window_id, ops, pace_seconds, base_dir, file_path, partial)
 
     monkeypatch.setattr(control, "save_pending_show_fresh", _fresh)
     monkeypatch.setattr(control, "save_pending_apply_edit", _ops)
