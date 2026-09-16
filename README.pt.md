@@ -89,7 +89,14 @@ caminho absoluto do `claude-follow` instalado):
 
 ## Uso
 
-De um painel dentro da sessão tmux onde o `claude` roda:
+**Se você instalou o plugin**, controle-o pelos slash commands, de um painel dentro da sessão tmux onde o `claude` roda: `/vim-ai-follower:start`, `/vim-ai-follower:status`, `/vim-ai-follower:stop`, `/vim-ai-follower:toggle`. O `/vim-ai-follower:start` repassa os argumentos direto para o `claude-follow start` (flags abaixo), ex.: `/vim-ai-follower:start --backend nvim --speed lento`. O wrapper `claude-follow` embutido de propósito não fica no `PATH` do seu shell — ele só roda a partir da própria ferramenta Bash do Claude Code e dos keybindings do tmux abaixo (veja o comentário de cabeçalho em `bin/claude-follow`). Se você também quiser rodar o `claude-follow` direto no seu shell, crie um symlink do wrapper embutido para qualquer diretório no seu `PATH` (ex.: `~/.local/bin`) — o diretório de versão varia conforme o que o plugin baixou por último, então liste primeiro:
+
+```sh
+ls ~/.claude/plugins/cache/vim-ai-follower/vim-ai-follower/                       # encontre a <versão> instalada
+ln -s ~/.claude/plugins/cache/vim-ai-follower/vim-ai-follower/<versão>/bin/claude-follow ~/.local/bin/claude-follow
+```
+
+**Se você usou a instalação manual/de desenvolvimento**, o `pip install -e .` já colocou o `claude-follow` no `PATH` do seu shell, então rode direto de um painel dentro da sessão tmux onde o `claude` roda:
 
 ```sh
 claude-follow start      # abre um painel follower (ou adota um Vim existente)
