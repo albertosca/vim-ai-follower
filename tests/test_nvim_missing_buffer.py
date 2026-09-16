@@ -145,6 +145,7 @@ def test_apply_edit_animates_normally_when_the_buffer_is_still_there(tmp_path: P
     nvim = MagicMock()
     nvim.funcs.bufnr.return_value = 9
     nvim.api.get_current_buf.return_value.handle = 7
+    nvim.api.buf_line_count.return_value = 1
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
