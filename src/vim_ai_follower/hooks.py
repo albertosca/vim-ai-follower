@@ -274,11 +274,16 @@ def _print_hook_context(context: str) -> None:
 
 
 def _print_interrupt_notification(file_path: str, partial_content: str) -> None:
+    # Every partial arrives newline-terminated, and the template already puts
+    # a blank line on each side of the quote — so drop exactly the terminator,
+    # not every trailing newline: a partial whose last line is genuinely blank
+    # must still show that blank line here.
+    quoted = partial_content.removesuffix("\n")
     _print_hook_context(
         f"The user interrupted the live preview of {file_path} while it was "
         "being written, edited it themselves, and SAVED their own version — "
         "it is now the file's content on disk. Only this much of your "
-        f"version had been shown before they took over:\n\n{partial_content}\n\n"
+        f"version had been shown before they took over:\n\n{quoted}\n\n"
         "Re-read the file from disk and build on the user's version; do not "
         "restore yours without asking."
     )

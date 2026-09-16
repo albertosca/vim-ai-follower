@@ -80,7 +80,7 @@ def test_apply_edit_pause_persists_the_ops_already_applied_to_before(tmp_path: P
         result = follower.apply_edit("/tmp/f.txt", ops, before="a\nb\nc\n")
     assert result.outcome == "completed"
     assert seen == [
-        control.PendingApplyEdit(ops[1:], 0.05, file_path="/tmp/f.txt", partial="a\nXX\nc")
+        control.PendingApplyEdit(ops[1:], 0.05, file_path="/tmp/f.txt", partial="a\nXX\nc\n")
     ]
 
 

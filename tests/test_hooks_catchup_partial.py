@@ -195,7 +195,7 @@ def test_apply_edit_interrupt_persists_the_applied_prefix_as_the_partial(
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     # The ops run bottom-to-top, so the one completed op is the LAST line.
-    assert seen["partial"] == "a\nb\nC"
+    assert seen["partial"] == "a\nb\nC\n"
 
 
 def test_rearm_handoff_persists_the_grown_partial(tmp_path: Path) -> None:
@@ -229,10 +229,10 @@ def test_rearm_handoff_persists_the_grown_partial_for_ops(tmp_path: Path) -> Non
 
     grown = hooks._rearm_handoff(follower, "@1", pending, "a\nb\n", 1)
 
-    assert grown == "a\nB"
+    assert grown == "a\nB\n"
     saved = control.load_pending_animation("@1")
     assert isinstance(saved, control.PendingApplyEdit)
-    assert saved.partial == "a\nB"
+    assert saved.partial == "a\nB\n"
     assert saved.ops == [second]
 
 

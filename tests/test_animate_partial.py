@@ -170,7 +170,7 @@ def test_run_ops_pause_at_an_op_boundary_records_the_ops_already_applied(
         result = run_ops(pane, "@1", _OPS, pace_seconds=0.0, base_dir=tmp_path, base_content=_BASE)
     assert result == AnimationResult("completed", 2)
     # op0 replaced "b" with "XX"/"YY"; op1 has not run yet.
-    assert seen == [control.PendingApplyEdit(_OPS[1:], 0.0, partial="a\nXX\nYY\nc")]
+    assert seen == [control.PendingApplyEdit(_OPS[1:], 0.0, partial="a\nXX\nYY\nc\n")]
 
 
 def test_run_ops_pause_mid_op_leaves_the_rolled_back_op_out_of_the_partial(
@@ -189,7 +189,7 @@ def test_run_ops_pause_mid_op_leaves_the_rolled_back_op_out_of_the_partial(
     # rolled back with a "u", and the whole op was replayed afterwards.
     sent = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent == [":2d", ":1", "o", "XX", "YY", "gg", "O", "u", "gg", "O", "ZZ"]
-    assert seen == [control.PendingApplyEdit(_OPS[1:], 0.0, partial="a\nXX\nYY\nc")]
+    assert seen == [control.PendingApplyEdit(_OPS[1:], 0.0, partial="a\nXX\nYY\nc\n")]
 
 
 def test_run_ops_pause_before_the_first_op_records_the_untouched_base(
@@ -200,7 +200,7 @@ def test_run_ops_pause_before_the_first_op_records_the_untouched_base(
     with patch("vim_ai_follower.control.check_signal", side_effect=_pause_at(1, tmp_path, seen)):
         result = run_ops(pane, "@1", _OPS, pace_seconds=0.0, base_dir=tmp_path, base_content=_BASE)
     assert result == AnimationResult("completed", 2)
-    assert seen == [control.PendingApplyEdit(_OPS, 0.0, partial="a\nb\nc")]
+    assert seen == [control.PendingApplyEdit(_OPS, 0.0, partial="a\nb\nc\n")]
 
 
 def test_run_ops_without_a_base_records_no_partial(tmp_path: Path) -> None:

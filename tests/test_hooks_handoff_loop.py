@@ -175,7 +175,7 @@ def test_apply_edit_replay_interrupted_midway_re_enters_the_handoff(
     # the rebuilt partial is the previous one with that op applied
     assert fake.rewrite_buffer.call_args_list == [
         call(target, "a\nb\nc\nd"),
-        call(target, "a\nB\nc\nd"),
+        call(target, "a\nB\nc\nd\n"),
     ]
     assert saved == [("apply_edit", _OPS[1:], 0.03, target)]
     assert fake.hand_over.call_count == 1
