@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends.nvim import NvimFollower
+from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
 from vim_ai_follower.diff import EditOp
 
 
@@ -89,6 +90,53 @@ def test_apply_edit_shows_disk_content_instead_of_animating_into_nothing() -> No
     # nothing was animated into the freshly loaded buffer
     nvim.api.buf_set_lines.assert_not_called()
     nvim.api.buf_set_text.assert_not_called()
+
+
+def test_resume_apply_edit_returns_completed_and_touches_nothing_when_the_buffer_vanished() -> None:
+    # Deliberately NOT a disk load: leaving the buffer absent is what lets the
+    # apply_edit that follows in hooks._animate_edit take its own guard.
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
+    nvim = MagicMock()
+    nvim.funcs.bufnr.return_value = -1
+    pending = PendingApplyEdit(
+        ops=[
+            EditOp(kind="replace", start_line=5, end_line=5, new_lines=("E",)),
+            EditOp(kind="replace", start_line=3, end_line=3, new_lines=("C",)),
+        ],
+        pace_seconds=0.0,
+        file_path="/tmp/f.py",
+    )
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch.object(NvimFollower, "goto_file") as goto_file,
+    ):
+        result = follower.resume(pending)
+    assert result == AnimationResult("completed", 2)
+    goto_file.assert_not_called()
+    nvim.funcs.bufadd.assert_not_called()
+    nvim.funcs.bufload.assert_not_called()
+    nvim.api.create_buf.assert_not_called()
+    nvim.api.buf_set_lines.assert_not_called()
+    nvim.command.assert_not_called()
+
+
+def test_resume_show_fresh_returns_completed_and_touches_nothing_when_the_buffer_vanished() -> None:
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
+    nvim = MagicMock()
+    nvim.funcs.bufnr.return_value = -1
+    pending = PendingShowFresh(
+        lines=("one", "two", "three"), pace_seconds=0.0, continuation=True, file_path="/tmp/f.py"
+    )
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch.object(NvimFollower, "goto_file") as goto_file,
+    ):
+        result = follower.resume(pending, seeded=True)
+    assert result == AnimationResult("completed", 3)
+    goto_file.assert_not_called()
+    nvim.api.create_buf.assert_not_called()
+    nvim.api.buf_set_lines.assert_not_called()
+    nvim.command.assert_not_called()
 
 
 def test_apply_edit_animates_normally_when_the_buffer_is_still_there(tmp_path: Path) -> None:

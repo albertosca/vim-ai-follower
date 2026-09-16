@@ -443,8 +443,27 @@ class NvimFollower:
 
         The pace-0 catch-up must stay silent forever: pending.pace_seconds == 0
         selects a fixed-0 provider that never re-reads live speed mid-catch-up
-        (parity with tmux.resume)."""
+        (parity with tmux.resume).
+
+        When the remainder's buffer is GONE, the replay is abandoned whole and
+        NOTHING is touched — no navigation, no buffer creation, no relock.
+        Deliberately not a disk load, unlike ensure_showing/apply_edit: loading
+        here would leave the buffer holding the POST-edit disk content, and the
+        apply_edit that hooks._animate_edit runs right after this (the pace-0
+        catch-up precedes the new edit) would then find bufnr != -1 and animate
+        before->after ops on top of after-content — garbage, or the same "Index
+        out of bounds", one call later. Leaving the buffer absent hands the
+        decision to apply_edit's own guard (or to show_fresh on the is_fresh
+        path), which is the one with the content to show. Reported as completed
+        for the whole remainder so no caller treats it as an interrupt. The
+        des-interrupt replay can never reach this branch: hooks._await_user_
+        handoff always calls rewrite_buffer first, which goes through goto_file
+        and therefore recreates the buffer, and only resumes when that returned
+        completed."""
         nvim = self._connect()
+        if pending.file_path and nvim.funcs.bufnr(pending.file_path) == -1:
+            remaining = pending.ops if isinstance(pending, PendingApplyEdit) else pending.lines
+            return AnimationResult("completed", len(remaining))
         ns = nvim.api.create_namespace(_NAMESPACE)
         if pending.file_path:
             self.goto_file(pending.file_path)
