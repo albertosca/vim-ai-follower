@@ -1182,23 +1182,32 @@ def test_hook_post_handoff_survives_an_unstatable_file(
     assert capsys.readouterr().out == ""
 
 
-def test_hook_post_replay_interrupted_again_hands_over_without_a_second_wait(
+def test_hook_post_replay_interrupted_again_hands_over_and_waits_again(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # A third S during the des-interrupt replay hands the buffer to the
-    # user and releases the turn — one hand-off wait per hook, no second
-    # notification loop.
+    # A third S during the des-interrupt replay hands the buffer to the user
+    # and RE-ENTERS the hand-off wait. It used to return there ("one hand-off
+    # wait per hook"), so a fourth S reached nobody and the buffer stayed
+    # partial (live, 2026-09-16); now the user's save still releases the turn.
+    # tests/test_hooks_handoff_loop.py covers the cycling itself.
     target = tmp_path / "f.txt"
     target.write_text("a\nb\nc\nd\n")
     _register_fake_follower("@1", "%2")
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
-    signals: list[str | None] = ["interrupt", "interrupt", None, None, None, None, "interrupt"]
-    signals += [None] * 40
+    calls = {"n": 0}
+
+    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
+        calls["n"] += 1
+        if calls["n"] in {1, 2, 7}:  # interrupt, des-interrupt, stop the replay
+            return "interrupt"
+        if calls["n"] == 12:  # a few polls into the SECOND wait, the user saves
+            target.write_text("the user's own version\n")
+        return None
 
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
-        patch("vim_ai_follower.control.check_signal", side_effect=signals),
+        patch("vim_ai_follower.control.check_signal", side_effect=_bounded(_check)),
         patch("vim_ai_follower.hooks.time.sleep"),
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
@@ -1208,7 +1217,8 @@ def test_hook_post_replay_interrupted_again_hands_over_without_a_second_wait(
     refreshed = state.FollowerState.read("@1")
     assert refreshed is not None
     assert refreshed.current_file is None  # tracking dropped until resync
-    assert capsys.readouterr().out == ""  # no notification for the replay stop
+    out = json.loads(capsys.readouterr().out)
+    assert "SAVED their own version" in out["hookSpecificOutput"]["additionalContext"]
 
 
 def test_hook_post_handoff_keeps_polling_through_unreadable_reads(

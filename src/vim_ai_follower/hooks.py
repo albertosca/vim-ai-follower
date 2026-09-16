@@ -8,6 +8,7 @@ import logging
 import os
 import subprocess
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -246,13 +247,17 @@ def _touch_and_evict(
     FollowerState.update(window_id, open_files=new_open, shown_any=True)
 
 
-def _reconstruct_partial_fresh(content: str, completed_count: int) -> str:
+def _terminated(lines: Sequence[str]) -> str:
     # Terminate every line with "\n" instead of joining with it: the returned
     # string is later `.splitlines()`'d again (by rewrite_buffer, and shown in
     # the interrupt notification), and a "\n".join round-trip is LOSSY for
     # trailing blank lines — ['a','',''] -> "a\n\n" -> ['a',''] drops one. The
     # terminating form is lossless: ['a','',''] -> "a\n\n\n" -> ['a','',''].
-    return "".join(line + "\n" for line in content.splitlines()[:completed_count])
+    return "".join(line + "\n" for line in lines)
+
+
+def _reconstruct_partial_fresh(content: str, completed_count: int) -> str:
+    return _terminated(content.splitlines()[:completed_count])
 
 
 def _print_hook_context(context: str) -> None:
@@ -292,6 +297,120 @@ _HANDOFF_REMINDER_POLLS = 150  # ~30s at the poll cadence above
 _HANDOFF_CUE = "Claude waiting \u2014 :w releases \u00b7 S discards"
 
 
+def _poll_until_interrupt(
+    current: FollowerState,
+    session: Session,
+    file_path: str,
+    after: str,
+    partial_content: str,
+    initial_mtime: int | None,
+) -> bool:
+    """One hand-off wait. True when the user pressed S again (des-interrupt);
+    False when they released the turn by saving, with the matching
+    notification already printed."""
+    polls = 0
+    while True:
+        polls += 1
+        if polls % _HANDOFF_REMINDER_POLLS == 0 and session.in_tmux:
+            show_popup(current.target, _HANDOFF_CUE)
+        if control.check_signal(session.window_id) == "interrupt":
+            return True
+        try:
+            if Path(file_path).read_text() != after:
+                control.discard_pending_animation(session.window_id)
+                _print_interrupt_notification(file_path, partial_content)
+                return False
+            # A save is a save: a user who reviewed and kept Claude's
+            # version (identical content, fresh mtime) must release the
+            # turn too — content comparison alone held it forever.
+            if initial_mtime is not None and Path(file_path).stat().st_mtime_ns != initial_mtime:
+                control.discard_pending_animation(session.window_id)
+                _print_unchanged_save_notification(file_path)
+                return False
+        except OSError:
+            pass  # mid-save or momentarily unreadable: check again
+        time.sleep(_HANDOFF_POLL_SECONDS)
+
+
+def _rearm_handoff(
+    follower: Follower,
+    window_id: str,
+    pending: control.PendingApplyEdit | control.PendingShowFresh,
+    partial_content: str,
+    completed_count: int,
+) -> str:
+    """A des-interrupt replay was itself interrupted: persist the SHORTENED
+    remainder (load_pending_animation consumed the old one), grow the partial
+    by whatever the replay did manage to show, and hand the buffer back to the
+    user. Returns the new partial; the caller loops into another hand-off wait
+    with it, so interrupt/des-interrupt can repeat as often as the user likes."""
+    if isinstance(pending, control.PendingShowFresh):
+        # A resumed show_fresh counts LINES of the remainder (both backends
+        # index the `lines` tuple they were handed: animate.run_lines and
+        # nvim._animate_lines).
+        partial_content += _terminated(pending.lines[:completed_count])
+        control.save_pending_show_fresh(
+            window_id,
+            pending.lines[completed_count:],
+            pending.pace_seconds,
+            # continuation means "the buffer already holds earlier lines",
+            # which is exactly "the partial is non-empty" — and the inverse of
+            # the `seeded` the next rewrite_buffer/resume pair will compute.
+            continuation=partial_content != "",
+            file_path=pending.file_path,
+        )
+    else:
+        # A resumed apply_edit counts OPS of the remainder, and each op's line
+        # numbers are relative to the state the ops before it produced — so
+        # replaying them onto the previous partial yields exactly the buffer
+        # the user is now looking at.
+        partial_content = diff_module.apply_ops(partial_content, pending.ops[:completed_count])
+        control.save_pending_apply_edit(
+            window_id,
+            pending.ops[completed_count:],
+            pending.pace_seconds,
+            file_path=pending.file_path,
+        )
+    follower.hand_over()
+    FollowerState.update_current_file(window_id, None)
+    return partial_content
+
+
+def _replay_remainder(
+    current: FollowerState, session: Session, file_path: str, partial_content: str
+) -> str | None:
+    """The des-interrupt: discard the user's unsaved typing and put the show
+    back on — rebuilding the interrupt-point buffer instantly, then REPLAYING
+    the remaining animation at live pace. Without a stored remainder (stale
+    state), fall back to reloading the finished file.
+
+    None means this hand-off is over (the replay finished, or there was
+    nothing to replay); a string is the new partial for another wait."""
+    window_id = session.window_id
+    follower = get_follower(current.backend, current.target, window_id=window_id)
+    pending = control.load_pending_animation(window_id)
+    if pending is None:
+        follower.reload_and_relock(file_path)
+        FollowerState.update_current_file(window_id, file_path)
+        return None
+    rebuilt = follower.rewrite_buffer(file_path, partial_content)
+    if rebuilt.outcome != "completed":
+        # Interrupted during the instant rebuild: none of the remainder ran,
+        # so re-arm with it untouched. The half-rebuilt buffer needs no repair
+        # — the next des-interrupt rewrites it from the same partial.
+        return _rearm_handoff(follower, window_id, pending, partial_content, 0)
+    # rewrite_buffer rebuilds the buffer to EXACTLY the partial, so there is
+    # no seed to strip — EXCEPT when the partial is empty (interrupt before
+    # any line was typed): nvim can't hold a truly empty buffer, so
+    # rewrite_buffer forces a single blank line, which IS a seed the replay
+    # must type in front of and drop.
+    result = follower.resume(pending, seeded=partial_content == "")
+    if result.outcome == "completed":
+        FollowerState.update_current_file(window_id, file_path)
+        return None
+    return _rearm_handoff(follower, window_id, pending, partial_content, result.completed_count)
+
+
 def _await_user_handoff(
     current: FollowerState, session: Session, file_path: str, after: str, partial_content: str
 ) -> None:
@@ -299,13 +418,22 @@ def _await_user_handoff(
     they save their version (release Claude with it, via the notification)
     or press S again (discard their unsaved typing and resume following the
     file Claude wrote). A hook-timeout kill releases Claude without a
-    notification — degraded but harmless."""
+    notification — degraded but harmless.
+
+    One iteration per interrupt/des-interrupt cycle, each owning its own
+    (pending remainder, partial): a replay that is itself interrupted re-arms
+    the wait instead of returning, so the second S is not the last one the
+    hook listens to (live finding, 2026-09-16 — a mid-replay interrupt left
+    nobody listening and the buffer partial until the next animation)."""
     window_id = session.window_id
-    control.mark_animating(window_id, state="handoff")
     try:
         initial_mtime = Path(file_path).stat().st_mtime_ns
     except OSError:
         initial_mtime = None
+    # The replay never writes the file, so initial_mtime stays valid across
+    # cycles — and re-reading it after one would silently swallow a save that
+    # landed during the replay.
+    #
     # Durable cue: the 1.5s "Interrupted" popup is easy to miss, and a held
     # turn with no visible reason reads as Claude hanging. Put the release
     # instructions in the pane's border title for the whole wait (restored
@@ -314,68 +442,23 @@ def _await_user_handoff(
     # standalone, so it's skipped there; the border/floating-window cue
     # above still carries the message.
     surface = status_surface_for(current)
-    surface.set_state(_HANDOFF_CUE)
-    polls = 0
     try:
         while True:
-            polls += 1
-            if polls % _HANDOFF_REMINDER_POLLS == 0 and session.in_tmux:
-                show_popup(current.target, _HANDOFF_CUE)
-            signal = control.check_signal(window_id)
-            if signal == "interrupt":
-                # switch the cue from "waiting" to the replay before it runs
-                surface.set_state("Writing...")
-                # the des-interrupt: discard the user's unsaved typing and
-                # put the show back on — rebuilding the interrupt-point
-                # buffer instantly, then REPLAYING the remaining animation
-                # at live pace. Without a stored remainder (stale state),
-                # fall back to reloading the finished file.
-                follower = get_follower(current.backend, current.target, window_id=window_id)
-                pending = control.load_pending_animation(window_id)
-                if pending is None:
-                    follower.reload_and_relock(file_path)
-                    FollowerState.update_current_file(window_id, file_path)
-                    return
-                rebuilt = follower.rewrite_buffer(file_path, partial_content)
-                # rewrite_buffer rebuilds the buffer to EXACTLY the partial, so
-                # there is no seed to strip — EXCEPT when the partial is empty
-                # (interrupt before any line was typed): nvim can't hold a truly
-                # empty buffer, so rewrite_buffer forces a single blank line,
-                # which IS a seed the replay must type in front of and drop.
-                seeded = partial_content == ""
-                result = (
-                    follower.resume(pending, seeded=seeded)
-                    if rebuilt.outcome == "completed"
-                    else rebuilt
-                )
-                if result.outcome == "completed":
-                    FollowerState.update_current_file(window_id, file_path)
-                else:
-                    # Interrupted again mid-replay: hand the buffer over and
-                    # release the turn — one hand-off wait per hook. The
-                    # partial buffer self-heals at the next completed
-                    # animation via the relock's :e!.
-                    follower.hand_over()
-                    FollowerState.update_current_file(window_id, None)
+            # Re-marked every cycle: the replay's own animation envelope
+            # clears the marker when it ends, so a later cycle would wait
+            # unmarked and let a parallel hook claim this window's pane.
+            control.mark_animating(window_id, state="handoff")
+            surface.set_state(_HANDOFF_CUE)
+            if not _poll_until_interrupt(
+                current, session, file_path, after, partial_content, initial_mtime
+            ):
                 return
-            try:
-                if Path(file_path).read_text() != after:
-                    control.discard_pending_animation(window_id)
-                    _print_interrupt_notification(file_path, partial_content)
-                    return
-                # A save is a save: a user who reviewed and kept Claude's
-                # version (identical content, fresh mtime) must release the
-                # turn too — content comparison alone held it forever.
-                if (
-                    initial_mtime is not None
-                    and Path(file_path).stat().st_mtime_ns != initial_mtime
-                ):
-                    control.discard_pending_animation(window_id)
-                    _print_unchanged_save_notification(file_path)
-                    return
-            except OSError:
-                pass  # mid-save or momentarily unreadable: check again
-            time.sleep(_HANDOFF_POLL_SECONDS)
+            # switch the cue from "waiting" to the replay before it runs
+            surface.set_state("Writing...")
+            replayed = _replay_remainder(current, session, file_path, partial_content)
+            if replayed is None:
+                return
+            partial_content = replayed
     finally:
         surface.clear()
         control.clear_animating(window_id)
