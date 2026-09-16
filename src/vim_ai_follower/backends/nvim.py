@@ -318,8 +318,23 @@ class NvimFollower:
             # no longer tell a genuinely-emptied buffer from one that already
             # held a single real line.
             wipes_buffer = op.start_line == 1 and op.end_line >= nvim.api.buf_line_count(buf)
+            # EditOp carries no old text, so keep the range we are about to
+            # delete: an interrupt mid-op has to put it back (see below). Only
+            # an op that animates new lines can stop mid-op — a delete-only op
+            # runs to completion between two signal checks — so only that one
+            # pays for the snapshot.
+            old_lines = (
+                nvim.api.buf_get_lines(buf, op.start_line - 1, op.end_line, True)
+                if op.new_lines
+                else []
+            )
             nvim.api.buf_set_lines(buf, op.start_line - 1, op.end_line, True, [])
             if op.new_lines:
+                # How many rows sit where the op's range used to be, right
+                # after the delete: zero when the delete emptied the buffer
+                # (the one line nvim insists on keeping is the implicit
+                # blank, not content).
+                rows_after_delete = nvim.api.buf_line_count(buf) - (1 if wipes_buffer else 0)
                 result = _animate_lines(
                     nvim,
                     buf,
@@ -331,6 +346,24 @@ class NvimFollower:
                     save_pending=save_pending,
                 )
                 if result.outcome == "interrupted":
+                    # Roll the op back so the buffer the user takes over is
+                    # exactly apply_ops(before, ops[:index]) — the state the
+                    # interrupt notification quotes to Claude as "what was
+                    # shown". Without this the old range is already gone while
+                    # `index` says the op never happened, and the notification
+                    # over-reports the buffer by every line this op deleted.
+                    # The tmux backend gets the same guarantee from its `u`
+                    # undos; here `:undo` is unusable — one undo entry per
+                    # typed character, and in an adopted nvim the undo tree
+                    # belongs to the user — so restore the region by hand.
+                    # Its length is measured, not derived: _animate_lines
+                    # inserts a blank row per line before typing into it, so a
+                    # half-typed line occupies a row too, and a wiping op's
+                    # implicit blank has to be swallowed by the same write or
+                    # the restored buffer would carry a spurious trailing one.
+                    occupied = nvim.api.buf_line_count(buf) - rows_after_delete
+                    start = op.start_line - 1
+                    nvim.api.buf_set_lines(buf, start, start + occupied, True, old_lines)
                     return AnimationResult("interrupted", index)
                 if wipes_buffer:
                     # Drop the implicit blank now pushed past every typed
