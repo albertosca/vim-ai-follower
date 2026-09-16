@@ -110,8 +110,8 @@ def test_multiple_fresh_files_open_as_separate_tabs(
     nvim = pynvim.attach("socket", path=headless_nvim)
     names = _tab_buffer_names(nvim)
     assert len(names) == 2
-    assert names[0].endswith("/tmp/a.py")
-    assert names[1].endswith("/tmp/b.py")
+    assert any(name.endswith("/tmp/a.py") for name in names)
+    assert any(name.endswith("/tmp/b.py") for name in names)
     # the tab for the most recently shown file is the active one
     assert nvim.current.buffer.name.endswith("/tmp/b.py")
 

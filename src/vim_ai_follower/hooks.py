@@ -220,13 +220,14 @@ def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> Fo
 
 
 def _ensure_buffer(window_id: str, follower: Follower, file_path: str) -> None:
-    """Switches the follower to file_path's tab (`:tab drop`). Used for Read
-    navigation and binary files, where showing the real on-disk content
-    immediately is exactly what's wanted — unlike a fresh text edit, which
-    goes through show_fresh instead so the finished content is never flashed
-    before it's typed. Always runs the preamble — it's cheap and
-    self-healing, immune to the user having closed or reordered tabs since
-    the last time this file was current."""
+    """Switches the follower to file_path's tab (`:tab drop` on tmux; an
+    RPC-based tab lookup on nvim). Used for Read navigation and binary
+    files, where showing the real on-disk content immediately is exactly
+    what's wanted — unlike a fresh text edit, which goes through show_fresh
+    instead so the finished content is never flashed before it's typed.
+    Always runs the preamble — it's cheap and self-healing, immune to the
+    user having closed or reordered tabs since the last time this file was
+    current."""
     follower.ensure_showing(file_path)
     FollowerState.update_current_file(window_id, file_path)
 
@@ -235,9 +236,10 @@ def _touch_and_evict(
     window_id: str, follower: Follower, current: FollowerState, file_path: str, max_tabs: int
 ) -> None:
     """Bump file_path to most-recent in the tab list and close whatever now
-    falls past max_tabs. close_tab wipes the buffer on nvim (it has buffers,
-    not tabs) and closes the tab on tmux — both backends implement the
-    Follower protocol's close_tab, so eviction is generic here."""
+    falls past max_tabs. close_tab wipes the buffer on nvim (which, since
+    the buffer is that tab's only window, closes the tab too) and closes
+    the tab directly on tmux — both backends implement the Follower
+    protocol's close_tab, so eviction is generic here."""
     new_open, evicted = touch_open_files(current.open_files, file_path, max_tabs)
     for old in evicted:
         follower.close_tab(old)

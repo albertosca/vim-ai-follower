@@ -452,31 +452,41 @@ class NvimFollower:
         """Unlock the current buffer for direct user editing. The interrupt
         path already leaves the buffer modifiable via _drive; this is the
         explicit re-assert used when a des-interrupt replay is itself
-        interrupted."""
+        interrupted. Acts on whatever buffer is current — safe here because
+        it always runs immediately after resume() left the right tab
+        current; unlike apply_edit, it has no independent file_path to
+        navigate to."""
         nvim = self._connect()
         buf = nvim.api.get_current_buf().handle
         nvim.api.buf_set_option(buf, "modifiable", True)
 
     def goto_file(self, file_path: str) -> None:
-        """Switch to the tab showing file_path (by name, immune to the user
-        closing/reordering tabs), opening one if missing. Pure API calls only
-        — never an Ex :edit/:drop/:buffer, which would trigger Vim's "abandon
-        unsaved changes" guard (E37) or silently discard typed-but-unsaved
-        content and reload from disk, exactly what this backend must never
-        do (its buffers are never written; see show_fresh). Looked up via
-        nvim.funcs.bufnr rather than a hand-rolled compare, for the same
-        canonicalization reason as before (macOS /tmp -> /private/tmp)."""
+        """Switch to the window showing file_path (by name, immune to the
+        user closing/reordering tabs), opening one if missing. Checks every
+        window of every tab, not just each tab's focused window — a buffer
+        can be visible in an unfocused split (normal in an adopted nvim, the
+        user's own editor), and checking only the focused window would miss
+        it and open a duplicate tab for the same file (measured live,
+        2026-09-15). set_current_win switches tabpage AND window in one
+        call. Pure API calls only — never an Ex :edit/:drop/:buffer, which
+        would trigger Vim's "abandon unsaved changes" guard (E37) or
+        silently discard typed-but-unsaved content and reload from disk,
+        exactly what this backend must never do (its buffers are never
+        written; see show_fresh). Looked up via nvim.funcs.bufnr rather
+        than a hand-rolled compare, for the same canonicalization reason as
+        before (macOS /tmp -> /private/tmp)."""
         nvim = self._connect()
         bufnr = nvim.funcs.bufnr(file_path)
         if bufnr != -1:
             for tabpage in nvim.api.list_tabpages():
-                win = nvim.api.tabpage_get_win(tabpage)
-                if nvim.api.win_get_buf(win).number == bufnr:
-                    nvim.api.set_current_tabpage(tabpage)
-                    return
-            # Buffer exists but isn't shown in any tab — shouldn't normally
-            # happen (every open file gets its own tab from show_fresh), but
-            # show it in a new tab via API rather than risk any Ex command's
+                for win in nvim.api.tabpage_list_wins(tabpage):
+                    if nvim.api.win_get_buf(win).number == bufnr:
+                        nvim.api.set_current_win(win)
+                        return
+            # Buffer exists but isn't shown in any window — reachable (e.g.
+            # after a show_fresh(in_new_tab=False) hijacks the one existing
+            # tab, or after eviction touches a stale reference) — show it in
+            # a new tab via API rather than risk any Ex command's
             # unsaved-changes guard.
             nvim.command("tabnew")
             nvim.api.win_set_buf(0, bufnr)
@@ -494,8 +504,10 @@ class NvimFollower:
         # bufnr() here too, for the same reason as goto_file: bwipeout by a
         # raw (unresolved) name is a no-op if nvim canonicalized the buffer's
         # actual name, silently leaving the "evicted" buffer alive. goto_file
-        # first (same pattern as reload_and_relock/rewrite_buffer) so the tab
-        # showing this file is current before it's wiped out from under it.
+        # first for structural parity with reload_and_relock/rewrite_buffer —
+        # measured that bwipeout! alone (without navigating there first)
+        # already closes the right tab regardless of which one is current,
+        # so this preamble isn't load-bearing, just consistent style.
         self.goto_file(file_path)
         nvim = self._connect()
         bufnr = nvim.funcs.bufnr(file_path)

@@ -199,8 +199,9 @@ editor:
   as tmux. **Adopt-or-launch:** with `adopt_existing: true` (or `start --backend
   nvim` in a window that already has a running nvim) it adopts that nvim — your
   own editor, never locked read-only; otherwise it launches a dedicated headless
-  nvim for the window. Neovim has buffers rather than tabs, so it switches
-  buffers instead of opening tabs; per-file eviction still applies (`max_tabs`).
+  nvim for the window. Neovim opens real tabs too — the same tab-cycling
+  experience as tmux, kept in sync via its RPC API; per-file eviction still
+  applies (`max_tabs`).
 
 ## Limitations
 

@@ -609,7 +609,7 @@ def test_close_tab_wipes_the_buffer_found_via_bufnr() -> None:
     nvim.command.assert_called_once_with("silent! bwipeout! 9")
 
 
-def test_close_tab_is_a_noop_when_bufnr_finds_nothing() -> None:
+def test_close_tab_skips_the_wipe_when_bufnr_finds_nothing() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
     nvim.funcs.bufnr.return_value = -1
@@ -623,6 +623,8 @@ def test_close_tab_is_a_noop_when_bufnr_finds_nothing() -> None:
 
 
 def test_goto_file_switches_to_the_tab_already_showing_the_buffer() -> None:
+    # A single window per tab is a special case of the general multi-window
+    # loop goto_file runs (see the split-window test below).
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
     nvim.funcs.bufnr.return_value = 9
@@ -630,13 +632,35 @@ def test_goto_file_switches_to_the_tab_already_showing_the_buffer() -> None:
     win_other, win_target = MagicMock(), MagicMock()
     buf_other, buf_target = MagicMock(number=3), MagicMock(number=9)
     nvim.api.list_tabpages.return_value = [tab_other, tab_target]
-    nvim.api.tabpage_get_win.side_effect = lambda t: win_target if t is tab_target else win_other
+    nvim.api.tabpage_list_wins.side_effect = lambda t: (
+        [win_target] if t is tab_target else [win_other]
+    )
     nvim.api.win_get_buf.side_effect = lambda w: buf_target if w is win_target else buf_other
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.goto_file("/tmp/f.py")
-    nvim.api.set_current_tabpage.assert_called_once_with(tab_target)
+    nvim.api.set_current_win.assert_called_once_with(win_target)
     nvim.command.assert_not_called()
     nvim.api.create_buf.assert_not_called()
+
+
+def test_goto_file_finds_the_buffer_in_a_split_window_not_just_the_focused_one() -> None:
+    # A buffer can be visible in an unfocused split of some tab (normal in
+    # an adopted nvim, the user's own editor) — checking only each tab's
+    # focused window misses it and opens a duplicate tab for the same file.
+    follower = NvimFollower(socket_path="/tmp/x.sock")
+    nvim = MagicMock()
+    nvim.funcs.bufnr.return_value = 9
+    tab1, tab2 = MagicMock(), MagicMock()
+    win1, win2a, win2b = MagicMock(), MagicMock(), MagicMock()
+    buf1, buf2a, buf2b = MagicMock(number=1), MagicMock(number=3), MagicMock(number=9)
+    nvim.api.list_tabpages.return_value = [tab1, tab2]
+    nvim.api.tabpage_list_wins.side_effect = lambda t: [win1] if t is tab1 else [win2a, win2b]
+    win_to_buf = {win1: buf1, win2a: buf2a, win2b: buf2b}
+    nvim.api.win_get_buf.side_effect = lambda w: win_to_buf[w]
+    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+        follower.goto_file("/tmp/f.py")
+    nvim.api.set_current_win.assert_called_once_with(win2b)
+    nvim.command.assert_not_called()
 
 
 def test_goto_file_opens_a_new_tab_when_the_buffer_exists_but_isnt_shown() -> None:
