@@ -289,10 +289,10 @@ def test_apply_edit_catchup_after_a_paused_and_abandoned_mid_op_run_reaches_full
     assert isinstance(pending, control.PendingApplyEdit)
     assert pending.ops == ops
     assert pending.file_path == file_a
-    # apply_ops(before, []) == before with no ops applied, minus its trailing
-    # newline (diff.apply_ops joins with "\n", never terminates) — the whole
-    # op was still in flight, so nothing of it is in the persisted base yet.
-    assert pending.partial == "a\nb\nc"
+    # apply_ops(before, []) == before with no ops applied, in the canonical
+    # terminated form every persisted partial uses — the whole op was still
+    # in flight, so nothing of it is in the persisted base yet.
+    assert pending.partial == "a\nb\nc\n"
 
     control.save_pending_apply_edit(
         window_id, pending.ops, 0.0, file_path=pending.file_path, partial=pending.partial
