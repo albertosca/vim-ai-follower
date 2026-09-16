@@ -359,7 +359,11 @@ class NvimFollower:
         exactly the post-edit content. Reported as completed(len(ops)) so the
         caller's bookkeeping (writer-cue refresh, open-file tracking) runs its
         normal non-interrupted path — nothing downstream assumes the
-        animation actually typed."""
+        animation actually typed. This branch never reaches _drive, so
+        _open_from_disk locks the buffer itself: a completed animation
+        leaves the buffer locked on both backends, and this is the one path
+        that returns "completed" without going through the machinery that
+        normally guarantees it."""
         nvim = self._connect()
         if nvim.funcs.bufnr(file_path) == -1:
             self._open_from_disk(nvim, file_path)
@@ -580,28 +584,48 @@ class NvimFollower:
         buffer — same reason goto_file uses bufnr. bufadd creates the buffer
         unlisted; list it, for parity with goto_file's create_buf(True, ...).
         A file that does not exist on disk is fine: the buffer opens empty,
-        exactly as `:edit` on a new file would."""
+        exactly as `:edit` on a new file would.
+
+        Locked (nomodifiable) before returning — nothing animates this
+        buffer afterwards, so it must land in the same locked state
+        ensure_showing's other branch does (tmux parity, see its
+        docstring). Shared by both of this backend's disk-reading callers:
+        ensure_showing (Read navigation) and apply_edit's vanished-buffer
+        branch, where a "completed" outcome must leave the buffer locked
+        exactly like a completed animation run through _drive would."""
         bufnr = nvim.funcs.bufadd(file_path)
         nvim.funcs.bufload(bufnr)
         nvim.api.buf_set_option(bufnr, "buflisted", True)
         nvim.command("tabnew")
         nvim.api.win_set_buf(0, bufnr)
         nvim.command("filetype detect")
+        nvim.api.buf_set_option(bufnr, "modifiable", False)
 
     def ensure_showing(self, file_path: str) -> None:
         """Show file_path with its REAL on-disk content — the Read-navigation
         and binary-file entry point, where the finished content is exactly
         what should appear because nothing is animated afterwards (parity
-        with the tmux backend's `:tab drop`).
+        with the tmux backend's `:tab drop` + its `_LOCK_READONLY`).
 
         This is THE disk-reading entry point of this backend; goto_file is
         the one that NEVER reads disk, because show_fresh's callers rely on
         the finished file not being flashed before it is typed. An existing
         buffer is therefore switched to and never reloaded: it may hold
-        typed-but-unsaved content, which in this backend is the norm."""
+        typed-but-unsaved content, which in this backend is the norm.
+
+        Both branches lock the buffer (nomodifiable) before returning, via
+        the same `buf_set_option` call `_drive`'s completion relock uses —
+        a stray keystroke here must not corrupt a buffer that isn't being
+        actively animated, exactly the tmux backend's rationale for locking
+        after `:tab drop`. Unlike `_drive`, this lock is unconditional: tmux
+        locks an adopted Vim's tab the same as a dedicated one, so parity
+        means nvim does too. `hand_over` is still how the buffer comes back
+        to the user."""
         nvim = self._connect()
         if nvim.funcs.bufnr(file_path) != -1:
             self.goto_file(file_path)
+            buf = nvim.api.get_current_buf().handle
+            nvim.api.buf_set_option(buf, "modifiable", False)
             return
         self._open_from_disk(nvim, file_path)
 

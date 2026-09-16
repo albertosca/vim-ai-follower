@@ -5,7 +5,7 @@ offset, and an edit whose buffer vanished since the snapshot was taken."""
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends.nvim import NvimFollower
@@ -41,7 +41,12 @@ def test_ensure_showing_loads_the_real_disk_content_when_no_buffer_exists() -> N
     goto_file.assert_not_called()
     nvim.funcs.bufadd.assert_called_once_with("/tmp/f.py")
     nvim.funcs.bufload.assert_called_once_with(42)
-    nvim.api.buf_set_option.assert_called_once_with(42, "buflisted", True)
+    # buflisted first, then locked (nomodifiable) — tmux-parity lock (see
+    # test_nvim_lock_parity.py for the dedicated coverage).
+    assert nvim.api.buf_set_option.call_args_list == [
+        call(42, "buflisted", True),
+        call(42, "modifiable", False),
+    ]
     assert [c.args[0] for c in nvim.command.call_args_list] == ["tabnew", "filetype detect"]
     nvim.api.win_set_buf.assert_called_once_with(0, 42)
 
