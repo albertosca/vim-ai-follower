@@ -227,6 +227,27 @@ def test_show_fresh_never_edits_the_real_file_and_types_the_content(tmp_path: Pa
     nvim.api.buf_set_text.assert_any_call(7, 1, 0, 1, 0, ["world"])
 
 
+def test_show_fresh_opens_a_new_tab_when_requested(tmp_path: Path) -> None:
+    # The bug this plan fixes: in_new_tab was accepted but never wired to
+    # anything, so a second file silently replaced the first instead of
+    # getting its own tab.
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
+    nvim = MagicMock()
+    nvim.current.buffer.handle = 7
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+    ):
+        follower.show_fresh("/tmp/b.py", "x\n", in_new_tab=True)
+    cmds = [c.args[0] for c in nvim.command.call_args_list]
+    assert "tabnew" in cmds
+    assert "enew" not in cmds
+    tabnew_idx = cmds.index("tabnew")
+    file_idx = next(i for i, c in enumerate(cmds) if c.startswith("file "))
+    assert tabnew_idx < file_idx
+
+
 def test_show_fresh_marks_and_clears_animating(tmp_path: Path) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
@@ -477,6 +498,27 @@ def test_apply_edit_deletes_then_animates_each_op(tmp_path: Path) -> None:
     nvim.api.buf_set_text.assert_any_call(7, 1, 0, 1, 0, ["vim ai follower"])
 
 
+def test_apply_edit_navigates_to_the_tab_showing_file_path(tmp_path: Path) -> None:
+    # Regression guard: apply_edit used to operate on whatever tab happened
+    # to be active instead of switching to file_path's own tab first, unlike
+    # goto_file/close_tab/reload_and_relock/resume, which all do. Harmless
+    # with a single tab, but live content corruption once multiple real
+    # tabs exist: editing file A while file B's tab is active would type
+    # A's diff into B's buffer, leaving A untouched.
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
+    nvim = MagicMock()
+    nvim.api.get_current_buf.return_value.handle = 7
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch.object(NvimFollower, "goto_file") as goto_file,
+    ):
+        follower.apply_edit("/tmp/f.py", [op])
+    goto_file.assert_called_once_with("/tmp/f.py")
+
+
 def test_apply_edit_interrupted_reports_completed_op_index(tmp_path: Path) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
@@ -557,54 +599,100 @@ def test_close_tab_wipes_the_buffer_found_via_bufnr() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
     nvim.funcs.bufnr.return_value = 9
-    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch.object(NvimFollower, "goto_file") as goto_file,
+    ):
         follower.close_tab("/tmp/f.py")
+    goto_file.assert_called_once_with("/tmp/f.py")
     nvim.funcs.bufnr.assert_called_once_with("/tmp/f.py")
     nvim.command.assert_called_once_with("silent! bwipeout! 9")
 
 
-def test_close_tab_is_a_noop_when_bufnr_finds_nothing() -> None:
+def test_close_tab_skips_the_wipe_when_bufnr_finds_nothing() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
     nvim.funcs.bufnr.return_value = -1
-    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch.object(NvimFollower, "goto_file") as goto_file,
+    ):
         follower.close_tab("/tmp/f.py")
+    goto_file.assert_called_once_with("/tmp/f.py")
     nvim.command.assert_not_called()
 
 
-def test_goto_file_switches_to_an_existing_buffer_via_bufnr() -> None:
-    # bufnr() applies nvim's own path canonicalization (e.g. macOS's
-    # /tmp -> /private/tmp symlink), unlike a raw string compare against
-    # nvim_buf_get_name — see the docstring on goto_file.
+def test_goto_file_switches_to_the_tab_already_showing_the_buffer() -> None:
+    # A single window per tab is a special case of the general multi-window
+    # loop goto_file runs (see the split-window test below).
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
     nvim.funcs.bufnr.return_value = 9
+    tab_other, tab_target = MagicMock(), MagicMock()
+    win_other, win_target = MagicMock(), MagicMock()
+    buf_other, buf_target = MagicMock(number=3), MagicMock(number=9)
+    nvim.api.list_tabpages.return_value = [tab_other, tab_target]
+    nvim.api.tabpage_list_wins.side_effect = lambda t: (
+        [win_target] if t is tab_target else [win_other]
+    )
+    nvim.api.win_get_buf.side_effect = lambda w: buf_target if w is win_target else buf_other
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.goto_file("/tmp/f.py")
-    nvim.funcs.bufnr.assert_called_once_with("/tmp/f.py")
-    nvim.api.set_current_buf.assert_called_once_with(9)
+    nvim.api.set_current_win.assert_called_once_with(win_target)
+    nvim.command.assert_not_called()
     nvim.api.create_buf.assert_not_called()
 
 
-def test_goto_file_creates_and_names_a_new_buffer_when_bufnr_finds_nothing() -> None:
+def test_goto_file_finds_the_buffer_in_a_split_window_not_just_the_focused_one() -> None:
+    # A buffer can be visible in an unfocused split of some tab (normal in
+    # an adopted nvim, the user's own editor) — checking only each tab's
+    # focused window misses it and opens a duplicate tab for the same file.
+    follower = NvimFollower(socket_path="/tmp/x.sock")
+    nvim = MagicMock()
+    nvim.funcs.bufnr.return_value = 9
+    tab1, tab2 = MagicMock(), MagicMock()
+    win1, win2a, win2b = MagicMock(), MagicMock(), MagicMock()
+    buf1, buf2a, buf2b = MagicMock(number=1), MagicMock(number=3), MagicMock(number=9)
+    nvim.api.list_tabpages.return_value = [tab1, tab2]
+    nvim.api.tabpage_list_wins.side_effect = lambda t: [win1] if t is tab1 else [win2a, win2b]
+    win_to_buf = {win1: buf1, win2a: buf2a, win2b: buf2b}
+    nvim.api.win_get_buf.side_effect = lambda w: win_to_buf[w]
+    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+        follower.goto_file("/tmp/f.py")
+    nvim.api.set_current_win.assert_called_once_with(win2b)
+    nvim.command.assert_not_called()
+
+
+def test_goto_file_opens_a_new_tab_when_the_buffer_exists_but_isnt_shown() -> None:
+    follower = NvimFollower(socket_path="/tmp/x.sock")
+    nvim = MagicMock()
+    nvim.funcs.bufnr.return_value = 9
+    nvim.api.list_tabpages.return_value = []  # no tab shows it
+    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+        follower.goto_file("/tmp/f.py")
+    nvim.command.assert_called_once_with("tabnew")
+    nvim.api.win_set_buf.assert_called_once_with(0, 9)
+    nvim.api.create_buf.assert_not_called()
+
+
+def test_goto_file_creates_a_new_buffer_in_a_new_tab_when_none_exists() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
     nvim.funcs.bufnr.return_value = -1
     nvim.api.create_buf.return_value = 42
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.goto_file("/tmp/f.py")
+    nvim.command.assert_called_once_with("tabnew")
     nvim.api.create_buf.assert_called_once_with(True, False)
     nvim.api.buf_set_name.assert_called_once_with(42, "/tmp/f.py")
-    nvim.api.set_current_buf.assert_called_once_with(42)
+    nvim.api.win_set_buf.assert_called_once_with(0, 42)
 
 
 def test_ensure_showing_delegates_to_goto_file() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock")
-    nvim = MagicMock()
-    nvim.funcs.bufnr.return_value = 9
-    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+    with patch.object(NvimFollower, "goto_file") as goto_file:
         follower.ensure_showing("/tmp/f.py")
-    nvim.api.set_current_buf.assert_called_once_with(9)
+    goto_file.assert_called_once_with("/tmp/f.py")
 
 
 def test_stop_is_a_noop() -> None:

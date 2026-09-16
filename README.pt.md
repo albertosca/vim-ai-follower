@@ -206,8 +206,9 @@ Vim que você já tem aberto na mesma janela tmux. Como é o **seu** editor:
   lançar:** com `adopt_existing: true` (ou `start --backend nvim` numa janela que
   já tem um nvim rodando) ele adota esse nvim — o seu próprio editor, nunca
   travado em somente-leitura; caso contrário lança um nvim headless dedicado para
-  a janela. O Neovim tem buffers em vez de abas, então troca de buffer no lugar
-  de abrir abas; a remoção por arquivo ainda vale (`max_tabs`).
+  a janela. O Neovim também abre abas de verdade — a mesma experiência de
+  circular entre abas do tmux, mantida via sua API RPC; a remoção por arquivo
+  ainda vale (`max_tabs`).
 
 ## Limitações
 

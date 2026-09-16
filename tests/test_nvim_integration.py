@@ -86,6 +86,76 @@ def test_apply_edit_inserts_and_deletes_lines(
     assert nvim.current.buffer[:] == ["a", "B1", "B2"]
 
 
+def _tab_buffer_names(nvim: Any) -> list[str]:
+    names = []
+    for tabpage in nvim.api.list_tabpages():
+        win = nvim.api.tabpage_get_win(tabpage)
+        buf = nvim.api.win_get_buf(win)
+        names.append(nvim.api.buf_get_name(buf))
+    return names
+
+
+@pytest.mark.integration
+def test_multiple_fresh_files_open_as_separate_tabs(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vim_ai_follower import cache
+
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+
+    follower.show_fresh("/tmp/a.py", "a = 1\n")
+    follower.show_fresh("/tmp/b.py", "b = 2\n", in_new_tab=True)
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    names = _tab_buffer_names(nvim)
+    assert len(names) == 2
+    assert any(name.endswith("/tmp/a.py") for name in names)
+    assert any(name.endswith("/tmp/b.py") for name in names)
+    # the tab for the most recently shown file is the active one
+    assert nvim.current.buffer.name.endswith("/tmp/b.py")
+
+
+@pytest.mark.integration
+def test_editing_an_earlier_file_switches_back_to_its_tab(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vim_ai_follower import cache
+
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+
+    follower.show_fresh("/tmp/a.py", "a = 1\nb = 1\n")
+    follower.show_fresh("/tmp/b.py", "b = 2\n", in_new_tab=True)
+
+    ops = compute_edit_script("a = 1\nb = 1\n", "a = 2\nb = 1\n")
+    follower.apply_edit("/tmp/a.py", ops)
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    assert len(nvim.api.list_tabpages()) == 2
+    assert nvim.current.buffer.name.endswith("/tmp/a.py")
+    assert nvim.current.buffer[:] == ["a = 2", "b = 1"]
+
+
+@pytest.mark.integration
+def test_close_tab_removes_the_tab_not_just_the_buffer(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vim_ai_follower import cache
+
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+
+    follower.show_fresh("/tmp/a.py", "a = 1\n")
+    follower.show_fresh("/tmp/b.py", "b = 2\n", in_new_tab=True)
+    follower.close_tab("/tmp/a.py")
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    names = _tab_buffer_names(nvim)
+    assert len(names) == 1
+    assert names[0].endswith("/tmp/b.py")
+
+
 @pytest.mark.integration
 def test_pause_stops_the_animation_then_resumes_to_the_full_content(
     headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
