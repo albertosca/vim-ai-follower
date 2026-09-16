@@ -344,6 +344,7 @@ def test_apply_edit_pause_at_op_boundary_saves_ops_and_resumes(tmp_path: Path) -
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
     nvim.api.get_current_buf.return_value.handle = 7
+    nvim.api.buf_line_count.return_value = 1
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
     saved: list[int] = []
     real_save = control.save_pending_apply_edit
@@ -390,6 +391,7 @@ def test_apply_edit_pause_inside_an_ops_lines_saves_and_resumes(tmp_path: Path) 
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
     nvim.api.get_current_buf.return_value.handle = 7
+    nvim.api.buf_line_count.return_value = 1
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
     saved: list[int] = []
 
@@ -508,6 +510,7 @@ def test_apply_edit_navigates_to_the_tab_showing_file_path(tmp_path: Path) -> No
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
     nvim.api.get_current_buf.return_value.handle = 7
+    nvim.api.buf_line_count.return_value = 1
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -523,6 +526,7 @@ def test_apply_edit_interrupted_reports_completed_op_index(tmp_path: Path) -> No
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
     nvim.api.get_current_buf.return_value.handle = 7
+    nvim.api.buf_line_count.return_value = 1
     ops = [
         EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",)),
         EditOp(kind="insert", start_line=3, end_line=2, new_lines=("b",)),
@@ -544,6 +548,7 @@ def test_apply_edit_interrupted_inside_an_ops_line_animation(tmp_path: Path) -> 
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
     nvim.api.get_current_buf.return_value.handle = 7
+    nvim.api.buf_line_count.return_value = 1
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),

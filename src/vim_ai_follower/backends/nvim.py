@@ -298,6 +298,17 @@ class NvimFollower:
                 continue  # resumed: retry this op from its clean boundary
             # start_line-1/end_line are the 0-indexed, end-exclusive range
             # nvim_buf_set_lines wants (same convention as diff.apply_ops).
+            # An op whose range spans the buffer's own top-to-bottom (starts
+            # at line 1 and reaches at least the current last line) empties
+            # it, and nvim can never hold zero lines — it silently keeps one
+            # implicit blank line, the same role show_fresh's own seed blank
+            # plays (see its docstring). _animate_lines always inserts each
+            # new line BEFORE its target row, so that implicit blank gets
+            # pushed past every typed line instead of being consumed by one.
+            # Snapshot the pre-delete count now: after the delete call it can
+            # no longer tell a genuinely-emptied buffer from one that already
+            # held a single real line.
+            wipes_buffer = op.start_line == 1 and op.end_line >= nvim.api.buf_line_count(buf)
             nvim.api.buf_set_lines(buf, op.start_line - 1, op.end_line, True, [])
             if op.new_lines:
                 result = _animate_lines(
@@ -312,6 +323,14 @@ class NvimFollower:
                 )
                 if result.outcome == "interrupted":
                     return AnimationResult("interrupted", index)
+                if wipes_buffer:
+                    # Drop the implicit blank now pushed past every typed
+                    # line, mirroring show_fresh's own seed-blank cleanup.
+                    # A delete-only op (no new_lines, handled above) never
+                    # reaches here: the implicit blank IS the correct final
+                    # state for a buffer emptied with nothing to replace it.
+                    drop = op.start_line - 1 + len(op.new_lines)
+                    nvim.api.buf_set_lines(buf, drop, drop + 1, True, [])
             index += 1
         return AnimationResult("completed", len(ops))
 
