@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -35,6 +36,15 @@ def _mock_nvim(line_counts: list[int], old_lines: list[str]) -> MagicMock:
     return nvim
 
 
+# _run_ops reads the whole buffer once per run (the base of the persisted
+# crash-fallback partial); the rollback snapshot is every OTHER read.
+_INITIAL_READ = call(7, 0, -1, True)
+
+
+def _snapshots(nvim: MagicMock) -> list[Any]:
+    return [c for c in nvim.api.buf_get_lines.call_args_list if c != _INITIAL_READ]
+
+
 def test_interrupt_mid_line_restores_the_deleted_range_and_drops_the_typed_row(
     tmp_path: Path,
 ) -> None:
@@ -56,7 +66,7 @@ def test_interrupt_mid_line_restores_the_deleted_range_and_drops_the_typed_row(
     ):
         result = follower.apply_edit("/tmp/f.py", [op])
     assert result == AnimationResult("interrupted", 0)
-    nvim.api.buf_get_lines.assert_called_once_with(7, 1, 2, True)
+    assert _snapshots(nvim) == [call(7, 1, 2, True)]
     assert nvim.api.buf_set_lines.call_args_list == [
         call(7, 1, 2, True, []),  # the op's delete
         call(7, 1, 1, True, [""]),  # _animate_lines' row for "WX"
@@ -120,7 +130,7 @@ def test_interrupt_inside_a_wiping_op_swallows_the_implicit_blank(tmp_path: Path
     ):
         result = follower.apply_edit("/tmp/f.py", [op])
     assert result == AnimationResult("interrupted", 0)
-    nvim.api.buf_get_lines.assert_called_once_with(7, 0, 3, True)
+    assert _snapshots(nvim) == [call(7, 0, 3, True)]
     assert nvim.api.buf_set_lines.call_args_list == [
         call(7, 0, 3, True, []),  # the op's delete (buffer -> implicit blank)
         call(7, 0, 0, True, [""]),  # _animate_lines' row for "XY"
@@ -143,7 +153,7 @@ def test_an_op_boundary_interrupt_leaves_the_buffer_untouched(tmp_path: Path) ->
     ):
         result = follower.apply_edit("/tmp/f.py", [op])
     assert result == AnimationResult("interrupted", 0)
-    nvim.api.buf_get_lines.assert_not_called()
+    assert _snapshots(nvim) == []
     nvim.api.buf_set_lines.assert_not_called()
 
 
@@ -164,7 +174,7 @@ def test_a_delete_only_op_is_neither_snapshotted_nor_rolled_back(tmp_path: Path)
     ):
         result = follower.apply_edit("/tmp/f.py", ops)
     assert result == AnimationResult("interrupted", 1)  # op 0 genuinely done
-    nvim.api.buf_get_lines.assert_not_called()
+    assert _snapshots(nvim) == []
     assert nvim.api.buf_set_lines.call_args_list == [call(7, 2, 3, True, [])]
 
 
@@ -181,5 +191,5 @@ def test_a_completed_op_never_rolls_back(tmp_path: Path) -> None:
     ):
         result = follower.apply_edit("/tmp/f.py", [op])
     assert result == AnimationResult("completed", 1)
-    nvim.api.buf_get_lines.assert_called_once_with(7, 1, 2, True)  # snapshot taken
+    assert _snapshots(nvim) == [call(7, 1, 2, True)]  # snapshot taken
     assert call(7, 1, 2, True, ["b"]) not in nvim.api.buf_set_lines.call_args_list
