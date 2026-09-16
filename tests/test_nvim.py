@@ -92,17 +92,23 @@ def test_animate_lines_stops_partway_when_interrupt_fires_between_lines() -> Non
     assert nvim.api.buf_set_text.call_count == 1  # only line 0 was typed
 
 
-def test_animate_lines_snaps_the_line_on_a_mid_char_interrupt() -> None:
-    # Interrupt detected mid-line (per-char check): the untyped remainder is
-    # snapped in so the buffer lands on a clean line boundary, and the line
-    # counts as done (index + 1).
+def test_animate_lines_leaves_the_partial_line_untouched_on_a_mid_char_interrupt() -> None:
+    # Interrupt detected mid-line (per-char check): Alberto does not want the
+    # line "finished" for him (2026-09-16) — the untyped remainder is left
+    # out of the buffer, and the line does NOT count as done (index, not
+    # index + 1), so it's retyped from scratch on resume.
     nvim = MagicMock()
     # line 0 "hi" typed fully, then on line 1 "abc" type 'a', interrupt before 'b'
     signals = [None, None, None, None, None, "interrupt"]
     with patch("vim_ai_follower.control.check_signal", side_effect=signals):
         result = _animate_lines(nvim, 7, ("hi", "abc"), 0, lambda: 0.05, "@1", ns=1)
-    assert result == AnimationResult("interrupted", 2)
-    nvim.api.buf_set_text.assert_any_call(7, 1, 1, 1, 1, ["bc"])  # snapped remainder
+    assert result == AnimationResult("interrupted", 1)
+    # only "h", "i", "a" were typed — no snap of "bc"
+    assert nvim.api.buf_set_text.call_args_list == [
+        call(7, 0, 0, 0, 0, ["h"]),
+        call(7, 0, 1, 0, 1, ["i"]),
+        call(7, 1, 0, 1, 0, ["a"]),
+    ]
 
 
 def test_animate_lines_pause_inside_the_char_loop_then_resumes(tmp_path: Path) -> None:
@@ -124,17 +130,20 @@ def test_animate_lines_pause_inside_the_char_loop_then_resumes(tmp_path: Path) -
     ]
 
 
-def test_animate_lines_interrupt_during_a_mid_line_pause_snaps_and_stops(tmp_path: Path) -> None:
-    # Paused mid-line, then interrupted: _wait_while_paused returns False, the
-    # line is snapped whole, and the run reports interrupted with it counted.
+def test_animate_lines_interrupt_during_a_mid_line_pause_leaves_it_untouched(
+    tmp_path: Path,
+) -> None:
+    # Paused mid-line, then interrupted: _wait_while_paused returns False, and
+    # the line is left exactly as far as it was typed (nothing here, since the
+    # pause landed before the first character) — not counted as done.
     nvim = MagicMock()
     with (
         patch("vim_ai_follower.control.check_signal", side_effect=[None, "pause", "interrupt"]),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
     ):
         result = _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", ns=1)
-    assert result == AnimationResult("interrupted", 1)
-    nvim.api.buf_set_text.assert_any_call(7, 0, 0, 0, 0, ["ab"])  # snapped whole
+    assert result == AnimationResult("interrupted", 0)
+    nvim.api.buf_set_text.assert_not_called()  # no snap; nothing was typed yet
 
 
 def test_animate_lines_pace_zero_skips_empty_lines(tmp_path: Path) -> None:
@@ -558,7 +567,7 @@ def test_apply_edit_interrupted_inside_an_ops_line_animation(tmp_path: Path) -> 
     ):
         result = follower.apply_edit("/tmp/f.py", [op])
     assert result == AnimationResult("interrupted", 0)
-    assert nvim.api.buf_set_text.call_count == 1  # line0 snapped whole on interrupt
+    assert nvim.api.buf_set_text.call_count == 0  # no snap; line0 not typed at all
 
 
 def test_apply_edit_pure_delete_op_needs_no_animation(tmp_path: Path) -> None:
