@@ -52,26 +52,29 @@ def test_is_binary_false_for_plain_text() -> None:
 
 def test_apply_ops_replace_single_line() -> None:
     ops = [EditOp(kind="replace", start_line=2, end_line=2, new_lines=("X",))]
-    assert apply_ops("a\nb\nc", ops) == "a\nX\nc"
+    assert apply_ops("a\nb\nc", ops) == "a\nX\nc\n"
 
 
 def test_apply_ops_pure_insertion_at_top() -> None:
     ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))]
-    assert apply_ops("b\nc", ops) == "a\nb\nc"
+    assert apply_ops("b\nc", ops) == "a\nb\nc\n"
 
 
 def test_apply_ops_pure_insertion_at_end() -> None:
     ops = [EditOp(kind="insert", start_line=3, end_line=2, new_lines=("c", "d"))]
-    assert apply_ops("a\nb", ops) == "a\nb\nc\nd"
+    assert apply_ops("a\nb", ops) == "a\nb\nc\nd\n"
 
 
 def test_apply_ops_pure_deletion() -> None:
     ops = [EditOp(kind="delete", start_line=2, end_line=3, new_lines=())]
-    assert apply_ops("a\nb\nc\nd", ops) == "a\nd"
+    assert apply_ops("a\nb\nc\nd", ops) == "a\nd\n"
 
 
 def test_apply_ops_empty_list_returns_before_unchanged() -> None:
-    assert apply_ops("a\nb", []) == "a\nb"
+    # "Unchanged" up to the canonical terminated form apply_ops always returns
+    # (see tests/test_partial_form.py for why the return has to be lossless).
+    assert apply_ops("a\nb", []) == "a\nb\n"
+    assert apply_ops("a\nb\n", []) == "a\nb\n"
 
 
 def test_apply_ops_multiple_ops_applied_in_given_order() -> None:
@@ -82,7 +85,7 @@ def test_apply_ops_multiple_ops_applied_in_given_order() -> None:
     after = "a\nX\nc\nd\nY"
     ops = compute_edit_script(before, after)
     assert [op.start_line for op in ops] == [5, 2]  # already bottom-to-top
-    assert apply_ops(before, ops) == after
+    assert apply_ops(before, ops) == after + "\n"
 
 
 def test_apply_ops_reconstructs_partial_prefix_of_a_multi_op_diff() -> None:
@@ -90,5 +93,5 @@ def test_apply_ops_reconstructs_partial_prefix_of_a_multi_op_diff() -> None:
     before = "a\nb\nc\nd\ne"
     after = "a\nX\nc\nd\nY"
     ops = compute_edit_script(before, after)
-    assert apply_ops(before, ops[:1]) == "a\nb\nc\nd\nY"
-    assert apply_ops(before, ops[:0]) == before
+    assert apply_ops(before, ops[:1]) == "a\nb\nc\nd\nY\n"
+    assert apply_ops(before, ops[:0]) == before + "\n"

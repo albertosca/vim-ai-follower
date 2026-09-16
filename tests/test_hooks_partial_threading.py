@@ -107,4 +107,4 @@ def test_the_before_it_passes_is_the_base_its_own_interrupt_path_uses(
     ops = follower.apply_edit.call_args.args[1]
     assert len(ops) == 2  # not vacuous: a one-op script would make any prefix agree
     assert diff.apply_ops(before, ops[:1]) == seen["partial"]
-    assert seen["partial"] == "a\nb\nC"
+    assert seen["partial"] == "a\nb\nC\n"

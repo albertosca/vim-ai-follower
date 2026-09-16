@@ -157,7 +157,7 @@ def test_apply_edit_des_interrupt_after_mid_op_mid_line_stop_lands_at_full_conte
 
     monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
     partial = apply_ops(before, ops[: result.completed_count])
-    assert partial == "a\nb\nc"  # op0 hadn't completed: nothing of it survives
+    assert partial == "a\nb\nc\n"  # op0 hadn't completed: nothing of it survives
     rebuilt = follower.rewrite_buffer(file_a, partial)
     assert rebuilt.outcome == "completed"
 

@@ -130,7 +130,7 @@ def test_run_ops_pause_records_the_applied_prefix_as_the_partial(tmp_path: Path)
         assert follower.apply_edit("/tmp/f.py", ops) == AnimationResult("completed", 2)
 
     # op0 (line 3 -> "C") had landed; op1 had not.
-    assert saved == ["a\nb\nC"]
+    assert saved == ["a\nb\nC\n"]
 
 
 def test_resume_fresh_pause_records_the_buffer_prefix_plus_the_typed_lines(
