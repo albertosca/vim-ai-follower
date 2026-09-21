@@ -12,6 +12,19 @@ from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.diff import EditOp, compute_edit_script
 
 
+def _goto(path: str) -> str:
+    """The exact Ex line goto_file sends to navigate to `path`.
+
+    Spelled out here rather than imported from tmux_vim._GOTO_FILE on
+    purpose: these assertions exist to catch an unintended change to that
+    constant, and importing it would make every one of them agree with
+    whatever the constant happens to say. The `:try`/`:catch` wrapper
+    swallows E37 (a modified target buffer) and nothing else — see
+    _GOTO_FILE's comment for why the bang, `:silent!` and 'hidden' were all
+    measured and rejected."""
+    return rf":try | tab drop {path} | catch /^Vim\%((\a\+)\)\=:E37:/ | endtry"
+
+
 def test_is_alive_true_when_vim_is_running_in_pane() -> None:
     follower = TmuxVimFollower(pane_id="%2")
     fake_result = MagicMock(stdout="%1 zsh\n%2 vim\n")
@@ -59,7 +72,7 @@ def test_apply_edit_unlocks_the_buffer_only_for_the_animation(tmp_path: Path) ->
     # goto_file's defensive preamble runs first
     assert commands[0] == ("Escape", False)
     assert commands[1] == ("Escape", False)
-    assert commands[2] == (":tab drop /tmp/f.txt", True)
+    assert commands[2] == (_goto("/tmp/f.txt"), True)
     assert commands[3] == ("Enter", False)
     assert commands[4] == (":silent! CocDisable", True)
     assert commands[5] == ("Enter", False)
@@ -133,7 +146,7 @@ def test_apply_edit_renavigates_to_its_own_tab_on_resume(tmp_path: Path) -> None
         result = follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
     commands = _sent_commands(run)
     assert result.outcome == "completed"
-    tab_drops = [i for i, c in enumerate(commands) if c == (":tab drop /tmp/f.txt", True)]
+    tab_drops = [i for i, c in enumerate(commands) if c == (_goto("/tmp/f.txt"), True)]
     # once for the initial goto_file preamble, once more for the resume
     assert len(tab_drops) == 2
     # the second tab drop happens after the pause and before the relock
@@ -394,7 +407,7 @@ def test_resume_navigates_to_the_pending_files_tab_first(tmp_path: Path) -> None
     assert commands[:4] == [
         ("Escape", False),
         ("Escape", False),
-        (":tab drop /tmp/f.py", True),
+        (_goto("/tmp/f.py"), True),
         ("Enter", False),
     ]
 
@@ -410,7 +423,10 @@ def test_resume_skips_navigation_when_pending_has_no_file_path(tmp_path: Path) -
     ):
         follower.resume(pending)
     commands = _sent_commands(run)
-    assert not any(text.startswith(":tab drop") for text, _ in commands)
+    # Matches on the substring, not a ':tab drop' prefix: goto_file's Ex
+    # line now opens with ':try |', so a prefix check would pass whether or
+    # not the navigation was skipped.
+    assert not any("tab drop" in text for text, _ in commands)
 
 
 def test_resume_skips_relock_when_interrupted_again(tmp_path: Path) -> None:
@@ -447,7 +463,7 @@ def test_goto_file_sends_normal_mode_then_tab_drop() -> None:
     assert _sent_commands(run) == [
         ("Escape", False),
         ("Escape", False),
-        (":tab drop /tmp/a.py", True),
+        (_goto("/tmp/a.py"), True),
         ("Enter", False),
     ]
 
@@ -460,7 +476,7 @@ def test_ensure_showing_navigates_by_tab_drop_and_locks() -> None:
     assert commands == [
         ("Escape", False),
         ("Escape", False),
-        (":tab drop /tmp/a.py", True),
+        (_goto("/tmp/a.py"), True),
         ("Enter", False),
         (":setlocal readonly nomodifiable", True),
         ("Enter", False),
@@ -476,7 +492,7 @@ def test_reload_and_relock_navigates_then_reloads_and_relocks() -> None:
     assert commands == [
         ("Escape", False),
         ("Escape", False),
-        (":tab drop /tmp/a.py", True),
+        (_goto("/tmp/a.py"), True),
         ("Enter", False),
         (":e!", True),
         ("Enter", False),
@@ -493,7 +509,7 @@ def test_close_tab_wipes_the_buffer_and_never_double_closes() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.close_tab("/tmp/old.py")
     commands = _sent_commands(run)
-    drop_index = commands.index((":tab drop /tmp/old.py", True))
+    drop_index = commands.index((_goto("/tmp/old.py"), True))
     texts_after_drop = [text for text, _ in commands[drop_index:]]
     assert ":silent! bwipeout! /tmp/old.py" in texts_after_drop
     assert not any("tabclose" in text for text, _ in commands)
