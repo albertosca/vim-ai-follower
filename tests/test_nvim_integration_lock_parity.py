@@ -1,8 +1,11 @@
-"""Real-headless-nvim coverage for lock parity between ensure_showing/
-apply_edit's disk-reading branches and the tmux backend's `ensure_showing`
-(which always relocks `nomodifiable` after `:tab drop`). Reuses the
-headless_nvim fixture and the tab-name helper from test_nvim_integration.py
-rather than duplicating them."""
+"""Real-headless-nvim coverage for the nvim backend's navigation lock: a
+launched, dedicated follower's buffer gets relocked (`nomodifiable`) by
+ensure_showing/apply_edit's disk-reading branches, exactly like the tmux
+backend's `ensure_showing` (which relocks after `:tab drop`) — but an
+ADOPTED nvim never is, navigation included (same rule `_drive`'s completion
+relock follows; see nvim.py's docstrings). Reuses the headless_nvim fixture
+and the tab-name helper from test_nvim_integration.py rather than
+duplicating them."""
 
 from __future__ import annotations
 
@@ -18,6 +21,7 @@ from test_nvim_integration import _tab_buffer_names  # noqa: E402
 from vim_ai_follower.animate import AnimationResult  # noqa: E402
 from vim_ai_follower.backends.nvim import NvimFollower  # noqa: E402
 from vim_ai_follower.diff import compute_edit_script  # noqa: E402
+from vim_ai_follower.state import FollowerState  # noqa: E402
 
 
 def _modifiable(nvim: Any, buf: int) -> bool:
@@ -43,6 +47,28 @@ def test_ensure_showing_a_never_seen_file_locks_the_loaded_buffer(
     assert buf != -1
     assert _modifiable(nvim, buf) is False
     assert nvim.current.buffer[:] == ["disk1", "disk2"]  # content untouched by the lock
+
+
+@pytest.mark.integration
+def test_ensure_showing_a_never_seen_file_leaves_an_adopted_buffer_modifiable(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vim_ai_follower import cache
+
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    FollowerState.set("@1", "nvim", headless_nvim, adopted=True)
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+
+    read_me = tmp_path / "read_me.py"
+    read_me.write_text("disk1\ndisk2\n")
+    follower.ensure_showing(str(read_me))
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    buf = nvim.funcs.bufnr(str(read_me))
+    assert buf != -1
+    # an adopted nvim is the user's own editor: never locked out of it
+    assert _modifiable(nvim, buf) is True
+    assert nvim.current.buffer[:] == ["disk1", "disk2"]
 
 
 @pytest.mark.integration
@@ -74,6 +100,33 @@ def test_ensure_showing_an_existing_unlocked_buffer_switches_to_it_and_locks_it(
 
 
 @pytest.mark.integration
+def test_ensure_showing_an_adopted_followers_existing_buffer_stays_modifiable(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vim_ai_follower import cache
+
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    FollowerState.set("@1", "nvim", headless_nvim, adopted=True)
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+
+    target = tmp_path / "live.py"
+    target.write_text("STALE DISK CONTENT\n")
+    follower.show_fresh(str(target), "typed line 1\ntyped line 2\n")
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    buf = nvim.funcs.bufnr(str(target))
+    # show_fresh's own completion never locked it (adopted), so this test
+    # actually exercises ensure_showing's own (non-)lock.
+    assert _modifiable(nvim, buf) is True
+
+    follower.show_fresh(str(tmp_path / "other.py"), "other\n", in_new_tab=True)
+    follower.ensure_showing(str(target))
+
+    assert nvim.current.buffer.name.endswith("/live.py")
+    assert nvim.current.buffer[:] == ["typed line 1", "typed line 2"]  # content untouched
+    assert _modifiable(nvim, buf) is True
+
+
+@pytest.mark.integration
 def test_apply_edit_on_a_vanished_buffer_locks_the_disk_loaded_buffer(
     headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -99,6 +152,37 @@ def test_apply_edit_on_a_vanished_buffer_locks_the_disk_loaded_buffer(
     buf = nvim.funcs.bufnr(str(target))
     assert buf != -1
     assert _modifiable(nvim, buf) is False
+    assert nvim.current.buffer[:] == ["a", "B", "c"]
+
+
+@pytest.mark.integration
+def test_apply_edit_on_a_vanished_buffer_leaves_an_adopted_disk_loaded_buffer_modifiable(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vim_ai_follower import cache
+
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    FollowerState.set("@1", "nvim", headless_nvim, adopted=True)
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+
+    target = tmp_path / "wiped.py"
+    before = "a\nb\nc\n"
+    after = "a\nB\nc\n"
+    target.write_text(after)
+    follower.show_fresh(str(target), before)
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    nvim.command(f"silent! bwipeout! {nvim.funcs.bufnr(str(target))}")
+    assert nvim.funcs.bufnr(str(target)) == -1
+
+    ops = compute_edit_script(before, after)
+    result = follower.apply_edit(str(target), ops)
+
+    assert result == AnimationResult("completed", len(ops))
+    buf = nvim.funcs.bufnr(str(target))
+    assert buf != -1
+    # an adopted nvim is the user's own editor: never locked out of it
+    assert _modifiable(nvim, buf) is True
     assert nvim.current.buffer[:] == ["a", "B", "c"]
 
 

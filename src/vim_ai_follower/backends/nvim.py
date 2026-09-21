@@ -662,20 +662,28 @@ class NvimFollower:
         A file that does not exist on disk is fine: the buffer opens empty,
         exactly as `:edit` on a new file would.
 
-        Locked (nomodifiable) before returning — nothing animates this
-        buffer afterwards, so it must land in the same locked state
-        ensure_showing's other branch does (tmux parity, see its
-        docstring). Shared by both of this backend's disk-reading callers:
+        Locked (nomodifiable) before returning when this is a launched,
+        dedicated follower — nothing animates this buffer afterwards, so it
+        must land in the same locked state ensure_showing's other branch
+        does. An adopted nvim is the user's own editor and is never locked
+        by this backend, navigation included: the controller's earlier
+        ruling to mirror tmux's unconditional lock here (2026-09-16) has
+        been reversed, restoring the same launched/adopted split `_drive`'s
+        completion relock uses (see its docstring — locking the user out of
+        their own buffer is hostile regardless of which entry point does
+        it). Shared by both of this backend's disk-reading callers:
         ensure_showing (Read navigation) and apply_edit's vanished-buffer
         branch, where a "completed" outcome must leave the buffer locked
-        exactly like a completed animation run through _drive would."""
+        exactly like a completed animation run through _drive would, unless
+        adopted."""
         bufnr = nvim.funcs.bufadd(file_path)
         nvim.funcs.bufload(bufnr)
         nvim.api.buf_set_option(bufnr, "buflisted", True)
         nvim.command("tabnew")
         nvim.api.win_set_buf(0, bufnr)
         nvim.command("filetype detect")
-        nvim.api.buf_set_option(bufnr, "modifiable", False)
+        if not self._is_adopted():
+            nvim.api.buf_set_option(bufnr, "modifiable", False)
 
     def ensure_showing(self, file_path: str) -> None:
         """Show file_path with its REAL on-disk content — the Read-navigation
@@ -693,15 +701,22 @@ class NvimFollower:
         the same `buf_set_option` call `_drive`'s completion relock uses —
         a stray keystroke here must not corrupt a buffer that isn't being
         actively animated, exactly the tmux backend's rationale for locking
-        after `:tab drop`. Unlike `_drive`, this lock is unconditional: tmux
-        locks an adopted Vim's tab the same as a dedicated one, so parity
-        means nvim does too. `hand_over` is still how the buffer comes back
-        to the user."""
+        after `:tab drop` — but, like `_drive`, ONLY for a launched,
+        dedicated follower. An adopted nvim is the user's own editor and is
+        never locked by this backend, navigation included: a controller
+        ruling on 2026-09-16 made this lock unconditional to mirror tmux
+        exactly, which contradicted this backend's own design (and the
+        README's promise that an adopted editor is never locked read-only);
+        that ruling has since been reversed. See `_drive`'s docstring for
+        why locking the user out of their own buffer is hostile regardless
+        of which entry point would do it. `hand_over` is still how a
+        launched follower's buffer comes back to the user."""
         nvim = self._connect()
         if nvim.funcs.bufnr(file_path) != -1:
             self.goto_file(file_path)
             buf = nvim.api.get_current_buf().handle
-            nvim.api.buf_set_option(buf, "modifiable", False)
+            if not self._is_adopted():
+                nvim.api.buf_set_option(buf, "modifiable", False)
             return
         self._open_from_disk(nvim, file_path)
 
