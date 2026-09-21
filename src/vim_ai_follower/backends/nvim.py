@@ -129,6 +129,17 @@ def _animate_lines(
             continue
         mark = nvim.api.buf_set_extmark(buf, ns, row, 0, {"line_hl_group": _TYPING_HL})
         char = 0
+        # nvim's API columns are BYTE offsets; `char` counts CODE POINTS. They
+        # coincide only while the line stays ASCII, so carry the byte offset
+        # of everything typed so far alongside the character index instead of
+        # reusing `char` as a column. Before this, the first multi-byte
+        # character desynchronised the two by (width - 1) bytes and every
+        # later insert landed inside an already-typed character: Alberto's
+        # `alpha — beta` reached the buffer as b'alpha \xe2 beta\x80\x94'
+        # (QA visual battery, 2026-09-21). `char` keeps its own meaning
+        # untouched — the pace loop, the signal checks and every persisted
+        # remainder stay character-granular.
+        col = 0
         interrupted = False
         while char < len(line):
             signal = control.check_signal(window_id, base_dir)
@@ -140,10 +151,13 @@ def _animate_lines(
                     interrupted = True
                     break
                 continue  # resumed: retype from the same character
-            nvim.api.buf_set_text(buf, row, char, row, char, [line[char]])
+            nvim.api.buf_set_text(buf, row, col, row, col, [line[char]])
+            col += len(line[char].encode("utf-8"))
             char += 1
             with contextlib.suppress(Exception):
-                nvim.api.win_set_cursor(0, [row + 1, char])
+                # Byte-based too, so the cursor trails the typed prefix by its
+                # byte length, not its character count.
+                nvim.api.win_set_cursor(0, [row + 1, col])
             nvim.command("redraw")
             time.sleep(pace)
         nvim.api.buf_del_extmark(buf, ns, mark)
