@@ -27,6 +27,17 @@ from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.session import Session
 
 
+def _goto(path: object) -> str:
+    """The exact Ex line the tmux backend's goto_file sends for `path`.
+
+    Written out here instead of imported from tmux_vim._GOTO_FILE on
+    purpose: these assertions exist to catch an unintended change to that
+    constant, which importing it would hide. The `:try`/`:catch` wrapper
+    swallows E37 (a modified target buffer would otherwise leave a blocking
+    hit-enter prompt in the pane) and nothing else."""
+    return rf":try | tab drop {path} | catch /^Vim\%((\a\+)\)\=:E37:/ | endtry"
+
+
 def _literal_sends(run_mock: MagicMock) -> list[str]:
     sends = []
     for call in run_mock.call_args_list:
@@ -200,7 +211,7 @@ def test_hook_post_skips_binary_files_on_first_open(tmp_path: Path) -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
-    assert _literal_sends(run) == [f":tab drop {target}", ":setlocal readonly nomodifiable"]
+    assert _literal_sends(run) == [_goto(target), ":setlocal readonly nomodifiable"]
 
 
 def test_hook_post_skips_binary_files_on_subsequent_edit(tmp_path: Path) -> None:
@@ -230,7 +241,7 @@ def test_hook_post_read_without_offset_does_not_navigate(tmp_path: Path) -> None
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
-    assert _literal_sends(run) == [f":tab drop {target}", ":setlocal readonly nomodifiable"]
+    assert _literal_sends(run) == [_goto(target), ":setlocal readonly nomodifiable"]
 
 
 def test_hook_post_read_skips_non_code_files_under_code_policy(
@@ -267,7 +278,7 @@ def test_hook_post_read_navigates_to_file_and_offset(tmp_path: Path) -> None:
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert _literal_sends(run) == [
-        f":tab drop {target}",
+        _goto(target),
         ":setlocal readonly nomodifiable",
         ":2",
     ]
@@ -289,7 +300,7 @@ def test_hook_post_read_navigates_even_when_file_already_current(tmp_path: Path)
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert _literal_sends(run) == [
-        f":tab drop {target}",
+        _goto(target),
         ":setlocal readonly nomodifiable",
         ":2",
     ]
@@ -355,7 +366,7 @@ def test_edit_of_tracked_file_uses_apply_edit_even_when_not_current(tmp_path: Pa
     # apply_edit's goto_file preamble navigates to a's tab — the backend's
     # job, not cli.py's — then the diff is applied in place; show_fresh's
     # rename-in-place (":file <path>") never runs.
-    assert f":tab drop {a}" in sends
+    assert _goto(a) in sends
     assert not any(text.startswith(":file ") for text in sends)
     assert "print('a changed')" in sends
 

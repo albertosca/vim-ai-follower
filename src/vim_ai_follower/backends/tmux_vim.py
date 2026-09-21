@@ -38,6 +38,42 @@ _RELOCK_READONLY_SYNCED = ":silent! e! | setlocal readonly nomodifiable nopaste"
 _COC_DISABLE = ":silent! CocDisable"
 _COC_ENABLE = ":silent! CocEnable"
 
+# goto_file's navigation, wrapped so a dirty target can't stall the pane.
+#
+# `:tab drop {file}` finishes by running `:rewind` on the arglist it just
+# set, and `:rewind` calls Vim's abandon check against the buffer it has
+# ALREADY landed on. When that buffer is modified, the check raises
+# `E37: No write since last change (add ! to override)` — 51 characters,
+# one more than the 49-column follower pane (`split-window -h` inside a
+# 100-column window), so the message wraps and Vim turns it into a real,
+# blocking "Press ENTER or type command to continue" hit-enter prompt in
+# the user's pane. A dirty target is the normal state after an interrupt
+# hand-off or a killed hook (see _with_unlocked: "A pause never relocks").
+#
+# The navigation itself has already completed by then — measured: the
+# right tab is focused, the unsaved content is untouched, the tab count is
+# unchanged. Only the trailing bookkeeping aborts, and nothing here needs
+# it. So the fix is to swallow that ONE error and nothing else:
+#
+#   - `:tab drop!` is wrong: the bang reloads from disk and silently
+#     DISCARDS the unsaved content (measured — it turns 3 of this file's
+#     integration tests red).
+#   - `:silent! tab drop` is wrong for a subtler reason: it also hides the
+#     swap-file "ATTENTION" dialog, which blocks Vim exactly as it does
+#     today but now with a blank screen — trading a visible stall for an
+#     invisible one (measured: both forms leave Vim unresponsive; only
+#     `silent!` leaves nothing on screen to explain why).
+#   - `set hidden` around the drop does not even work: the same-file path
+#     adds Vim's CCGD_MULTWIN flag, which skips the 'hidden' escape, so
+#     E37 still fires — and a `|`-chained restore never runs after the
+#     error, leaking `hidden` ON into what, in adopt mode, is the user's
+#     own Vim (measured: &hidden left at 1 in all three dirty scenarios).
+#
+# The catch pattern is the documented `Vim(cmd):E37:` form and is narrow
+# in both directions (measured against E17/E212/E325/E370, all of which
+# still surface exactly as they do today).
+_GOTO_FILE = r":try | tab drop {file} | catch /^Vim\%((\a\+)\)\=:E37:/ | endtry"
+
 
 @dataclass(frozen=True)
 class TmuxVimFollower:
@@ -81,10 +117,17 @@ class TmuxVimFollower:
     def goto_file(self, file_path: str) -> None:
         """The defensive preamble: land on the tab showing file_path (by
         name, immune to the user closing/reordering tabs), opening one if
-        missing."""
+        missing. Wrapped in _GOTO_FILE's E37 guard so a modified target
+        can't leave a blocking hit-enter prompt in the pane — see that
+        constant for why the bang, `:silent!` and 'hidden' are all wrong.
+
+        file_path is interpolated raw, exactly as it always has been: it
+        stays in `tab drop`'s own file argument, so its (pre-existing)
+        handling of spaces, `%`, `#` and wildcards is unchanged by the
+        wrapper."""
         pane = TmuxPane(pane_id=self.pane_id)
         self._normal_mode(pane)
-        pane.send_text(f":tab drop {file_path}")
+        pane.send_text(_GOTO_FILE.format(file=file_path))
         pane.send_key("Enter")
 
     def reload_and_relock(self, file_path: str) -> None:
