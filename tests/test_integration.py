@@ -277,14 +277,46 @@ def test_completed_edit_animation_writes_cleanly_with_a_bare_w(
     assert wait_until(lambda: "beta" in _capture(follower_pane_id), timeout=10.0)
 
     follower_pane = TmuxPane(pane_id=follower_pane_id)
+    # Read the file's mtime *before* sending `:w` (never after "beta" renders
+    # but before this point: `:e!` never writes, so nothing else moves it in
+    # between). st_mtime_ns is the same signal src/hooks.py's
+    # _poll_until_interrupt already uses to detect a real `:w` on disk.
+    before_write_mtime_ns = target_file.stat().st_mtime_ns
     follower_pane.send_text(":w")
     follower_pane.send_key("Enter")
 
-    def _wrote_cleanly() -> bool:
-        screen = _capture(follower_pane_id)
-        return "written" in screen and "WARNING" not in screen
+    # Flaky under load (measured 2026-09-21, reproduced by simply running
+    # the full test_integration.py suite locally while other tmux/vim-heavy
+    # processes were competing for CPU): waiting on the rendered "written"
+    # cmdline message timed out at 5s, and the pane captured at that moment
+    # showed neither "written" nor "WARNING" — just the buffer content and
+    # Vim's own ruler ("2,1  All"). That rules out the message having been
+    # typed and then scrolled/overwritten by a later command (nothing sends
+    # further keystrokes after this `:w`) — under load, Vim's own process
+    # simply hadn't been scheduled to consume+execute the queued `:w` Enter
+    # keystrokes by the deadline. A rendered cmdline message is a bad
+    # completion signal here regardless of timeout length: whether it's
+    # showing yet says nothing about whether the write happened. The file's
+    # mtime is real disk state instead: a warning-blocked `:w` (the W11
+    # regression this test guards) would hang on an unanswered y/n
+    # confirmation prompt and never touch the file, so mtime advancing can
+    # only mean the write actually completed cleanly.
+    #
+    # Vim's default backupcopy=auto does a rename-then-rewrite dance for a
+    # plain `:w` (rename synced.txt -> a backup name, then write a fresh
+    # synced.txt): mid-write, the path measurably does not exist for a
+    # moment (measured: FileNotFoundError from every one of 10 back-to-back
+    # runs once this predicate stopped being a rendered-message poll and
+    # started stat()-ing the real path). _poll_until_interrupt in
+    # src/hooks.py hits the exact same window and already treats it as
+    # "still saving, check again" rather than an error — mirrored here.
+    def _write_landed() -> bool:
+        try:
+            return target_file.stat().st_mtime_ns != before_write_mtime_ns
+        except OSError:
+            return False
 
-    assert wait_until(_wrote_cleanly, timeout=5.0)
+    assert wait_until(_write_landed, timeout=10.0)
     screen = _capture(follower_pane_id)
     assert "WARNING" not in screen
     assert "E45" not in screen
