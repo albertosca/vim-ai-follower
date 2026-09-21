@@ -28,8 +28,9 @@ check, by the driving slash command; it is not repeated per check here.
 > to a scratch path), both of which each check prints ready to paste.
 
 > **Never pipe a check script that backgrounds `hook post`.** Checks 3, 6,
-> 12, 13, 14 and 16 leave an animation running so the controls can be
-> exercised. If you run them as `zsh scripts/... | tee log`, the shell waits
+> 12, 13, 14, 15 and 16 do, most of them to leave an animation running so the
+> controls can be exercised. If you run them as `zsh scripts/... | tee log`,
+> the shell waits
 > for the pipe to close, which only happens when the backgrounded hook exits
 > — so the prompt does not come back and no `prefix P`/`prefix S` you type
 > lands until the animation is already over (measured 2026-09-21: an entire

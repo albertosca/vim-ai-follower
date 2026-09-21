@@ -33,9 +33,10 @@ disagree with it.
   `qa_config_handoff`, exactly like Check 9. Checks 4 and 7 create their own
   isolated `vaf-smoke` / private tmux sessions and never touch Alberto's
   real server.
-- **Redirect, never pipe, any check that leaves an animation running.**
-  Checks 3, 6, 12, 13, 14 and 16 background a `hook post` so the controls can
-  be exercised. Running them as `zsh scripts/... | tee log` makes the shell
+- **Redirect, never pipe, any check that backgrounds a `hook post`.**
+  Checks 3, 6, 12, 13, 14, 15 and 16 do, most of them to leave an animation
+  running so the controls can be exercised.
+  Running them as `zsh scripts/... | tee log` makes the shell
   wait for the pipe, which closes only when the backgrounded hook exits — so
   the command does not return and no `prefix P`/`prefix S` lands until the
   animation is already over. Measured 2026-09-21: a whole verification round
@@ -111,8 +112,8 @@ first half's animation finish before starting the second.
    `zsh scripts/qa-check-1-color-cue.sh`). Some checks (5, 9) also require an
    extra `claude-follow start ...` invocation or a manual/Claude-Code-driven
    edit before or alongside the script — follow that check's own section in
-   `qa/visual-battery.md` for any such extra step. For any check that leaves
-   an animation running (3, 6, 12, 13, 14, 16), redirect instead of piping:
+   `qa/visual-battery.md` for any such extra step. For any check that
+   backgrounds a hook (3, 6, 12, 13, 14, 15, 16), redirect instead of piping:
    `zsh scripts/... > /tmp/vaf-qa-run.log 2>&1`, then read the file (see the
    ground rule above).
 3. **Relay** the script's `LOOK AT: ...` output to Alberto (paraphrase is
