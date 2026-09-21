@@ -1,9 +1,9 @@
 ---
-description: Drive the full 10-check visual QA battery (qa/visual-battery.md) end to end, recording verdicts into qa/results/<date>.md.
+description: Drive the full 19-check visual QA battery (qa/visual-battery.md) end to end, recording verdicts into qa/results/<date>.md.
 ---
 
 Drive the entire visual test battery documented in `qa/visual-battery.md`,
-end to end, against all 10 checks in order. Full detail for each check
+end to end, against all 19 checks in order. Full detail for each check
 (purpose, setup, what to look at, PASS/FAIL criteria, cleanup) lives in that
 runbook — treat it as the source of truth if anything here seems to
 disagree with it.
@@ -27,8 +27,24 @@ disagree with it.
   `~/.config/claude-vim-follower/config.json`, and their own scripts
   (`scripts/qa-check-9-nvim-standalone.sh`, `scripts/qa-check-10-vim-without-tmux.sh`)
   already handle backup/restore of that file (auto-restoring on any crash).
-  Checks 4 and 7 create their own isolated `vaf-smoke` / private tmux
-  sessions and never touch Alberto's real server.
+  **Checks 11–19 never write the config** — each takes its backend from a
+  `--backend` flag on `start` instead. Any future check that does need to
+  write it uses `qa_protect_config` + `qa_write_test_config` +
+  `qa_config_handoff`, exactly like Check 9. Checks 4 and 7 create their own
+  isolated `vaf-smoke` / private tmux sessions and never touch Alberto's
+  real server.
+- **Redirect, never pipe, any check that leaves an animation running.**
+  Checks 3, 6, 12, 13, 14 and 16 background a `hook post` so the controls can
+  be exercised. Running them as `zsh scripts/... | tee log` makes the shell
+  wait for the pipe, which closes only when the backgrounded hook exits — so
+  the command does not return and no `prefix P`/`prefix S` lands until the
+  animation is already over. Measured 2026-09-21: a whole verification round
+  read as a pass that way with the interrupt never landing. Always
+  `zsh scripts/... > /tmp/vaf-qa-run.log 2>&1` and then read the file.
+- **Settle content verdicts from the buffer, not the screen.** `capture-pane`
+  shows the rendered pane. Every check whose verdict is about content prints
+  a ready-to-paste `qa_dump_nvim_buffer <socket> <file>` or
+  `qa_dump_vim_buffer <pane>` diff line — use it.
 - **Checks 9 and 10 must run OUTSIDE tmux — their scripts refuse to run
   inside one.** Your own Bash tool almost certainly runs inside the same
   tmux session Alberto's `claude` is running in (his normal Vim+tmux setup),
@@ -56,7 +72,7 @@ disagree with it.
    1-8)"): `claude-follow start` from the pane where `claude` runs, and
    confirm a follower pane opened before proceeding.
 
-## For each of the 10 checks, in order
+## For each of the 19 checks, in order
 
 Run this five-step loop for each check. The scripts are:
 
@@ -72,6 +88,21 @@ Run this five-step loop for each check. The scripts are:
 | 8 | `scripts/qa-check-8-remapped-esc.sh` | Remapped-`<Esc>` insert-exit |
 | 9 | `scripts/qa-check-9-nvim-standalone.sh` | nvim standalone (no tmux) |
 | 10 | `scripts/qa-check-10-vim-without-tmux.sh` | vim-without-tmux error |
+| 11 | `scripts/qa-check-11-nvim-multi-tabs.sh` | nvim backend: real tabs for multiple files |
+| 12 | `scripts/qa-check-12-writing-cue-colors.sh` | "Writing…" cue on every animation + static colorscheme |
+| 13 | `scripts/qa-check-13-nvim-interrupt-fidelity.sh line` then `... op` | nvim: what an interrupt leaves behind (two tables) |
+| 14 | `scripts/qa-check-14-handoff-loop.sh nvim` then `... tmux` | Interrupt / des-interrupt hand-off cycles |
+| 15 | `scripts/qa-check-15-crash-catchup.sh nvim` then `... tmux` | Crash-fallback catch-up rebuilds from the persisted partial |
+| 16 | `scripts/qa-check-16-tmux-dirty-nav.sh` | tmux: no E37 hit-enter prompt on a dirty target |
+| 17 | `scripts/qa-check-17-tmux-swap.sh live` then `... stale` | tmux: swap-file ATTENTION answered "(E)dit anyway" |
+| 18 | `scripts/qa-check-18-nvim-swap.sh` | nvim: a swap-held file opens instead of crashing the hook |
+| 19 | `scripts/qa-check-19-nvim-read-nav.sh` | nvim: Read navigation shows disk content, `goto_line` clamps |
+
+Checks 13, 14, 15 and 17 are run TWICE each, with the argument shown —
+`line`/`op`, `nvim`/`tmux`, `live`/`stale`. Announce, relay, wait for a
+verdict and record each invocation separately; the results template has a
+row per half (`13a`/`13b`, `14a`/`14b`, `15a`/`15b`, `17a`/`17b`). Let the
+first half's animation finish before starting the second.
 
 1. **Announce** the check to Alberto: its number, name, and one-line
    purpose (copy the "Purpose" sentence from the matching section of
@@ -80,7 +111,10 @@ Run this five-step loop for each check. The scripts are:
    `zsh scripts/qa-check-1-color-cue.sh`). Some checks (5, 9) also require an
    extra `claude-follow start ...` invocation or a manual/Claude-Code-driven
    edit before or alongside the script — follow that check's own section in
-   `qa/visual-battery.md` for any such extra step.
+   `qa/visual-battery.md` for any such extra step. For any check that leaves
+   an animation running (3, 6, 12, 13, 14, 16), redirect instead of piping:
+   `zsh scripts/... > /tmp/vaf-qa-run.log 2>&1`, then read the file (see the
+   ground rule above).
 3. **Relay** the script's `LOOK AT: ...` output to Alberto (paraphrase is
    fine, but don't drop detail — it names the exact moments/lines/output
    blocks to watch).
@@ -103,8 +137,36 @@ Run this five-step loop for each check. The scripts are:
      from you for those halves. Check 8 also has a real-world variant that
      leaves `/tmp/vaf-qa-esc.py` for you to remove, same as the other manual
      checks.
+   - Checks 11–19 all print a "Cleanup when done:" block; run it verbatim.
+     Three of them leave more than a `/tmp` file behind and are easy to skip:
+     Check 16 and Check 17 print a `tmux resize-pane` that restores the
+     follower pane's original width, Check 17 (`live`) and Check 18 print a
+     `tmux kill-pane` for the second editor they opened, and Check 18 prints
+     a `find ~/.local/state/nvim/swap -name '*vaf-qa-nvim-swap*' -delete`.
 
-## After all 10 checks
+## Extra setup notes for checks 11–19
+
+- **No config writes.** Every one of them picks its backend with
+  `--backend` on `start`, so `~/.config/claude-vim-follower/config.json` is
+  never touched. Nothing to back up or restore.
+- **Geometry, for Checks 16 and 17.** Both only mean anything with the
+  follower pane narrower than 51 columns — that is the width at which Vim's
+  E37 / ATTENTION text wraps and escalates to a blocking prompt. The scripts
+  resize to 49 and print the width; if the warning about ≥51 columns appears,
+  tell Alberto and record the check as inconclusive rather than PASS, because
+  a clean pane at that width proves nothing.
+- **A second editor, for Checks 17 and 18.** The script opens it itself
+  (`tmux split-window`), in the same window, and prints its pane id — a Vim
+  for Check 17, an nvim for Check 18. Do not substitute one for the other:
+  the two editors keep their swap files in different places.
+- **Hooks in the foreground, for Checks 18 and 19.** Those two print an exit
+  code and stderr instead of leaving an animation running, because their
+  failure mode is a dead hook rather than anything on screen. Relay both
+  numbers to Alberto; a non-zero code is a FAIL even if the pane looks fine.
+- **The adopt note at the end of Check 19** is optional and not scripted.
+  Offer it, do not stage it unless Alberto asks.
+
+## After all 19 checks
 
 1. Source the shared harness and run final teardown:
    `source scripts/qa-lib.sh && qa_teardown`.

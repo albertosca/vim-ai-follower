@@ -2,13 +2,92 @@
 # QA harness shared library — run isolation, verified teardown.
 # Sourced by every check script and final teardown. Provides:
 #   qa_run_id, qa_snapshot_cache, qa_cache_created, qa_teardown, qa_verify_clean,
-#   qa_protect_config, qa_write_test_config, qa_config_handoff
+#   qa_protect_config, qa_write_test_config, qa_config_handoff,
+#   qa_window_id, qa_follower_target, qa_dump_nvim_buffer, qa_dump_vim_buffer
 
 # Generate unique run token (timestamp + random 8-char suffix, usable in /tmp/vaf-qa-<id>/)
 qa_run_id() {
   local ts=$(date +%s)
   local rand=$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' ')
   echo "${ts}-${rand}"
+}
+
+# The tmux window id this pane belongs to — the id the follower keys ALL of
+# its per-window state by (state file, signal files, pending animation,
+# animating marker), the same one session.py derives from $TMUX_PANE. Checks
+# that have to look at those files by hand (kill a hook, wait for a pending
+# file to appear) resolve the id through this.
+qa_window_id() {
+  tmux display-message -p -t "$TMUX_PANE" '#{window_id}'
+}
+
+# The follower's drive target for this window, read straight out of the
+# persisted state file: a tmux pane id for the tmux backend, an nvim RPC
+# socket path for the nvim backend. Empty when no follower is registered.
+qa_follower_target() {
+  local window_id="${1:-$(qa_window_id)}"
+  python3 - "$window_id" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path.home() / ".cache" / "claude-vim-follower" / f"{sys.argv[1]}.pane"
+print(json.loads(path.read_text())["target"] if path.exists() else "")
+PY
+}
+
+# Print the REAL buffer holding `file` out of the nvim listening on `socket`.
+# Deliberately NOT capture-pane: that shows the RENDERED screen (wrapped
+# lines, truncation, CoC/inlay virtual text mixed in), which has twice been
+# mistaken for buffer corruption in this project. Every check whose verdict
+# is about CONTENT reads the buffer through this instead.
+qa_dump_nvim_buffer() {
+  local socket="$1" file="$2"
+  python3 - "$socket" "$file" <<'PY'
+import sys
+from pathlib import Path
+
+import pynvim
+
+# Compare resolved paths: on macOS /tmp is a symlink to /private/tmp, so a
+# buffer the follower opened as /tmp/x.py reports its name as /private/tmp/x.py
+# and a plain string compare silently finds nothing.
+wanted = Path(sys.argv[2]).resolve()
+nvim = pynvim.attach("socket", path=sys.argv[1])
+for buf in nvim.buffers:
+    if buf.name and Path(buf.name).resolve() == wanted:
+        # errors="replace": a buffer read WHILE it is being typed can hold a
+        # partial multi-byte sequence, and a raw print would die on it
+        # instead of showing the check's answer.
+        text = "\n".join(buf[:])
+        sys.stdout.buffer.write(text.encode("utf-8", "replace") + b"\n")
+        break
+else:
+    print(f"(no buffer for {wanted})", file=sys.stderr)
+    raise SystemExit(1)
+PY
+}
+
+# The tmux-backend twin of qa_dump_nvim_buffer: dump the follower Vim's real
+# buffer, for the same reason. Escape Escape first so the Ex command lands
+# even if the pane was left in insert mode.
+#
+# `:w!` to a scratch path rather than `:redir | silent %p`: measured
+# 2026-09-21 against a real follower, redir renders every BLANK line as a
+# single space and drops the file's final newline, so a byte diff against a
+# fixture fails on a buffer that is in fact correct — a dump you have to
+# hand-normalize is a dump you cannot trust. The bang overrides the
+# follower's readonly relock; the write goes to the scratch path only, never
+# to the file under test.
+qa_dump_vim_buffer() {
+  local pane="$1"
+  local out="/tmp/vaf-qa-bufdump-$$.txt"
+  tmux send-keys -t "$pane" Escape Escape
+  tmux send-keys -t "$pane" -l -- ":silent! w! $out"
+  tmux send-keys -t "$pane" Enter
+  sleep 0.8
+  cat "$out"
+  rm -f "$out"
 }
 
 # Capture current cache state before a run starts. Idempotent — a second
