@@ -1,12 +1,15 @@
-"""Unit coverage (mocked pynvim) for lock parity between the nvim backend's
-disk-reading entry points and the tmux backend's `ensure_showing`, which
-always relocks (`:setlocal readonly nomodifiable`) after `:tab drop` — even
-for an adopted (user-owned) Vim. On nvim, `ensure_showing` (both the
-existing-buffer and the `_open_from_disk` branches) and `apply_edit`'s
-vanished-buffer branch (which also goes through `_open_from_disk`) must
-apply the equivalent lock: the exact `buf_set_option(buf, "modifiable",
-False)` call `_drive`'s completion relock uses, applied unconditionally
-(no `_is_adopted` check, mirroring tmux's own unconditional lock)."""
+"""Unit coverage (mocked pynvim) for the nvim backend's navigation lock: a
+launched, dedicated follower's buffer gets relocked (nomodifiable) by
+`ensure_showing` (both the existing-buffer and the `_open_from_disk`
+branches) and by `apply_edit`'s vanished-buffer branch (which also goes
+through `_open_from_disk`) — the exact `buf_set_option(buf, "modifiable",
+False)` call `_drive`'s completion relock uses. An ADOPTED nvim is the
+user's own editor and is never locked by this backend, navigation included
+(same `_is_adopted` guard `_drive` uses) — unlike the tmux backend, which
+locks an adopted Vim's tab the same as a dedicated one. A prior controller
+ruling (2026-09-16) made this lock unconditional to match tmux exactly;
+that ruling was reversed, so this file covers both the launched case (lock
+applies) and the adopted case (lock never applies) for every branch."""
 
 from __future__ import annotations
 
@@ -52,10 +55,13 @@ def test_ensure_showing_locks_unconditionally_without_checking_prior_state() -> 
     assert call(9, "modifiable", False) in nvim.api.buf_set_option.call_args_list
 
 
-def test_ensure_showing_locks_an_adopted_followers_buffer_too(tmp_path: Path) -> None:
-    # tmux locks the user's own adopted Vim the same as a dedicated one;
-    # nvim's ensure_showing must not special-case adopted here (unlike
-    # _drive's completion relock, which does).
+def test_ensure_showing_leaves_an_adopted_followers_existing_buffer_modifiable(
+    tmp_path: Path,
+) -> None:
+    # Unlike tmux (which locks an adopted Vim's tab the same as a dedicated
+    # one), nvim's ensure_showing must special-case adopted here, exactly
+    # like _drive's completion relock does: the user's own editor is never
+    # locked by this backend.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
     nvim.funcs.bufnr.return_value = 9
@@ -67,7 +73,49 @@ def test_ensure_showing_locks_an_adopted_followers_buffer_too(tmp_path: Path) ->
     ):
         state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=True)
         follower.ensure_showing("/tmp/f.py")
-    nvim.api.buf_set_option.assert_called_once_with(9, "modifiable", False)
+    nvim.api.buf_set_option.assert_not_called()
+
+
+def test_ensure_showing_leaves_an_adopted_followers_disk_loaded_buffer_modifiable(
+    tmp_path: Path,
+) -> None:
+    # The _open_from_disk branch (never-seen file) must apply the same
+    # adopted guard as the existing-buffer branch above.
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
+    nvim = MagicMock()
+    nvim.funcs.bufnr.return_value = -1
+    nvim.funcs.bufadd.return_value = 42
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch.object(NvimFollower, "goto_file") as goto_file,
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+    ):
+        state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=True)
+        follower.ensure_showing("/tmp/f.py")
+    goto_file.assert_not_called()
+    assert nvim.api.buf_set_option.call_args_list == [call(42, "buflisted", True)]
+
+
+def test_apply_edit_leaves_an_adopted_followers_disk_loaded_buffer_modifiable(
+    tmp_path: Path,
+) -> None:
+    # apply_edit's vanished-buffer branch also goes through _open_from_disk
+    # and must apply the same adopted guard.
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
+    nvim = MagicMock()
+    nvim.funcs.bufnr.return_value = -1
+    nvim.funcs.bufadd.return_value = 42
+    ops = [EditOp(kind="replace", start_line=3, end_line=3, new_lines=("C",))]
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch.object(NvimFollower, "goto_file") as goto_file,
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+    ):
+        state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=True)
+        result = follower.apply_edit("/tmp/f.py", ops)
+    assert result == AnimationResult("completed", 1)
+    goto_file.assert_not_called()
+    assert nvim.api.buf_set_option.call_args_list == [call(42, "buflisted", True)]
 
 
 def test_ensure_showing_locks_a_disk_loaded_buffer_for_a_never_seen_file() -> None:
