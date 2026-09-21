@@ -19,10 +19,19 @@ def _goto(path: str) -> str:
     purpose: these assertions exist to catch an unintended change to that
     constant, and importing it would make every one of them agree with
     whatever the constant happens to say. The `:try`/`:catch` wrapper
-    swallows E37 (a modified target buffer) and nothing else — see
-    _GOTO_FILE's comment for why the bang, `:silent!` and 'hidden' were all
-    measured and rejected."""
-    return rf":try | tab drop {path} | catch /^Vim\%((\a\+)\)\=:E37:/ | endtry"
+    swallows E37 (a modified target buffer) and nothing else; the
+    `SwapExists` hook around it answers the swap-file ATTENTION dialog
+    with `(E)dit anyway` and is torn down in `finally` — see _GOTO_FILE's
+    comment for why the bang, `:silent!`, 'hidden', 'shortmess' and
+    'noswapfile' were all measured and rejected."""
+    return (
+        ':exe "augroup vim_ai_follower_swap"'
+        " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
+        ' | exe "augroup END"'
+        rf" | try | tab drop {path} | catch /^Vim\%((\a\+)\)\=:E37:/"
+        ' | finally | exe "autocmd! vim_ai_follower_swap"'
+        ' | exe "augroup! vim_ai_follower_swap" | endtry'
+    )
 
 
 def test_is_alive_true_when_vim_is_running_in_pane() -> None:

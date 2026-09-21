@@ -34,8 +34,17 @@ def _goto(path: object) -> str:
     purpose: these assertions exist to catch an unintended change to that
     constant, which importing it would hide. The `:try`/`:catch` wrapper
     swallows E37 (a modified target buffer would otherwise leave a blocking
-    hit-enter prompt in the pane) and nothing else."""
-    return rf":try | tab drop {path} | catch /^Vim\%((\a\+)\)\=:E37:/ | endtry"
+    hit-enter prompt in the pane) and nothing else; the `SwapExists` hook
+    around it answers the swap-file ATTENTION dialog with `(E)dit anyway`
+    and is torn down in `finally`."""
+    return (
+        ':exe "augroup vim_ai_follower_swap"'
+        " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
+        ' | exe "augroup END"'
+        rf" | try | tab drop {path} | catch /^Vim\%((\a\+)\)\=:E37:/"
+        ' | finally | exe "autocmd! vim_ai_follower_swap"'
+        ' | exe "augroup! vim_ai_follower_swap" | endtry'
+    )
 
 
 def _literal_sends(run_mock: MagicMock) -> list[str]:

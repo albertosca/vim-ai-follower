@@ -72,7 +72,67 @@ _COC_ENABLE = ":silent! CocEnable"
 # The catch pattern is the documented `Vim(cmd):E37:` form and is narrow
 # in both directions (measured against E17/E212/E325/E370, all of which
 # still surface exactly as they do today).
-_GOTO_FILE = r":try | tab drop {file} | catch /^Vim\%((\a\+)\)\=:E37:/ | endtry"
+#
+# The SECOND stall the same line has to survive is Vim's swap-file
+# `E325: ATTENTION` dialog, which `:tab drop` raises whenever the target
+# has a `.file.swp` — another Vim holding it open (the everyday adopt-mode
+# case: the user's own editor on the file Claude is writing), or a stale
+# one left by a crash. At 49 columns the ATTENTION text is long enough to
+# hit the `-- More --` pager BEFORE it even reaches the
+# `[O]pen Read-Only, (E)dit anyway, (R)ecover, (Q)uit, (A)bort` question,
+# so the pane is stuck twice over and every later keystroke answers a
+# prompt instead of navigating (measured).
+#
+# Policy (Alberto, 2026-09-21): the follower answers `(E)dit anyway`,
+# adopt mode included. It is safe because the follower never writes the
+# file — its buffers are display-only and relocked read-only — so editing
+# anyway cannot clobber the other Vim's work. Measured: the other Vim
+# still `:w`s its unsaved changes to disk afterwards, and a stale swap
+# file is left untouched on disk (we choose Edit, never (D)elete, so
+# nobody's recovery data is destroyed).
+#
+# `SwapExists` + `v:swapchoice` is Vim's own designed hook for exactly
+# this and answers the question without typing into a prompt at all. The
+# two alternatives both work on screen and both LEAK (measured with a
+# user `:e` of an unrelated swapped file afterwards):
+#
+#   - `set shortmess+=A` is global and never restored, so from then on the
+#     USER's own `:e` opens a swapped file silently, with no warning at
+#     all — strictly worse than the stall it fixes.
+#   - `set noswapfile` is global too and costs the user crash recovery for
+#     every file they open afterwards.
+#
+# So the hook is registered and torn down inside this one Ex line:
+#
+#   - It lives in its own augroup, created by an `augroup` command first.
+#     `:autocmd {group} ...` does NOT create a missing group: it fails
+#     with `E216` and leaves its own hit-enter prompt (measured), which is
+#     the very failure being fixed.
+#   - There is deliberately no bare `:autocmd!` anywhere in the line. It
+#     would only ever apply to `vim_ai_follower_swap`, but if the
+#     preceding `augroup` ever failed it would run in the DEFAULT group
+#     and wipe every autocommand the user has. Nothing in the line needs
+#     it: `finally` clears the group on every pass.
+#   - The teardown is in `finally`, not after `endtry`, so it runs on the
+#     E37 path and on an uncaught error too (both measured: no residue,
+#     and a non-E37 error still reaches the user).
+#   - `++once` bounds the one residual risk — this line being cut off
+#     mid-flight, before `finally` — to a single auto-answered dialog
+#     instead of the policy persisting in the user's Vim.
+#
+# Scoping is by TIME, not by pattern: the hook exists only for the
+# duration of this drop, so a user `:e` of a swapped file afterwards
+# still gets the normal dialog (measured). Matching on the path instead
+# would mean escaping it into an autocmd pattern — the quoting hazard
+# this line otherwise avoids entirely.
+_SWAP_GROUP = "vim_ai_follower_swap"
+_GOTO_FILE = (
+    f':exe "augroup {_SWAP_GROUP}"'
+    " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
+    ' | exe "augroup END"'
+    r" | try | tab drop {file} | catch /^Vim\%((\a\+)\)\=:E37:/"
+    f' | finally | exe "autocmd! {_SWAP_GROUP}" | exe "augroup! {_SWAP_GROUP}" | endtry'
+)
 
 
 @dataclass(frozen=True)
@@ -117,9 +177,15 @@ class TmuxVimFollower:
     def goto_file(self, file_path: str) -> None:
         """The defensive preamble: land on the tab showing file_path (by
         name, immune to the user closing/reordering tabs), opening one if
-        missing. Wrapped in _GOTO_FILE's E37 guard so a modified target
-        can't leave a blocking hit-enter prompt in the pane — see that
-        constant for why the bang, `:silent!` and 'hidden' are all wrong.
+        missing. Wrapped in _GOTO_FILE's guards so neither a modified
+        target (E37) nor a swap file on the target (the ATTENTION dialog,
+        answered `(E)dit anyway`) can leave a blocking prompt in the pane
+        — see that constant for why the bang, `:silent!`, 'hidden',
+        'shortmess' and 'noswapfile' are all wrong.
+
+        This is the single navigation preamble every other method calls,
+        so both guards cover show_fresh, ensure_showing, apply_edit,
+        reload_and_relock, rewrite_buffer, resume and close_tab at once.
 
         file_path is interpolated raw, exactly as it always has been: it
         stays in `tab drop`'s own file argument, so its (pre-existing)
