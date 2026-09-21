@@ -41,9 +41,12 @@ def test_ensure_showing_loads_the_real_disk_content_when_no_buffer_exists() -> N
     goto_file.assert_not_called()
     nvim.funcs.bufadd.assert_called_once_with("/tmp/f.py")
     nvim.funcs.bufload.assert_called_once_with(42)
-    # buflisted first, then locked (nomodifiable) — tmux-parity lock (see
-    # test_nvim_lock_parity.py for the dedicated coverage).
+    # swapfile off first (before bufload, so a live second editor's swap
+    # cannot raise E325 — see test_nvim_swap.py), then buflisted, then
+    # locked (nomodifiable) — tmux-parity lock (see test_nvim_lock_parity.py
+    # for the dedicated coverage).
     assert nvim.api.buf_set_option.call_args_list == [
+        call(42, "swapfile", False),
         call(42, "buflisted", True),
         call(42, "modifiable", False),
     ]

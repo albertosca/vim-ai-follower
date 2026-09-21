@@ -93,7 +93,10 @@ def test_ensure_showing_leaves_an_adopted_followers_disk_loaded_buffer_modifiabl
         state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=True)
         follower.ensure_showing("/tmp/f.py")
     goto_file.assert_not_called()
-    assert nvim.api.buf_set_option.call_args_list == [call(42, "buflisted", True)]
+    assert nvim.api.buf_set_option.call_args_list == [
+        call(42, "swapfile", False),
+        call(42, "buflisted", True),
+    ]
 
 
 def test_apply_edit_leaves_an_adopted_followers_disk_loaded_buffer_modifiable(
@@ -115,7 +118,10 @@ def test_apply_edit_leaves_an_adopted_followers_disk_loaded_buffer_modifiable(
         result = follower.apply_edit("/tmp/f.py", ops)
     assert result == AnimationResult("completed", 1)
     goto_file.assert_not_called()
-    assert nvim.api.buf_set_option.call_args_list == [call(42, "buflisted", True)]
+    assert nvim.api.buf_set_option.call_args_list == [
+        call(42, "swapfile", False),
+        call(42, "buflisted", True),
+    ]
 
 
 def test_ensure_showing_locks_a_disk_loaded_buffer_for_a_never_seen_file() -> None:
@@ -130,6 +136,7 @@ def test_ensure_showing_locks_a_disk_loaded_buffer_for_a_never_seen_file() -> No
         follower.ensure_showing("/tmp/f.py")
     goto_file.assert_not_called()
     assert nvim.api.buf_set_option.call_args_list == [
+        call(42, "swapfile", False),
         call(42, "buflisted", True),
         call(42, "modifiable", False),
     ]
@@ -149,6 +156,7 @@ def test_apply_edit_locks_the_disk_loaded_buffer_when_the_original_vanished() ->
     assert result == AnimationResult("completed", 1)
     goto_file.assert_not_called()
     assert nvim.api.buf_set_option.call_args_list == [
+        call(42, "swapfile", False),
         call(42, "buflisted", True),
         call(42, "modifiable", False),
     ]
