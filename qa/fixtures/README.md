@@ -21,7 +21,9 @@ them into `/tmp` at run time, so the fixtures stay the single source of truth.
 | `catchup-blanks.py` | Check 15 (crash-fallback catch-up) | The FIRST edit, paused mid-animation before its hook is killed. Long enough that a pause at `lento` always leaves real content untyped, with consecutive blank lines (two between defs, one deliberate triple gap) around the rows the rebuild has to get right. |
 | `catchup-blanks-next.py` | Check 15 (crash-fallback catch-up) | The SECOND edit: identical except `report()`'s dict, which grows a third key holding the marker `CATCHUP OK`. |
 
-All fixtures are pure ASCII on purpose. Typing a multi-byte character
-through the nvim backend corrupts it (measured 2026-09-21: `alpha — beta`
-lands as `alpha \xe2 beta\x80\x94`), so a fixture with an em dash in it fails
-every content diff for a reason that has nothing to do with the check.
+The run-3 fixtures are pure ASCII. They were written while the nvim backend
+still corrupted multi-byte characters (measured 2026-09-21: `alpha — beta`
+landed as `alpha \xe2 beta\x80\x94` — a character index passed as a byte
+column, fixed the same day in `ffaed50` and pinned by
+`tests/test_nvim_integration_utf8.py`). Accented content is safe in fixtures
+again; a future check that wants to eyeball it live can add one.
