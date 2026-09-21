@@ -2,8 +2,8 @@
 half — that no hit-enter prompt actually appears at the follower pane's
 real 49-column geometry — lives in tests/test_integration_goto_file_e37.py.
 
-What goto_file sends is `:try | tab drop {file} | catch /<E37>/ | endtry`,
-not a bare `:tab drop {file}`. Why:
+What goto_file sends wraps `tab drop {file}` in `:try`/`:catch /<E37>/`
+rather than sending a bare `:tab drop {file}`. Why:
 
 `:tab drop` finishes by running `:rewind` over the arglist it just set, and
 `:rewind` runs Vim's abandon check against the buffer it has ALREADY landed
@@ -24,8 +24,11 @@ each measured against a real tmux+vim and rejected:
   * `:tab drop!` — the bang reloads from disk and silently DISCARDS the
     unsaved content.
   * `:silent! tab drop` — also hides the swap-file "ATTENTION" dialog,
-    which blocks Vim just as it does today but now behind a blank screen:
-    a visible stall traded for an invisible one.
+    which blocks Vim just as it did then but now behind a blank screen:
+    a visible stall traded for an invisible one. (That dialog is no longer
+    merely visible — it is answered, by the `SwapExists` hook the same
+    line now carries. `:silent!` stays rejected: it would still hide any
+    OTHER prompt the drop raises, and it is not what answers this one.)
   * `:let h=&hidden | set hidden | tab drop | let &hidden=h` — does not
     even work (the same-file path sets Vim's CCGD_MULTWIN flag, which skips
     the 'hidden' escape, so E37 still fires), and the `|`-chained restore
@@ -53,8 +56,19 @@ def _goto(path: str) -> str:
     """The exact Ex line goto_file sends. Spelled out rather than imported
     from tmux_vim._GOTO_FILE on purpose: importing the constant would make
     every assertion below agree with whatever it happens to say, which is
-    precisely the change these tests exist to catch."""
-    return rf":try | tab drop {path} | catch /^Vim\%((\a\+)\)\=:E37:/ | endtry"
+    precisely the change these tests exist to catch.
+
+    The `SwapExists` hook wrapping the try/catch is the swap-file half of
+    the same guard (tests/test_tmux_swap_choice.py); it is part of the
+    literal, so it belongs in this spelling too."""
+    return (
+        ':exe "augroup vim_ai_follower_swap"'
+        " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
+        ' | exe "augroup END"'
+        rf" | try | tab drop {path} | catch /^Vim\%((\a\+)\)\=:E37:/"
+        ' | finally | exe "autocmd! vim_ai_follower_swap"'
+        ' | exe "augroup! vim_ai_follower_swap" | endtry'
+    )
 
 
 def _sent_commands(run_mock: MagicMock) -> list[tuple[str, bool]]:
@@ -116,13 +130,16 @@ def test_the_guard_catches_e37_only_and_keeps_the_path_unescaped() -> None:
     literal, so the wrapper adds no new quoting rules: whatever `:tab drop`
     already did with spaces, `%`, `#` or wildcards, it still does."""
     line = _goto("/tmp/a b#c%d.py")
-    assert line.startswith(":try | tab drop /tmp/a b#c%d.py | catch /")
-    assert line.endswith(r"/ | endtry")
+    assert " | try | tab drop /tmp/a b#c%d.py | catch /" in line
+    assert line.endswith(' | exe "augroup! vim_ai_follower_swap" | endtry')
     assert r"^Vim\%((\a\+)\)\=:E37:" in line
-    # No Vim string quoting anywhere: the only path occurrence is the raw
-    # one inside `tab drop`.
+    # The swap hook brought Vim string literals into the line, but NOT
+    # around the path: its only occurrence is still the raw one inside
+    # `tab drop`, so no escaping rule changed for it.
     assert line.count("/tmp/a b#c%d.py") == 1
-    assert "'" not in line
+    quoted_segments = line.split('"')[1::2]
+    assert quoted_segments, "expected the swap hook's exe-quoted segments"
+    assert not any("/tmp/a b#c%d.py" in segment for segment in quoted_segments)
 
 
 def test_ensure_showing_navigates_through_the_guard() -> None:
