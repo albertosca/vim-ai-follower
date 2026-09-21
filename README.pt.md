@@ -1,11 +1,12 @@
 # vim-ai-follower
 
+🇺🇸 [English](README.md) · 🇧🇷 [Português](README.pt.md)
+
 [![CI](https://github.com/albertosca/vim-ai-follower/actions/workflows/ci.yml/badge.svg)](https://github.com/albertosca/vim-ai-follower/actions/workflows/ci.yml)
+[![Lint](https://github.com/albertosca/vim-ai-follower/actions/workflows/lint.yml/badge.svg)](https://github.com/albertosca/vim-ai-follower/actions/workflows/lint.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2.svg)](https://code.claude.com/docs/en/plugins)
-
-*[English version](README.md)*
 
 Acompanhe o Claude Code editando arquivos **ao vivo, dentro de um Vim de
 verdade** — sem migrar de editor, sem GUI. Um painel tmux dedicado (ou um Neovim
@@ -203,8 +204,7 @@ Vim que você já tem aberto na mesma janela tmux. Como é o **seu** editor:
 ## Backends
 
 - **`tmux`** (padrão): dirige um Vim não modificado num painel tmux via
-  `send-keys`. Todo o comportamento multi-arquivo baseado em abas acima é
-  exclusivo do tmux.
+  `send-keys`.
 - **`nvim`** (requer `pip install '.[nvim]'`, Neovim ≥ 0.10): dirige um Neovim
   real inteiramente via msgpack-RPC — sem `send-keys`, então a classe de bugs de
   corrupção de teclas que o backend tmux precisa enfrentar simplesmente não

@@ -18,16 +18,12 @@ jobs:
       - name: Install the package with dev + nvim extras
         run: pip install -e '.[nvim,dev]'
 
-      - name: Lint (ruff)
-        run: |
-          ruff check src tests
-          ruff format --check src tests
-
-      - name: Type-check (mypy)
-        run: mypy
-
-      # The integration tests need a real tmux + Vim/Neovim and are
-      # timing-sensitive; they run as a local/manual gate (see qa/). CI runs
-      # the deterministic unit suite so the badge stays reliably green.
-      - name: Unit tests
-        run: pytest -m "not integration" -q
+      # Lint and type-check live in lint.yml so each badge is backed by its
+      # own workflow. The integration tests need a real tmux + Vim/Neovim and
+      # are timing-sensitive; they run as a local/manual gate (see qa/). CI
+      # runs the deterministic unit suite so the badge stays reliably green.
+      # The floor is the unit suite's own measured coverage (99% branch on
+      # 2026-09-21); the full suite with integration tests reaches 100%
+      # locally, which is the number the project holds itself to.
+      - name: Unit tests with coverage
+        run: pytest -m "not integration" -q --cov=vim_ai_follower --cov-branch --cov-fail-under=98

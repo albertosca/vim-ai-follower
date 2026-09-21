@@ -1,11 +1,12 @@
 # vim-ai-follower
 
+🇺🇸 [English](README.md) · 🇧🇷 [Português](README.pt.md)
+
 [![CI](https://github.com/albertosca/vim-ai-follower/actions/workflows/ci.yml/badge.svg)](https://github.com/albertosca/vim-ai-follower/actions/workflows/ci.yml)
+[![Lint](https://github.com/albertosca/vim-ai-follower/actions/workflows/lint.yml/badge.svg)](https://github.com/albertosca/vim-ai-follower/actions/workflows/lint.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2.svg)](https://code.claude.com/docs/en/plugins)
-
-*[Versão em português](README.pt.md)*
 
 Watch Claude Code edit files **live, inside a real Vim** — no editor migration,
 no GUI. A dedicated tmux pane (or a running Neovim) mirrors every file Claude
@@ -198,7 +199,6 @@ editor:
 ## Backends
 
 - **`tmux`** (default): drives an unmodified Vim in a tmux pane via `send-keys`.
-  All tab-based multi-file behavior above is tmux-only.
 - **`nvim`** (needs `pip install '.[nvim]'`, Neovim ≥ 0.10): drives a real Neovim
   entirely over msgpack-RPC — no `send-keys`, so the keystroke-corruption bug
   class the tmux backend has to fight simply does not exist. Every animation,
