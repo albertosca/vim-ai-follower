@@ -675,8 +675,54 @@ class NvimFollower:
         ensure_showing (Read navigation) and apply_edit's vanished-buffer
         branch, where a "completed" outcome must leave the buffer locked
         exactly like a completed animation run through _drive would, unless
-        adopted."""
+        adopted.
+
+        Opens the file even when a LIVE second editor holds its swap. Left
+        alone, `bufload` answers that with `E325: ATTENTION` raised straight
+        out of the RPC call (the channel stays responsive — there is no stall
+        like the tmux backend's), which escaped this method uncaught and took
+        the hook process down instead of showing the file, on both callers.
+        Safe to override because this backend's buffers are display-only and
+        are never written to disk, so it cannot clobber the other editor's
+        work. A STALE swap was never a problem: nvim recognises a swap whose
+        owning Nvim is gone and ignores it (W325).
+
+        Measured 2026-09-21, real headless nvim 0.12.5, two instances sharing
+        one `directory`, the second holding the file open and unsaved:
+
+        | candidate                            | loads | leaks | own swap |
+        |--------------------------------------|-------|-------|----------|
+        | (none — status quo)                  | E325  |   -   |     -    |
+        | buf_set_option swapfile=False first  |  yes  |  no   |   none   |
+        | SwapExists autocmd, v:swapchoice='e' | E325  |   -   |     -    |
+        | catch NvimError /E325/ and continue  |  yes  |  no   |  .swo    |
+
+        Re-measured with a real VIM (not a second nvim) as the swap owner,
+        the likelier case for a Vim user running an adopted follower: same
+        E325 unfixed, same clean load fixed. The override disables the CHECK,
+        so it does not care which editor took the swap out.
+
+        The autocmd — the tmux backend's mechanism, translated — simply does
+        not apply here: `SwapExists` never fires under `bufload` (measured
+        with a marker variable: still 0 after the raise), only under Ex
+        `:edit`, which this method avoids for the E499/E37 reasons above.
+        Catching E325 does work, because nvim finishes loading the correct
+        content before raising, but it leans on undocumented post-error state
+        and leaves the follower's buffer holding a SECOND swap file (`.swo`)
+        for a file it will never write — litter that makes the next editor to
+        open that file see a stale-swap prompt. Restoring swapfile=True after
+        the load creates the same `.swo`, so the option stays off.
+
+        Scoping: `buf_set_option` is buffer-local, on the buffer bufadd just
+        created. Measured after the call, the global `swapfile` is still on,
+        a freshly added unrelated buffer still reports swapfile on, and
+        `bufload` on an unrelated swap-held file still raises E325 — so an
+        adopted nvim's own behaviour, for every file the follower never
+        touched, is unchanged. Must run BEFORE bufload: the swap check runs
+        during the load, so setting it afterwards is a no-op that still
+        raises."""
         bufnr = nvim.funcs.bufadd(file_path)
+        nvim.api.buf_set_option(bufnr, "swapfile", False)
         nvim.funcs.bufload(bufnr)
         nvim.api.buf_set_option(bufnr, "buflisted", True)
         nvim.command("tabnew")
