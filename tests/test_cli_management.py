@@ -103,17 +103,35 @@ def test_speed_standalone_updates_speed_but_skips_the_tmux_status_line() -> None
     assert updated is not None and updated.speed == "muito_rapido"
 
 
-def test_status_reports_no_follower(capsys: pytest.CaptureFixture[str]) -> None:
+def test_status_reports_no_follower_and_names_the_identity(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # "no follower" alone is ambiguous between "nothing is running" and "this
+    # run is asking about the wrong identity", which is exactly the confusion
+    # that cost a session half an hour on 2026-09-22.
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
         commands.cmd_status({"TMUX_PANE": "%1"})
-    assert "no follower active" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "no follower for @1 (tmux)" in out
 
 
 def test_status_reports_active_follower(capsys: pytest.CaptureFixture[str]) -> None:
-    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+    # A live follower in ANOTHER window has to exist for the one-line
+    # assertion below to mean anything: with no other follower, a roster leak
+    # onto the happy path prints nothing and the canary comes back blind.
+    _register_fake_follower("@18", "%23")
+    run = make_mock_tmux_run(pane_id="%9", other_panes=("%1", "%2"), vim_panes=("%23",))
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=run):
         commands.cmd_start({"TMUX_PANE": "%1"})
+        capsys.readouterr()  # drop cmd_start's own line
         commands.cmd_status({"TMUX_PANE": "%1"})
-    assert "%9" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "%9" in out
+    assert "active for @1 (tmux)" in out
+    # The happy path stays one line: Alberto routinely has followers in
+    # several windows and reads this constantly — it must not hand him a
+    # roster every time.
+    assert len(out.strip().splitlines()) == 1
 
 
 def test_status_standalone_reports_no_follower(capsys: pytest.CaptureFixture[str]) -> None:
@@ -122,7 +140,29 @@ def test_status_standalone_reports_no_follower(capsys: pytest.CaptureFixture[str
     standalone_session = session.Session(window_id="term-x", origin=None, in_tmux=False)
     with patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session):
         assert commands.cmd_status({}) == 0
-    assert "no follower active" in capsys.readouterr().out
+    assert "no follower for term-x (not in tmux)" in capsys.readouterr().out
+
+
+def test_status_lists_live_followers_under_other_identities(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The lost-identity case at the CLI: the run resolves to a synthetic id
+    with nothing registered, while the real window's follower is alive. Target
+    pane and current file are what let Alberto recognise which window it is."""
+    _register_fake_follower("@18", "%23", current_file="/tmp/real.py")
+    lost = session.Session(window_id="term-w0t0p0:ABC", origin=None, in_tmux=False)
+    with (
+        patch("vim_ai_follower.commands.resolve_session", return_value=lost),
+        patch(
+            "vim_ai_follower.tmux.subprocess.run",
+            side_effect=make_mock_tmux_run(pane_id="%23"),
+        ),
+    ):
+        assert commands.cmd_status({}) == 0
+    out = capsys.readouterr().out
+    assert "no follower for term-w0t0p0:ABC (not in tmux)" in out
+    assert "may have lost its window identity" in out
+    assert "@18: tmux %23, showing /tmp/real.py" in out
 
 
 def test_status_dead_tmux_pane(capsys: pytest.CaptureFixture[str]) -> None:

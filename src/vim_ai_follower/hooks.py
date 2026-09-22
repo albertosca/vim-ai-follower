@@ -17,7 +17,7 @@ from vim_ai_follower import diff as diff_module
 from vim_ai_follower.backends import Follower, get_follower
 from vim_ai_follower.backends.nvim_connect import launch_standalone_nvim, resolve_nvim_target
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
-from vim_ai_follower.session import Session, resolve_session
+from vim_ai_follower.session import Session, other_live_followers, resolve_session
 from vim_ai_follower.snapshot import load as load_snapshot
 from vim_ai_follower.snapshot import save as save_snapshot
 from vim_ai_follower.state import FollowerState, touch_open_files
@@ -29,6 +29,16 @@ LOG_PATH = cache.CACHE_DIR / "hook.log"
 logger = logging.getLogger("vim_ai_follower")
 
 _EDIT_TOOLS = {"Edit", "MultiEdit", "Write"}
+
+# How long one resolved identity stays quiet after warning about a lost window.
+# Ten minutes, chosen against both failure modes: the live incident (2026-09-22)
+# cost a second session half an hour, and at this interval such a window holds
+# about three warnings — impossible to miss, impossible to mistake for noise.
+# One minute would put a line in the log every few edits and train the reader
+# to scroll past it; an hour risks a whole session leaving a single line that
+# scrolls away above the real question. It also bounds the cost, since the
+# scan behind the warning probes every registered follower's liveness.
+IDENTITY_WARN_INTERVAL_SECONDS = 600
 
 
 def _configure_logging() -> None:
@@ -110,6 +120,66 @@ def _get_active_follower(window_id: str) -> FollowerState | None:
         speed=raw.speed,
     )
     return FollowerState.get(window_id)
+
+
+def _identity_warning_marker(window_id: str) -> Path:
+    """Throttle marker for this identity's lost-window warning. The suffix is
+    deliberately not ".pane": cmd_stop's orphan scan globs *.pane and would
+    treat the marker as abandoned follower state."""
+    return cache.CACHE_DIR / f"{window_id}.identity-warn"
+
+
+def _claim_identity_warning(window_id: str) -> bool:
+    """True at most once per IDENTITY_WARN_INTERVAL_SECONDS per identity.
+
+    Claims the slot BEFORE the caller decides whether there is anything to warn
+    about, which is what keeps the quiet case cheap: a genuinely standalone run
+    with no follower anywhere would otherwise pay a full liveness scan on every
+    single edit forever, since it never warns and so would never write a
+    marker. The cost is that a follower registered elsewhere right after a
+    fruitless scan goes unreported for up to one interval."""
+    marker = _identity_warning_marker(window_id)
+    try:
+        if time.time() - marker.stat().st_mtime < IDENTITY_WARN_INTERVAL_SECONDS:
+            return False
+    except OSError:
+        pass  # no marker yet (or unreadable) — treat as never warned
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+    return True
+
+
+def _warn_lost_window_identity(session: Session) -> None:
+    """One log line for the give-up that used to be silent.
+
+    Only fires for a SYNTHETIC identity (in_tmux False). That is the whole
+    signal: a hook re-parented onto a `claude bg-spare` worker loses
+    $TMUX_PANE, so resolve_session falls back to term-<TERM_SESSION_ID> and
+    every lookup misses, while the real window's follower stays alive and
+    enabled. An in-tmux window with no follower is the ordinary case — Alberto
+    runs Claude in several windows with a follower in one — and logging that
+    would bury this line in wallpaper.
+
+    Never escalates into a guess about which window was meant: see
+    docs on the Part 3 decision in tests/test_hook_identity_diagnostics.py.
+    Best-effort throughout; the hook's return value never depends on it."""
+    if session.in_tmux:
+        return
+    if not _claim_identity_warning(session.window_id):
+        return
+    others = other_live_followers(session.window_id)
+    if not others:
+        return
+    logger.warning(
+        "no follower registered for resolved identity %s (in_tmux=%s, no TMUX_PANE in this "
+        "hook's environment), but %d other identity/identities have a live follower: %s — "
+        "this session most likely lost its tmux window identity, so edits resolve against a "
+        "synthetic id and nothing animates; the follower itself is fine",
+        session.window_id,
+        session.in_tmux,
+        len(others),
+        ", ".join(f"{o.window_id} ({o.backend} {o.target})" for o in others),
+    )
 
 
 def _launch_standalone_or_log(window_id: str) -> str | None:
@@ -647,6 +717,7 @@ def _animate_edit(
     releases it in a finally, so no parallel hook animates the same pane."""
     current = _get_active_follower(session.window_id) or _maybe_auto_open(session, file_path, cfg)
     if current is None:
+        _warn_lost_window_identity(session)
         return 0
     _register_writer(session.window_id, payload)
     _apply_writer_cue(session.window_id, current.target, payload)
@@ -775,6 +846,7 @@ def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
         return 0
     current = _get_active_follower(session.window_id) or _maybe_auto_open(session, file_path, cfg)
     if current is None:
+        _warn_lost_window_identity(session)
         return 0
     follower = get_follower(current.backend, current.target)
     _ensure_buffer(session.window_id, follower, file_path)

@@ -488,10 +488,12 @@ def test_main_start_stop_status(
         monkeypatch.setenv("TMUX_PANE", "%1")
         assert cli.main(["start"]) == 0
         assert cli.main(["status"]) == 0
-        assert "active, backend tmux (%2)" in capsys.readouterr().out
+        # status now leads with the identity it is answering about, so that
+        # "no follower" can never again be read as "no follower anywhere".
+        assert "active for @1 (tmux), backend tmux (%2)" in capsys.readouterr().out
         assert cli.main(["stop"]) == 0
         assert cli.main(["status"]) == 0
-        assert "no follower active" in capsys.readouterr().out
+        assert "no follower for @1 (tmux)" in capsys.readouterr().out
 
 
 def test_main_speed_and_toggle_dispatch(
