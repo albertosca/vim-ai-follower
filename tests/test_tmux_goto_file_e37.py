@@ -65,7 +65,9 @@ def _goto(path: str) -> str:
         ':exe "augroup vim_ai_follower_swap"'
         " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
         ' | exe "augroup END"'
-        rf" | try | tab drop {path} | catch /^Vim\%((\a\+)\)\=:E37:/"
+        " | try | exe 'tab drop ' . fnameescape('"
+        + path.replace("'", "''")
+        + r"') | catch /^Vim\%((\a\+)\)\=:E37:/"
         ' | finally | exe "autocmd! vim_ai_follower_swap"'
         ' | exe "augroup! vim_ai_follower_swap" | endtry'
     )
@@ -120,26 +122,28 @@ def test_goto_file_sends_the_guarded_line_with_no_python_branching() -> None:
     ]
 
 
-def test_the_guard_catches_e37_only_and_keeps_the_path_unescaped() -> None:
+def test_the_guard_catches_e37_only_and_hands_the_path_to_fnameescape() -> None:
     """Two properties of the literal that the call-site tests above would
     not notice on their own.
 
     The catch pattern is Vim's documented `Vim(cmd):E37:` exception form,
-    anchored — a looser one could swallow an unrelated failure. And the
-    path stays in `tab drop`'s own file argument, never inside a Vim string
-    literal, so the wrapper adds no new quoting rules: whatever `:tab drop`
-    already did with spaces, `%`, `#` or wildcards, it still does."""
-    line = _goto("/tmp/a b#c%d.py")
-    assert " | try | tab drop /tmp/a b#c%d.py | catch /" in line
+    anchored — a looser one could swallow an unrelated failure; `:exe`
+    keeps it matching (the error still reads `Vim(drop):E37:`). And the
+    path never reaches `tab drop` bare: as a raw argument `#`/`%`/`$` were
+    expanded, a space split it in two and a glob opened a sibling
+    (tests/test_integration_goto_file_escaping.py). It goes in as a Vim
+    single-quoted literal — only `'` needs doubling there — and Vim's own
+    fnameescape() does the rest."""
+    line = _goto("/tmp/a b#c%d'e.py")
+    assert " | try | exe 'tab drop ' . fnameescape('/tmp/a b#c%d''e.py') | catch /" in line
     assert line.endswith(' | exe "augroup! vim_ai_follower_swap" | endtry')
     assert r"^Vim\%((\a\+)\)\=:E37:" in line
-    # The swap hook brought Vim string literals into the line, but NOT
-    # around the path: its only occurrence is still the raw one inside
-    # `tab drop`, so no escaping rule changed for it.
-    assert line.count("/tmp/a b#c%d.py") == 1
+    # Its only occurrence is that single-quoted literal — never inside the
+    # swap hook's double-quoted exe segments, where `\` and `"` would bite.
+    assert line.count("/tmp/a b#c%d''e.py") == 1
     quoted_segments = line.split('"')[1::2]
     assert quoted_segments, "expected the swap hook's exe-quoted segments"
-    assert not any("/tmp/a b#c%d.py" in segment for segment in quoted_segments)
+    assert not any("a b#c" in segment for segment in quoted_segments)
 
 
 def test_ensure_showing_navigates_through_the_guard() -> None:

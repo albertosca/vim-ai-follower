@@ -28,7 +28,9 @@ def _goto(path: str) -> str:
         ':exe "augroup vim_ai_follower_swap"'
         " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
         ' | exe "augroup END"'
-        rf" | try | tab drop {path} | catch /^Vim\%((\a\+)\)\=:E37:/"
+        " | try | exe 'tab drop ' . fnameescape('"
+        + path.replace("'", "''")
+        + r"') | catch /^Vim\%((\a\+)\)\=:E37:/"
         ' | finally | exe "autocmd! vim_ai_follower_swap"'
         ' | exe "augroup! vim_ai_follower_swap" | endtry'
     )

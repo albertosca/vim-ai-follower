@@ -155,18 +155,19 @@ def test_the_line_never_touches_shortmess_or_swapfile() -> None:
     assert "noswapfile" not in line
 
 
-def test_the_swap_hook_adds_no_quoting_rule_for_the_path() -> None:
-    """The hook brought Vim string literals into the line for the first
-    time. The path must stay out of all of them — inside `tab drop`'s own
-    file argument, exactly where it already was — so its handling of
-    spaces, `%`, `#` and wildcards is unchanged."""
+def test_the_swap_hook_never_carries_the_path() -> None:
+    """The hook's `exe "..."` segments are double-quoted Vim strings, where
+    a backslash or `"` in a path would be reinterpreted. The path must stay
+    out of all of them and appear exactly once, as the single-quoted
+    literal handed to fnameescape()."""
     path = "/tmp/a b#c%d'e.py"
     line = _goto_line(path)
-    assert line.count(path) == 1
+    literal = "'/tmp/a b#c%d''e.py'"
+    assert line.count(literal) == 1
     quoted = line.split('"')[1::2]
     assert quoted, "expected the exe-quoted segments the hook is built from"
-    assert not any(path in segment for segment in quoted)
-    assert f"tab drop {path} |" in line
+    assert not any("a b#c" in segment for segment in quoted)
+    assert f"fnameescape({literal})" in line
 
 
 def test_every_navigation_carries_the_swap_hook() -> None:

@@ -130,7 +130,7 @@ _GOTO_FILE = (
     f':exe "augroup {_SWAP_GROUP}"'
     " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
     ' | exe "augroup END"'
-    r" | try | tab drop {file} | catch /^Vim\%((\a\+)\)\=:E37:/"
+    r" | try | exe 'tab drop ' . fnameescape({file}) | catch /^Vim\%((\a\+)\)\=:E37:/"
     f' | finally | exe "autocmd! {_SWAP_GROUP}" | exe "augroup! {_SWAP_GROUP}" | endtry'
 )
 
@@ -241,13 +241,15 @@ class TmuxVimFollower:
         so both guards cover show_fresh, ensure_showing, apply_edit,
         reload_and_relock, rewrite_buffer, resume and close_tab at once.
 
-        file_path is interpolated raw, exactly as it always has been: it
-        stays in `tab drop`'s own file argument, so its (pre-existing)
-        handling of spaces, `%`, `#` and wildcards is unchanged by the
-        wrapper."""
+        file_path reaches Vim as a string literal (_vim_string, total) run
+        through Vim's own `fnameescape()`, never raw: as a bare `tab drop`
+        argument `#`/`%` expanded to the alternate/current file, `$NAME` to
+        an environment variable, a space split it into two files and a glob
+        opened a matching sibling (all measured 2026-09-22). `:exe` keeps
+        the E37 catch intact — the error still reads `Vim(drop):E37:`."""
         pane = TmuxPane(pane_id=self.pane_id)
         self._normal_mode(pane)
-        pane.send_text(_GOTO_FILE.format(file=file_path))
+        pane.send_text(_GOTO_FILE.format(file=_vim_string(file_path)))
         pane.send_key("Enter")
 
     def reload_and_relock(self, file_path: str) -> None:
