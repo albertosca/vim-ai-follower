@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vim_ai_follower import cache, config, hooks, snapshot
+from vim_ai_follower import cache, config, hooks, session, snapshot
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 
 
@@ -30,6 +30,26 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[N
     monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
     yield
     hooks.logger.handlers.clear()
+
+
+@pytest.fixture(autouse=True)
+def no_pid_ancestry_walk(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Switch off resolve_session's pid-ancestry fallback for the whole suite.
+
+    That fallback asks the REAL tmux server about the REAL process tree, and a
+    pytest process started from a tmux pane is itself a pane's descendant —
+    verified on this machine (2026-09-22): the runner's ancestry reaches the
+    pid tmux lists for pane %12. Left alone, every `resolve_session({})` in the
+    suite would resolve to whatever window the developer happens to be sitting
+    in, while CI (no tmux server) kept getting the synthetic identity: green
+    here, green there, and neither one measuring the same thing.
+
+    Tests that mean to exercise the walk opt back in with
+    @pytest.mark.pid_walk, and supply their own fake (or, for the one
+    integration test, a throwaway server)."""
+    if "pid_walk" in request.keywords:
+        return
+    monkeypatch.setattr(session, "_tmux_panes_by_pid", dict)
 
 
 @pytest.fixture
