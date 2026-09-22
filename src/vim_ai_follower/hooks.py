@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from vim_ai_follower import cache, config, control, keybindings, writer_cue
+from vim_ai_follower import binding, cache, config, control, keybindings, writer_cue
 from vim_ai_follower import diff as diff_module
 from vim_ai_follower.backends import Follower, get_follower
 from vim_ai_follower.backends.nvim_connect import launch_standalone_nvim, resolve_nvim_target
@@ -180,6 +180,80 @@ def _warn_lost_window_identity(session: Session) -> None:
         len(others),
         ", ".join(f"{o.window_id} ({o.backend} {o.target})" for o in others),
     )
+
+
+def _payload_session_id(payload: dict[str, Any]) -> str | None:
+    """The hook payload's top-level session id, or None when it carries none.
+
+    Deliberately NOT writer_cue.writer_identity, which prefers agent_id. That
+    preference is right for the writer cue — two agents animating into one
+    window need two colors — and wrong here: a subagent shares its parent
+    session's process and therefore its window, so a per-agent binding would
+    store the same fact under a second key that then ages on its own schedule
+    and invents a way for the two to disagree."""
+    value = payload.get("session_id")
+    return value if isinstance(value, str) and value else None
+
+
+def _recover_window_from_binding(session: Session, session_id: str) -> Session | None:
+    """The window this session remembered while it could still prove it, or
+    None when there is nothing to recall or the remembered window no longer
+    has a live follower.
+
+    This is recall, not inference: binding.recall only answers for a binding
+    this same session_id wrote under the tmux server that is still running, so
+    the window id here was MEASURED by this session from its own $TMUX_PANE.
+    That is what separates it from picking the one live follower that happens
+    to be out there — see test_a_sole_other_follower_is_never_borrowed.
+
+    FollowerState.get costs a real backend round-trip (a tmux shell-out, an
+    nvim RPC connect), which is why it is reached only after a binding was
+    actually found: a session that never wrote one pays a missing-file read
+    per hook and nothing else."""
+    window_id = binding.recall(session_id)
+    if window_id is None:
+        return None
+    live = FollowerState.get(window_id)
+    if live is None:
+        return None
+    logger.warning(
+        "recovered window %s for session %s from a stored session->window binding: this "
+        "hook's environment carries no TMUX_PANE, so the identity resolved to %s and nothing "
+        "would have animated. The binding was written by this same session while it could "
+        "still see its own pane, under the tmux server still running now — if an edit lands "
+        "in the wrong editor, this line is the reason",
+        window_id,
+        session_id,
+        session.window_id,
+    )
+    return Session(window_id=window_id, origin=live.origin, in_tmux=True)
+
+
+def _resolve_session_for(env: dict[str, str], payload: dict[str, Any]) -> Session | None:
+    """resolve_session, plus the session→window binding in both directions.
+
+    The single entry point every hook uses, so pre and post can never disagree
+    about which window this edit belongs to (they would otherwise diff a fresh
+    buffer against an empty snapshot and retype the whole file every time).
+
+    Four branches, in order:
+      1. Nothing resolved at all — pass the None through; every caller exits 0.
+      2. No session id in the payload — nothing to key a binding on.
+      3. In tmux: the window is proved, so record it for later.
+      4. Not in tmux: try to recover the window a previous hook of this same
+         session proved. On any doubt, fall through to the session as resolved,
+         which is exactly today's behavior (synthetic identity + the existing
+         lost-identity warning)."""
+    session = resolve_session(env)
+    if session is None:
+        return None
+    session_id = _payload_session_id(payload)
+    if session_id is None:
+        return session
+    if session.in_tmux:
+        binding.remember(session_id, session.window_id)
+        return session
+    return _recover_window_from_binding(session, session_id) or session
 
 
 def _launch_standalone_or_log(window_id: str) -> str | None:
@@ -545,7 +619,7 @@ def cmd_hook_pre(env: dict[str, str], payload: dict[str, Any]) -> int:
     _configure_logging()
     if payload.get("tool_name") not in _EDIT_TOOLS:
         return 0
-    session = resolve_session(env)
+    session = _resolve_session_for(env, payload)
     if session is None:
         return 0
     raw = FollowerState.read(session.window_id)
@@ -615,7 +689,7 @@ def _refresh_writer_cue(window_id: str, target: str, payload: dict[str, Any]) ->
 
 
 def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
-    session = resolve_session(env)
+    session = _resolve_session_for(env, payload)
     if session is None:
         return 0
     raw = FollowerState.read(session.window_id)
@@ -828,7 +902,7 @@ def _animate_edit(
 
 
 def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
-    session = resolve_session(env)
+    session = _resolve_session_for(env, payload)
     if session is None:
         return 0
     raw = FollowerState.read(session.window_id)
