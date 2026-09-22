@@ -164,7 +164,7 @@ def test_nvim_backend_accepts_and_ignores_the_before_argument() -> None:
 
     follower = NvimFollower(socket_path="/tmp/s", window_id="@1")
     nvim = MagicMock()
-    nvim.funcs.bufnr.return_value = -1  # the disk-load short circuit
+    nvim.exec_lua.return_value = -1  # the disk-load short circuit
     with (
         patch.object(NvimFollower, "_connect", return_value=cast(Any, nvim)),
         patch.object(NvimFollower, "_open_from_disk") as open_from_disk,

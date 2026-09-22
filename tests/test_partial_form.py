@@ -146,7 +146,7 @@ def test_the_nvim_backend_persists_the_blank_ending_prefix_in_terminated_form(
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
     nvim.api.get_current_buf.return_value.handle = 7
-    nvim.funcs.bufnr.return_value = 3
+    nvim.exec_lua.return_value = 3
     nvim.api.buf_get_lines.return_value = _BEFORE.splitlines()
     nvim.api.buf_line_count.return_value = 4
     saved: list[str | None] = []

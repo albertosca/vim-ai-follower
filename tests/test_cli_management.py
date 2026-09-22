@@ -12,6 +12,7 @@ from helpers import make_mock_tmux_run
 from helpers import register_fake_follower as _register_fake_follower
 
 from vim_ai_follower import commands, config, control, keybindings, session, snapshot, state
+from vim_ai_follower.backends.nvim import _FIND_BUFFER_LUA
 
 _mock_tmux_run = functools.partial(make_mock_tmux_run, pane_id="%9", other_panes=("%1", "%2"))
 
@@ -698,7 +699,7 @@ def test_stop_on_adopted_nvim_closes_tabs_over_rpc_not_tmux_send_keys(
         "@1", "nvim", sock, origin="%1", adopted=True, open_files=(a, b), shown_any=True
     )
     nvim_mock = MagicMock()
-    nvim_mock.funcs.bufnr.return_value = 7
+    nvim_mock.exec_lua.return_value = 7
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
         patch("pynvim.attach", return_value=nvim_mock) as attach,
@@ -708,8 +709,8 @@ def test_stop_on_adopted_nvim_closes_tabs_over_rpc_not_tmux_send_keys(
     assert "claude-follow: stopped" in capsys.readouterr().out
     # the nvim RPC path was actually used to close the tabs...
     attach.assert_called()
-    nvim_mock.funcs.bufnr.assert_any_call(a)
-    nvim_mock.funcs.bufnr.assert_any_call(b)
+    nvim_mock.exec_lua.assert_any_call(_FIND_BUFFER_LUA, a)
+    nvim_mock.exec_lua.assert_any_call(_FIND_BUFFER_LUA, b)
     # ...and never through a tmux send-keys aimed at the socket path (what
     # the old hardcoded TmuxVimFollower(pane_id=existing.target, ...) did —
     # it never calls pynvim.attach, and instead fires send-keys -t <sock>).

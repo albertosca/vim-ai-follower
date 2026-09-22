@@ -158,8 +158,9 @@ def _vim_string(value: str) -> str:
 # worse still: those are expanded on the command line itself (alternate
 # file, current file, environment variable), so the wipe targets some other
 # buffer entirely. `bufnr()` is no escape — it pattern-matches by the same
-# rules, which is why the nvim backend's `bufnr(file_path)` shares the flaw
-# for exactly these paths.
+# rules (the nvim backend used it until 2026-09-22 and resolved
+# `app/[slug]/page.tsx` to its sibling `app/s/page.tsx`; see its
+# `_buffer_number`).
 #
 # So the path never reaches a pattern at all. It goes into a Vim string
 # literal (see _vim_string), and the buffer list is walked comparing FULL

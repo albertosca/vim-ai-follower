@@ -18,7 +18,7 @@ def test_ensure_showing_switches_to_an_existing_buffer_without_touching_disk() -
     # never writes its buffers), so it is switched to, never reloaded.
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
-    nvim.funcs.bufnr.return_value = 9
+    nvim.exec_lua.return_value = 9
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch.object(NvimFollower, "goto_file") as goto_file,
@@ -31,7 +31,7 @@ def test_ensure_showing_switches_to_an_existing_buffer_without_touching_disk() -
 def test_ensure_showing_loads_the_real_disk_content_when_no_buffer_exists() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
-    nvim.funcs.bufnr.return_value = -1
+    nvim.exec_lua.return_value = -1
     nvim.funcs.bufadd.return_value = 42
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -80,7 +80,7 @@ def test_apply_edit_shows_disk_content_instead_of_animating_into_nothing() -> No
     # wrong content or raises "Index out of bounds".
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
-    nvim.funcs.bufnr.return_value = -1
+    nvim.exec_lua.return_value = -1
     nvim.funcs.bufadd.return_value = 42
     ops = [
         EditOp(kind="replace", start_line=5, end_line=5, new_lines=("E",)),
@@ -105,7 +105,7 @@ def test_resume_apply_edit_returns_completed_and_touches_nothing_when_the_buffer
     # apply_edit that follows in hooks._animate_edit take its own guard.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
-    nvim.funcs.bufnr.return_value = -1
+    nvim.exec_lua.return_value = -1
     pending = PendingApplyEdit(
         ops=[
             EditOp(kind="replace", start_line=5, end_line=5, new_lines=("E",)),
@@ -131,7 +131,7 @@ def test_resume_apply_edit_returns_completed_and_touches_nothing_when_the_buffer
 def test_resume_show_fresh_returns_completed_and_touches_nothing_when_the_buffer_vanished() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
-    nvim.funcs.bufnr.return_value = -1
+    nvim.exec_lua.return_value = -1
     pending = PendingShowFresh(
         lines=("one", "two", "three"), pace_seconds=0.0, continuation=True, file_path="/tmp/f.py"
     )
@@ -151,7 +151,7 @@ def test_apply_edit_animates_normally_when_the_buffer_is_still_there(tmp_path: P
     # The guard must not divert a healthy edit to the disk-load path.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
-    nvim.funcs.bufnr.return_value = 9
+    nvim.exec_lua.return_value = 9
     nvim.api.get_current_buf.return_value.handle = 7
     nvim.api.buf_line_count.return_value = 1
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))

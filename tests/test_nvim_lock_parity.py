@@ -25,7 +25,7 @@ from vim_ai_follower.diff import EditOp
 def test_ensure_showing_locks_an_existing_buffer_after_switching_to_it() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
-    nvim.funcs.bufnr.return_value = 9
+    nvim.exec_lua.return_value = 9
     nvim.api.get_current_buf.return_value.handle = 9
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -43,7 +43,7 @@ def test_ensure_showing_locks_unconditionally_without_checking_prior_state() -> 
     # rather than first querying the current lock state.
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
-    nvim.funcs.bufnr.return_value = 9
+    nvim.exec_lua.return_value = 9
     nvim.api.get_current_buf.return_value.handle = 9
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -64,7 +64,7 @@ def test_ensure_showing_leaves_an_adopted_followers_existing_buffer_modifiable(
     # locked by this backend.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
-    nvim.funcs.bufnr.return_value = 9
+    nvim.exec_lua.return_value = 9
     nvim.api.get_current_buf.return_value.handle = 9
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -83,7 +83,7 @@ def test_ensure_showing_leaves_an_adopted_followers_disk_loaded_buffer_modifiabl
     # adopted guard as the existing-buffer branch above.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
-    nvim.funcs.bufnr.return_value = -1
+    nvim.exec_lua.return_value = -1
     nvim.funcs.bufadd.return_value = 42
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -106,7 +106,7 @@ def test_apply_edit_leaves_an_adopted_followers_disk_loaded_buffer_modifiable(
     # and must apply the same adopted guard.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
-    nvim.funcs.bufnr.return_value = -1
+    nvim.exec_lua.return_value = -1
     nvim.funcs.bufadd.return_value = 42
     ops = [EditOp(kind="replace", start_line=3, end_line=3, new_lines=("C",))]
     with (
@@ -127,7 +127,7 @@ def test_apply_edit_leaves_an_adopted_followers_disk_loaded_buffer_modifiable(
 def test_ensure_showing_locks_a_disk_loaded_buffer_for_a_never_seen_file() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
-    nvim.funcs.bufnr.return_value = -1
+    nvim.exec_lua.return_value = -1
     nvim.funcs.bufadd.return_value = 42
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -145,7 +145,7 @@ def test_ensure_showing_locks_a_disk_loaded_buffer_for_a_never_seen_file() -> No
 def test_apply_edit_locks_the_disk_loaded_buffer_when_the_original_vanished() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
-    nvim.funcs.bufnr.return_value = -1
+    nvim.exec_lua.return_value = -1
     nvim.funcs.bufadd.return_value = 42
     ops = [EditOp(kind="replace", start_line=3, end_line=3, new_lines=("C",))]
     with (
@@ -168,7 +168,7 @@ def test_goto_file_itself_never_touches_modifiable() -> None:
     # that lifecycle end to end.
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
-    nvim.funcs.bufnr.return_value = 9
+    nvim.exec_lua.return_value = 9
     tab, win = MagicMock(), MagicMock()
     buf = MagicMock(number=9)
     nvim.api.list_tabpages.return_value = [tab]

@@ -47,6 +47,41 @@ def _bind_save(save_pending: Callable[[int], None] | None, index: int) -> Callab
     return _save
 
 
+# One RPC: canonicalize both sides INSIDE nvim, which is what named the
+# buffers. fs_realpath returns nil for a path that does not exist (yet), so
+# fall back to resolving the directory and re-attaching the basename.
+_FIND_BUFFER_LUA = """
+local function canon(p)
+  local real = vim.uv.fs_realpath(p)
+  if real then return real end
+  local dir = vim.uv.fs_realpath(vim.fs.dirname(p))
+  if dir then return dir .. '/' .. vim.fs.basename(p) end
+  return vim.fn.fnamemodify(p, ':p')
+end
+local want = canon(...)
+for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+  local name = vim.api.nvim_buf_get_name(buf)
+  if name ~= '' and canon(name) == want then return buf end
+end
+return -1
+"""
+
+
+def _buffer_number(nvim: pynvim.Nvim, file_path: str) -> int:
+    """The number of the buffer holding `file_path`, or -1 — found by walking
+    the buffer list, never by `bufnr()`.
+
+    `bufnr()` (like `:bwipeout {name}`) takes a buffer-name PATTERN. Measured
+    2026-09-22 against real nvim: with `app/[slug]/page.tsx` and its
+    pattern-sibling `app/s/page.tsx` both open, `bufnr(target)` returned the
+    SIBLING, so goto_file landed on the wrong file and close_tab evicted it.
+    Both sides are realpath'd because nvim stores names with a symlinked
+    directory prefix resolved (macOS /tmp -> /private/tmp) — the one thing
+    `bufnr()` got right, and a plain name compare would lose."""
+    number: int = nvim.exec_lua(_FIND_BUFFER_LUA, file_path)
+    return number
+
+
 def _animate_lines(
     nvim: pynvim.Nvim,
     buf: int,
@@ -247,12 +282,17 @@ class NvimFollower:
         current window — real multi-file parity with the tmux backend."""
         nvim = self._connect()
         ns = nvim.api.create_namespace(_NAMESPACE)
-        nvim.command(f"silent! bwipeout! {file_path}")
+        # Wipe by NUMBER and name via the API: the Ex forms take the path as a
+        # pattern / command-line argument, so `[`, `{`, `*` missed the old
+        # buffer (then E95 on the rename) and `#`/`%` raised E499.
+        stale = _buffer_number(nvim, file_path)
+        if stale != -1:
+            nvim.command(f"silent! bwipeout! {stale}")
         if in_new_tab:
             nvim.command("tabnew")
         else:
             nvim.command("enew")
-        nvim.command(f"file {file_path}")
+        nvim.api.buf_set_name(nvim.current.buffer, file_path)
         nvim.command("filetype detect")
         nvim.command("setlocal buftype=")
         buf = nvim.current.buffer.handle
@@ -449,7 +489,7 @@ class NvimFollower:
         normally guarantees it."""
         del before
         nvim = self._connect()
-        if nvim.funcs.bufnr(file_path) == -1:
+        if _buffer_number(nvim, file_path) == -1:
             self._open_from_disk(nvim, file_path)
             return AnimationResult("completed", len(ops))
         self.goto_file(file_path)
@@ -583,7 +623,7 @@ class NvimFollower:
         and therefore recreates the buffer, and only resumes when that returned
         completed."""
         nvim = self._connect()
-        if pending.file_path and nvim.funcs.bufnr(pending.file_path) == -1:
+        if pending.file_path and _buffer_number(nvim, pending.file_path) == -1:
             remaining = pending.ops if isinstance(pending, PendingApplyEdit) else pending.lines
             return AnimationResult("completed", len(remaining))
         ns = nvim.api.create_namespace(_NAMESPACE)
@@ -633,11 +673,9 @@ class NvimFollower:
         disk — a missing buffer is created EMPTY here, because show_fresh's
         callers must not see the finished file flashed before it is typed.
         ensure_showing is the sibling that does read disk. Looked up via
-        nvim.funcs.bufnr rather
-        than a hand-rolled compare, for the same canonicalization reason as
-        before (macOS /tmp -> /private/tmp)."""
+        _buffer_number, never bufnr() — see there."""
         nvim = self._connect()
-        bufnr = nvim.funcs.bufnr(file_path)
+        bufnr = _buffer_number(nvim, file_path)
         if bufnr != -1:
             for tabpage in nvim.api.list_tabpages():
                 for win in nvim.api.tabpage_list_wins(tabpage):
@@ -670,8 +708,8 @@ class NvimFollower:
         no "abandon changes" guard (E37) is even in play, whereas `:edit`'s
         safety relies on the argument that tabnew's scratch window makes E37
         unreachable. bufadd applies nvim's own name canonicalization (macOS
-        /tmp -> /private/tmp), so a later bufnr(file_path) finds this very
-        buffer — same reason goto_file uses bufnr. bufadd creates the buffer
+        /tmp -> /private/tmp), which _buffer_number's realpath compare sees
+        through, so a later lookup finds this very buffer. bufadd creates the buffer
         unlisted; list it, for parity with goto_file's create_buf(True, ...).
         A file that does not exist on disk is fine: the buffer opens empty,
         exactly as `:edit` on a new file would.
@@ -772,7 +810,7 @@ class NvimFollower:
         of which entry point would do it. `hand_over` is still how a
         launched follower's buffer comes back to the user."""
         nvim = self._connect()
-        if nvim.funcs.bufnr(file_path) != -1:
+        if _buffer_number(nvim, file_path) != -1:
             self.goto_file(file_path)
             buf = nvim.api.get_current_buf().handle
             if not self._is_adopted():
@@ -781,16 +819,16 @@ class NvimFollower:
         self._open_from_disk(nvim, file_path)
 
     def close_tab(self, file_path: str) -> None:
-        # bufnr() here too, for the same reason as goto_file: bwipeout by a
-        # raw (unresolved) name is a no-op if nvim canonicalized the buffer's
-        # actual name, silently leaving the "evicted" buffer alive. goto_file
+        # Wipe by the number _buffer_number resolves, never by name: bwipeout
+        # takes a PATTERN, so a raw name can miss the buffer or hit a
+        # pattern-sibling (see _buffer_number). goto_file
         # first for structural parity with reload_and_relock/rewrite_buffer —
         # measured that bwipeout! alone (without navigating there first)
         # already closes the right tab regardless of which one is current,
         # so this preamble isn't load-bearing, just consistent style.
         self.goto_file(file_path)
         nvim = self._connect()
-        bufnr = nvim.funcs.bufnr(file_path)
+        bufnr = _buffer_number(nvim, file_path)
         if bufnr != -1:
             nvim.command(f"silent! bwipeout! {bufnr}")
 

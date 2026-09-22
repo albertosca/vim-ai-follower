@@ -25,7 +25,7 @@ def _disk_loading_nvim() -> MagicMock:
     """A mock nvim where the file has no buffer yet, so both callers of
     _open_from_disk take the disk-reading branch and bufadd hands out 42."""
     nvim = MagicMock()
-    nvim.funcs.bufnr.return_value = -1
+    nvim.exec_lua.return_value = -1
     nvim.funcs.bufadd.return_value = 42
     return nvim
 
@@ -114,7 +114,7 @@ def test_switching_to_an_existing_buffer_never_touches_its_swapfile() -> None:
     # already there keeps whatever swap protection it had.
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
-    nvim.funcs.bufnr.return_value = 9
+    nvim.exec_lua.return_value = 9
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch.object(NvimFollower, "goto_file"),
@@ -128,7 +128,7 @@ def test_goto_file_never_touches_swapfile() -> None:
     # check is in play and nothing should be opted out.
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
-    nvim.funcs.bufnr.return_value = -1
+    nvim.exec_lua.return_value = -1
     nvim.api.list_tabpages.return_value = []
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.goto_file("/tmp/f.py")

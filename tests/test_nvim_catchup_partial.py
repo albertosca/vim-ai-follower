@@ -107,7 +107,7 @@ def test_run_ops_pause_records_the_applied_prefix_as_the_partial(tmp_path: Path)
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
     nvim.api.get_current_buf.return_value.handle = 7
-    nvim.funcs.bufnr.return_value = 3
+    nvim.exec_lua.return_value = 3
     nvim.api.buf_get_lines.return_value = ["a", "b", "c"]
     nvim.api.buf_line_count.return_value = 3
     # Bottom-to-top, as compute_edit_script emits them: line 3 first.
@@ -142,7 +142,7 @@ def test_resume_fresh_pause_records_the_buffer_prefix_plus_the_typed_lines(
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
     nvim.api.get_current_buf.return_value.handle = 7
-    nvim.funcs.bufnr.return_value = 3
+    nvim.exec_lua.return_value = 3
     nvim.api.buf_get_lines.return_value = ["a", "x"]  # seedless: exactly the partial
     saved: list[tuple[str | None, bool]] = []
     pending = PendingShowFresh(
@@ -168,7 +168,7 @@ def test_resume_fresh_pause_excludes_the_trailing_seed_blank_from_the_partial(
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
     nvim.api.get_current_buf.return_value.handle = 7
-    nvim.funcs.bufnr.return_value = 3
+    nvim.exec_lua.return_value = 3
     nvim.api.buf_get_lines.return_value = ["a", ""]
     saved: list[tuple[str | None, bool]] = []
     pending = PendingShowFresh(

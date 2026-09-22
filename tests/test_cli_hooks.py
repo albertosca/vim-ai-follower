@@ -24,6 +24,7 @@ from vim_ai_follower import (
     writer_cue,
 )
 from vim_ai_follower.animate import AnimationResult
+from vim_ai_follower.backends.nvim import _FIND_BUFFER_LUA
 from vim_ai_follower.session import Session
 
 
@@ -440,7 +441,7 @@ def test_eviction_wipes_the_buffer_for_the_nvim_backend(
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(c)}}
     nvim = MagicMock()
-    nvim.funcs.bufnr.return_value = 7  # the buffer number bufnr(str(a)) resolves to
+    nvim.exec_lua.return_value = 7  # the buffer number the lookup resolves str(a) to
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("pynvim.attach", return_value=nvim),
@@ -450,9 +451,9 @@ def test_eviction_wipes_the_buffer_for_the_nvim_backend(
     refreshed = state.FollowerState.read("@1")
     assert refreshed is not None
     assert refreshed.open_files == (str(b), str(c))
-    # close_tab looks the evicted file (a) up via bufnr() (nvim's own path
-    # canonicalization, not a raw string compare) then wipes it by number.
-    nvim.funcs.bufnr.assert_any_call(str(a))
+    # close_tab looks the evicted file (a) up by walking the buffer list
+    # (never bufnr(), which pattern-matches) then wipes it by number.
+    nvim.exec_lua.assert_any_call(_FIND_BUFFER_LUA, str(a))
     nvim.command.assert_any_call("silent! bwipeout! 7")
 
 
