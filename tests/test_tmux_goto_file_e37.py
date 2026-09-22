@@ -156,11 +156,26 @@ def test_reload_and_relock_navigates_through_the_guard() -> None:
     _assert_navigates_through_the_guard(_sent_commands(run), "/tmp/f.py")
 
 
-def test_close_tab_navigates_through_the_guard() -> None:
+def test_close_tab_deliberately_does_not_navigate_at_all() -> None:
+    """The one entry point that opted OUT, and had to.
+
+    close_tab used to run the guard like its neighbours, and that preamble
+    is what made the eviction bug compound instead of merely failing:
+    `:tab drop` OPENS a tab for a path Vim does not already hold, so once
+    the wipe itself started missing (it wiped by buffer NAME, which Vim
+    reads as a pattern), each eviction ADDED a tab. Measured 2026-09-22 on
+    a real tmux+vim: nine tabs after nine files with max_tabs at five.
+
+    Wiping by buffer number needs no navigation — it closes the right tab
+    from wherever the cursor is — so there is nothing left for the guard to
+    protect here. The guard's own reason for existing is untouched: every
+    other caller still goes through it, which the tests above pin."""
     follower = TmuxVimFollower(pane_id="%2")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.close_tab("/tmp/f.py")
-    _assert_navigates_through_the_guard(_sent_commands(run), "/tmp/f.py")
+    texts = [text for text, _ in _sent_commands(run)]
+    assert not any("tab drop" in text for text in texts)
+    assert not any("vim_ai_follower_swap" in text for text in texts)
 
 
 def test_rewrite_buffer_navigates_through_the_guard(tmp_path: Path) -> None:
