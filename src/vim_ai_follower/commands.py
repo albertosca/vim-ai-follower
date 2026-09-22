@@ -10,7 +10,7 @@ from vim_ai_follower import cache, config, control, keybindings, snapshot, tmux
 from vim_ai_follower.backends import get_follower
 from vim_ai_follower.backends.nvim_connect import launch_standalone_nvim, resolve_nvim_target
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
-from vim_ai_follower.session import resolve_session
+from vim_ai_follower.session import Session, other_live_followers, resolve_session
 from vim_ai_follower.state import FollowerState
 from vim_ai_follower.status_surface import status_surface_for
 from vim_ai_follower.tmux import TmuxPane, adopt_target
@@ -227,20 +227,47 @@ def cmd_stop(env: dict[str, str]) -> int:
     return 0
 
 
+def _identity_label(session: Session) -> str:
+    return f"{session.window_id} ({'tmux' if session.in_tmux else 'not in tmux'})"
+
+
 def cmd_status(env: dict[str, str]) -> int:
+    """Always says WHICH identity it is answering about.
+
+    A bare "no follower active" is what made the 2026-09-22 incident cost half
+    an hour: it was answering truthfully about the synthetic term-<id> this run
+    had fallen back to, and was read as "there is no follower" while the real
+    window's follower was alive the whole time. Naming the identity, and
+    listing the live followers found elsewhere, makes those two states
+    impossible to confuse.
+
+    The other-followers list is printed only when this identity has no
+    follower. On the happy path it would be noise — Alberto routinely has
+    followers in several windows at once — and this is a CLI he reads often."""
     session = resolve_session(env)
     if session is None:
         print("claude-follow: not running inside tmux")
         return 0
     existing = FollowerState.get(session.window_id)
-    if existing is None:
-        print("claude-follow: no follower active")
-    else:
+    if existing is not None:
         print(
-            f"claude-follow: active, backend {existing.backend} "
-            f"({existing.target}), showing {existing.current_file}, "
+            f"claude-follow: active for {_identity_label(session)}, "
+            f"backend {existing.backend} ({existing.target}), "
+            f"showing {existing.current_file}, "
             f"on_failure={existing.on_failure}, speed={existing.speed}"
         )
+        return 0
+    print(f"claude-follow: no follower for {_identity_label(session)}")
+    others = other_live_followers(session.window_id)
+    if others:
+        print(
+            f"claude-follow: {len(others)} live follower(s) under other identities — "
+            "this session may have lost its window identity:"
+        )
+        for other in others:
+            print(
+                f"  {other.window_id}: {other.backend} {other.target}, showing {other.current_file}"
+            )
     return 0
 
 

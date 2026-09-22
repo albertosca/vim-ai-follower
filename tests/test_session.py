@@ -1,7 +1,11 @@
 import os
+from unittest.mock import patch
 
 import pytest
+from helpers import make_mock_tmux_run
+from helpers import register_fake_follower as _register_fake_follower
 
+from vim_ai_follower import cache
 from vim_ai_follower import session as session_mod
 from vim_ai_follower.tmux import TmuxWindow
 
@@ -51,3 +55,44 @@ def test_dead_pane_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
         classmethod(lambda cls, env: None),
     )
     assert session_mod.resolve_session({"TMUX_PANE": "%1"}) is None
+
+
+def test_other_live_followers_skips_own_identity_and_dead_ones() -> None:
+    # resolve_session itself gained nothing: $TMUX was measured (2026-09-22)
+    # NOT to survive the bg-spare re-parenting either, so there is no signal
+    # to recover a window from and no recovery was built. What the module
+    # gained is the diagnostic scan that makes the give-up visible.
+    _register_fake_follower("@18", "%23", current_file="/tmp/a.py")
+    _register_fake_follower("@19", "%24")
+    _register_fake_follower("term-me", "%25")
+    # %23 and %25 are both live vim panes; %24 is not. term-me is therefore
+    # live AND is the caller's own identity — it has to be excluded for being
+    # the caller's, not for being dead. An earlier version of this test gave
+    # term-me a dead pane, which made the own-key skip untestable: deleting
+    # the skip changed nothing and the canary came back blind.
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        side_effect=make_mock_tmux_run(pane_id="%23", vim_panes=("%25",)),
+    ):
+        others = session_mod.other_live_followers("term-me")
+    assert others == [
+        session_mod.OtherFollower(
+            window_id="@18", backend="tmux", target="%23", current_file="/tmp/a.py"
+        )
+    ]
+
+
+def test_other_live_followers_never_collects_dead_state() -> None:
+    """cmd_stop's sibling scan deletes the dead state it walks past. This one
+    must not: it runs from a hook, and a hook that failed to find its own
+    follower has no business deleting another window's."""
+    _register_fake_follower("@19", "%24")
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run(pane_id="%23")
+    ):
+        assert session_mod.other_live_followers("term-me") == []
+    assert (cache.CACHE_DIR / "@19.pane").exists()
+
+
+def test_other_live_followers_is_empty_when_nothing_is_registered() -> None:
+    assert session_mod.other_live_followers("term-me") == []
