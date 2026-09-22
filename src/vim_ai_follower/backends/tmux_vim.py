@@ -135,6 +135,59 @@ _GOTO_FILE = (
 )
 
 
+def _vim_string(value: str) -> str:
+    """`value` as a Vim single-quoted string literal.
+
+    Total, and cheaply so: Vim's single-quoted strings process no backslash
+    escapes at all, so the only character needing any handling is `'`, which
+    doubles. Every other byte survives verbatim — including the `#`, `%`,
+    `$`, `*`, `[`, `]`, `{` and `}` that Vim's command line and its
+    buffer-name patterns would otherwise eat."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+# Wipe the buffer holding a given file, resolved by NUMBER rather than by
+# name. This is the eviction primitive close_tab uses and the pre-wipe
+# show_fresh does before it renames a buffer onto the same path.
+#
+# `:bwipeout {name}` does NOT take a file name: it takes a buffer-name
+# pattern (`:h {bufname}`). A real path containing `[`, `]`, `{` or `}`
+# therefore matches nothing, and `:silent!` swallows the E94 that says so —
+# measured 2026-09-22 against a real tmux+vim: the "evicted" buffer and its
+# tab both survive, so max_tabs stops capping anything. `#`, `%` and `$` are
+# worse still: those are expanded on the command line itself (alternate
+# file, current file, environment variable), so the wipe targets some other
+# buffer entirely. `bufnr()` is no escape — it pattern-matches by the same
+# rules, which is why the nvim backend's `bufnr(file_path)` shares the flaw
+# for exactly these paths.
+#
+# So the path never reaches a pattern at all. It goes into a Vim string
+# literal (see _vim_string), and the buffer list is walked comparing FULL
+# names; `:p` normalizes both sides, so `/a/./b.py` and `/a/b.py` still
+# match. Only an exact hit is wiped, and a miss wipes nothing — which is
+# load-bearing, not merely tidy: a bare `:bwipeout!` with no number would
+# wipe the CURRENT buffer.
+#
+# The two `g:` variables are unlet in the same line. They exist because the
+# comparison target has to be referenced from inside filter()'s expression
+# STRING, and nesting a path through two levels of Vim string quoting is the
+# hazard this whole constant exists to avoid. A line cut off mid-flight can
+# leave them behind; they are inert, and the next call overwrites them.
+#
+# Never follow this with `:tabclose`. Wiping a buffer that is its tab's only
+# window already closes that tab, and the "safety" close then lands on
+# whichever neighbour received focus and eats an innocent one (live eviction
+# bug, 2026-07-15).
+_WIPE_BUFFER = (
+    ":let g:vaf_wipe_name = fnamemodify({file}, ':p')"
+    " | let g:vaf_wipe_nr = get(filter(range(1, bufnr('$')),"
+    ' \'bufexists(v:val) && bufname(v:val) !=# ""'
+    ' && fnamemodify(bufname(v:val), ":p") ==# g:vaf_wipe_name\'), 0, -1)'
+    " | if g:vaf_wipe_nr > 0 | exe 'silent! bwipeout! ' . g:vaf_wipe_nr | endif"
+    " | unlet! g:vaf_wipe_name g:vaf_wipe_nr"
+)
+
+
 @dataclass(frozen=True)
 class TmuxVimFollower:
     """Follower backend that drives a real Vim instance in a tmux pane via
@@ -225,14 +278,22 @@ class TmuxVimFollower:
         return run_lines(pane, self.window_id, lines, 0.0, file_path=file_path, base_content="")
 
     def close_tab(self, file_path: str) -> None:
+        """Evict `file_path`: wipe its buffer, which closes the tab it was
+        the only window of. On the last remaining tab the wipe just leaves
+        an empty buffer, which is fine.
+
+        There is deliberately no goto_file preamble. It was never
+        load-bearing — _WIPE_BUFFER resolves a buffer NUMBER, and wiping by
+        number closes the right tab from wherever the cursor happens to be,
+        the same thing the nvim backend measured for its own close_tab — and
+        it was actively harmful: `:tab drop` on a path Vim does not already
+        hold OPENS a tab for it, so an eviction whose wipe then missed
+        ADDED a tab instead of removing one. With the name-pattern wipe that
+        preceded it, that pair is how the tab count climbed past max_tabs
+        while the follower's own bookkeeping stayed pinned at the limit."""
         pane = TmuxPane(pane_id=self.pane_id)
-        self.goto_file(file_path)
-        # bwipeout! of a buffer that is its tab's only window already
-        # closes that tab; never follow it with :tabclose — focus lands on
-        # a neighboring tab and the "safety" close eats an innocent one
-        # (live eviction bug, 2026-07-15). On the last remaining tab the
-        # wipe just leaves an empty buffer, which is fine.
-        pane.send_text(f":silent! bwipeout! {file_path}")
+        self._normal_mode(pane)
+        pane.send_text(_WIPE_BUFFER.format(file=_vim_string(file_path)))
         pane.send_key("Enter")
 
     def ensure_showing(self, file_path: str) -> None:
@@ -313,7 +374,10 @@ class TmuxVimFollower:
         # Instead the current buffer is wiped and renamed in place, so the
         # real content is never displayed before we type it back in.
         self._normal_mode(pane)
-        pane.send_text(f":silent! bwipeout! {file_path}")
+        # Same by-number wipe as close_tab, and for the same reason: a
+        # name-pattern miss here leaves the old buffer alive, and the
+        # `:file` below then hangs a SECOND buffer off the same path.
+        pane.send_text(_WIPE_BUFFER.format(file=_vim_string(file_path)))
         pane.send_key("Enter")
         if in_new_tab:
             pane.send_text(":tabnew")

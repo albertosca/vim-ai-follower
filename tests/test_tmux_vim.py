@@ -241,7 +241,7 @@ def test_show_fresh_renames_current_buffer_without_ever_loading_the_real_file(
     # _normal_mode sends two prompt-proof Escapes first
     assert commands[0] == ("Escape", False)
     assert commands[1] == ("Escape", False)
-    assert commands[2] == (":silent! bwipeout! /tmp/f.txt", True)
+    assert commands[2] == (_wipe("'/tmp/f.txt'"), True)
     assert commands[3] == ("Enter", False)
     assert commands[4] == (":file /tmp/f.txt", True)
     assert commands[5] == ("Enter", False)
@@ -279,7 +279,7 @@ def test_show_fresh_with_empty_content_still_wipes_and_relocks(tmp_path: Path) -
     assert commands == [
         ("Escape", False),
         ("Escape", False),
-        (":silent! bwipeout! /tmp/f.txt", True),
+        (_wipe("'/tmp/f.txt'"), True),
         ("Enter", False),
         (":file /tmp/f.txt", True),
         ("Enter", False),
@@ -510,25 +510,91 @@ def test_reload_and_relock_navigates_then_reloads_and_relocks() -> None:
     ]
 
 
-def test_close_tab_wipes_the_buffer_and_never_double_closes() -> None:
-    # bwipeout! of a buffer that is a tab's only window ALREADY closes that
-    # tab; a follow-up :tabclose then lands on whichever neighbor received
-    # focus and closes an innocent tab (live eviction bug, 2026-07-15).
+def _wipe(quoted_path: str) -> str:
+    """The exact Ex line an eviction sends to wipe `quoted_path`'s buffer.
+
+    Spelled out rather than imported from tmux_vim._WIPE_BUFFER, for the
+    same reason as _goto above: importing would make these assertions agree
+    with whatever the constant happens to say. `quoted_path` is already a
+    Vim single-quoted string literal — that is the whole point of the line,
+    so it is what the caller passes."""
+    return (
+        f":let g:vaf_wipe_name = fnamemodify({quoted_path}, ':p')"
+        " | let g:vaf_wipe_nr = get(filter(range(1, bufnr('$')),"
+        ' \'bufexists(v:val) && bufname(v:val) !=# ""'
+        ' && fnamemodify(bufname(v:val), ":p") ==# g:vaf_wipe_name\'), 0, -1)'
+        " | if g:vaf_wipe_nr > 0 | exe 'silent! bwipeout! ' . g:vaf_wipe_nr | endif"
+        " | unlet! g:vaf_wipe_name g:vaf_wipe_nr"
+    )
+
+
+def test_close_tab_wipes_by_buffer_number_and_never_double_closes() -> None:
+    """The exact Ex traffic of one eviction.
+
+    Two separate regressions are pinned here, both measured on a real
+    tmux+vim on 2026-09-22:
+
+    1. The wipe must resolve a buffer NUMBER. `:bwipeout! {path}` treats its
+       argument as a buffer-name PATTERN, so a path containing `[`, `]`, `{`
+       or `}` matches nothing and `:silent!` eats the E94 — the "evicted"
+       buffer and its tab both survive and max_tabs stops capping anything.
+    2. There must be no goto_file preamble. `:tab drop` OPENS a tab for a
+       path Vim does not already hold, so the old pairing turned a missed
+       wipe into a tab ADDED rather than removed.
+
+    And the 2026-07-15 rule still stands: never `:tabclose` after the wipe —
+    focus lands on a neighbour and the "safety" close eats an innocent tab.
+    """
     follower = TmuxVimFollower(pane_id="%2")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.close_tab("/tmp/old.py")
     commands = _sent_commands(run)
-    drop_index = commands.index((_goto("/tmp/old.py"), True))
-    texts_after_drop = [text for text, _ in commands[drop_index:]]
-    assert ":silent! bwipeout! /tmp/old.py" in texts_after_drop
+    # Two Escapes to reach Normal mode, then the wipe, then Enter. Nothing
+    # else: no navigation, so nothing can open a tab on the way in.
+    assert commands == [
+        ("Escape", False),
+        ("Escape", False),
+        (_wipe("'/tmp/old.py'"), True),
+        ("Enter", False),
+    ]
+    assert not any("tab drop" in text for text, _ in commands)
     assert not any("tabclose" in text for text, _ in commands)
+
+
+def test_close_tab_never_sends_the_path_as_a_bwipeout_pattern() -> None:
+    """The regression in the form it actually shipped in: a path whose
+    characters are buffer-name pattern metacharacters. `app/[slug]/page.tsx`
+    is an ordinary Next.js route, and `:bwipeout! .../[slug]/page.tsx` reads
+    `[slug]` as a character class, matching no buffer at all.
+
+    Asserting the path is absent from the command line in bare form is the
+    load-bearing half: it must reach Vim only inside a string literal, where
+    no character is special."""
+    path = "/tmp/app/[slug]/page.tsx"
+    follower = TmuxVimFollower(pane_id="%2")
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        follower.close_tab(path)
+    texts = [text for text, literal in _sent_commands(run) if literal]
+    assert texts == [_wipe(f"'{path}'")]
+    assert not any(f"bwipeout! {path}" in text for text in texts)
+
+
+def test_close_tab_quotes_an_apostrophe_in_the_path() -> None:
+    """A Vim single-quoted literal escapes `'` by doubling it, and that is
+    the only escape it has. Get this wrong and the literal terminates early,
+    turning the rest of the path into broken Vim script."""
+    follower = TmuxVimFollower(pane_id="%2")
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        follower.close_tab("/tmp/it's/a.py")
+    texts = [text for text, literal in _sent_commands(run) if literal]
+    assert texts == [_wipe("'/tmp/it''s/a.py'")]
 
 
 def test_show_fresh_in_new_tab_opens_tab_before_renaming(
     sent: list[str], follower: TmuxVimFollower
 ) -> None:
     follower.show_fresh("/tmp/new.py", "line1\n", in_new_tab=True)
-    wipe = sent.index("text:::silent! bwipeout! /tmp/new.py")
+    wipe = sent.index("text::" + _wipe("'/tmp/new.py'"))
     tabnew = sent.index("text:::tabnew")
     rename = sent.index("text:::file /tmp/new.py")
     assert wipe < tabnew < rename

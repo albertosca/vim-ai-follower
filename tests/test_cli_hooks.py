@@ -400,10 +400,12 @@ def test_eviction_closes_oldest_tab_before_animating(
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = _literal_sends(run)
-    # a's tab is closed (close_tab: drop + bwipeout, which closes the tab
-    # by itself — no :tabclose, see close_tab) BEFORE c's content starts
-    # animating (show_fresh's rename-in-place for c).
-    close_index = sends.index(f":silent! bwipeout! {a}")
+    # a's tab is closed BEFORE c's content starts animating (show_fresh's
+    # rename-in-place for c). close_tab resolves a's BUFFER NUMBER and wipes
+    # that — wiping by name is a silent no-op for any path Vim reads as a
+    # buffer-name pattern — and the wipe closes the tab by itself, so there
+    # is no :tabclose (see close_tab).
+    close_index = next(i for i, text in enumerate(sends) if f"fnamemodify('{a}', ':p')" in text)
     rename_index = sends.index(f":file {c}")
     assert close_index < rename_index
     assert not any("tabclose" in text for text in sends)
