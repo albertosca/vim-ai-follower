@@ -515,8 +515,31 @@ class E2EFollower:
         # the follower's vim/nvim split, and the server itself. Nothing here
         # can reach the developer's server — the socket lives in tmux_tmpdir.
         self.tmux("kill-server", check=False)
+        self.wait_for_children_gone()
         shutil.rmtree(self.tmux_tmpdir, ignore_errors=True)
         shutil.rmtree(self.home, ignore_errors=True)
+
+    def wait_for_children_gone(self, timeout: float = 15.0) -> bool:
+        """Block until no process still carries this world's token in its
+        argv. kill-server returns as soon as the server is TOLD to die, and
+        its panes' editors outlive it by a moment — nvim writes its shada on
+        the way out, which RECREATES $XDG_STATE_HOME/nvim/shada under the home
+        directory the teardown has already deleted. Measured 2026-09-22: two
+        world roots survived a run that was otherwise completely clean,
+        holding nothing but an 84-byte main.shada.
+
+        The token is in every child's argv (it is a path component of HOME,
+        TMPDIR and the socket), and never in the test runner's own, so pgrep
+        answers exactly "are my children gone?"."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            alive = subprocess.run(
+                ["pgrep", "-f", self.token], capture_output=True, text=True, check=False
+            )
+            if alive.returncode != 0:  # pgrep exits 1 when nothing matches
+                return True
+            time.sleep(0.05)
+        return False
 
 
 def _stable_size(path: Path) -> Callable[[], bool]:

@@ -723,6 +723,12 @@ cut exactly where it was. `6bef225`: `_run_ops` deletes an op's old range
 instantly, so an interrupt inside an op used to hand over a buffer missing
 lines the interrupt notification claimed were on screen; the delete must now
 be rolled back.
+**Machine-verified** by
+`tests/test_e2e_cli_controls.py::test_nvim_interrupt_leaves_the_half_typed_line_uncounted`
+and `::test_nvim_interrupt_rolls_back_the_op_it_was_inside` — in a manual run,
+judge only whether the typing and the replay LOOK right: the per-character
+pace, the typing-line highlight, and the cut landing where your eye says you
+pressed `S`.
 
 **Setup — two steps, in order, against the same follower and file:**
 
@@ -778,6 +784,11 @@ Before the fix it ended at the first replay stop: `S` (interrupt), `S`
 press did nothing at all — nobody was listening any more, and the buffer
 stayed partial and modifiable until some later animation's relock healed it
 ("nao desinterrompeu mais", Alberto 2026-09-16).
+**Machine-verified** by
+`tests/test_e2e_cli_controls.py::test_handoff_cycles_past_the_press_that_used_to_do_nothing`
+— in a manual run, judge only that every press FEELS acknowledged at the
+moment you make it (the popup, the cue switching between waiting and
+"Writing…") and that each replay looks smooth rather than jumping.
 
 **Setup — run it twice, once per backend:**
 
@@ -828,6 +839,11 @@ routinely a half-typed line nothing had repaired — measured against real
 nvim, `_resume_fresh` pushed the leftover down and `_run_ops` stranded every
 extra row a partly-typed multi-line op had left. It now rebuilds from the
 partial persisted alongside the remainder, on both backends.
+**Machine-verified** by
+`tests/test_e2e_cli_controls.py::test_crash_fallback_catches_up_after_the_hook_is_killed`
+— in a manual run, judge only the SHAPE of the catch-up on screen: the buffer
+jumping to the rest of the first version in one silent step, then the new edit
+typing on top of it at normal pace.
 
 **Setup — run it twice, once per backend. Fully script-driven; Alberto only
 reads the result:**
@@ -887,6 +903,13 @@ abandon check raises `E37: No write since last change (add ! to override)`
 when the buffer it landed on is modified — the ordinary state after an
 interrupt hand-off or a killed hook. `goto_file` now wraps the drop in a
 `:try`/`:catch` that swallows exactly E37.
+**Machine-verified** by
+`tests/test_e2e_cli_controls.py::test_navigating_to_a_dirty_buffer_raises_no_e37_prompt`
+— in a manual run, judge only what the pane LOOKS and FEELS like: no error
+text or prompt anywhere on it, and it responding instantly to `j`/`G` rather
+than to a prompt. (The test asserts on Vim's `:messages`, because the
+follower's own trailing `:setlocal` dismisses a real hit-enter prompt
+milliseconds after it appears — too fast for a script, but not for your eye.)
 
 **Setup:**
 
