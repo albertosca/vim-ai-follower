@@ -43,7 +43,10 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["integration: requires a real tmux and/or nvim binary on PATH"]
+markers = [
+    "integration: requires a real tmux and/or nvim binary on PATH",
+    "pid_walk: opts out of conftest's no_pid_ancestry_walk neutraliser",
+]
 
 # The dev environment is uv-managed (.venv), resolved from uv.lock, so the
 # weekly-update routine's dependency layer applies a bump (uv lock --upgrade

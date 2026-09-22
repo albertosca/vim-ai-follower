@@ -10,6 +10,12 @@ from vim_ai_follower import session as session_mod
 from vim_ai_follower.tmux import TmuxWindow
 
 
+# The synthetic-identity tests below reach _standalone_id only because the
+# pid-ancestry fallback is off: conftest's autouse `no_pid_ancestry_walk`
+# neutralises it for every test that does not carry @pytest.mark.pid_walk.
+# Without it these resolve to whatever tmux window the runner is sitting in —
+# measured 2026-09-22, three of them came back "@6". The fallback's own tests
+# live in test_session_pid_fallback.py.
 def test_standalone_identity_prefers_term_session_id() -> None:
     s = session_mod.resolve_session({"TERM_SESSION_ID": "w0t0p0"})
     assert s == session_mod.Session(window_id="term-w0t0p0", origin=None, in_tmux=False)
@@ -58,10 +64,12 @@ def test_dead_pane_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_other_live_followers_skips_own_identity_and_dead_ones() -> None:
-    # resolve_session itself gained nothing: $TMUX was measured (2026-09-22)
-    # NOT to survive the bg-spare re-parenting either, so there is no signal
-    # to recover a window from and no recovery was built. What the module
-    # gained is the diagnostic scan that makes the give-up visible.
+    # $TMUX was measured (2026-09-22) NOT to survive the bg-spare
+    # re-parenting, so no window can be recovered from it and none is. The
+    # pid-ancestry fallback added later recovers a DIFFERENT case (TMUX_PANE
+    # stripped, process still a pane's descendant) and does not reach the
+    # bg-pty-host chain either, so this diagnostic scan — which makes the
+    # give-up visible — is still the whole answer for that one.
     _register_fake_follower("@18", "%23", current_file="/tmp/a.py")
     _register_fake_follower("@19", "%24")
     _register_fake_follower("term-me", "%25")
