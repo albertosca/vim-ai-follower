@@ -166,9 +166,22 @@ def test_status_lists_live_followers_under_other_identities(
 
 
 def test_status_dead_tmux_pane(capsys: pytest.CaptureFixture[str]) -> None:
+    # resolve_session returns None ONLY when TMUX_PANE is set and tmux cannot
+    # resolve it, so the message has to name that — saying "not running inside
+    # tmux" was exactly backwards and cost half an hour on 2026-09-22.
     with patch("vim_ai_follower.commands.resolve_session", return_value=None):
         assert commands.cmd_status({"TMUX_PANE": "%1"}) == 0
-    assert "not running inside tmux" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "could not resolve TMUX_PANE=%1" in out
+    assert "not running inside tmux" not in out
+
+
+def test_stop_names_the_unresolvable_pane_on_stderr(capsys: pytest.CaptureFixture[str]) -> None:
+    # Same wording on every command that gives up on a None session, not just
+    # status — the defect was a class, present at all seven call sites.
+    with patch("vim_ai_follower.commands.resolve_session", return_value=None):
+        assert commands.cmd_stop({"TMUX_PANE": "%7"}) == 1
+    assert "could not resolve TMUX_PANE=%7" in capsys.readouterr().err
 
 
 def test_start_nvim_launches_dedicated_and_records_not_adopted() -> None:

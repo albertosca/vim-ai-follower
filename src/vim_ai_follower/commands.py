@@ -39,6 +39,21 @@ def _launch_standalone_or_report(window_id: str) -> str | None:
         return None
 
 
+def _unresolvable_pane(env: dict[str, str]) -> str:
+    """The message for a `resolve_session` that came back None.
+
+    That happens ONLY when TMUX_PANE is set and tmux could not resolve it —
+    never when TMUX_PANE is absent, which now yields a pid-recovered or
+    synthetic identity instead. The old wording ("not running inside tmux")
+    said the opposite of the one condition that produces it, and reading it
+    at face value cost half an hour on 2026-09-22."""
+    pane = env.get("TMUX_PANE", "")
+    return (
+        f"claude-follow: tmux could not resolve TMUX_PANE={pane} — the pane is gone, "
+        "or the tmux server was restarted since this shell started"
+    )
+
+
 def cmd_start(
     env: dict[str, str],
     backend: str | None = None,
@@ -47,7 +62,7 @@ def cmd_start(
 ) -> int:
     session = resolve_session(env)
     if session is None:
-        print("claude-follow: not running inside tmux", file=sys.stderr)
+        print(_unresolvable_pane(env), file=sys.stderr)
         return 1
     if FollowerState.get(session.window_id) is not None:
         print("claude-follow: follower already running for this window")
@@ -183,7 +198,7 @@ def _other_live_follower(window_id: str) -> bool:
 def cmd_stop(env: dict[str, str]) -> int:
     session = resolve_session(env)
     if session is None:
-        print("claude-follow: not running inside tmux", file=sys.stderr)
+        print(_unresolvable_pane(env), file=sys.stderr)
         return 1
     existing = FollowerState.get(session.window_id)
     if existing is not None:
@@ -246,7 +261,7 @@ def cmd_status(env: dict[str, str]) -> int:
     followers in several windows at once — and this is a CLI he reads often."""
     session = resolve_session(env)
     if session is None:
-        print("claude-follow: not running inside tmux")
+        print(_unresolvable_pane(env))
         return 0
     existing = FollowerState.get(session.window_id)
     if existing is not None:
@@ -325,7 +340,7 @@ def _resave_pending(
 def cmd_pause(env: dict[str, str]) -> int:
     session = resolve_session(env)
     if session is None:
-        print("claude-follow: not running inside tmux", file=sys.stderr)
+        print(_unresolvable_pane(env), file=sys.stderr)
         return 1
     current = FollowerState.get(session.window_id)
 
@@ -383,7 +398,7 @@ def cmd_pause(env: dict[str, str]) -> int:
 def cmd_interrupt(env: dict[str, str]) -> int:
     session = resolve_session(env)
     if session is None:
-        print("claude-follow: not running inside tmux", file=sys.stderr)
+        print(_unresolvable_pane(env), file=sys.stderr)
         return 1
     current = FollowerState.get(session.window_id)
 
@@ -419,7 +434,7 @@ def cmd_interrupt(env: dict[str, str]) -> int:
 def cmd_speed(env: dict[str, str], direction: Literal["up", "down"]) -> int:
     session = resolve_session(env)
     if session is None:
-        print("claude-follow: not running inside tmux", file=sys.stderr)
+        print(_unresolvable_pane(env), file=sys.stderr)
         return 1
     current = FollowerState.get(session.window_id)
     if current is None:
@@ -450,7 +465,7 @@ def cmd_speed(env: dict[str, str], direction: Literal["up", "down"]) -> int:
 def cmd_toggle(env: dict[str, str]) -> int:
     session = resolve_session(env)
     if session is None:
-        print("claude-follow: not running inside tmux", file=sys.stderr)
+        print(_unresolvable_pane(env), file=sys.stderr)
         return 1
     raw = FollowerState.read(session.window_id)
     if raw is None:
