@@ -8,7 +8,7 @@ Live "follower" editor for Claude Code: `PreToolUse`/`PostToolUse` hooks (`claud
 uv sync --extra dev --extra nvim            # a bare `uv sync` leaves pytest/mypy/pynvim missing
 uv run ruff check src tests && uv run ruff format --check src tests
 uv run mypy                                  # bare — pyproject's files = src + tests; CI runs the same
-uv run pytest -q --cov=vim_ai_follower --cov-branch --cov-fail-under=100   # full suite, ~3 min, real tmux+vim+nvim
+uv run pytest -q --cov=vim_ai_follower --cov-branch --cov-fail-under=100   # full suite, ~5 min, real tmux+vim+nvim
 uv run pytest -q -m "not integration"        # what CI runs (~15 s); coverage floor there is 98 (unit-only is ~99%)
 ```
 
@@ -17,7 +17,7 @@ The project's bar is 100% branch coverage on the full suite; the coverage gate l
 ## Layout
 
 - `src/vim_ai_follower/cli.py` — subcommands `start stop status hook pause interrupt speed-up speed-down toggle`; `commands.py` implements them, `keybindings.py` the tmux prefix keys.
-- `hooks.py` — the hook orchestration (animate, interrupt hand-off loop, crash-fallback catch-up); `control.py` — signals + persisted pending animations (with `partial`); `state.py` — per-window follower state in `~/.cache/claude-vim-follower/`; `snapshot.py`/`diff.py` — before/after and the edit script; `animate.py` — tmux keystroke drivers.
+- `hooks.py` — the hook orchestration (animate, interrupt hand-off loop, crash-fallback catch-up); `control.py` — signals + persisted pending animations (with `partial`); `binding.py` — the `session_id → (window, tmux server pid)` store that carries a session through a mid-run loss of `TMUX_PANE`; `state.py` — per-window follower state in `~/.cache/claude-vim-follower/`; `snapshot.py`/`diff.py` — before/after and the edit script; `animate.py` — tmux keystroke drivers.
 - `backends/tmux_vim.py` (Vim via send-keys) and `backends/nvim.py` (Neovim via RPC) implement the `Follower` protocol in `backends/__init__.py`.
 - Config: `~/.config/claude-vim-follower/config.json`; hook log: `~/.cache/claude-vim-follower/hook.log` (hooks never fail the tool call — problems go there).
 - `qa/visual-battery.md` + `scripts/qa-check-N-*.sh` + `/qa-visual` — the manual visual QA battery (19 checks). `docs/superpowers/` is gitignored (private planning docs).
@@ -40,6 +40,9 @@ The project's bar is 100% branch coverage on the full suite; the coverage gate l
 - Test-side: assert on the specific call, not `assert_called_once` — exact call counts break whenever a neighbor adds an API read.
 - **Run the full suite alone.** Integration tests spawn real tmux servers and nvims; two suites in parallel (or a parallel agent's) push load past 10 and produce false timeouts — rerun the failing test alone before calling it a regression.
 - **QA scripts (`scripts/qa-check-*.sh`) must run from inside a tmux pane** (`$TMUX_PANE` guard) and background a hook with `> log 2>&1 &`, never `| tee` — a pipe makes the shell wait and the interrupt/pause you're testing never lands. Finish with `source scripts/qa-lib.sh && qa_teardown`.
+- **`conftest.py`'s autouse `no_pid_ancestry_walk` only reaches IN-PROCESS code.** It stubs `session._tmux_panes_by_pid` so the suite doesn't resolve to whatever window the developer is sitting in — but a test that runs the hook as a SUBPROCESS bypasses it and the pid walk hits the real tmux server. Point such a test at a private socket and fire the blind half from the pytest process, not from inside a pane, or it passes for the wrong reason. Opt in with `@pytest.mark.pid_walk`.
+- **`tmux` and `keybindings` share one `subprocess` module object**, so patching `vim_ai_follower.tmux.subprocess.run` silently intercepts `keybindings`' `git rev-parse` too. Resolve any expected path INSIDE the patch, or expectation and code under test see different worlds.
+- **Coverage is blind to subprocess execution**, so the e2e CLI tests add none — expect the percentage not to move, and never chase it with `# pragma: no cover`. To read a real buffer from an integration test, dump it with Vim's `writefile()` (or `buf_get_lines` over RPC): delete the dump first and wait for a sentinel prefix so a stale or half-written read can't pass for an answer, and retry — a loaded machine swallows the ESC pair.
 - **Worktrees:** tool-created worktrees may start from a stale `origin/main` — check `git rev-parse HEAD` against local `main` first. `docs/superpowers/` is gitignored, so edits made there inside a worktree never come back via merge: copy them to the main checkout before removing the worktree.
 
 ## Release
