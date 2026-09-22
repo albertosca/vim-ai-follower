@@ -33,6 +33,9 @@ The project's bar is 100% branch coverage on the full suite; the coverage gate l
 - **`tests/conftest.py`'s `headless_nvim` runs nvim with `-n` (no swap)** — anything swap-related needs the no-`-n` fixture in `tests/test_nvim_integration_swap.py`. `tmux_session` isolates from your real tmux server; never point a test at `$TMUX`.
 - **`compute_edit_script` emits ops bottom-up** (later lines first), so line numbers stay valid as ops apply; a whole-buffer delete is always the last op.
 - Test-side: assert on the specific call, not `assert_called_once` — exact call counts break whenever a neighbor adds an API read.
+- **Run the full suite alone.** Integration tests spawn real tmux servers and nvims; two suites in parallel (or a parallel agent's) push load past 10 and produce false timeouts — rerun the failing test alone before calling it a regression.
+- **QA scripts (`scripts/qa-check-*.sh`) must run from inside a tmux pane** (`$TMUX_PANE` guard) and background a hook with `> log 2>&1 &`, never `| tee` — a pipe makes the shell wait and the interrupt/pause you're testing never lands. Finish with `source scripts/qa-lib.sh && qa_teardown`.
+- **Worktrees:** tool-created worktrees may start from a stale `origin/main` — check `git rev-parse HEAD` against local `main` first. `docs/superpowers/` is gitignored, so edits made there inside a worktree never come back via merge: copy them to the main checkout before removing the worktree.
 
 ## Release
 

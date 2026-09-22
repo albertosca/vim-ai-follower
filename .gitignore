@@ -8,3 +8,4 @@ __pycache__/
 .claude/
 *.sw[a-p]
 docs/superpowers/
+.claude.local.md
