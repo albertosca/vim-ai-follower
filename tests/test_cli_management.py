@@ -670,8 +670,11 @@ def test_stop_on_adopted_pane_closes_tabs_but_not_the_pane() -> None:
         c.args[0] for c in run.call_args_list if c.args[0][:4] == ["tmux", "send-keys", "-t", "%7"]
     ]
     literal = [c[6] for c in sends if "-l" in c]
-    assert f":silent! bwipeout! {a}" in literal
-    assert f":silent! bwipeout! {b}" in literal
+    # close_tab resolves a buffer NUMBER and wipes that, because `:bwipeout!`
+    # takes a buffer-name PATTERN, not a path: `app/[slug]/page.tsx` is a
+    # character class and the wipe silently misses (measured 2026-09-22).
+    assert any(f"fnamemodify('{a}', ':p')" in text for text in literal)
+    assert any(f"fnamemodify('{b}', ':p')" in text for text in literal)
     # bwipeout alone closes each tab; a :tabclose here would eat an
     # innocent neighbor (see close_tab).
     assert not any("tabclose" in text for text in literal)
