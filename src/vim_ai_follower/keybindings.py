@@ -29,6 +29,67 @@ def _bundled_wrapper() -> Path:
     return Path(__file__).resolve().parents[2] / "bin" / "claude-follow"
 
 
+def _git_dirs(directory: Path) -> tuple[Path, Path, Path] | None:
+    """(common git dir, this tree's own git dir, working-tree top level) for
+    `directory`, all absolute. None when `directory` is not inside a git
+    working tree, or git is not installed.
+
+    Every answer is re-anchored on `directory` before resolving, because git
+    prints these RELATIVE to its own cwd whenever that is shorter: asked from
+    a repo's own bin/, --git-common-dir comes back as "../.git" while
+    --git-dir comes back absolute. Comparing the two raw strings would label
+    every ordinary checkout a worktree."""
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(directory),
+                "rev-parse",
+                "--git-common-dir",
+                "--git-dir",
+                "--show-toplevel",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None  # no git on this machine: degrade, never traceback
+    lines = result.stdout.splitlines()
+    if result.returncode != 0 or len(lines) != 3:
+        return None
+    paths = [Path(directory, line).resolve() for line in lines]
+    return paths[0], paths[1], paths[2]
+
+
+def _durable_wrapper(wrapper: Path) -> Path:
+    """`wrapper`, or its twin in the MAIN checkout when `wrapper` lives inside
+    a linked git worktree.
+
+    Resolution happens once, per invocation; the tmux binding it feeds is
+    SERVER-global and lasts as long as the tmux server. A path inside a
+    throwaway worktree therefore outlives the worktree it names. Measured
+    2026-09-22: a `start` run from a tool-created worktree repointed the
+    prefix keys of every window on the real server, and deleting that worktree
+    left all five keys exiting 127 — silently, since run-shell discards both
+    streams. A linked worktree is the case where the common git dir differs
+    from this tree's git dir, and the main checkout is the common dir's
+    parent."""
+    dirs = _git_dirs(wrapper.parent)
+    if dirs is None:
+        return wrapper
+    common_dir, git_dir, toplevel = dirs
+    if common_dir == git_dir:
+        return wrapper  # the main checkout (or a plain clone): already durable
+    candidate = Path(common_dir.parent, os.path.relpath(wrapper, toplevel))
+    if not candidate.exists():
+        # Nothing there to bind — an absent path is deader than an ephemeral
+        # one, which at least works until the worktree goes away.
+        return wrapper
+    return candidate
+
+
 def _claude_follow_executable() -> str:
     """Absolute path to the claude-follow entry point. tmux run-shell commands
     execute with the tmux SERVER's environment, whose PATH never includes this
@@ -37,14 +98,15 @@ def _claude_follow_executable() -> str:
 
     Resolution order: the plugin install (CLAUDE_PLUGIN_ROOT) when set, else the
     bundled wrapper resolved from this package's own location (covers a plugin
-    started outside a hook, and an editable clone), else this venv's installed
-    script, else PATH."""
+    started outside a hook, and an editable clone) — redirected to the main
+    checkout when that location is a linked worktree, since the binding must
+    outlive it — else this venv's installed script, else PATH."""
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
     if plugin_root:
         return str(Path(plugin_root) / "bin" / "claude-follow")
     bundled = _bundled_wrapper()
     if bundled.exists():
-        return str(bundled)
+        return str(_durable_wrapper(bundled))
     candidate = Path(sys.executable).parent / "claude-follow"
     if candidate.exists():
         return str(candidate)

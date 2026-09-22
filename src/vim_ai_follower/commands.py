@@ -65,7 +65,19 @@ def cmd_start(
         print(_unresolvable_pane(env), file=sys.stderr)
         return 1
     if FollowerState.get(session.window_id) is not None:
-        print("claude-follow: follower already running for this window")
+        message = "claude-follow: follower already running for this window"
+        if session.in_tmux:
+            # The keys are tmux SERVER-global while follower state is
+            # per-window, so they can be dead (bound to a path that no longer
+            # exists, exit 127 into /dev/null) while this window's state is
+            # perfectly healthy. `start` is precisely what a user retries
+            # then, and returning here before register() made that retry a
+            # no-op. Re-registering is safe: register() records the user's
+            # previous bindings only when the saved file does not exist yet,
+            # so a second pass cannot overwrite them with our own.
+            keybindings.register()
+            message += " — keybindings refreshed"
+        print(message)
         return 0
 
     defaults = config.load()

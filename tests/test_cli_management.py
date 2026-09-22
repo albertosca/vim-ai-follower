@@ -449,9 +449,17 @@ def test_start_registers_keybindings_with_absolute_path_and_silenced_output(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
-    exe = keybindings._claude_follow_executable()  # the resolved absolute path
-    assert Path(exe).is_absolute() and exe.endswith("claude-follow")
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        # Resolve INSIDE the patch, the way cmd_start does. tmux and
+        # keybindings share one subprocess module object, so this patch also
+        # intercepts the `git rev-parse` behind the worktree redirect
+        # (_durable_wrapper): resolving outside it compares a redirected path
+        # against an unredirected one, and fails whenever the suite happens to
+        # run from a worktree. What this test pins is that the binding embeds
+        # an absolute, resolved path rather than a bare name; the redirect
+        # itself is covered in test_keybindings_durability.py.
+        exe = keybindings._claude_follow_executable()  # the resolved absolute path
+        assert Path(exe).is_absolute() and exe.endswith("claude-follow")
         assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
     binds = _bind_calls(run)
     assert [cmd[4] for cmd in binds] == ["P", "S", "+", "_", "F"]
