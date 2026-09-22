@@ -1411,7 +1411,152 @@ def test_edit_skips_while_another_process_animates(tmp_path: Path) -> None:
     assert sent == []  # nothing animated into the pane
     current = state.FollowerState.read("@1")
     assert current is not None
-    assert file_path not in current.open_files  # next touch resyncs fresh
+    # The tab is still there, so it stays an eviction candidate; only its
+    # buffer is marked out of sync, which is what forces the fresh retype.
+    assert current.open_files == (file_path,)
+    assert current.stale_files == (file_path,)
+
+
+def test_repeated_busy_slot_collisions_mark_a_file_stale_once(tmp_path: Path) -> None:
+    """Two lost races on the same file are one mark, not two.
+
+    A duplicate would survive eviction's subset filter no better than a
+    single entry, but it would make stale_files grow without bound in the
+    window that hits this most — the many-parallel-writers one."""
+    target = tmp_path / "a.py"
+    target.write_text("new content\n")
+    file_path = os.path.realpath(str(target))
+    _register_fake_follower("@1", "%2", open_files=(file_path,), shown_any=True)
+    control.mark_animating("@1")
+    try:
+        with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+            for _ in range(2):
+                assert (
+                    hooks.cmd_hook_post(
+                        {"TMUX_PANE": "%1"},
+                        {"tool_name": "Edit", "tool_input": {"file_path": str(target)}},
+                    )
+                    == 0
+                )
+    finally:
+        control.clear_animating("@1")
+    current = state.FollowerState.read("@1")
+    assert current is not None
+    assert current.stale_files == (file_path,)
+
+
+def test_busy_slot_collision_on_an_untracked_file_tracks_nothing(tmp_path: Path) -> None:
+    """The no-op case the old drop-from-open_files also handled.
+
+    An untracked file has no tab and therefore no buffer that could be out
+    of sync — marking it stale would both be meaningless and violate the
+    stale-is-a-subset-of-open invariant."""
+    target = tmp_path / "a.py"
+    target.write_text("new content\n")
+    other = os.path.realpath(str(tmp_path / "b.py"))
+    _register_fake_follower("@1", "%2", open_files=(other,), shown_any=True)
+    control.mark_animating("@1")
+    try:
+        with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+            assert (
+                hooks.cmd_hook_post(
+                    {"TMUX_PANE": "%1"},
+                    {"tool_name": "Edit", "tool_input": {"file_path": str(target)}},
+                )
+                == 0
+            )
+    finally:
+        control.clear_animating("@1")
+    current = state.FollowerState.read("@1")
+    assert current is not None
+    assert current.open_files == (other,)
+    assert current.stale_files == ()
+
+
+def test_stale_file_is_retyped_fresh_and_the_mark_clears_on_completion(tmp_path: Path) -> None:
+    """A tracked-but-stale file must take show_fresh, not apply_edit.
+
+    The snapshot on disk would make a perfectly valid-looking diff, which is
+    exactly the trap: the buffer never received the edit the snapshot was
+    taken around, so applying the diff onto it produces garbage. The rename
+    in place (":file <path>") is show_fresh's signature; apply_edit never
+    emits one and goes through the goto_file preamble instead."""
+    target = tmp_path / "a.py"
+    target.write_text("print('after')\n")
+    file_path = os.path.realpath(str(target))
+    snapshot.save("@1", file_path, "print('before')\n")
+    _register_fake_follower(
+        "@1", "%2", current_file=file_path, open_files=(file_path,), shown_any=True
+    )
+    state.FollowerState.update("@1", stale_files=(file_path,))
+
+    payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    sends = _literal_sends(run)
+    assert f":file {file_path}" in sends  # show_fresh's rename in place
+    assert _goto(file_path) not in sends  # ...not apply_edit's navigation
+    assert "print('after')" in sends
+
+    refreshed = state.FollowerState.read("@1")
+    assert refreshed is not None
+    assert refreshed.stale_files == ()  # the retype finished: back in sync
+    assert refreshed.open_files == (file_path,)
+
+
+def test_an_interrupted_retype_leaves_the_file_stale(tmp_path: Path) -> None:
+    """The mirror of the test above, and the reason the clear is not simply
+    unconditional: an interrupt leaves a half-typed buffer, so the file is
+    still out of sync and the NEXT touch must retype it again."""
+    target = tmp_path / "a.py"
+    target.write_text("alpha\nbeta\n")
+    file_path = os.path.realpath(str(target))
+    _register_fake_follower(
+        "@1", "%2", current_file=file_path, open_files=(file_path,), shown_any=True
+    )
+    state.FollowerState.update("@1", stale_files=(file_path,))
+
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch(
+            "vim_ai_follower.control.check_signal",
+            side_effect=_interrupt_then_user_saves(target, at_check=7),
+        ),
+        patch("vim_ai_follower.hooks.time.sleep"),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    refreshed = state.FollowerState.read("@1")
+    assert refreshed is not None
+    assert refreshed.stale_files == (file_path,)
+
+
+def test_eviction_drops_the_victim_from_open_and_stale_alike(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale entry naming a closed tab is exactly the dangling shape that
+    would grow forever, so eviction has to take both tuples."""
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"max_tabs": 2}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+
+    a = os.path.realpath(str(tmp_path / "a.py"))
+    b = os.path.realpath(str(tmp_path / "b.py"))
+    c = tmp_path / "c.py"
+    c.write_text("print('c')\n")
+    _register_fake_follower("@1", "%2", current_file=b, open_files=(a, b), shown_any=True)
+    state.FollowerState.update("@1", stale_files=(a,))
+
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(c)}}
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    refreshed = state.FollowerState.read("@1")
+    assert refreshed is not None
+    assert refreshed.open_files == (b, os.path.realpath(str(c)))
+    assert refreshed.stale_files == ()  # a's tab is closed; its mark went with it
 
 
 def test_read_skips_while_another_process_animates(tmp_path: Path) -> None:

@@ -49,7 +49,14 @@ class FollowerState:
     origin: str
     on_failure: str
     speed: str
+    # open_files answers "which tabs exist" — it is the eviction candidate
+    # list. stale_files answers the separate question "which of those tabs
+    # holds a buffer that no longer matches disk", so a skipped edit can say
+    # "resync this one" without also saying "this tab is gone". Conflating
+    # the two is what stranded tabs outside eviction forever (see mark_stale).
+    # Invariant, enforced in set(): stale_files is a subset of open_files.
     open_files: tuple[str, ...] = ()
+    stale_files: tuple[str, ...] = ()
     enabled: bool = True
     adopted: bool = False
     shown_any: bool = False
@@ -73,6 +80,9 @@ class FollowerState:
             on_failure=data.get("on_failure", _DEFAULT_ON_FAILURE),
             speed=data.get("speed", _DEFAULT_SPEED),
             open_files=tuple(data.get("open_files", [])),
+            # A .pane file written before stale tracking existed has no
+            # such key: default it, exactly like the other late fields.
+            stale_files=tuple(data.get("stale_files", [])),
             enabled=data.get("enabled", True),
             adopted=data.get("adopted", False),
             shown_any=data.get("shown_any", False),
@@ -100,6 +110,7 @@ class FollowerState:
         on_failure: str = _DEFAULT_ON_FAILURE,
         speed: str = _DEFAULT_SPEED,
         open_files: tuple[str, ...] = (),
+        stale_files: tuple[str, ...] = (),
         enabled: bool = True,
         adopted: bool = False,
         shown_any: bool = False,
@@ -109,6 +120,14 @@ class FollowerState:
     ) -> None:
         path = _state_path(window_id, base_dir)
         path.parent.mkdir(parents=True, exist_ok=True)
+        # Enforce stale_files is a subset of open_files here rather than at
+        # each caller, because not every caller knows the field exists:
+        # cmd_toggle's un-mute resets open_files to () to force a resync and
+        # would otherwise leave stale entries naming tabs nothing tracks any
+        # more -- the same dangling shape this pairing exists to prevent.
+        # Eviction relies on it too: touch_open_files drops the victim from
+        # open_files and this drops its stale mark in the same write.
+        stale_files = tuple(f for f in stale_files if f in open_files)
         payload = json.dumps(
             {
                 "backend": backend,
@@ -118,6 +137,7 @@ class FollowerState:
                 "on_failure": on_failure,
                 "speed": speed,
                 "open_files": open_files,
+                "stale_files": stale_files,
                 "enabled": enabled,
                 "adopted": adopted,
                 "shown_any": shown_any,
@@ -153,6 +173,7 @@ class FollowerState:
             on_failure=updated.on_failure,
             speed=updated.speed,
             open_files=updated.open_files,
+            stale_files=updated.stale_files,
             enabled=updated.enabled,
             adopted=updated.adopted,
             shown_any=updated.shown_any,
@@ -177,6 +198,56 @@ class FollowerState:
         cls.update(window_id, base_dir=base_dir, current_file=file_path)
 
     @classmethod
+    def mark_stale(cls, window_id: str, file_path: str, base_dir: Path | None = None) -> None:
+        """Record that the follower's tab for file_path holds a buffer that
+        disk has moved on from, so the next touch must retype it whole
+        instead of animating a diff onto a base that was never applied.
+
+        Deliberately NOT expressed by dropping the file from open_files,
+        which is what the skipped-edit path used to do: that tuple doubles
+        as the eviction candidate list, so the drop told eviction "this tab
+        is gone" while Vim still held it, and the tab could never be named
+        as a victim again. Measured live on 2026-09-22 — nine tabs in Vim
+        against max_tabs=5 and exactly five open_files, climbing by one per
+        collision in a window with three concurrent writers.
+
+        A no-op for a file with no tab (nothing to be out of sync; the
+        stale-subset-of-open invariant would drop the entry anyway) and for
+        a window with no state at all — the .animating marker and the .pane
+        file have decoupled lifecycles, so a stop can delete the state while
+        a still-live animator's marker survives (cmd_stop never touches its
+        own marker). Deduped: repeated collisions on one file are one mark.
+        """
+        current = cls.read(window_id, base_dir)
+        if current is None or file_path not in current.open_files:
+            return
+        cls.update(
+            window_id,
+            base_dir=base_dir,
+            stale_files=tuple(dict.fromkeys((*current.stale_files, file_path))),
+        )
+
+    @classmethod
+    def clear_stale(cls, window_id: str, file_path: str, base_dir: Path | None = None) -> None:
+        """Drop file_path's stale mark: an animation for it just finished, so
+        its buffer now holds the whole file and matches what the next diff
+        will be computed against.
+
+        Only completion paths call this. An INTERRUPTED animation must leave
+        the mark — the buffer really does hold a half-typed prefix — and so
+        must navigation: ensure_showing switches to an existing buffer and
+        never reloads it from disk (see both backends), so arriving at a
+        stale tab does not resync it. Same no-state no-op as mark_stale."""
+        current = cls.read(window_id, base_dir)
+        if current is None:
+            return
+        cls.update(
+            window_id,
+            base_dir=base_dir,
+            stale_files=tuple(f for f in current.stale_files if f != file_path),
+        )
+
+    @classmethod
     def clear(cls, window_id: str, base_dir: Path | None = None) -> None:
         _state_path(window_id, base_dir).unlink(missing_ok=True)
 
@@ -187,6 +258,12 @@ def touch_open_files(
     """Recency bump: file_path becomes most recent; anything past max_tabs
     falls off the old end. The touched file is by construction never in the
     evicted slice, which is what keeps eviction away from the animating or
-    handed-over file."""
+    handed-over file.
+
+    Stale marks are not threaded through here on purpose: an evicted file
+    loses its mark when the caller persists the shrunken open_files, because
+    FollowerState.set enforces stale-is-a-subset-of-open on every write. That
+    chokepoint also covers the writers that never see this function (notably
+    cmd_toggle's un-mute, which zeroes open_files directly)."""
     files = (*(f for f in open_files if f != file_path), file_path)
     return files[-max_tabs:], files[:-max_tabs]

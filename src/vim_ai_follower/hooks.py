@@ -542,6 +542,9 @@ def _replay_remainder(
     pending = control.load_pending_animation(window_id)
     if pending is None:
         follower.reload_and_relock(file_path)
+        # reload_and_relock re-reads disk, so the buffer is back in sync even
+        # if the interrupted animation had been a stale file's retype.
+        FollowerState.clear_stale(window_id, file_path)
         FollowerState.update_current_file(window_id, file_path)
         return None
     rebuilt = follower.rewrite_buffer(file_path, partial_content)
@@ -557,6 +560,9 @@ def _replay_remainder(
     # must type in front of and drop.
     result = follower.resume(pending, seeded=partial_content == "")
     if result.outcome == "completed":
+        # Same as the completed animation in _animate_edit: the replay
+        # finished the file, so any stale mark on it no longer holds.
+        FollowerState.clear_stale(window_id, file_path)
         FollowerState.update_current_file(window_id, file_path)
         return None
     return _rearm_handoff(follower, window_id, pending, partial_content, result.completed_count)
@@ -704,25 +710,21 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
     if not control.try_acquire_animating(session.window_id):
         # Another live hook already owns this window's pane. Six parallel
         # Write tool calls fire six hooks at once; the acquire is atomic, so
-        # exactly one wins and animates while the rest land here, skip this
-        # edit, and drop the file from open_files (a no-op if it wasn't
-        # tracked): its next touch resyncs via a fresh retype instead of
-        # animating a diff over a buffer we never updated. A plain
-        # check-then-act let all six pass and interleave keystrokes into
-        # garble (scripts/repro-concurrent-hooks.sh).
+        # exactly one wins and animates while the rest land here and skip
+        # this edit. A plain check-then-act let all six pass and interleave
+        # keystrokes into garble (scripts/repro-concurrent-hooks.sh).
+        #
+        # The skipped file's buffer is now behind disk, so mark it stale: its
+        # next touch resyncs via a fresh retype instead of animating a diff
+        # over a buffer we never updated. Marking is all this branch may do.
+        # Closing the tab would send keystrokes into a pane another hook is
+        # mid-animation on, which is the whole reason the slot lock exists;
+        # and dropping the file from open_files — what this used to do — took
+        # the tab out of the eviction candidate list while Vim still held it,
+        # stranding it forever (mark_stale's docstring has the measurement).
+        # mark_stale handles a missing .pane file and an untracked path.
         _register_writer(session.window_id, payload)
-        current_state = FollowerState.read(session.window_id)
-        if current_state is not None:
-            # current_state can be None here: the .animating marker and the
-            # .pane state file have decoupled lifecycles. A stop for this
-            # window can clear .pane state while a still-live animator's
-            # .animating marker survives (cmd_stop never touches its own
-            # marker), or the animator can re-mark right after a stop
-            # clears it. Either way there's nothing to update — skip.
-            FollowerState.update(
-                session.window_id,
-                open_files=tuple(f for f in current_state.open_files if f != file_path),
-            )
+        FollowerState.mark_stale(session.window_id, file_path)
         return 0
     try:
         return _animate_edit(payload, session, file_path, cfg)
@@ -807,7 +809,11 @@ def _animate_edit(
         config.pace_seconds_for(current.speed),
         window_id=session.window_id,
     )
-    is_fresh = file_path not in current.open_files
+    # "Fresh" means the follower holds no buffer this edit's diff could be
+    # applied onto: either the file was never opened, or it has a tab whose
+    # buffer a skipped edit left behind (stale_files). Both need the whole
+    # file retyped; a diff would land on the wrong base.
+    is_fresh = file_path not in current.open_files or file_path in current.stale_files
     binary = diff_module.is_binary(raw_after)
 
     # Consume any paused animation BEFORE animating: replaying it at pace 0
@@ -872,6 +878,9 @@ def _animate_edit(
             )
             _await_user_handoff(current, session, file_path, after, partial)
         else:
+            # The retype ran to the end, so whatever was stale about this
+            # buffer is gone — it now holds the whole file.
+            FollowerState.clear_stale(session.window_id, file_path)
             FollowerState.update_current_file(session.window_id, file_path)
             _refresh_writer_cue(session.window_id, current.target, payload)
         return 0
