@@ -235,9 +235,13 @@ class FollowerState:
 
         Only completion paths call this. An INTERRUPTED animation must leave
         the mark — the buffer really does hold a half-typed prefix — and so
-        must navigation: ensure_showing switches to an existing buffer and
-        never reloads it from disk (see both backends), so arriving at a
-        stale tab does not resync it. Same no-state no-op as mark_stale."""
+        must navigation. On nvim, ensure_showing switches to an existing
+        buffer and never reloads it from disk, so arriving at a stale tab
+        does not resync it. On tmux, a Read re-reads a CLEAN open buffer
+        (`_RELOAD_IF_CLEAN`), which can resync a stale one — but the mark is
+        kept anyway, so the next Edit still retypes that file in full: a
+        wasted retype, never a diff applied to the wrong base. Same no-state
+        no-op as mark_stale."""
         current = cls.read(window_id, base_dir)
         if current is None:
             return

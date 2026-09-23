@@ -39,15 +39,34 @@ def _goto(path: object) -> str:
     around it answers the swap-file ATTENTION dialog with `(E)dit anyway`
     and is torn down in `finally`."""
     return (
-        ':exe "augroup vim_ai_follower_swap"'
+        ":let g:vaf_p = '" + str(path).replace("'", "''") + "'"
+        " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
+        " && fnamemodify(bufname(v:val), '':p'') ==# fnamemodify(g:vaf_p, '':p'')'), 0, -1)"
+        ' | exe "augroup vim_ai_follower_swap"'
         " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
         ' | exe "augroup END"'
-        " | try | exe 'tab drop ' . fnameescape('"
-        + str(path).replace("'", "''")
-        + r"') | catch /^Vim\%((\a\+)\)\=:E37:/"
+        " | try"
+        " | if g:vaf_n < 0 | exe 'tab drop ' . fnameescape(g:vaf_p)"
+        " | elseif g:vaf_n != bufnr('%')"
+        " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'tab sbuffer ' . g:vaf_n"
+        " | endif"
+        r" | catch /^Vim\%((\a\+)\)\=:E37:/"
         ' | finally | exe "autocmd! vim_ai_follower_swap"'
-        ' | exe "augroup! vim_ai_follower_swap" | endtry'
+        ' | exe "augroup! vim_ai_follower_swap"'
+        " | unlet! g:vaf_p g:vaf_n | endtry"
     )
+
+
+# ensure_showing's clean-only disk re-read, spelled out for the same reason
+# as _goto: importing tmux_vim._RELOAD_IF_CLEAN would agree with any change.
+_RELOAD_IF_CLEAN = (
+    ':exe "augroup vim_ai_follower_swap"'
+    " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
+    ' | exe "augroup END"'
+    " | try | if !&modified | silent edit | endif"
+    ' | finally | exe "autocmd! vim_ai_follower_swap"'
+    ' | exe "augroup! vim_ai_follower_swap" | endtry'
+)
 
 
 def _literal_sends(run_mock: MagicMock) -> list[str]:
@@ -223,7 +242,11 @@ def test_hook_post_skips_binary_files_on_first_open(tmp_path: Path) -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
-    assert _literal_sends(run) == [_goto(target), ":setlocal readonly nomodifiable"]
+    assert _literal_sends(run) == [
+        _goto(target),
+        _RELOAD_IF_CLEAN,
+        ":setlocal readonly nomodifiable",
+    ]
 
 
 def test_hook_post_skips_binary_files_on_subsequent_edit(tmp_path: Path) -> None:
@@ -253,7 +276,11 @@ def test_hook_post_read_without_offset_does_not_navigate(tmp_path: Path) -> None
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
-    assert _literal_sends(run) == [_goto(target), ":setlocal readonly nomodifiable"]
+    assert _literal_sends(run) == [
+        _goto(target),
+        _RELOAD_IF_CLEAN,
+        ":setlocal readonly nomodifiable",
+    ]
 
 
 def test_hook_post_read_skips_non_code_files_under_code_policy(
@@ -291,6 +318,7 @@ def test_hook_post_read_navigates_to_file_and_offset(tmp_path: Path) -> None:
 
     assert _literal_sends(run) == [
         _goto(target),
+        _RELOAD_IF_CLEAN,
         ":setlocal readonly nomodifiable",
         ":2",
     ]
@@ -313,6 +341,7 @@ def test_hook_post_read_navigates_even_when_file_already_current(tmp_path: Path)
 
     assert _literal_sends(run) == [
         _goto(target),
+        _RELOAD_IF_CLEAN,
         ":setlocal readonly nomodifiable",
         ":2",
     ]

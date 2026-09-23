@@ -406,3 +406,38 @@ def test_the_edit_anyway_policy_does_not_leak_into_the_users_own_edit(
         "normal swap dialog — the follower's Edit-anyway policy leaked into "
         f"their editing. Pane:\n{_capture(follower_pane_id)}"
     )
+
+
+def test_a_reads_reload_of_a_file_another_vim_holds_never_stalls(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    """ensure_showing (Read navigation) re-reads a CLEAN buffer from disk,
+    and that `:edit` re-runs Vim's swap-name search: the follower drops the
+    swap it took (`.swo`, the user's editor got there first and owns the
+    `.swp`), probes `.swp` again and meets the live owner — the ATTENTION
+    dialog, a second time, from a line that is not goto_file's. So the
+    reload carries the same scoped SwapExists answer, and this proves it."""
+    follower_pane_id = _start_follower(tmux_session, monkeypatch, wait_until)
+    target = tmp_path / "read_reload.py"
+    target.write_text("disk alpha\n")
+    _open_in_another_vim(tmux_session, target, wait_until)
+
+    follower = TmuxVimFollower(pane_id=follower_pane_id)
+    follower.ensure_showing(str(target))
+    assert wait_until(lambda: "disk alpha" in _capture(follower_pane_id), timeout=10.0), (
+        f"the follower never landed on the file:\n{_capture(follower_pane_id)}"
+    )
+    _assert_no_dialog(follower_pane_id)
+
+    target.write_text("disk CHANGED outside claude\n")
+    follower.ensure_showing(str(target))
+
+    assert wait_until(
+        lambda: "disk CHANGED outside claude" in _capture(follower_pane_id), timeout=10.0
+    ), f"the Read never showed the new disk content:\n{_capture(follower_pane_id)}"
+    _assert_no_dialog(follower_pane_id)
+    # Liveness: a Vim stuck on the dialog never runs the :redir read-back.
+    _assert_no_hook_residue(follower_pane_id, tmp_path, "reload.txt", wait_until)

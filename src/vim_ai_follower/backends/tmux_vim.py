@@ -17,8 +17,17 @@ from vim_ai_follower.tmux import TmuxPane
 # reload is visually a no-op but clears W11 staleness). The two relocks differ
 # only in whether they re-assert `readonly`: a fresh retype gets the stronger
 # read-only lock, an in-place edit is merely made unmodifiable.
+#
+# The unlock clears 'readonly' as well. Typing into a readonly buffer raises
+# `W10: Warning: Changing a readonly file`, which at the follower pane's 49
+# columns becomes a blocking hit-enter prompt that swallows the rest of the
+# animation. A buffer is left readonly by show_fresh's relock and by
+# ensure_showing's lock, and an Edit that follows either one used to be
+# rescued by accident: goto_file's `:tab drop` re-read the file, and a reload
+# resets 'readonly'. Now that goto_file never reloads a loaded buffer (see
+# _GOTO_FILE), the unlock has to say it (measured 2026-09-23).
 _LOCK_READONLY = ":setlocal readonly nomodifiable"
-_UNLOCK_FOR_ANIMATION = ":setlocal modifiable paste"
+_UNLOCK_FOR_ANIMATION = ":setlocal noreadonly modifiable paste"
 _RELOCK_SYNCED = ":silent! e! | setlocal nomodifiable nopaste"
 _RELOCK_READONLY_SYNCED = ":silent! e! | setlocal readonly nomodifiable nopaste"
 
@@ -125,13 +134,84 @@ _COC_ENABLE = ":silent! CocEnable"
 # still gets the normal dialog (measured). Matching on the path instead
 # would mean escaping it into an autocmd pattern — the quoting hazard
 # this line otherwise avoids entirely.
+#
+# And `:tab drop` is only the FALLBACK, for a file no buffer holds yet —
+# the one case where reading disk is the intent. An already-loaded buffer
+# is switched to by NUMBER and never re-read (measured 2026-09-23): the
+# drop's trailing `:rewind` re-edits the buffer it lands on, and on an
+# UNMODIFIED buffer — the normal state after a completed animation, whose
+# relock ends in `:e!` — that is a silent reload from disk. By the time
+# apply_edit navigates, Claude has already written the finished file, so
+# the follower flashed it and then typed the diff (computed against the
+# pre-edit snapshot) on top of it: duplicated lines until the relock's `:e!`
+# snapped them back. The nvim backend's goto_file has the same rule.
+#
+# The number is resolved the way _WIPE_BUFFER does it — the path lives in a
+# Vim string literal and the buffer list is walked comparing `:p` names —
+# because `bufnr()` and `:buffer {name}` take a PATTERN. A window already
+# showing it is focused (`win_gotoid`, any tab); a loaded buffer with no
+# window gets a new tab via `:tab sbuffer {nr}`, which does not re-read a
+# loaded buffer; the current buffer is left alone. All three stay inside
+# the try/SwapExists guard: `:tab sbuffer` on a listed-but-unloaded buffer
+# does read the file, and can raise the ATTENTION dialog like the drop.
+# The `g:` variables are unlet in `finally` (inert if a cut-off line leaves
+# them, like _WIPE_BUFFER's).
+#
+# The line is kept short on purpose (short `g:` names, win_gotoid's own
+# return value picking between focus and `:tab sbuffer`): at 49 columns every
+# ~49 characters is another screen row of command-line echo. The unnamed
+# buffer needs no guard in the lookup: `fnamemodify('', ':p')` is the working
+# DIRECTORY, trailing slash included, which no file path can equal.
 _SWAP_GROUP = "vim_ai_follower_swap"
-_GOTO_FILE = (
-    f':exe "augroup {_SWAP_GROUP}"'
+# The time-scoped `(E)dit anyway` answer, as the two halves every
+# disk-reading line wraps itself in (the opening registers it; the closing
+# runs in `finally`). See above for why each piece has this exact shape.
+_SWAP_ANSWER_OPEN = (
+    f'exe "augroup {_SWAP_GROUP}"'
     " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
     ' | exe "augroup END"'
-    r" | try | exe 'tab drop ' . fnameescape({file}) | catch /^Vim\%((\a\+)\)\=:E37:/"
-    f' | finally | exe "autocmd! {_SWAP_GROUP}" | exe "augroup! {_SWAP_GROUP}" | endtry'
+)
+_SWAP_ANSWER_CLOSE = f'exe "autocmd! {_SWAP_GROUP}" | exe "augroup! {_SWAP_GROUP}"'
+_GOTO_FILE = (
+    ":let g:vaf_p = {file}"
+    " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
+    " && fnamemodify(bufname(v:val), '':p'') ==# fnamemodify(g:vaf_p, '':p'')'), 0, -1)"
+    f" | {_SWAP_ANSWER_OPEN}"
+    " | try"
+    " | if g:vaf_n < 0 | exe 'tab drop ' . fnameescape(g:vaf_p)"
+    " | elseif g:vaf_n != bufnr('%')"
+    " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'tab sbuffer ' . g:vaf_n"
+    " | endif"
+    r" | catch /^Vim\%((\a\+)\)\=:E37:/"
+    f" | finally | {_SWAP_ANSWER_CLOSE}"
+    " | unlet! g:vaf_p g:vaf_n | endtry"
+)
+
+# ensure_showing's disk re-read, for the Read/binary navigation where
+# showing the file AS IT IS ON DISK is the whole point. goto_file no longer
+# re-reads a loaded buffer (it runs before animations, where that is the
+# bug above), so a file open and clean in the follower that something other
+# than Claude's Edit rewrote — a formatter run through Bash, `sed -i`, a
+# `git checkout` — would otherwise be shown stale, and locked read-only.
+#
+#   - `if !&modified`: a dirty buffer is typed-but-unsaved content (an
+#     interrupt hand-off, a killed hook) and is never discarded here; that
+#     also makes E37 unreachable, so no catch is needed.
+#   - `:edit` re-runs Vim's swap-name search, and that DOES raise ATTENTION
+#     on its own (measured 2026-09-23): when the user's editor opened the
+#     file first it owns `.swp`, the follower took `.swo`, and the reload
+#     drops `.swo` and probes `.swp` again. Unguarded, even the first Read
+#     of such a file stalled on the dialog. So the reload carries the same
+#     time-scoped `(E)dit anyway` answer as goto_file, torn down in
+#     `finally`.
+#   - `silent` (never `silent!`) keeps the long "<path>" NL, NB message from
+#     wrapping into a hit-enter prompt at 49 columns without hiding errors.
+#   - `:edit` works on a 'nomodifiable' buffer and keeps the option; it
+#     resets 'readonly', which ensure_showing's lock re-asserts right after.
+_RELOAD_IF_CLEAN = (
+    f":{_SWAP_ANSWER_OPEN}"
+    " | try | if !&modified | silent edit | endif"
+    f" | finally | {_SWAP_ANSWER_CLOSE} | endtry"
 )
 
 
@@ -231,7 +311,10 @@ class TmuxVimFollower:
     def goto_file(self, file_path: str) -> None:
         """The defensive preamble: land on the tab showing file_path (by
         name, immune to the user closing/reordering tabs), opening one if
-        missing. Wrapped in _GOTO_FILE's guards so neither a modified
+        missing. A buffer that already holds the file is switched to by
+        number and NEVER re-read from disk — only a file no buffer holds
+        goes through `:tab drop` (see _GOTO_FILE for the reload bug that
+        rule fixes). Wrapped in _GOTO_FILE's guards so neither a modified
         target (E37) nor a swap file on the target (the ATTENTION dialog,
         answered `(E)dit anyway`) can leave a blocking prompt in the pane
         — see that constant for why the bang, `:silent!`, 'hidden',
@@ -300,11 +383,17 @@ class TmuxVimFollower:
         pane.send_key("Enter")
 
     def ensure_showing(self, file_path: str) -> None:
+        """The Read/binary entry point: show the file as it is ON DISK. It
+        is the one navigation that re-reads a loaded buffer (clean only, see
+        _RELOAD_IF_CLEAN); goto_file itself never does, because it also runs
+        before every animation."""
         self.goto_file(file_path)
+        pane = TmuxPane(pane_id=self.pane_id)
+        pane.send_text(_RELOAD_IF_CLEAN)
+        pane.send_key("Enter")
         # Locked by default so a stray keystroke into this pane can't corrupt
         # the buffer: our own animation is indistinguishable from real
         # typing at the tty level, so it must explicitly unlock around itself.
-        pane = TmuxPane(pane_id=self.pane_id)
         pane.send_text(_LOCK_READONLY)
         pane.send_key("Enter")
 
