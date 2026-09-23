@@ -191,3 +191,46 @@ def test_a_stale_swap_is_edited_anyway_and_left_on_disk(world: E2EFollower) -> N
 
     _navigate_and_assert_clean(world, pane, target)
     assert swap.exists(), "the follower deleted the stale swap"
+
+
+# --------------------------------------------------------------- Check 18
+
+
+def test_a_swap_held_file_opens_in_nvim_and_the_hook_survives(world: E2EFollower) -> None:
+    """Battery check 18 — guards d817f08. `bufload` raised E325 straight out
+    of the RPC call and killed the HOOK PROCESS instead of showing the file.
+    The owner is an NVIM, not a Vim: nvim's swap dir is
+    stdpath('state')/swap, which is where the follower nvim looks; a Vim-made
+    swap beside the file would make this vacuous. `world.cli` asserts the
+    hook's exit code, which is the whole verdict here — there is no dialog to
+    see, only a dead hook."""
+    target = world.workdir / "nvim_swap.py"
+    target.write_text("held = 'BY OWNER'\n")
+    world.start("nvim", "instant")
+    sock = world.follower_target()
+    owner = world.tmux(
+        "new-window",
+        "-d",
+        "-t",
+        world.session,
+        "-P",
+        "-F",
+        "#{pane_id}",
+        f"nvim -u NONE -i NONE {target}",
+    ).stdout.strip()
+    swap_dir = world.home / ".local" / "state" / "nvim" / "swap"
+    world.wait_until(
+        lambda: swap_dir.exists() and any("nvim_swap.py" in p.name for p in swap_dir.iterdir()),
+        "the owner nvim's swap file",
+        timeout=15.0,
+    )
+
+    result = world.cli("hook", "post", stdin=payload("Read", target))
+    assert result.stderr == ""
+    assert world.nvim_buffer_lines(sock, target) == ["held = 'BY OWNER'"]
+    log_path = world.cache_dir / "hook.log"
+    log = log_path.read_text() if log_path.exists() else ""
+    for needle in ("Traceback", "E325"):
+        assert needle not in log, f"{needle} in hook.log:\n{log}"
+    panes = world.tmux("list-panes", "-a", "-F", "#{pane_id}").stdout.split()
+    assert owner in panes, "the owner nvim died"
