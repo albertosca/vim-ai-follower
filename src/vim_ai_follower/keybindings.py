@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import shlex
@@ -65,6 +66,7 @@ def _git_dirs(directory: Path) -> tuple[Path, Path, Path] | None:
     return paths[0], paths[1], paths[2]
 
 
+@functools.lru_cache(maxsize=8)
 def _durable_wrapper(wrapper: Path) -> Path:
     """`wrapper`, or its twin in the MAIN checkout when `wrapper` lives inside
     a linked git worktree.
@@ -77,7 +79,11 @@ def _durable_wrapper(wrapper: Path) -> Path:
     left all five keys exiting 127 — silently, since run-shell discards both
     streams. A linked worktree is the case where the common git dir differs
     from this tree's git dir, and the main checkout is the common dir's
-    parent."""
+    parent.
+
+    Cached per path: every `hook post` heals the keys through here, and on a
+    dev checkout (no CLAUDE_PLUGIN_ROOT) each call spawned `git rev-parse`.
+    Whether a path sits in a linked worktree does not change mid-process."""
     dirs = _git_dirs(wrapper.parent)
     if dirs is None:
         return wrapper

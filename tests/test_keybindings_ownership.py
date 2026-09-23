@@ -518,3 +518,25 @@ def test_the_per_hook_heal_touches_tmux_keys_only_when_something_changed(
         if c.args[0][:2] in (["tmux", "bind-key"], ["tmux", "list-keys"])
     ]
     assert keys_calls == []
+
+
+def test_repeated_owner_lookups_spawn_git_at_most_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every hook post heals the keys, and on the dev checkout (no
+    CLAUDE_PLUGIN_ROOT) resolving the executable asks git whether it sits in a
+    linked worktree. The answer for one path cannot change inside a process,
+    so it must be computed once, not on every edit."""
+    import subprocess as real_subprocess
+
+    monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+    calls: list[list[str]] = []
+    original = real_subprocess.run
+
+    def counting(cmd: list[str], **kwargs: object) -> object:
+        calls.append(cmd)
+        return original(cmd, **kwargs)  # type: ignore[call-overload]
+
+    monkeypatch.setattr("vim_ai_follower.keybindings.subprocess.run", counting)
+    first = keybindings.current_owner()
+    second = keybindings.current_owner()
+    assert first == second
+    assert sum(cmd[:1] == ["git"] for cmd in calls) <= 1
