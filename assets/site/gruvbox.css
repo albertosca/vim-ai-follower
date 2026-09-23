@@ -11,13 +11,28 @@
 }
 
 [data-md-color-scheme="default"] {
-  --md-primary-fg-color: var(--vaf-light-ground);
+  --md-primary-fg-color: var(--vaf-dark-ink);
+  --md-primary-bg-color: var(--vaf-light-ground);
   --md-primary-fg-color--light: var(--vaf-muted);
   --md-primary-fg-color--dark: var(--vaf-dark-ink);
   --md-accent-fg-color: var(--vaf-accent);
   --md-default-bg-color: var(--vaf-light-ground);
   --md-typeset-color: var(--vaf-dark-ink);
   --md-typeset-a-color: var(--vaf-dark-ink);
+}
+
+/* Zensical's "modern" theme variant (the project default) paints .md-header and
+   .md-tabs from --md-default-bg-color--light / --md-default-fg-color, not from
+   --md-primary-fg-color / --md-primary-bg-color (that pair only styles
+   .md-button--primary here) -- confirmed by reading the compiled
+   assets/stylesheets/modern/{main,palette}.*.min.css. Targeting the elements
+   directly is what actually makes the light-scheme header legible; the
+   --md-primary-* tokens above are kept for any classic-variant / primary-button
+   use, but do not reach the header on their own. */
+[data-md-color-scheme="default"] .md-header,
+[data-md-color-scheme="default"] .md-tabs {
+  background-color: var(--vaf-dark-ink);
+  color: var(--vaf-light-ground);
 }
 
 [data-md-color-scheme="slate"] {
