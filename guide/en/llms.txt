@@ -1,0 +1,3 @@
+# vim-ai-follower
+
+> Watch Claude Code type into your own Vim. Open-source Claude Code plugin (Python, `PreToolUse`/`PostToolUse` hooks, tmux + Neovim backends) that snapshots each file edit, diffs it, and replays it keystroke by keystroke into a real Vim or Neovim pane, at a pace you can actually read, so you can pause it and take the keyboard back.

@@ -16,6 +16,13 @@ dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
 ]
+# Docs site (guide/ -> GitHub Pages). Deliberately no upper bound: uv.lock pins the
+# exact version and a Dependabot bump lands only if the strict docs build passes.
+# Zensical is pre-1.0 (0.0.64 on 2026-09-23) -- try a bump locally before merging it:
+#   uv run --extra docs --with zensical==X zensical build --strict -f zensical.en.yml
+docs = [
+    "zensical",
+]
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

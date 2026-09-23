@@ -9,3 +9,6 @@ __pycache__/
 *.sw[a-p]
 docs/superpowers/
 .claude.local.md
+/.docs-build/
+/site/
+unit-report.xml

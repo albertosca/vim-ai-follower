@@ -1,0 +1,39 @@
+site_name: vim-ai-follower
+site_url: https://albertosca.github.io/vim-ai-follower/pt/
+site_description: Veja o Claude Code digitar no seu próprio Vim.
+repo_url: https://github.com/albertosca/vim-ai-follower
+docs_dir: guide/pt
+site_dir: .docs-build/pt
+theme:
+  name: material
+  language: pt
+  font:
+    text: Atkinson Hyperlegible
+    code: JetBrains Mono
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Mudar para o modo escuro
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Mudar para o modo claro
+  custom_dir: overrides
+  features:
+    - navigation.tabs
+extra_css:
+  - stylesheets/gruvbox.css
+extra:
+  alternate:
+    - name: English
+      link: /vim-ai-follower/
+      lang: en
+    - name: Português
+      link: /vim-ai-follower/pt/
+      lang: pt
+nav:
+  - Início: index.md
+  - LinkedIn: https://www.linkedin.com/in/albertosca/

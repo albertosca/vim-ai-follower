@@ -1,0 +1,31 @@
+/* Gruvbox-derived palette. Single source: scripts/build_docs.sh copies this file into
+   every language build (Zensical's --strict does not validate extra_css). */
+:root {
+  --vaf-dark-ground: #282828;
+  --vaf-light-ink: #EBDBB2;
+  --vaf-light-ground: #FBF1C7;
+  --vaf-dark-ink: #3C3836;
+  --vaf-muted: #928374;
+  --vaf-accent: #FABD2F;
+  --vaf-pass: #B8BB26;
+}
+
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: var(--vaf-light-ground);
+  --md-primary-fg-color--light: var(--vaf-muted);
+  --md-primary-fg-color--dark: var(--vaf-dark-ink);
+  --md-accent-fg-color: var(--vaf-accent);
+  --md-default-bg-color: var(--vaf-light-ground);
+  --md-typeset-color: var(--vaf-dark-ink);
+  --md-typeset-a-color: var(--vaf-dark-ink);
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: var(--vaf-dark-ground);
+  --md-primary-fg-color--light: var(--vaf-muted);
+  --md-primary-fg-color--dark: var(--vaf-light-ink);
+  --md-accent-fg-color: var(--vaf-accent);
+  --md-default-bg-color: var(--vaf-dark-ground);
+  --md-typeset-color: var(--vaf-light-ink);
+  --md-typeset-a-color: var(--vaf-light-ink);
+}

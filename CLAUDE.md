@@ -8,7 +8,7 @@ Live "follower" editor for Claude Code: `PreToolUse`/`PostToolUse` hooks (`claud
 uv sync --extra dev --extra nvim            # a bare `uv sync` leaves pytest/mypy/pynvim missing
 uv run ruff check src tests && uv run ruff format --check src tests
 uv run mypy                                  # bare — pyproject's files = src + tests; CI runs the same
-uv run pytest -q --cov=vim_ai_follower --cov-branch --cov-fail-under=100   # full suite, ~5 min, real tmux+vim+nvim
+bash scripts/full_suite.sh   # full suite, ~7 min, real tmux+vim+nvim; its gate is the 100% the README claims
 uv run pytest -q -m "not integration"        # what CI runs (~15 s); coverage floor there is 98 (unit-only is ~99%)
 ```
 
