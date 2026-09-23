@@ -1,7 +1,7 @@
 {
   "name": "vim-ai-follower",
   "description": "Watch Claude Code edit files live in a tmux+Vim pane or a running Neovim",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "author": { "name": "albertosca" },
   "homepage": "https://github.com/albertosca/vim-ai-follower",
   "repository": "https://github.com/albertosca/vim-ai-follower",
