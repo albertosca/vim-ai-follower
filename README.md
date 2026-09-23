@@ -1,7 +1,5 @@
 🇺🇸 [English](README.md) · 🇧🇷 [Português](README.pt.md)
 
-<img src="assets/site/social-preview.png" alt="vim-ai-follower — Watch Claude Code type into your own Vim." width="100%">
-
 # Watch Claude Code type into your own Vim.
 
 Every edit replayed line by line, at a pace you can actually read — pause it, take the keyboard, hand it back.

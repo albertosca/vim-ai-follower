@@ -28,7 +28,7 @@ O plugin declara os próprios hooks, então não existe `settings.json` pra edit
     pip install pynvim
     ```
 
-Os hooks nunca derrubam uma chamada de ferramenta: eles são construídos para sair com `0` e registrar problemas em `~/.cache/claude-vim-follower/hook.log`, em vez de reportá-los ao Claude.
+Os hooks nunca derrubam uma chamada de ferramenta: eles são feitos para sair com `0` e registrar problemas em `~/.cache/claude-vim-follower/hook.log`, em vez de reportá-los ao Claude.
 
 Próximo passo: [acompanhe sua primeira edição](first-follow.md).
 

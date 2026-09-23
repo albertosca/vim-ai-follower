@@ -31,7 +31,7 @@ Cada edição é reproduzida linha a linha, num ritmo que dá pra acompanhar de 
 ## O que ele não faz
 
 - **Nunca escreve nos seus arquivos.** Os buffers do follower nunca são salvos, e ficam travados como somente-leitura entre as animações (um Neovim adotado é a exceção: é o seu próprio editor, então nunca é travado).
-- **Nunca derruba uma chamada de ferramenta do Claude Code.** Os hooks são construídos para sair com `0` e registrar problemas em `hook.log`, em vez de falhar a chamada. A animação leva tempo mesmo — é pra isso que servem as teclas de velocidade e o mudo.
+- **Nunca derruba uma chamada de ferramenta do Claude Code.** Os hooks são feitos para sair com `0` e registrar problemas em `hook.log`, em vez de falhar a chamada. A animação leva tempo mesmo — é pra isso que servem as teclas de velocidade e o mudo.
 - **Nada sai da sua máquina.** O pacote não importa nenhum módulo de rede, e o Neovim é acessado por um socket local.
 
 ## Construído com cuidado

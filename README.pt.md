@@ -1,7 +1,5 @@
 🇺🇸 [English](README.md) · 🇧🇷 [Português](README.pt.md)
 
-<img src="assets/site/social-preview.png" alt="vim-ai-follower — Watch Claude Code type into your own Vim." width="100%">
-
 # Veja o Claude Code digitar no seu próprio Vim.
 
 Cada edição é reproduzida linha a linha, num ritmo que dá pra acompanhar de verdade — pause, pegue o teclado, devolva quando quiser.
@@ -33,14 +31,14 @@ Feito por Alberto Cavalcanti · [Conecte-se no LinkedIn](https://www.linkedin.co
 ## O que ele não faz
 
 - **Nunca escreve nos seus arquivos.** Os buffers do follower nunca são salvos, e ficam travados como somente-leitura entre as animações (um Neovim adotado é a exceção: é o seu próprio editor, então nunca é travado).
-- **Nunca derruba uma chamada de ferramenta do Claude Code.** Os hooks são construídos para sair com `0` e registrar problemas em `hook.log`, em vez de falhar a chamada.
+- **Nunca derruba uma chamada de ferramenta do Claude Code.** Os hooks são feitos para sair com `0` e registrar problemas em `hook.log`, em vez de falhar a chamada.
 - **Nada sai da sua máquina.** O pacote não importa nenhum módulo de rede, e o Neovim é acessado por um socket local.
 
 A animação leva tempo mesmo — é pra isso que servem as teclas de velocidade e o mudo.
 
 ## Decisões de engenharia
 
-O vim-ai-follower digita num editor que você está olhando, a partir de hooks que rodam dentro de cada chamada de ferramenta do Claude Code. Então a régua é: nunca corromper o que você vê, nunca atrapalhar o Claude, e nunca digitar na janela errada. Cada decisão abaixo comprou uma dessas coisas a um preço; a [página de Engenharia](https://albertosca.github.io/vim-ai-follower/pt/engineering/) registra o que cada uma custou e onde conferir no código.
+O vim-ai-follower digita num editor que você está olhando, a partir de hooks que rodam dentro de cada chamada de ferramenta do Claude Code. Então a régua é: nunca corromper o que você vê, nunca atrapalhar o Claude, e nunca digitar na janela errada. Cada decisão abaixo garantiu uma dessas coisas, a um custo; a [página de Engenharia](https://albertosca.github.io/vim-ai-follower/pt/engineering/) registra o que cada uma custou e onde conferir no código.
 
 | Decisão | Trade-off aceito, e a evidência |
 |---|---|

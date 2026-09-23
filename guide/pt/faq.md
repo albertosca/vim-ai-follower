@@ -20,7 +20,7 @@ Não. A edição chega ao seu arquivo pelo próprio `Edit`/`Write` do Claude Cod
 
 ### Isso pode derrubar uma chamada de ferramenta do Claude Code?
 
-Não. Os hooks são construídos para sair com `0` e registrar problemas em `~/.cache/claude-vim-follower/hook.log`, em vez de falhar a chamada de ferramenta. O trade-off é que uma falha fica silenciosa pro Claude: se o follower não fizer nada, leia o log.
+Não. Os hooks são feitos para sair com `0` e registrar problemas em `~/.cache/claude-vim-follower/hook.log`, em vez de falhar a chamada de ferramenta. O trade-off é que uma falha fica silenciosa pro Claude: se o follower não fizer nada, leia o log.
 
 ### Alguma coisa sai da minha máquina?
 

@@ -41,7 +41,7 @@
     <g fill="#504945"><text x="806" y="330" text-anchor="end">~</text><text x="806" y="366" text-anchor="end">~</text><text x="806" y="402" text-anchor="end">~</text></g>
     <rect x="762" y="420" width="420" height="34" fill="#3C3836"/>
     <text x="780" y="444" font-size="20" fill="#EBDBB2">fib.py</text>
-    <text x="1166" y="444" font-size="20" fill="#928374" text-anchor="end">5,13</text>
+    <text x="1166" y="444" font-size="20" fill="#BDAE93" text-anchor="end">5,13</text>
     <text x="780" y="476" font-size="20" fill="#EBDBB2" font-weight="700">-- INSERT --</text>
   </g>
 </svg>
