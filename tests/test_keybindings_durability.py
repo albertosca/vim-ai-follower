@@ -182,10 +182,10 @@ def test_start_refreshes_the_keybindings_when_a_follower_is_already_running(
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
         assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
         capsys.readouterr()
-        with patch("vim_ai_follower.commands.keybindings.register") as register:
+        with patch("vim_ai_follower.commands.keybindings.claim", wraps=keybindings.claim) as claim_:
             assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
 
-    register.assert_called_once_with()
+    claim_.assert_called_once_with(force=False, repair=True)
     out = capsys.readouterr().out
     assert "already running" in out
     assert "keybindings refreshed" in out  # silent repair is indistinguishable from a no-op

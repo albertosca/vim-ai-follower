@@ -24,6 +24,7 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=list(config.SPEED_PACE_SECONDS),
         default=None,
     )
+    start_parser.add_argument("--take-keys", action="store_true")
     subparsers.add_parser("stop")
     subparsers.add_parser("status")
     hook_parser = subparsers.add_parser("hook")
@@ -44,7 +45,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "start":
         return commands.cmd_start(
-            env, backend=args.backend, on_failure=args.on_failure, speed=args.speed
+            env,
+            backend=args.backend,
+            on_failure=args.on_failure,
+            speed=args.speed,
+            take_keys=args.take_keys,
         )
     if args.command == "stop":
         return commands.cmd_stop(env)

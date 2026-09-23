@@ -54,11 +54,22 @@ def _unresolvable_pane(env: dict[str, str]) -> str:
     )
 
 
+def _claim_keys(take_keys: bool) -> keybindings.Claim:
+    """start is a repair (repair=True: a restarted tmux server drops the keys
+    while the cache still names us) and the one place --take-keys applies."""
+    result = keybindings.claim(force=take_keys, repair=True)
+    note = keybindings.describe(result)
+    if note is not None:
+        print(f"claude-follow: {note}")
+    return result
+
+
 def cmd_start(
     env: dict[str, str],
     backend: str | None = None,
     on_failure: str | None = None,
     speed: str | None = None,
+    take_keys: bool = False,
 ) -> int:
     session = resolve_session(env)
     if session is None:
@@ -75,8 +86,11 @@ def cmd_start(
             # no-op. Re-registering is safe: register() records the user's
             # previous bindings only when the saved file does not exist yet,
             # so a second pass cannot overwrite them with our own.
-            keybindings.register()
-            message += " — keybindings refreshed"
+            # claim() refuses to take keys from a live foreign installation;
+            # then nothing was refreshed and the message must not say so.
+            result = _claim_keys(take_keys)
+            if result.outcome is not keybindings.ClaimOutcome.KEPT_FOREIGN:
+                message += " — keybindings refreshed"
         print(message)
         return 0
 
@@ -116,7 +130,7 @@ def cmd_start(
 
     origin = session.origin
     assert origin is not None  # in_tmux sessions always carry TMUX_PANE
-    keybindings.register()
+    _claim_keys(take_keys)
 
     if resolved_backend == "nvim":
         if defaults.nvim_window == "always":

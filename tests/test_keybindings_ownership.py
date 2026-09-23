@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from helpers import make_mock_tmux_run
 
-from vim_ai_follower import keybindings
+from vim_ai_follower import cli, commands, keybindings
 
 _mock_tmux_run = functools.partial(make_mock_tmux_run, pane_id="%9", other_panes=("%1",))
 
@@ -200,3 +200,70 @@ def test_describe_names_both_sides() -> None:
         "keybindings belong to /dev/bin/claude-follow (/dev/bin/claude-follow) — left there;"
         " rerun `claude-follow start --take-keys` to move them here"
     )
+
+
+def _live_foreign_owner(tmp_path: Path) -> keybindings.Owner:
+    other = tmp_path / "dev" / "bin" / "claude-follow"
+    other.parent.mkdir(parents=True)
+    other.write_text("#!/bin/sh\n")
+    other.chmod(0o755)
+    owner = keybindings.Owner(str(other), str(other))
+    _record(owner)
+    return owner
+
+
+def test_start_leaves_a_live_foreign_owner_and_says_how_to_force(
+    plugin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    owner = _live_foreign_owner(tmp_path)
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
+    assert _bound_paths(run) == []
+    out = capsys.readouterr().out
+    assert f"keybindings belong to {owner.installation}" in out
+    assert "--take-keys" in out
+
+
+def test_start_take_keys_moves_them(
+    plugin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _live_foreign_owner(tmp_path)
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert commands.cmd_start({"TMUX_PANE": "%1"}, take_keys=True) == 0
+    assert len(_bound_paths(run)) == 5
+    assert "keybindings taken from" in capsys.readouterr().out
+
+
+def test_cli_passes_take_keys_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    with patch("vim_ai_follower.commands.cmd_start", return_value=0) as start:
+        assert cli.main(["start", "--take-keys"]) == 0
+    assert start.call_args.kwargs["take_keys"] is True
+
+
+def test_already_running_start_does_not_claim_a_refresh_it_did_not_do(
+    plugin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
+        capsys.readouterr()
+        _live_foreign_owner(tmp_path)
+        assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
+    out = capsys.readouterr().out
+    assert "already running" in out
+    assert "keybindings refreshed" not in out
+    assert "keybindings belong to" in out
+
+
+def test_auto_open_logs_taking_keys_from_a_dead_owner(plugin: Path, tmp_path: Path) -> None:
+    from vim_ai_follower import config, hooks
+
+    config.CONFIG_PATH.write_text(json.dumps({"open_policy": "always"}))
+    gone = tmp_path / "deleted-checkout" / "bin" / "claude-follow"
+    _record(keybindings.Owner(str(gone), str(gone)))
+    target = tmp_path / "f.py"
+    target.write_text("x\n")
+    payload = {"tool_name": "Read", "tool_input": {"file_path": str(target)}}
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+    assert len(_bound_paths(run)) == 5
+    assert f"keybindings moved here from {gone}" in hooks.LOG_PATH.read_text()

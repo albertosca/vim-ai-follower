@@ -108,6 +108,7 @@ claude-follow stop       # tear the follower down and remove the keybindings
 - `--backend {tmux,nvim}` — default `tmux`.
 - `--on-failure {silent,reopen}` — what to do if the follower pane dies mid-session.
 - `--speed {instant,muito_rapido,rapido,normal,lento}` — initial animation pace.
+- `--take-keys` — move the tmux prefix keys to this installation even when another live installation (dev checkout, pip install, plugin) owns them; without it, `start` leaves them there and says so.
 
 With `open_policy` set to `always` or `code` (see below), you don't even need
 `start`: the first matching edit opens the follower automatically.

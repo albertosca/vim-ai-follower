@@ -297,7 +297,9 @@ def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> Fo
         return FollowerState.get(session.window_id)
     origin = session.origin
     assert origin is not None  # in_tmux sessions always carry TMUX_PANE
-    keybindings.register()
+    note = keybindings.describe(keybindings.claim(repair=True))
+    if note is not None:
+        logger.info(note)
     if cfg.backend == "nvim":
         if cfg.nvim_window == "always":
             # nvim_window=always opens a standalone window even inside tmux —
