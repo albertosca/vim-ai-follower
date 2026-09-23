@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from vim_ai_follower import cache, config, hooks, keybindings, session, snapshot
+from vim_ai_follower import cache, config, hooks, session, snapshot
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 
 
@@ -28,9 +28,6 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[N
     # leak into tests (a live open_policy=always there silently flipped
     # auto-open tests). Point at a nonexistent per-test path: defaults.
     monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
-    # keybindings memoizes the worktree redirect per process; tests build
-    # fresh repos and patch git per test, so each starts with an empty cache.
-    keybindings._durable_wrapper.cache_clear()
     yield
     hooks.logger.handlers.clear()
 

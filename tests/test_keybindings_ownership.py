@@ -520,14 +520,24 @@ def test_the_per_hook_heal_touches_tmux_keys_only_when_something_changed(
     assert keys_calls == []
 
 
-def test_repeated_owner_lookups_spawn_git_at_most_once(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every hook post heals the keys, and on the dev checkout (no
-    CLAUDE_PLUGIN_ROOT) resolving the executable asks git whether it sits in a
-    linked worktree. The answer for one path cannot change inside a process,
-    so it must be computed once, not on every edit."""
+def test_a_main_checkout_lookup_spawns_no_git(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every hook post is a NEW process that heals the keys once, so an
+    in-process cache saved nothing (whole-branch review, 2026-09-23): the dev
+    checkout still spawned `git rev-parse` on every edit. A main checkout is
+    recognizable without git — its `.git` is a DIRECTORY; only a `.git` FILE
+    (linked worktree or submodule) needs git to resolve the redirect."""
     import subprocess as real_subprocess
 
     monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+    checkout = tmp_path / "checkout"
+    wrapper = checkout / "bin" / "claude-follow"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.write_text("#!/bin/sh\n")
+    real_subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    assert (checkout / ".git").is_dir()
+    monkeypatch.setattr(keybindings, "_bundled_wrapper", lambda: wrapper)
     calls: list[list[str]] = []
     original = real_subprocess.run
 
@@ -536,10 +546,8 @@ def test_repeated_owner_lookups_spawn_git_at_most_once(monkeypatch: pytest.Monke
         return original(cmd, **kwargs)  # type: ignore[call-overload]
 
     monkeypatch.setattr("vim_ai_follower.keybindings.subprocess.run", counting)
-    first = keybindings.current_owner()
-    second = keybindings.current_owner()
-    assert first == second
-    assert sum(cmd[:1] == ["git"] for cmd in calls) <= 1
+    assert keybindings.current_owner().executable == str(wrapper)
+    assert [cmd for cmd in calls if cmd[:1] == ["git"]] == []
 
 
 def test_the_owner_record_is_replaced_atomically(plugin: Path) -> None:
@@ -620,3 +628,23 @@ def test_auto_open_survives_a_failing_key_bind(plugin: Path, tmp_path: Path) -> 
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=run):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _read_payload(target)) == 0
     assert "keybinding claim failed" in hooks.LOG_PATH.read_text()
+
+
+def test_a_failed_temp_write_leaves_no_partial_file(plugin: Path) -> None:
+    """The write itself can fail (disk full, EIO) after creating the file;
+    the partial temp must not be left behind either."""
+    real_write = Path.write_text
+
+    def half_write(self: Path, data: str, *args: object, **kwargs: object) -> int:
+        if self.name.endswith(".tmp"):
+            real_write(self, data[:5])
+            raise OSError("disk full")
+        return real_write(self, data, *args, **kwargs)  # type: ignore[arg-type]
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch.object(Path, "write_text", half_write),
+        pytest.raises(OSError, match="disk full"),
+    ):
+        keybindings.register()
+    assert not [p for p in keybindings._owner_path().parent.iterdir() if p.name.endswith(".tmp")]
