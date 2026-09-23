@@ -98,3 +98,21 @@ def test_first_animation_shows_writing_and_keeps_the_typing_highlight(
 
     world.wait_for_hook_exit(proc)
     assert _status_float_body(nvim) is None, "the float outlived the animation"
+
+    # "On EVERY animation": the second one must show the cue too. The float's
+    # scratch buffer is hidden, not wiped, when its window closes; a clear()
+    # that failed to wipe it made every later buf_set_name hit E95, swallowed,
+    # so the cue silently never came back (measured 2026-09-23).
+    second = world.workdir / "writing_cue_2.py"
+    world.cli("hook", "pre", stdin=payload("Write", second))
+    second.write_text("".join(f"again_{i} = {i}\n" for i in range(12)))
+    proc = world.cli_background("hook", "post", stdin=payload("Write", second))
+    world.wait_for_animating("running")
+    world.wait_until(
+        lambda: "again_1" in "".join(world.nvim_buffer_lines(sock, second)),
+        "the second animation to be typing",
+        timeout=60.0,
+    )
+    body = _status_float_body(nvim)
+    assert body is not None and "Writing..." in body, f"second animation's float: {body!r}"
+    world.wait_for_hook_exit(proc)

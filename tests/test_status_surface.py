@@ -265,7 +265,10 @@ def test_clear_closes_the_window_wipes_its_buffer_and_clears_cursor_virtual_text
     nvim = MagicMock()
     nvim.api.list_wins.return_value = [3]
     nvim.api.win_get_config.return_value = {"relative": "editor"}
-    nvim.api.win_get_buf.return_value = 7
+    # A Buffer OBJECT, as real pynvim returns — not a bare int. An int made
+    # f"{buf}" read "7" and hid that the real Buffer formats as
+    # "<Buffer(handle=7)>", which :bwipeout silently rejects.
+    nvim.api.win_get_buf.return_value = MagicMock(number=7)
     nvim.api.buf_get_name.return_value = "vaf-status"
     nvim.api.get_current_buf.return_value = 1
 

@@ -249,7 +249,12 @@ class NvimStatusSurface:
             if win is not None:
                 buf = nvim.api.win_get_buf(win)
                 nvim.api.win_close(win, True)
-                nvim.command(f"silent! bwipeout! {buf}")
+                # By NUMBER: a pynvim Buffer formats as "<Buffer(handle=N)>",
+                # which :bwipeout silently rejects. The scratch buffer is only
+                # hidden when its window closes, so the NEXT cue's
+                # buf_set_name("vaf-status") then hit E95 and — swallowed by
+                # suppress() — the float never came back (measured 2026-09-23).
+                nvim.command(f"silent! bwipeout! {buf.number}")
             cur_buf = nvim.api.get_current_buf()
             ns = nvim.api.create_namespace(_CURSOR_NAMESPACE)
             nvim.api.buf_clear_namespace(cur_buf, ns, 0, -1)
