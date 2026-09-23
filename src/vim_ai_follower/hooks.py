@@ -149,6 +149,46 @@ def _claim_identity_warning(window_id: str) -> bool:
     return True
 
 
+def _foreign_keys_warning_marker() -> Path:
+    # Not ".pane": cmd_stop's orphan scan globs *.pane.
+    return cache.CACHE_DIR / "keys-foreign-owner.warn"
+
+
+def _claim_foreign_keys_warning() -> bool:
+    """True at most once per IDENTITY_WARN_INTERVAL_SECONDS: a live foreign
+    owner is a stable state `start` already announced, so every edit of a
+    long turn repeating it would bury hook.log."""
+    marker = _foreign_keys_warning_marker()
+    try:
+        if time.time() - marker.stat().st_mtime < IDENTITY_WARN_INTERVAL_SECONDS:
+            return False
+    except OSError:
+        pass  # no marker yet (or unreadable) — treat as never warned
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+    return True
+
+
+def _heal_keybindings() -> None:
+    """Re-point the server-global prefix keys at THIS installation when they
+    name a dead or superseded one — the version-stamped plugin root dies on
+    `plugin update`. Runs before any animation so the keys controlling it
+    already work. Never raises: hooks must not fail the tool call."""
+    try:
+        result = keybindings.claim()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        logger.warning("keybinding heal failed: %s", exc)
+        return
+    note = keybindings.describe(result)
+    if note is None:
+        return
+    if result.outcome is keybindings.ClaimOutcome.KEPT_FOREIGN:
+        if _claim_foreign_keys_warning():
+            logger.warning(note)
+        return
+    logger.info(note)
+
+
 def _warn_lost_window_identity(session: Session) -> None:
     """One log line for the give-up that used to be silent.
 
@@ -703,6 +743,8 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
     raw = FollowerState.read(session.window_id)
     if raw is not None and not raw.enabled:
         return 0
+    if raw is not None and session.in_tmux:
+        _heal_keybindings()
     file_path = _file_path(payload)
     if file_path is None:
         return 0
@@ -919,6 +961,8 @@ def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
     raw = FollowerState.read(session.window_id)
     if raw is not None and not raw.enabled:
         return 0
+    if raw is not None and session.in_tmux:
+        _heal_keybindings()
     file_path = _file_path(payload)
     if file_path is None:
         return 0

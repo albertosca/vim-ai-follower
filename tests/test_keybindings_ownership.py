@@ -6,13 +6,15 @@ from __future__ import annotations
 
 import functools
 import json
+import os
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from helpers import make_mock_tmux_run
 
-from vim_ai_follower import cli, commands, keybindings
+from vim_ai_follower import cli, commands, hooks, keybindings, state
 
 _mock_tmux_run = functools.partial(make_mock_tmux_run, pane_id="%9", other_panes=("%1",))
 
@@ -267,3 +269,104 @@ def test_auto_open_logs_taking_keys_from_a_dead_owner(plugin: Path, tmp_path: Pa
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
     assert len(_bound_paths(run)) == 5
     assert f"keybindings moved here from {gone}" in hooks.LOG_PATH.read_text()
+
+
+def _read_payload(path: Path) -> dict[str, object]:
+    return {"tool_name": "Read", "tool_input": {"file_path": str(path)}}
+
+
+def _running_follower() -> None:
+    state.FollowerState.set("@1", "tmux", "%9", origin="%1")
+
+
+def test_hook_post_repoints_keys_after_a_plugin_update(plugin: Path, tmp_path: Path) -> None:
+    old = tmp_path / "vim-ai-follower" / "0.1.0" / "bin" / "claude-follow"  # removed by update
+    _record(keybindings.Owner(str(old), str(plugin.parent)))
+    _running_follower()
+    target = tmp_path / "f.py"
+    target.write_text("x\n")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _read_payload(target)) == 0
+    assert all("0.2.0" in cmd for cmd in _bound_paths(run))
+    assert len(_bound_paths(run)) == 5
+    assert "keybindings re-pointed from" in hooks.LOG_PATH.read_text()
+
+
+def test_hook_post_heals_before_navigating(plugin: Path, tmp_path: Path) -> None:
+    _record(keybindings.Owner(str(tmp_path / "gone"), str(plugin.parent)))
+    _running_follower()
+    target = tmp_path / "f.py"
+    target.write_text("x\n")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _read_payload(target))
+    cmds = [c.args[0] for c in run.call_args_list]
+    first_bind = next(i for i, c in enumerate(cmds) if c[:2] == ["tmux", "bind-key"])
+    first_keys = next(i for i, c in enumerate(cmds) if c[:2] == ["tmux", "send-keys"])
+    assert first_bind < first_keys
+
+
+def test_hook_post_without_a_follower_never_touches_the_keys(plugin: Path, tmp_path: Path) -> None:
+    target = tmp_path / "f.py"
+    target.write_text("x\n")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _read_payload(target))
+    assert _bound_paths(run) == []
+    assert not keybindings._owner_path().exists()
+
+
+def test_foreign_owner_warning_is_throttled(plugin: Path, tmp_path: Path) -> None:
+    _live_foreign_owner(tmp_path)
+    _running_follower()
+    target = tmp_path / "f.py"
+    target.write_text("x\n")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        for _ in range(3):
+            hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _read_payload(target))
+    assert hooks.LOG_PATH.read_text().count("keybindings belong to") == 1
+
+
+def test_a_failing_bind_never_fails_the_hook(plugin: Path, tmp_path: Path) -> None:
+    import subprocess
+
+    _record(keybindings.Owner(str(tmp_path / "gone"), str(tmp_path / "gone")))
+    _running_follower()
+    base = _mock_tmux_run()
+
+    def run(cmd: list[str], **kwargs: object) -> MagicMock:
+        if cmd[:2] == ["tmux", "bind-key"]:
+            raise subprocess.CalledProcessError(1, cmd)
+        return base(cmd, **kwargs)
+
+    target = tmp_path / "f.py"
+    target.write_text("x\n")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=run):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _read_payload(target)) == 0
+    assert "keybinding heal failed" in hooks.LOG_PATH.read_text()
+
+
+def test_foreign_owner_warning_repeats_once_the_interval_has_passed(
+    plugin: Path, tmp_path: Path
+) -> None:
+    _live_foreign_owner(tmp_path)
+    _running_follower()
+    target = tmp_path / "f.py"
+    target.write_text("x\n")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _read_payload(target))
+        stale = time.time() - hooks.IDENTITY_WARN_INTERVAL_SECONDS - 1
+        os.utime(hooks._foreign_keys_warning_marker(), (stale, stale))
+        hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _read_payload(target))
+    assert hooks.LOG_PATH.read_text().count("keybindings belong to") == 2
+
+
+def test_an_edit_hook_also_heals_the_keys(plugin: Path, tmp_path: Path) -> None:
+    old = tmp_path / "vim-ai-follower" / "0.1.0" / "bin" / "claude-follow"
+    _record(keybindings.Owner(str(old), str(plugin.parent)))
+    _running_follower()
+    target = tmp_path / "f.py"
+    target.write_text("x\n")
+    payload = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+    assert len(_bound_paths(run)) == 5
+    assert all("0.2.0" in cmd for cmd in _bound_paths(run))
