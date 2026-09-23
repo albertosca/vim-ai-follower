@@ -36,4 +36,18 @@ extra:
       lang: pt
 nav:
   - Início: index.md
+  - Primeiros passos:
+      - Instalação: getting-started/install.md
+      - Primeira edição: getting-started/first-follow.md
+  - Guias:
+      - Pausar, assumir, velocidade e mudo: guides/controls.md
+      - Abas multi-arquivo: guides/multi-file-tabs.md
+      - Adotando um editor: guides/adopting-an-editor.md
+      - Backend Neovim: guides/nvim-backend.md
+  - Referência:
+      - CLI: reference/cli.md
+      - Configuração: reference/config.md
+      - Atalhos: reference/keybindings.md
+  - Engenharia: engineering.md
+  - FAQ: faq.md
   - LinkedIn: https://www.linkedin.com/in/albertosca/
