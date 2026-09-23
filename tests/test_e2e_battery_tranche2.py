@@ -6,6 +6,8 @@ battery is the part only a human can judge."""
 
 from __future__ import annotations
 
+import os
+import signal
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -116,3 +118,76 @@ def test_first_animation_shows_writing_and_keeps_the_typing_highlight(
     body = _status_float_body(nvim)
     assert body is not None and "Writing..." in body, f"second animation's float: {body!r}"
     world.wait_for_hook_exit(proc)
+
+
+# --------------------------------------------------------------- Check 17
+
+
+def _open_owner_vim(world: E2EFollower, target: Path) -> str:
+    """A second real Vim holding `target`, in its own (detached) window of the
+    world's own server, so the follower window's geometry is untouched.
+    Returns its pane id once the swap exists — without one there is nothing
+    for the follower to answer and the test would measure nothing."""
+    pane = world.tmux(
+        "new-window", "-d", "-t", world.session, "-P", "-F", "#{pane_id}", f"vim -N {target}"
+    ).stdout.strip()
+    swap = target.with_name(f".{target.name}.swp")
+    world.wait_until(swap.exists, f"the owner Vim's swap {swap}", timeout=15.0)
+    return pane
+
+
+def _navigate_and_assert_clean(world: E2EFollower, pane: str, target: Path) -> None:
+    world.cli("hook", "post", stdin=payload("Read", target))
+    row, height = world.cursor_row(pane)
+    assert row != height - 1, "cursor parked on the bottom row: a prompt is blocking"
+    messages = world.vim_messages(pane)
+    for needle in ("E325", "ATTENTION", "already exists"):
+        assert needle not in messages, f"{needle} reached the follower:\n{messages}"
+    assert world.vim_buffer_bytes(pane) == target.read_bytes()
+
+
+def _narrow_follower(world: E2EFollower) -> str:
+    pane = world.follower_target()
+    width = world.resize_pane(pane, 49)
+    assert width < 51, (
+        f"the follower pane is {width} columns; at 51 or more the ATTENTION block "
+        "does not page and a clean pane proves nothing"
+    )
+    return pane
+
+
+def test_a_live_owners_swap_is_edited_anyway_and_the_owner_still_writes(
+    world: E2EFollower,
+) -> None:
+    """Battery check 17 (live) — guards e0bb5be, tmux backend, at 49 columns:
+    the ATTENTION block used to stall `:tab drop` twice over (pager, then the
+    question), so every later keystroke answered a prompt."""
+    target = world.workdir / "swap_live.py"
+    target.write_text("owner = 'LIVE'\n")
+    world.start("tmux", "instant")
+    pane = _narrow_follower(world)
+    owner = _open_owner_vim(world, target)
+
+    _navigate_and_assert_clean(world, pane, target)
+
+    world.tmux("send-keys", "-t", owner, "Go# owner edit", "Escape", ":w", "Enter")
+    world.wait_until(lambda: "# owner edit" in target.read_text(), "the owner Vim's :w")
+
+
+def test_a_stale_swap_is_edited_anyway_and_left_on_disk(world: E2EFollower) -> None:
+    """Battery check 17 (stale) — guards e0bb5be: (E)dit anyway, never
+    (D)elete, so a crash's recovery data survives. SIGKILL, never SIGTERM:
+    on SIGTERM Vim removes its own swap and nothing stale is left."""
+    target = world.workdir / "swap_stale.py"
+    target.write_text("owner = 'STALE'\n")
+    world.start("tmux", "instant")
+    pane = _narrow_follower(world)
+    owner = _open_owner_vim(world, target)
+    world.tmux("send-keys", "-t", owner, "oWORK LOST IN THE CRASH", "Escape")
+    pid = int(world.tmux("display-message", "-p", "-t", owner, "#{pane_pid}").stdout.strip())
+    os.kill(pid, signal.SIGKILL)
+    swap = target.with_name(f".{target.name}.swp")
+    assert swap.exists(), "the kill removed the swap: nothing stale to answer"
+
+    _navigate_and_assert_clean(world, pane, target)
+    assert swap.exists(), "the follower deleted the stale swap"
