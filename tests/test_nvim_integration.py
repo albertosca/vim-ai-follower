@@ -823,3 +823,50 @@ def test_the_status_float_follows_the_animation_to_the_current_tab(headless_nvim
     lines = nvim.api.buf_get_lines(nvim.api.win_get_buf(current[0]), 0, -1, True)
     assert any("Writing..." in line for line in lines)
     assert len(_floating_windows(nvim)) == 1, "a second status float was left behind"
+
+
+@pytest.mark.integration
+def test_the_status_float_follows_the_backend_into_a_new_tab(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """In the HOOK's order: _animate_edit shows the writer cue and
+    "Writing..." BEFORE the backend navigates (show_fresh(in_new_tab=True)
+    opens the new file's tab after the cue). Moving the float only when a cue
+    is set therefore moved it to the tab being LEFT, and the animation ran in
+    the new tab with no visible cue (whole-branch review, 2026-09-23)."""
+    from vim_ai_follower import cache
+
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    surface = NvimStatusSurface(socket_path=headless_nvim)
+    first = tmp_path / "first.py"
+    first.write_text("a = 1\n")
+    follower.show_fresh(str(first), "a = 1\n")
+
+    second = tmp_path / "second.py"
+    second.write_text("b = 2\n")
+    surface.set_writer("code-reviewer", "colour78")  # the hook's cue order
+    surface.set_state("Writing...")
+    follower.show_fresh(str(second), "b = 2\n", in_new_tab=True)
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    assert Path(nvim.api.buf_get_name(nvim.api.get_current_buf())).name == "second.py"
+    here = [
+        w
+        for w in nvim.api.tabpage_list_wins(nvim.api.get_current_tabpage())
+        if nvim.api.win_get_config(w)["relative"] != ""
+    ]
+    assert len(here) == 1, "the cue stayed behind in the tab the backend left"
+    assert any("code-reviewer" in c[0] for c in nvim.api.win_get_config(here[0])["title"])
+    assert len(_floating_windows(nvim)) == 1
+
+    # A Read's navigation switches tabs through set_current_win, not :tabnew.
+    follower.goto_file(str(first))
+    assert Path(nvim.api.buf_get_name(nvim.api.get_current_buf())).name == "first.py"
+    here = [
+        w
+        for w in nvim.api.tabpage_list_wins(nvim.api.get_current_tabpage())
+        if nvim.api.win_get_config(w)["relative"] != ""
+    ]
+    assert len(here) == 1, "the cue stayed behind when goto_file switched tabs"
+    assert len(_floating_windows(nvim)) == 1

@@ -112,6 +112,40 @@ class TmuxStatusSurface:
         pane.set_window_option(_BORDER_STATUS_OPTION, None)
 
 
+# Floats belong to one tabpage, and the hook shows its cues BEFORE the backend
+# navigates (show_fresh(in_new_tab=True) opens the new file's tab after the
+# cue), so moving the float only when a cue is set left it in the tab being
+# LEFT (whole-branch review, 2026-09-23). nvim itself carries it instead: on
+# every TabEnter, a status float living in another tab is re-opened here on
+# the same buffer with its title and border colour — whoever switched the tab
+# (the backend, a Read's goto_file, the user in an adopted nvim). Same
+# geometry as _open_window; `{clear = true}` makes re-registering idempotent.
+_FOLLOW_TABS_LUA = """
+local name, width, height = ...
+local group = vim.api.nvim_create_augroup('vaf_status_follows_tabs', {clear = true})
+vim.api.nvim_create_autocmd('TabEnter', {group = group, callback = function()
+  local here = vim.api.nvim_get_current_tabpage()
+  for _, win in ipairs(vim.api.nvim_list_wins()) do
+    local cfg = vim.api.nvim_win_get_config(win)
+    local buf = vim.api.nvim_win_get_buf(win)
+    if cfg.relative ~= '' and vim.api.nvim_win_get_tabpage(win) ~= here
+        and vim.api.nvim_buf_get_name(buf):sub(-#name) == name then
+      local highlight = vim.wo[win].winhighlight
+      local moved = vim.api.nvim_open_win(buf, false, {
+        relative = 'editor', width = width, height = height, row = 1,
+        col = math.max(0, vim.o.columns - width - 2), style = 'minimal',
+        border = 'rounded', title = cfg.title, title_pos = 'center',
+        focusable = false, noautocmd = true,
+      })
+      vim.wo[moved].winhighlight = highlight
+      vim.api.nvim_win_close(win, true)
+      return
+    end
+  end
+end})
+"""
+
+
 @dataclass
 class NvimStatusSurface:
     """Renders cues as a small rounded floating window anchored top-right in a
@@ -168,6 +202,7 @@ class NvimStatusSurface:
             "focusable": False,
             "noautocmd": True,
         }
+        nvim.exec_lua(_FOLLOW_TABS_LUA, _STATUS_BUFFER_NAME, _WINDOW_WIDTH, _WINDOW_HEIGHT)
         return nvim.api.open_win(buf, False, opts)
 
     def _ensure_window(self, nvim: pynvim.Nvim) -> tuple[Any, Any]:
