@@ -67,3 +67,136 @@ def test_a_malformed_owner_record_reads_as_absent(content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
     assert keybindings.read_owner() is None
+
+
+def _record(owner: keybindings.Owner) -> None:
+    path = keybindings._owner_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    record = {"executable": owner.executable, "installation": owner.installation}
+    path.write_text(json.dumps(record))
+
+
+def _bound_paths(run: MagicMock) -> list[str]:
+    """The run-shell command strings of every bind-key call made."""
+    return [c.args[0][-1] for c in run.call_args_list if c.args[0][:2] == ["tmux", "bind-key"]]
+
+
+@pytest.fixture
+def plugin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """This process runs as plugin version 0.2.0; returns its plugin root."""
+    root = _fake_install(tmp_path, "0.2.0")
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(root))
+    return root
+
+
+def _claim(**kwargs: bool) -> tuple[keybindings.Claim, MagicMock]:
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        result = keybindings.claim(**kwargs)
+    return result, run
+
+
+def test_claim_with_no_owner_takes_the_keys(plugin: Path) -> None:
+    result, run = _claim()
+    assert result.outcome is keybindings.ClaimOutcome.TAKEN
+    assert result.previous is None
+    assert all(str(plugin / "bin" / "claude-follow") in cmd for cmd in _bound_paths(run))
+    assert len(_bound_paths(run)) == 5
+
+
+def test_claim_same_installation_same_path_binds_nothing(plugin: Path) -> None:
+    _record(keybindings.current_owner())
+    result, run = _claim()
+    assert result.outcome is keybindings.ClaimOutcome.UNCHANGED
+    assert _bound_paths(run) == []
+
+
+def test_claim_repair_rebinds_even_when_unchanged(plugin: Path) -> None:
+    """A tmux server restart drops the bindings but keeps the cache: `start`
+    (repair=True) must still bind, or it stops being a repair."""
+    _record(keybindings.current_owner())
+    result, run = _claim(repair=True)
+    assert result.outcome is keybindings.ClaimOutcome.UNCHANGED
+    assert len(_bound_paths(run)) == 5
+
+
+def test_claim_same_installation_new_version_refreshes(plugin: Path, tmp_path: Path) -> None:
+    old = _fake_install(tmp_path, "0.1.0")  # still on disk: kept-alive old version
+    _record(keybindings.Owner(str(old / "bin" / "claude-follow"), str(old.parent)))
+    result, run = _claim()
+    assert result.outcome is keybindings.ClaimOutcome.REFRESHED
+    assert all("0.2.0" in cmd for cmd in _bound_paths(run))
+    assert len(_bound_paths(run)) == 5
+
+
+def test_claim_takes_from_a_dead_foreign_owner(plugin: Path, tmp_path: Path) -> None:
+    gone = tmp_path / "deleted-checkout" / "bin" / "claude-follow"
+    _record(keybindings.Owner(str(gone), str(gone)))
+    result, run = _claim()
+    assert result.outcome is keybindings.ClaimOutcome.TAKEN_FROM_DEAD
+    assert len(_bound_paths(run)) == 5
+
+
+def test_claim_keeps_a_live_foreign_owner(plugin: Path, tmp_path: Path) -> None:
+    other = tmp_path / "dev" / "bin" / "claude-follow"
+    other.parent.mkdir(parents=True)
+    other.write_text("#!/bin/sh\n")
+    other.chmod(0o755)
+    _record(keybindings.Owner(str(other), str(other)))
+    result, run = _claim(repair=True)
+    assert result.outcome is keybindings.ClaimOutcome.KEPT_FOREIGN
+    assert _bound_paths(run) == []
+    assert keybindings.read_owner() == keybindings.Owner(str(other), str(other))
+
+
+def test_claim_force_takes_from_a_live_foreign_owner(plugin: Path, tmp_path: Path) -> None:
+    other = tmp_path / "dev" / "bin" / "claude-follow"
+    other.parent.mkdir(parents=True)
+    other.write_text("#!/bin/sh\n")
+    other.chmod(0o755)
+    _record(keybindings.Owner(str(other), str(other)))
+    result, run = _claim(force=True)
+    assert result.outcome is keybindings.ClaimOutcome.TAKEN_BY_FORCE
+    assert len(_bound_paths(run)) == 5
+    assert keybindings.read_owner() == keybindings.current_owner()
+
+
+def test_a_bare_name_owner_counts_as_dead(plugin: Path) -> None:
+    _record(keybindings.Owner("claude-follow", "claude-follow"))
+    result, _ = _claim()
+    assert result.outcome is keybindings.ClaimOutcome.TAKEN_FROM_DEAD
+
+
+def test_a_non_executable_owner_counts_as_dead(plugin: Path, tmp_path: Path) -> None:
+    plain = tmp_path / "dev" / "bin" / "claude-follow"
+    plain.parent.mkdir(parents=True)
+    plain.write_text("")  # exists, mode 0644
+    _record(keybindings.Owner(str(plain), str(plain)))
+    assert _claim()[0].outcome is keybindings.ClaimOutcome.TAKEN_FROM_DEAD
+
+
+def test_a_malformed_record_is_taken_over(plugin: Path) -> None:
+    keybindings._owner_path().parent.mkdir(parents=True, exist_ok=True)
+    keybindings._owner_path().write_text("{trunc")
+    assert _claim()[0].outcome is keybindings.ClaimOutcome.TAKEN
+
+
+def test_describe_names_both_sides() -> None:
+    old = keybindings.Owner("/a/0.1.0/bin/claude-follow", "/a")
+    new = keybindings.Owner("/a/0.2.0/bin/claude-follow", "/a")
+    dev = keybindings.Owner("/dev/bin/claude-follow", "/dev/bin/claude-follow")
+    make, kind = keybindings.Claim, keybindings.ClaimOutcome
+    assert keybindings.describe(make(kind.TAKEN, None, new)) is None
+    assert keybindings.describe(make(kind.UNCHANGED, new, new)) is None
+    assert keybindings.describe(make(kind.REFRESHED, old, new)) == (
+        "keybindings re-pointed from /a/0.1.0/bin/claude-follow to /a/0.2.0/bin/claude-follow"
+    )
+    assert keybindings.describe(make(kind.TAKEN_FROM_DEAD, dev, new)) == (
+        "keybindings moved here from /dev/bin/claude-follow, which no longer exists"
+    )
+    assert keybindings.describe(make(kind.TAKEN_BY_FORCE, dev, new)) == (
+        "keybindings taken from /dev/bin/claude-follow (/dev/bin/claude-follow)"
+    )
+    assert keybindings.describe(make(kind.KEPT_FOREIGN, dev, new)) == (
+        "keybindings belong to /dev/bin/claude-follow (/dev/bin/claude-follow) — left there;"
+        " rerun `claude-follow start --take-keys` to move them here"
+    )

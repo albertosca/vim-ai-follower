@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from vim_ai_follower import cache
@@ -226,6 +227,75 @@ def register() -> None:
         )
     _owner_path().write_text(
         json.dumps({"executable": owner.executable, "installation": owner.installation})
+    )
+
+
+class ClaimOutcome(StrEnum):
+    TAKEN = "taken"
+    UNCHANGED = "unchanged"
+    REFRESHED = "refreshed"
+    TAKEN_FROM_DEAD = "taken_from_dead"
+    TAKEN_BY_FORCE = "taken_by_force"
+    KEPT_FOREIGN = "kept_foreign"
+
+
+@dataclass(frozen=True)
+class Claim:
+    outcome: ClaimOutcome
+    previous: Owner | None
+    current: Owner
+
+
+def _is_alive(owner: Owner) -> bool:
+    # A bare name ("claude-follow", the last-resort fallback) is relative and
+    # reads as dead: it never ran from tmux's PATH anyway.
+    return Path(owner.executable).is_absolute() and os.access(owner.executable, os.X_OK)
+
+
+def claim(force: bool = False, repair: bool = False) -> Claim:
+    """Point the prefix keys at this installation, or deliberately don't.
+
+    Same installation re-points (a plugin update moved it); a dead foreign
+    owner is taken; a live foreign one keeps the keys unless `force`. The
+    per-hook heal calls this with repair=False, so the common case binds
+    nothing; `start` and auto-open pass repair=True because a restarted tmux
+    server drops the bindings while the cache still names us as owner, and
+    `start` must stay a real repair for that."""
+    me = current_owner()
+    previous = read_owner()
+    if previous is None:
+        outcome = ClaimOutcome.TAKEN
+    elif previous.installation == me.installation:
+        same = previous.executable == me.executable
+        outcome = ClaimOutcome.UNCHANGED if same else ClaimOutcome.REFRESHED
+    elif not _is_alive(previous):
+        outcome = ClaimOutcome.TAKEN_FROM_DEAD
+    elif force:
+        outcome = ClaimOutcome.TAKEN_BY_FORCE
+    else:
+        outcome = ClaimOutcome.KEPT_FOREIGN
+    if outcome is not ClaimOutcome.KEPT_FOREIGN and (
+        outcome is not ClaimOutcome.UNCHANGED or repair
+    ):
+        register()
+    return Claim(outcome, previous, me)
+
+
+def describe(result: Claim) -> str | None:
+    """One line worth saying about `result`, or None when nothing changed
+    hands (a first take is today's silent start path)."""
+    prev = result.previous
+    if prev is None or result.outcome in (ClaimOutcome.TAKEN, ClaimOutcome.UNCHANGED):
+        return None
+    if result.outcome is ClaimOutcome.REFRESHED:
+        return f"keybindings re-pointed from {prev.executable} to {result.current.executable}"
+    if result.outcome is ClaimOutcome.TAKEN_FROM_DEAD:
+        return f"keybindings moved here from {prev.executable}, which no longer exists"
+    if result.outcome is ClaimOutcome.TAKEN_BY_FORCE:
+        return f"keybindings taken from {prev.installation} ({prev.executable})"
+    return (
+        f"keybindings belong to {prev.installation} ({prev.executable}) — left there;"
+        " rerun `claude-follow start --take-keys` to move them here"
     )
 
 
