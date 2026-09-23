@@ -274,3 +274,45 @@ def test_bound_keys_point_at_an_executable_that_really_exists(
         executable = Path(shlex.split(shell_command)[1])
         assert executable.is_file(), f"{executable} is gone — this key exits 127 on press"
         assert os.access(executable, os.X_OK), f"{executable} is not executable"
+
+
+# --------------------------------------------------------------------------
+# A `.git` FILE is the only shape that asks git (a `.git` directory is a main
+# checkout, resolved without spawning anything). These cover what git can
+# answer behind such a file when it is NOT a linked worktree.
+# --------------------------------------------------------------------------
+
+
+def _wrapper_under(root: Path) -> Path:
+    wrapper = root / "bin" / "claude-follow"
+    wrapper.parent.mkdir(parents=True)
+    wrapper.touch()
+    return wrapper
+
+
+def test_a_broken_git_file_degrades_to_the_wrapper_itself(tmp_path: Path) -> None:
+    """A `.git` file pointing nowhere: git exits non-zero, nothing to redirect."""
+    wrapper = _wrapper_under(tmp_path / "broken")
+    (tmp_path / "broken" / ".git").write_text("gitdir: /nonexistent/gitdir\n")
+    assert keybindings._durable_wrapper(wrapper) == wrapper
+
+
+def test_a_git_file_without_git_installed_degrades_to_the_wrapper_itself(
+    tmp_path: Path,
+) -> None:
+    wrapper = _wrapper_under(tmp_path / "wt")
+    (tmp_path / "wt" / ".git").write_text("gitdir: /somewhere\n")
+    with patch("vim_ai_follower.keybindings.subprocess.run", side_effect=FileNotFoundError("git")):
+        assert keybindings._durable_wrapper(wrapper) == wrapper
+
+
+def test_a_separate_git_dir_checkout_is_already_durable(tmp_path: Path) -> None:
+    """`git init --separate-git-dir` (the submodule shape) leaves a `.git`
+    FILE, but its common dir IS its git dir: a main checkout, not a worktree."""
+    tree = tmp_path / "tree"
+    subprocess.run(
+        ["git", "init", "-q", f"--separate-git-dir={tmp_path / 'store'}", str(tree)], check=True
+    )
+    assert (tree / ".git").is_file()
+    wrapper = _wrapper_under(tree)
+    assert keybindings._durable_wrapper(wrapper) == wrapper
