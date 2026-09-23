@@ -581,3 +581,19 @@ def test_a_failed_owner_write_leaves_no_temp_file(plugin: Path) -> None:
     assert sorted(p.name for p in keybindings._owner_path().parent.iterdir()) == [
         "saved-keybindings.json"
     ]
+
+
+def test_a_dead_followers_leftover_state_does_not_heal_the_keys(
+    plugin: Path, tmp_path: Path
+) -> None:
+    """The heal used to run whenever follower STATE existed, so a window whose
+    follower pane had died still re-bound the server-global keys on every
+    edit. Only a live follower's hook may touch them."""
+    _record(keybindings.Owner(str(tmp_path / "gone"), str(tmp_path / "gone")))
+    _running_follower()
+    target = tmp_path / "f.py"
+    target.write_text("x\n")
+    dead = _mock_tmux_run(pane_exists=False)
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=dead) as run:
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _read_payload(target)) == 0
+    assert _bound_paths(run) == []

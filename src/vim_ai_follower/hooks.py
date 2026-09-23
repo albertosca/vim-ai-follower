@@ -189,6 +189,19 @@ def _heal_keybindings() -> None:
     logger.info(note)
 
 
+def _live_follower_healing_keys(session: Session) -> FollowerState | None:
+    """_get_active_follower, plus the per-hook key heal for a LIVE follower
+    only. Gating on mere state re-bound the server-global keys from windows
+    whose follower pane had died; resolving liveness here costs nothing extra
+    because the hook needs this answer anyway, and it still precedes any
+    animation the keys would control. Auto-open claims with repair=True on
+    its own path, so it is not healed twice."""
+    current = _get_active_follower(session.window_id)
+    if current is not None and session.in_tmux:
+        _heal_keybindings()
+    return current
+
+
 def _warn_lost_window_identity(session: Session) -> None:
     """One log line for the give-up that used to be silent.
 
@@ -743,8 +756,6 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
     raw = FollowerState.read(session.window_id)
     if raw is not None and not raw.enabled:
         return 0
-    if raw is not None and session.in_tmux:
-        _heal_keybindings()
     file_path = _file_path(payload)
     if file_path is None:
         return 0
@@ -835,7 +846,7 @@ def _animate_edit(
     """Animate one edit (show_fresh for a new file, apply_edit for a diff).
     The caller holds this window's animation slot for the whole call and
     releases it in a finally, so no parallel hook animates the same pane."""
-    current = _get_active_follower(session.window_id) or _maybe_auto_open(session, file_path, cfg)
+    current = _live_follower_healing_keys(session) or _maybe_auto_open(session, file_path, cfg)
     if current is None:
         _warn_lost_window_identity(session)
         return 0
@@ -961,8 +972,6 @@ def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
     raw = FollowerState.read(session.window_id)
     if raw is not None and not raw.enabled:
         return 0
-    if raw is not None and session.in_tmux:
-        _heal_keybindings()
     file_path = _file_path(payload)
     if file_path is None:
         return 0
@@ -973,7 +982,7 @@ def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
         # Another live hook owns this window's pane: navigating now would
         # interleave keystrokes with its animation. Skip; state untouched.
         return 0
-    current = _get_active_follower(session.window_id) or _maybe_auto_open(session, file_path, cfg)
+    current = _live_follower_healing_keys(session) or _maybe_auto_open(session, file_path, cfg)
     if current is None:
         _warn_lost_window_identity(session)
         return 0
