@@ -166,6 +166,22 @@ def _installation_id(executable: str) -> str:
     return executable
 
 
+def _write_owner(owner: Owner) -> None:
+    """Replace the record atomically. Another installation's hook can read it
+    at any moment, and a plain write_text truncates first: a reader landing
+    mid-write saw no owner and took keys from a live installation. The temp
+    file lives beside the target (os.replace is only atomic within one
+    filesystem) and is removed if the rename fails."""
+    path = _owner_path()
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps({"executable": owner.executable, "installation": owner.installation}))
+    try:
+        tmp.replace(path)
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def current_owner() -> Owner:
     executable = _claude_follow_executable()
     return Owner(executable, _installation_id(executable))
@@ -242,9 +258,7 @@ def register() -> None:
             ],
             check=True,
         )
-    _owner_path().write_text(
-        json.dumps({"executable": owner.executable, "installation": owner.installation})
-    )
+    _write_owner(owner)
 
 
 class ClaimOutcome(StrEnum):

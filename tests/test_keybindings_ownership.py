@@ -540,3 +540,44 @@ def test_repeated_owner_lookups_spawn_git_at_most_once(monkeypatch: pytest.Monke
     second = keybindings.current_owner()
     assert first == second
     assert sum(cmd[:1] == ["git"] for cmd in calls) <= 1
+
+
+def test_the_owner_record_is_replaced_atomically(plugin: Path) -> None:
+    """Another installation's hook can read the record at any moment. A
+    plain write_text truncates first, so a reader landing mid-write saw no
+    owner and took live keys; the record must appear whole or not at all."""
+    seen: list[tuple[str, str]] = []
+    real_replace = os.replace
+
+    def spying_replace(src: str, dst: str) -> None:
+        seen.append((Path(src).read_text(), str(dst)))
+        real_replace(src, dst)
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.keybindings.os.replace", side_effect=spying_replace),
+    ):
+        keybindings.register()
+    assert len(seen) == 1
+    content, target = seen[0]
+    assert target == str(keybindings._owner_path())
+    assert json.loads(content) == {
+        "executable": keybindings.current_owner().executable,
+        "installation": keybindings.current_owner().installation,
+    }
+    assert sorted(p.name for p in keybindings._owner_path().parent.iterdir()) == [
+        "keybindings-owner.json",
+        "saved-keybindings.json",
+    ]
+
+
+def test_a_failed_owner_write_leaves_no_temp_file(plugin: Path) -> None:
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.keybindings.os.replace", side_effect=OSError("disk full")),
+        pytest.raises(OSError, match="disk full"),
+    ):
+        keybindings.register()
+    assert sorted(p.name for p in keybindings._owner_path().parent.iterdir()) == [
+        "saved-keybindings.json"
+    ]
