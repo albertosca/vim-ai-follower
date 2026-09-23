@@ -142,10 +142,21 @@ def _installation_id(executable: str) -> str:
     changes, each path becomes its own installation and a dead old path is
     still taken, only a kept-alive old one is warned about instead of
     refreshed. Anything else (dev checkout wrapper, venv script) is
-    identified by its own path."""
+    identified by its own path.
+
+    The env is not enough on its own: `/start` runs `claude-follow start` in
+    the Bash tool, which has NO CLAUDE_PLUGIN_ROOT (measured 2026-09-23) and
+    reaches the bundled wrapper by its versioned path, while hooks do have
+    it. Both must land on the same id, so the plugin-cache shape
+    `.../plugins/cache/<marketplace>/<plugin>/<version>/bin/claude-follow` is
+    recognized from the path itself. The version segment is not assumed to
+    look like a version: some plugin caches use commit hashes there."""
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
     if plugin_root and Path(executable).is_relative_to(plugin_root):
         return str(Path(plugin_root).parent)
+    parts = Path(executable).parts
+    if len(parts) >= 8 and parts[-7:-5] == ("plugins", "cache") and parts[-2] == "bin":
+        return str(Path(*parts[:-3]))
     return executable
 
 
@@ -236,6 +247,7 @@ class ClaimOutcome(StrEnum):
     REFRESHED = "refreshed"
     TAKEN_FROM_DEAD = "taken_from_dead"
     TAKEN_BY_FORCE = "taken_by_force"
+    TAKEN_FROM_STALE = "taken_from_stale"
     KEPT_FOREIGN = "kept_foreign"
 
 
@@ -250,6 +262,17 @@ def _is_alive(owner: Owner) -> bool:
     # A bare name ("claude-follow", the last-resort fallback) is relative and
     # reads as dead: it never ran from tmux's PATH anyway.
     return Path(owner.executable).is_absolute() and os.access(owner.executable, os.X_OK)
+
+
+def _holds_keys(owner: Owner) -> bool:
+    """True when the server's prefix keys actually run `owner`'s executable.
+    The record outlives the bindings — a tmux server restart drops every key
+    while the cache (and the other installation) survive — and deferring to
+    an owner that holds nothing would leave the user with no keys at all.
+    Only asked on the rare live-foreign path, so the per-hook common case
+    still never lists keys."""
+    binding = _existing_binding(_KEYBINDINGS[0][0])
+    return binding is not None and owner.executable in binding
 
 
 def claim(force: bool = False, repair: bool = False) -> Claim:
@@ -272,6 +295,8 @@ def claim(force: bool = False, repair: bool = False) -> Claim:
         outcome = ClaimOutcome.TAKEN_FROM_DEAD
     elif force:
         outcome = ClaimOutcome.TAKEN_BY_FORCE
+    elif not _holds_keys(previous):
+        outcome = ClaimOutcome.TAKEN_FROM_STALE
     else:
         outcome = ClaimOutcome.KEPT_FOREIGN
     if outcome is not ClaimOutcome.KEPT_FOREIGN and (
@@ -291,6 +316,11 @@ def describe(result: Claim) -> str | None:
         return f"keybindings re-pointed from {prev.executable} to {result.current.executable}"
     if result.outcome is ClaimOutcome.TAKEN_FROM_DEAD:
         return f"keybindings moved here from {prev.executable}, which no longer exists"
+    if result.outcome is ClaimOutcome.TAKEN_FROM_STALE:
+        return (
+            f"keybindings moved here: the record named {prev.executable},"
+            " but no key was bound to it (tmux restarted?)"
+        )
     if result.outcome is ClaimOutcome.TAKEN_BY_FORCE:
         return f"keybindings taken from {prev.installation} ({prev.executable})"
     return (

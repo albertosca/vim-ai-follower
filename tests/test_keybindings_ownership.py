@@ -143,8 +143,10 @@ def test_claim_keeps_a_live_foreign_owner(plugin: Path, tmp_path: Path) -> None:
     other.parent.mkdir(parents=True)
     other.write_text("#!/bin/sh\n")
     other.chmod(0o755)
-    _record(keybindings.Owner(str(other), str(other)))
-    result, run = _claim(repair=True)
+    owner = keybindings.Owner(str(other), str(other))
+    _record(owner)
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_holding(owner)) as run:
+        result = keybindings.claim(repair=True)
     assert result.outcome is keybindings.ClaimOutcome.KEPT_FOREIGN
     assert _bound_paths(run) == []
     assert keybindings.read_owner() == keybindings.Owner(str(other), str(other))
@@ -204,6 +206,21 @@ def test_describe_names_both_sides() -> None:
     )
 
 
+def _holding(owner: keybindings.Owner) -> object:
+    """A tmux mock whose prefix table shows `owner`'s P binding: a live
+    foreign owner that actually HOLDS the keys (the only one claim() defers
+    to since the stale-record fix)."""
+    base = _mock_tmux_run()
+    line = f'bind-key -T prefix P run-shell -b "TMUX_PANE=#{{pane_id}} {owner.executable} pause"\n'
+
+    def run(cmd: list[str], **kwargs: object) -> MagicMock:
+        if cmd[:2] == ["tmux", "list-keys"]:
+            return MagicMock(returncode=0, stdout=line)
+        return base(cmd, **kwargs)
+
+    return run
+
+
 def _live_foreign_owner(tmp_path: Path) -> keybindings.Owner:
     other = tmp_path / "dev" / "bin" / "claude-follow"
     other.parent.mkdir(parents=True)
@@ -218,7 +235,7 @@ def test_start_leaves_a_live_foreign_owner_and_says_how_to_force(
     plugin: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     owner = _live_foreign_owner(tmp_path)
-    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_holding(owner)) as run:
         assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
     assert _bound_paths(run) == []
     out = capsys.readouterr().out
@@ -247,8 +264,9 @@ def test_already_running_start_does_not_claim_a_refresh_it_did_not_do(
 ) -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
         assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
-        capsys.readouterr()
-        _live_foreign_owner(tmp_path)
+    capsys.readouterr()
+    owner = _live_foreign_owner(tmp_path)
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_holding(owner)):
         assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
     out = capsys.readouterr().out
     assert "already running" in out
@@ -315,11 +333,11 @@ def test_hook_post_without_a_follower_never_touches_the_keys(plugin: Path, tmp_p
 
 
 def test_foreign_owner_warning_is_throttled(plugin: Path, tmp_path: Path) -> None:
-    _live_foreign_owner(tmp_path)
+    owner = _live_foreign_owner(tmp_path)
     _running_follower()
     target = tmp_path / "f.py"
     target.write_text("x\n")
-    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_holding(owner)):
         for _ in range(3):
             hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _read_payload(target))
     assert hooks.LOG_PATH.read_text().count("keybindings belong to") == 1
@@ -347,11 +365,11 @@ def test_a_failing_bind_never_fails_the_hook(plugin: Path, tmp_path: Path) -> No
 def test_foreign_owner_warning_repeats_once_the_interval_has_passed(
     plugin: Path, tmp_path: Path
 ) -> None:
-    _live_foreign_owner(tmp_path)
+    owner = _live_foreign_owner(tmp_path)
     _running_follower()
     target = tmp_path / "f.py"
     target.write_text("x\n")
-    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_holding(owner)):
         hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _read_payload(target))
         stale = time.time() - hooks.IDENTITY_WARN_INTERVAL_SECONDS - 1
         os.utime(hooks._foreign_keys_warning_marker(), (stale, stale))
@@ -370,3 +388,133 @@ def test_an_edit_hook_also_heals_the_keys(plugin: Path, tmp_path: Path) -> None:
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
     assert len(_bound_paths(run)) == 5
     assert all("0.2.0" in cmd for cmd in _bound_paths(run))
+
+
+# ---------------------------------------------------------------------------
+# Final-review fixes (whole-branch review, 2026-09-23).
+# ---------------------------------------------------------------------------
+
+
+def _plugin_cache_install(root: Path, version: str) -> Path:
+    """The REAL plugin-cache shape: <home>/.claude/plugins/cache/<marketplace>/
+    <plugin>/<version>/bin/claude-follow — what `/start` resolves by itself."""
+    marketplace = root / ".claude" / "plugins" / "cache" / "vim-ai-follower"
+    return _fake_install(marketplace, version).resolve()
+
+
+def test_start_via_slash_command_and_hooks_agree_on_the_installation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`/start` runs `claude-follow start` in the Bash tool, which has NO
+    CLAUDE_PLUGIN_ROOT (measured 2026-09-23); hooks do have it. Both must
+    name the same installation, or the user's own hooks see a live foreign
+    owner and never re-point the keys after an update."""
+    root = _plugin_cache_install(tmp_path, "0.2.6")
+    exe = root / "bin" / "claude-follow"
+    monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+    monkeypatch.setattr(keybindings, "_bundled_wrapper", lambda: exe)
+    started = keybindings.current_owner()
+
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(root))
+    hooked = keybindings.current_owner()
+
+    assert started == hooked
+    assert started.installation == str(root.parent)
+
+
+def test_a_shell_started_old_version_is_refreshed_by_a_new_versions_hook(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old = _plugin_cache_install(tmp_path, "0.2.6")
+    new = _plugin_cache_install(tmp_path, "0.2.7")  # old dir kept alive
+    monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+    monkeypatch.setattr(keybindings, "_bundled_wrapper", lambda: old / "bin" / "claude-follow")
+    _record(keybindings.current_owner())
+
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(new))
+    result, run = _claim()
+    assert result.outcome is keybindings.ClaimOutcome.REFRESHED
+    assert len(_bound_paths(run)) == 5
+    assert all("0.2.7" in cmd for cmd in _bound_paths(run))
+
+
+def _mock_run_with_bindings(lines: list[str]) -> object:
+    base = _mock_tmux_run()
+
+    def run(cmd: list[str], **kwargs: object) -> MagicMock:
+        if cmd[:2] == ["tmux", "list-keys"]:
+            return MagicMock(returncode=0, stdout="".join(line + "\n" for line in lines))
+        return base(cmd, **kwargs)
+
+    return run
+
+
+def test_a_live_foreign_owner_that_no_longer_holds_the_keys_is_taken_over(
+    plugin: Path, tmp_path: Path
+) -> None:
+    """A tmux server restart drops every binding while the owner record (and
+    the other installation's executable) survive. Deferring to it would leave
+    the user with no keys at all, announced as "belong to X"."""
+    owner = _live_foreign_owner(tmp_path)
+    run_fn = _mock_run_with_bindings(["bind-key -T prefix P send-keys C-a"])  # not the owner's
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=run_fn) as run:
+        result = keybindings.claim()
+    assert result.outcome is keybindings.ClaimOutcome.TAKEN_FROM_STALE
+    assert result.previous == owner
+    assert len(_bound_paths(run)) == 5
+
+
+def test_a_live_foreign_owner_that_holds_the_keys_is_kept(plugin: Path, tmp_path: Path) -> None:
+    owner = _live_foreign_owner(tmp_path)
+    bound = f'bind-key -T prefix P run-shell -b "TMUX_PANE=#{{pane_id}} {owner.executable} pause"'
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run", side_effect=_mock_run_with_bindings([bound])
+    ) as run:
+        result = keybindings.claim()
+    assert result.outcome is keybindings.ClaimOutcome.KEPT_FOREIGN
+    assert _bound_paths(run) == []
+
+
+def test_describe_a_stale_takeover() -> None:
+    dev = keybindings.Owner("/dev/bin/claude-follow", "/dev/bin/claude-follow")
+    new = keybindings.Owner("/a/0.2.0/bin/claude-follow", "/a")
+    result = keybindings.Claim(keybindings.ClaimOutcome.TAKEN_FROM_STALE, dev, new)
+    assert keybindings.describe(result) == (
+        "keybindings moved here: the record named /dev/bin/claude-follow,"
+        " but no key was bound to it (tmux restarted?)"
+    )
+
+
+def test_auto_open_repairs_keys_even_when_the_record_already_names_us(
+    plugin: Path, tmp_path: Path
+) -> None:
+    """Auto-open after a tmux restart: the record says "mine, same path" but
+    the server has no bindings. repair=True is what re-binds them."""
+    from vim_ai_follower import config
+
+    config.CONFIG_PATH.write_text(json.dumps({"open_policy": "always"}))
+    _record(keybindings.current_owner())
+    target = tmp_path / "f.py"
+    target.write_text("x\n")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _read_payload(target))
+    assert len(_bound_paths(run)) == 5
+
+
+def test_the_per_hook_heal_touches_tmux_keys_only_when_something_changed(
+    plugin: Path, tmp_path: Path
+) -> None:
+    """The common case of every hook: the record names us. No bind-key and no
+    list-keys — otherwise every edit re-binds five server-global keys."""
+    _record(keybindings.current_owner())
+    _running_follower()
+    target = tmp_path / "f.py"
+    target.write_text("x\n")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _read_payload(target))
+    keys_calls = [
+        c.args[0][:2]
+        for c in run.call_args_list
+        if c.args[0][:2] in (["tmux", "bind-key"], ["tmux", "list-keys"])
+    ]
+    assert keys_calls == []
