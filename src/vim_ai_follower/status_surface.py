@@ -177,7 +177,19 @@ class NvimStatusSurface:
         win = self._find_window(nvim)
         if win is not None:
             return win, nvim.api.win_get_buf(win)
+        # A buffer already carrying the name makes buf_set_name raise E95,
+        # which the callers' suppress() swallows — and the cue then never
+        # shows again for the life of that nvim. Only an older version of
+        # this code (which merely hid the buffer) can leave one behind now;
+        # wipe it by NUMBER before naming the new one.
+        for stale in nvim.api.list_bufs():
+            if nvim.api.buf_get_name(stale).endswith(_STATUS_BUFFER_NAME):
+                nvim.command(f"silent! bwipeout! {stale.number}")
         buf = nvim.api.create_buf(False, True)
+        # scratch buffers default to bufhidden=hide: when the float's window
+        # dies with its TAB (eviction past max_tabs) the buffer would survive
+        # under the name and strand the next cue exactly as above.
+        nvim.api.buf_set_option(buf, "bufhidden", "wipe")
         nvim.api.buf_set_name(buf, _STATUS_BUFFER_NAME)
         win = self._open_window(nvim, buf)
         return win, buf

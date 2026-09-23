@@ -750,3 +750,49 @@ def test_resume_without_a_file_path_operates_on_the_current_buffer(
 
     nvim = pynvim.attach("socket", path=headless_nvim)
     assert nvim.current.buffer[:] == ["one", "two", "three"]
+
+
+@pytest.mark.integration
+def test_the_float_comes_back_after_its_tab_is_closed_under_it(headless_nvim: str) -> None:
+    """The float window dies with its tab (eviction past max_tabs closes the
+    tab it was opened in), but a scratch buffer only HIDES on window close —
+    it survived under the name "vaf-status", so every later buf_set_name hit
+    E95 inside suppress() and the cue never came back for the life of that
+    nvim (whole-branch review, 2026-09-23; clear() was just one of the ways
+    to strand it)."""
+    surface = NvimStatusSurface(socket_path=headless_nvim)
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    nvim.command("tabnew")
+    surface.set_state("Writing...")
+    assert len(_floating_windows(nvim)) == 1
+
+    nvim.command("tabclose")
+    assert _floating_windows(nvim) == []
+    # Wiped WITH its window, not merely hidden — checked here, before the
+    # next cue, because _ensure_window's stale-buffer sweep would otherwise
+    # clean up after a hidden one and mask it.
+    names = [nvim.api.buf_get_name(b) for b in nvim.api.list_bufs()]
+    assert not any(name.endswith("vaf-status") for name in names), names
+
+    surface.set_state("Writing...")
+    floating = _floating_windows(nvim)
+    assert len(floating) == 1, "the cue never came back after its tab closed"
+    lines = nvim.api.buf_get_lines(nvim.api.win_get_buf(floating[0]), 0, -1, True)
+    assert any("Writing..." in line for line in lines)
+
+
+@pytest.mark.integration
+def test_a_leftover_status_buffer_does_not_block_the_float(headless_nvim: str) -> None:
+    """A long-lived nvim can already hold a hidden "vaf-status" buffer from
+    an older version of this code (which only hid it). Naming a fresh one
+    over it would hit E95 inside suppress() and the cue would never show."""
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    stale = nvim.api.create_buf(False, True)
+    nvim.api.buf_set_name(stale, "vaf-status")
+
+    NvimStatusSurface(socket_path=headless_nvim).set_state("Writing...")
+
+    floating = _floating_windows(nvim)
+    assert len(floating) == 1, "a leftover vaf-status buffer blocked the float"
+    lines = nvim.api.buf_get_lines(nvim.api.win_get_buf(floating[0]), 0, -1, True)
+    assert any("Writing..." in line for line in lines)
