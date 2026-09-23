@@ -68,6 +68,18 @@ def _status_float_body(nvim: Any) -> list[str] | None:
     return None
 
 
+def _typing_line_marks(nvim: Any, path: Path) -> list[int]:
+    """Rows of `path`'s buffer carrying a VafTypingLine line highlight."""
+    wanted = path.resolve()
+    ns = nvim.api.create_namespace("vaf")
+    for buf in nvim.api.list_bufs():
+        name = nvim.api.buf_get_name(buf)
+        if name and Path(name).resolve() == wanted:
+            marks = nvim.api.buf_get_extmarks(buf, ns, 0, -1, {"details": True})
+            return [row for _id, row, _col, d in marks if d.get("line_hl_group") == "VafTypingLine"]
+    return []
+
+
 def test_first_animation_shows_writing_and_keeps_the_typing_highlight(
     world: E2EFollower,
 ) -> None:
@@ -100,6 +112,13 @@ def test_first_animation_shows_writing_and_keeps_the_typing_highlight(
     nvim = world._nvim(sock)
     assert nvim.eval("get(g:, 'colors_name', '')") == "gruvbox", "stand-in scheme never ran"
     assert nvim.api.get_hl(0, {"name": "VafTypingLine"}), "VafTypingLine was wiped by hi clear"
+    # The group surviving is half the promise; the other half is that it is
+    # APPLIED — a line_hl_group extmark on the line being typed.
+    world.wait_until(
+        lambda: _typing_line_marks(nvim, path) != [],
+        "a VafTypingLine extmark on the line being typed",
+        timeout=30.0,
+    )
     body = _status_float_body(nvim)
     assert body is not None and "Writing..." in body, f"float body mid-animation: {body!r}"
 
@@ -123,6 +142,7 @@ def test_first_animation_shows_writing_and_keeps_the_typing_highlight(
     body = _status_float_body(nvim)
     assert body is not None and "Writing..." in body, f"second animation's float: {body!r}"
     world.wait_for_hook_exit(proc)
+    assert _status_float_body(nvim) is None, "the second animation's float outlived it"
 
 
 # --------------------------------------------------------------- Check 17
@@ -172,9 +192,13 @@ def test_a_live_owners_swap_is_edited_anyway_and_the_owner_still_writes(
     world.start("tmux", "instant")
     pane = _narrow_follower(world)
     owner = _open_owner_vim(world, target)
+    owner_before = world.vim_buffer_bytes(owner)
 
     _navigate_and_assert_clean(world, pane, target)
 
+    # The PASS row "its content was touched" is a FAIL: the follower's
+    # edit-anyway must not have reached into the owner's buffer.
+    assert world.vim_buffer_bytes(owner) == owner_before
     world.tmux("send-keys", "-t", owner, "Go# owner edit", "Escape", ":w", "Enter")
     world.wait_until(lambda: "# owner edit" in target.read_text(), "the owner Vim's :w")
 
@@ -201,18 +225,10 @@ def test_a_stale_swap_is_edited_anyway_and_left_on_disk(world: E2EFollower) -> N
 # --------------------------------------------------------------- Check 18
 
 
-def test_a_swap_held_file_opens_in_nvim_and_the_hook_survives(world: E2EFollower) -> None:
-    """Battery check 18 — guards d817f08. `bufload` raised E325 straight out
-    of the RPC call and killed the HOOK PROCESS instead of showing the file.
-    The owner is an NVIM, not a Vim: nvim's swap dir is
-    stdpath('state')/swap, which is where the follower nvim looks; a Vim-made
-    swap beside the file would make this vacuous. `world.cli` asserts the
-    hook's exit code, which is the whole verdict here — there is no dialog to
-    see, only a dead hook."""
-    target = world.workdir / "nvim_swap.py"
-    target.write_text("held = 'BY OWNER'\n")
-    world.start("nvim", "instant")
-    sock = world.follower_target()
+def _open_owner_nvim(world: E2EFollower, target: Path) -> str:
+    """A second real nvim holding `target`'s swap, in a detached window.
+    Returns its pane id once the swap exists in the isolated HOME's
+    stdpath('state')/swap — without it the check would be vacuous."""
     owner = world.tmux(
         "new-window",
         "-d",
@@ -225,20 +241,75 @@ def test_a_swap_held_file_opens_in_nvim_and_the_hook_survives(world: E2EFollower
     ).stdout.strip()
     swap_dir = world.home / ".local" / "state" / "nvim" / "swap"
     world.wait_until(
-        lambda: swap_dir.exists() and any("nvim_swap.py" in p.name for p in swap_dir.iterdir()),
+        lambda: swap_dir.exists() and any(target.name in p.name for p in swap_dir.iterdir()),
         "the owner nvim's swap file",
         timeout=15.0,
     )
+    return owner
+
+
+def _assert_clean_log_and_usable_owner(world: E2EFollower, owner: str) -> None:
+    """The battery's log grep (`-i` error/traceback/E325) and "the other nvim
+    is still USABLE" — proved by making it run a command, not by its pane
+    merely existing."""
+    log_path = world.cache_dir / "hook.log"
+    log = log_path.read_text() if log_path.exists() else ""
+    for needle in ("traceback", "error", "e325"):
+        assert needle not in log.lower(), f"{needle!r} in hook.log:\n{log}"
+    probe = world.workdir / f"owner_alive_{owner.lstrip('%')}.txt"
+    command = f":call writefile(['alive'], '{probe}')"
+    world.tmux("send-keys", "-t", owner, "Escape", command, "Enter")
+    world.wait_until(probe.exists, "the owner nvim to run a command", timeout=10.0)
+
+
+def test_a_swap_held_file_opens_in_nvim_and_the_hook_survives(world: E2EFollower) -> None:
+    """Battery check 18 — guards d817f08. `bufload` raised E325 straight out
+    of the RPC call and killed the HOOK PROCESS instead of showing the file.
+    The owner is an NVIM, not a Vim: nvim's swap dir is
+    stdpath('state')/swap, which is where the follower nvim looks; a Vim-made
+    swap beside the file would make this vacuous. `world.cli` asserts the
+    hook's exit code, which is the whole verdict here — there is no dialog to
+    see, only a dead hook."""
+    target = world.workdir / "nvim_swap.py"
+    target.write_text("held = 'BY OWNER'\n")
+    world.start("nvim", "instant")
+    sock = world.follower_target()
+    owner = _open_owner_nvim(world, target)
 
     result = world.cli("hook", "post", stdin=payload("Read", target))
     assert result.stderr == ""
     assert world.nvim_buffer_lines(sock, target) == ["held = 'BY OWNER'"]
-    log_path = world.cache_dir / "hook.log"
-    log = log_path.read_text() if log_path.exists() else ""
-    for needle in ("Traceback", "E325"):
-        assert needle not in log, f"{needle} in hook.log:\n{log}"
-    panes = world.tmux("list-panes", "-a", "-F", "#{pane_id}").stdout.split()
-    assert owner in panes, "the owner nvim died"
+    _assert_clean_log_and_usable_owner(world, owner)
+
+
+def test_a_swap_held_file_whose_follower_buffer_vanished_opens_on_edit(
+    world: E2EFollower,
+) -> None:
+    """Battery check 18, the OTHER caller named in its purpose: `apply_edit`'s
+    vanished-buffer branch loads from disk through the same `_open_from_disk`,
+    so a swap-held file crashed the Edit hook the same way. The follower must
+    already track the file (so the edit goes to apply_edit, not a fresh
+    retype) and its buffer must be gone (wiped, as a user `:bwipeout` does)."""
+    target = world.workdir / "nvim_swap_edit.py"
+    world.start("nvim", "instant")
+    sock = world.follower_target()
+    world.cli("hook", "pre", stdin=payload("Write", target))
+    target.write_text("before = 1\n")
+    world.cli("hook", "post", stdin=payload("Write", target))
+    nvim = world._nvim(sock)
+    wanted = target.resolve()
+    [number] = [
+        b.number for b in nvim.api.list_bufs() if b.name and Path(b.name).resolve() == wanted
+    ]
+    nvim.command(f"bwipeout! {number}")
+    owner = _open_owner_nvim(world, target)
+
+    world.cli("hook", "pre", stdin=payload("Edit", target))
+    target.write_text("before = 1\nafter = 2\n")
+    result = world.cli("hook", "post", stdin=payload("Edit", target))
+    assert result.stderr == ""
+    assert world.nvim_buffer_lines(sock, target) == ["before = 1", "after = 2"]
+    _assert_clean_log_and_usable_owner(world, owner)
 
 
 # --------------------------------------------------------------- Check 19
@@ -257,10 +328,19 @@ def test_read_navigation_shows_disk_and_clamps_the_offset(world: E2EFollower) ->
     sock = world.follower_target()
     nvim = world._nvim(sock)
 
-    world.cli("hook", "post", stdin=payload("Read", target, offset=5))
+    def current_is_target() -> bool:
+        return Path(nvim.api.buf_get_name(nvim.api.get_current_buf())).resolve() == target.resolve()
+
+    result = world.cli("hook", "post", stdin=payload("Read", target, offset=5))
+    assert result.stderr == ""
     assert world.nvim_buffer_lines(sock, target) == lines
+    # cursor and &modifiable are read from the CURRENT window/buffer: prove
+    # that is the target before trusting either.
+    assert current_is_target()
     assert nvim.api.win_get_cursor(0)[0] == 5
 
-    world.cli("hook", "post", stdin=payload("Read", target, offset=9999))
+    result = world.cli("hook", "post", stdin=payload("Read", target, offset=9999))
+    assert result.stderr == ""
+    assert current_is_target()
     assert nvim.api.win_get_cursor(0)[0] == len(lines)
     assert nvim.eval("&modifiable") == 0
