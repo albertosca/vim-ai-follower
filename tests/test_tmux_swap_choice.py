@@ -188,3 +188,26 @@ def test_every_navigation_carries_the_swap_hook() -> None:
         assert drops, f"{name} sent no navigation at all"
         for drop in drops:
             assert "SwapExists" in drop, f"{name} navigates without the hook: {drop!r}"
+
+
+def test_ensure_showings_reload_carries_the_same_scoped_answer() -> None:
+    """ensure_showing re-reads a clean buffer with `:edit`, which re-runs
+    the swap-name search and raises ATTENTION on its own when another Vim
+    owns `.swp` (measured; tests/test_integration_swap_choice.py). So that
+    line is guarded exactly like the drop: hook registered before the
+    `edit`, torn down in `finally`, `++once`, never `silent!` (which would
+    hide a dialog behind a blank screen), and a dirty buffer is skipped."""
+    follower = TmuxVimFollower(pane_id="%2")
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        follower.ensure_showing("/tmp/f.py")
+    reloads = [text for text in _sent_text(run) if "silent edit" in text]
+    assert len(reloads) == 1, _sent_text(run)
+    line = reloads[0]
+    assert line.index("autocmd SwapExists * ++once let v:swapchoice = 'e'") < line.index(
+        "silent edit"
+    )
+    assert line.index("silent edit") < line.index("| finally |")
+    assert line.index("| finally |") < line.index(f'exe "autocmd! {_GROUP}"')
+    assert line.endswith(f'exe "augroup! {_GROUP}" | endtry')
+    assert "if !&modified | silent edit | endif" in line
+    assert "silent!" not in line

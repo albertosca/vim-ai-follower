@@ -156,7 +156,6 @@ _COC_ENABLE = ":silent! CocEnable"
 # does read the file, and can raise the ATTENTION dialog like the drop.
 # The `g:` variables are unlet in `finally` (inert if a cut-off line leaves
 # them, like _WIPE_BUFFER's).
-_SWAP_GROUP = "vim_ai_follower_swap"
 #
 # The line is kept short on purpose (short `g:` names, win_gotoid's own
 # return value picking between focus and `:tab sbuffer`): at 49 columns every
@@ -164,21 +163,55 @@ _SWAP_GROUP = "vim_ai_follower_swap"
 # buffer needs no guard in the lookup: `fnamemodify('', ':p')` is the working
 # DIRECTORY, trailing slash included, which no file path can equal.
 _SWAP_GROUP = "vim_ai_follower_swap"
+# The time-scoped `(E)dit anyway` answer, as the two halves every
+# disk-reading line wraps itself in (the opening registers it; the closing
+# runs in `finally`). See above for why each piece has this exact shape.
+_SWAP_ANSWER_OPEN = (
+    f'exe "augroup {_SWAP_GROUP}"'
+    " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
+    ' | exe "augroup END"'
+)
+_SWAP_ANSWER_CLOSE = f'exe "autocmd! {_SWAP_GROUP}" | exe "augroup! {_SWAP_GROUP}"'
 _GOTO_FILE = (
     ":let g:vaf_p = {file}"
     " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
     " && fnamemodify(bufname(v:val), '':p'') ==# fnamemodify(g:vaf_p, '':p'')'), 0, -1)"
-    f' | exe "augroup {_SWAP_GROUP}"'
-    " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
-    ' | exe "augroup END"'
+    f" | {_SWAP_ANSWER_OPEN}"
     " | try"
     " | if g:vaf_n < 0 | exe 'tab drop ' . fnameescape(g:vaf_p)"
     " | elseif g:vaf_n != bufnr('%')"
     " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'tab sbuffer ' . g:vaf_n"
     " | endif"
     r" | catch /^Vim\%((\a\+)\)\=:E37:/"
-    f' | finally | exe "autocmd! {_SWAP_GROUP}" | exe "augroup! {_SWAP_GROUP}"'
+    f" | finally | {_SWAP_ANSWER_CLOSE}"
     " | unlet! g:vaf_p g:vaf_n | endtry"
+)
+
+# ensure_showing's disk re-read, for the Read/binary navigation where
+# showing the file AS IT IS ON DISK is the whole point. goto_file no longer
+# re-reads a loaded buffer (it runs before animations, where that is the
+# bug above), so a file open and clean in the follower that something other
+# than Claude's Edit rewrote — a formatter run through Bash, `sed -i`, a
+# `git checkout` — would otherwise be shown stale, and locked read-only.
+#
+#   - `if !&modified`: a dirty buffer is typed-but-unsaved content (an
+#     interrupt hand-off, a killed hook) and is never discarded here; that
+#     also makes E37 unreachable, so no catch is needed.
+#   - `:edit` re-runs Vim's swap-name search, and that DOES raise ATTENTION
+#     on its own (measured 2026-09-23): when the user's editor opened the
+#     file first it owns `.swp`, the follower took `.swo`, and the reload
+#     drops `.swo` and probes `.swp` again. Unguarded, even the first Read
+#     of such a file stalled on the dialog. So the reload carries the same
+#     time-scoped `(E)dit anyway` answer as goto_file, torn down in
+#     `finally`.
+#   - `silent` (never `silent!`) keeps the long "<path>" NL, NB message from
+#     wrapping into a hit-enter prompt at 49 columns without hiding errors.
+#   - `:edit` works on a 'nomodifiable' buffer and keeps the option; it
+#     resets 'readonly', which ensure_showing's lock re-asserts right after.
+_RELOAD_IF_CLEAN = (
+    f":{_SWAP_ANSWER_OPEN}"
+    " | try | if !&modified | silent edit | endif"
+    f" | finally | {_SWAP_ANSWER_CLOSE} | endtry"
 )
 
 
@@ -350,11 +383,17 @@ class TmuxVimFollower:
         pane.send_key("Enter")
 
     def ensure_showing(self, file_path: str) -> None:
+        """The Read/binary entry point: show the file as it is ON DISK. It
+        is the one navigation that re-reads a loaded buffer (clean only, see
+        _RELOAD_IF_CLEAN); goto_file itself never does, because it also runs
+        before every animation."""
         self.goto_file(file_path)
+        pane = TmuxPane(pane_id=self.pane_id)
+        pane.send_text(_RELOAD_IF_CLEAN)
+        pane.send_key("Enter")
         # Locked by default so a stray keystroke into this pane can't corrupt
         # the buffer: our own animation is indistinguishable from real
         # typing at the tty level, so it must explicitly unlock around itself.
-        pane = TmuxPane(pane_id=self.pane_id)
         pane.send_text(_LOCK_READONLY)
         pane.send_key("Enter")
 

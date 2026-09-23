@@ -43,6 +43,18 @@ def _goto(path: str) -> str:
     )
 
 
+# ensure_showing's clean-only disk re-read, spelled out for the same reason
+# as _goto: importing tmux_vim._RELOAD_IF_CLEAN would agree with any change.
+_RELOAD_IF_CLEAN = (
+    ':exe "augroup vim_ai_follower_swap"'
+    " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
+    ' | exe "augroup END"'
+    " | try | if !&modified | silent edit | endif"
+    ' | finally | exe "autocmd! vim_ai_follower_swap"'
+    ' | exe "augroup! vim_ai_follower_swap" | endtry'
+)
+
+
 def test_is_alive_true_when_vim_is_running_in_pane() -> None:
     follower = TmuxVimFollower(pane_id="%2")
     fake_result = MagicMock(stdout="%1 zsh\n%2 vim\n")
@@ -495,6 +507,8 @@ def test_ensure_showing_navigates_by_tab_drop_and_locks() -> None:
         ("Escape", False),
         ("Escape", False),
         (_goto("/tmp/a.py"), True),
+        ("Enter", False),
+        (_RELOAD_IF_CLEAN, True),
         ("Enter", False),
         (":setlocal readonly nomodifiable", True),
         ("Enter", False),

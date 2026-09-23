@@ -57,6 +57,18 @@ def _goto(path: object) -> str:
     )
 
 
+# ensure_showing's clean-only disk re-read, spelled out for the same reason
+# as _goto: importing tmux_vim._RELOAD_IF_CLEAN would agree with any change.
+_RELOAD_IF_CLEAN = (
+    ':exe "augroup vim_ai_follower_swap"'
+    " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
+    ' | exe "augroup END"'
+    " | try | if !&modified | silent edit | endif"
+    ' | finally | exe "autocmd! vim_ai_follower_swap"'
+    ' | exe "augroup! vim_ai_follower_swap" | endtry'
+)
+
+
 def _literal_sends(run_mock: MagicMock) -> list[str]:
     sends = []
     for call in run_mock.call_args_list:
@@ -230,7 +242,11 @@ def test_hook_post_skips_binary_files_on_first_open(tmp_path: Path) -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
-    assert _literal_sends(run) == [_goto(target), ":setlocal readonly nomodifiable"]
+    assert _literal_sends(run) == [
+        _goto(target),
+        _RELOAD_IF_CLEAN,
+        ":setlocal readonly nomodifiable",
+    ]
 
 
 def test_hook_post_skips_binary_files_on_subsequent_edit(tmp_path: Path) -> None:
@@ -260,7 +276,11 @@ def test_hook_post_read_without_offset_does_not_navigate(tmp_path: Path) -> None
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
-    assert _literal_sends(run) == [_goto(target), ":setlocal readonly nomodifiable"]
+    assert _literal_sends(run) == [
+        _goto(target),
+        _RELOAD_IF_CLEAN,
+        ":setlocal readonly nomodifiable",
+    ]
 
 
 def test_hook_post_read_skips_non_code_files_under_code_policy(
@@ -298,6 +318,7 @@ def test_hook_post_read_navigates_to_file_and_offset(tmp_path: Path) -> None:
 
     assert _literal_sends(run) == [
         _goto(target),
+        _RELOAD_IF_CLEAN,
         ":setlocal readonly nomodifiable",
         ":2",
     ]
@@ -320,6 +341,7 @@ def test_hook_post_read_navigates_even_when_file_already_current(tmp_path: Path)
 
     assert _literal_sends(run) == [
         _goto(target),
+        _RELOAD_IF_CLEAN,
         ":setlocal readonly nomodifiable",
         ":2",
     ]
