@@ -597,3 +597,26 @@ def test_a_dead_followers_leftover_state_does_not_heal_the_keys(
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=dead) as run:
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _read_payload(target)) == 0
     assert _bound_paths(run) == []
+
+
+def test_auto_open_survives_a_failing_key_bind(plugin: Path, tmp_path: Path) -> None:
+    """Auto-open claims the keys with repair=True; a bind-key failure there
+    escaped the hook as a traceback (the per-hook heal was guarded, auto-open
+    was not). Hooks must never fail the tool call."""
+    import subprocess
+
+    from vim_ai_follower import config
+
+    config.CONFIG_PATH.write_text(json.dumps({"open_policy": "always"}))
+    base = _mock_tmux_run()
+
+    def run(cmd: list[str], **kwargs: object) -> MagicMock:
+        if cmd[:2] == ["tmux", "bind-key"]:
+            raise subprocess.CalledProcessError(1, cmd)
+        return base(cmd, **kwargs)
+
+    target = tmp_path / "f.py"
+    target.write_text("x\n")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=run):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _read_payload(target)) == 0
+    assert "keybinding claim failed" in hooks.LOG_PATH.read_text()
