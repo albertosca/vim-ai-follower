@@ -62,14 +62,21 @@ def _goto(path: str) -> str:
     the same guard (tests/test_tmux_swap_choice.py); it is part of the
     literal, so it belongs in this spelling too."""
     return (
-        ':exe "augroup vim_ai_follower_swap"'
+        ":let g:vaf_p = '" + path.replace("'", "''") + "'"
+        " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
+        " && fnamemodify(bufname(v:val), '':p'') ==# fnamemodify(g:vaf_p, '':p'')'), 0, -1)"
+        ' | exe "augroup vim_ai_follower_swap"'
         " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
         ' | exe "augroup END"'
-        " | try | exe 'tab drop ' . fnameescape('"
-        + path.replace("'", "''")
-        + r"') | catch /^Vim\%((\a\+)\)\=:E37:/"
+        " | try"
+        " | if g:vaf_n < 0 | exe 'tab drop ' . fnameescape(g:vaf_p)"
+        " | elseif g:vaf_n != bufnr('%')"
+        " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'tab sbuffer ' . g:vaf_n"
+        " | endif"
+        r" | catch /^Vim\%((\a\+)\)\=:E37:/"
         ' | finally | exe "autocmd! vim_ai_follower_swap"'
-        ' | exe "augroup! vim_ai_follower_swap" | endtry'
+        ' | exe "augroup! vim_ai_follower_swap"'
+        " | unlet! g:vaf_p g:vaf_n | endtry"
     )
 
 
@@ -133,10 +140,12 @@ def test_the_guard_catches_e37_only_and_hands_the_path_to_fnameescape() -> None:
     expanded, a space split it in two and a glob opened a sibling
     (tests/test_integration_goto_file_escaping.py). It goes in as a Vim
     single-quoted literal — only `'` needs doubling there — and Vim's own
-    fnameescape() does the rest."""
+    fnameescape() does the rest. The literal is bound once to a variable,
+    because the same path also feeds the by-number buffer lookup."""
     line = _goto("/tmp/a b#c%d'e.py")
-    assert " | try | exe 'tab drop ' . fnameescape('/tmp/a b#c%d''e.py') | catch /" in line
-    assert line.endswith(' | exe "augroup! vim_ai_follower_swap" | endtry')
+    assert line.startswith(":let g:vaf_p = '/tmp/a b#c%d''e.py' | ")
+    assert " | exe 'tab drop ' . fnameescape(g:vaf_p) | " in line
+    assert line.endswith(" | unlet! g:vaf_p g:vaf_n | endtry")
     assert r"^Vim\%((\a\+)\)\=:E37:" in line
     # Its only occurrence is that single-quoted literal — never inside the
     # swap hook's double-quoted exe segments, where `\` and `"` would bite.

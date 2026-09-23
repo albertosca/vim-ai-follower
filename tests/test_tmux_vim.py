@@ -25,14 +25,21 @@ def _goto(path: str) -> str:
     comment for why the bang, `:silent!`, 'hidden', 'shortmess' and
     'noswapfile' were all measured and rejected."""
     return (
-        ':exe "augroup vim_ai_follower_swap"'
+        ":let g:vaf_p = '" + path.replace("'", "''") + "'"
+        " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
+        " && fnamemodify(bufname(v:val), '':p'') ==# fnamemodify(g:vaf_p, '':p'')'), 0, -1)"
+        ' | exe "augroup vim_ai_follower_swap"'
         " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
         ' | exe "augroup END"'
-        " | try | exe 'tab drop ' . fnameescape('"
-        + path.replace("'", "''")
-        + r"') | catch /^Vim\%((\a\+)\)\=:E37:/"
+        " | try"
+        " | if g:vaf_n < 0 | exe 'tab drop ' . fnameescape(g:vaf_p)"
+        " | elseif g:vaf_n != bufnr('%')"
+        " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'tab sbuffer ' . g:vaf_n"
+        " | endif"
+        r" | catch /^Vim\%((\a\+)\)\=:E37:/"
         ' | finally | exe "autocmd! vim_ai_follower_swap"'
-        ' | exe "augroup! vim_ai_follower_swap" | endtry'
+        ' | exe "augroup! vim_ai_follower_swap"'
+        " | unlet! g:vaf_p g:vaf_n | endtry"
     )
 
 
@@ -87,7 +94,7 @@ def test_apply_edit_unlocks_the_buffer_only_for_the_animation(tmp_path: Path) ->
     assert commands[3] == ("Enter", False)
     assert commands[4] == (":silent! CocDisable", True)
     assert commands[5] == ("Enter", False)
-    assert commands[6] == (":setlocal modifiable paste", True)
+    assert commands[6] == (":setlocal noreadonly modifiable paste", True)
     assert commands[7] == ("Enter", False)
     assert commands[-2] == (":silent! e! | setlocal nomodifiable nopaste", True)
     assert commands[-1] == ("Enter", False)
@@ -255,7 +262,7 @@ def test_show_fresh_renames_current_buffer_without_ever_loading_the_real_file(
     assert commands[9] == ("Enter", False)
     assert commands[10] == (":silent! CocDisable", True)
     assert commands[11] == ("Enter", False)
-    assert commands[12] == (":setlocal modifiable paste", True)
+    assert commands[12] == (":setlocal noreadonly modifiable paste", True)
     assert commands[13] == ("Enter", False)
     assert commands[14] == (":%d", True)
     assert commands[15] == ("Enter", False)
@@ -291,7 +298,7 @@ def test_show_fresh_with_empty_content_still_wipes_and_relocks(tmp_path: Path) -
         ("Enter", False),
         (":silent! CocDisable", True),
         ("Enter", False),
-        (":setlocal modifiable paste", True),
+        (":setlocal noreadonly modifiable paste", True),
         ("Enter", False),
         (":%d", True),
         ("Enter", False),
@@ -378,7 +385,7 @@ def test_resume_apply_edit_replays_remaining_ops_and_relocks(tmp_path: Path) -> 
     commands = _sent_commands(run)
     assert commands[0] == (":silent! CocDisable", True)
     assert commands[1] == ("Enter", False)
-    assert commands[2] == (":setlocal modifiable paste", True)
+    assert commands[2] == (":setlocal noreadonly modifiable paste", True)
     assert commands[3] == ("Enter", False)
     assert commands[-2] == (":silent! e! | setlocal nomodifiable nopaste", True)
     assert commands[-1] == ("Enter", False)
@@ -398,7 +405,7 @@ def test_resume_show_fresh_replays_remaining_lines_and_relocks_with_readonly(
         result = follower.resume(pending)
     commands = _sent_commands(run)
     assert commands[0] == (":silent! CocDisable", True)
-    assert commands[2] == (":setlocal modifiable paste", True)
+    assert commands[2] == (":setlocal noreadonly modifiable paste", True)
     assert commands[-2] == (":silent! e! | setlocal readonly nomodifiable nopaste", True)
     assert commands[-1] == ("Enter", False)
     assert result == AnimationResult("completed", 2)

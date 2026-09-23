@@ -39,14 +39,21 @@ def _goto(path: object) -> str:
     around it answers the swap-file ATTENTION dialog with `(E)dit anyway`
     and is torn down in `finally`."""
     return (
-        ':exe "augroup vim_ai_follower_swap"'
+        ":let g:vaf_p = '" + str(path).replace("'", "''") + "'"
+        " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
+        " && fnamemodify(bufname(v:val), '':p'') ==# fnamemodify(g:vaf_p, '':p'')'), 0, -1)"
+        ' | exe "augroup vim_ai_follower_swap"'
         " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
         ' | exe "augroup END"'
-        " | try | exe 'tab drop ' . fnameescape('"
-        + str(path).replace("'", "''")
-        + r"') | catch /^Vim\%((\a\+)\)\=:E37:/"
+        " | try"
+        " | if g:vaf_n < 0 | exe 'tab drop ' . fnameescape(g:vaf_p)"
+        " | elseif g:vaf_n != bufnr('%')"
+        " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'tab sbuffer ' . g:vaf_n"
+        " | endif"
+        r" | catch /^Vim\%((\a\+)\)\=:E37:/"
         ' | finally | exe "autocmd! vim_ai_follower_swap"'
-        ' | exe "augroup! vim_ai_follower_swap" | endtry'
+        ' | exe "augroup! vim_ai_follower_swap"'
+        " | unlet! g:vaf_p g:vaf_n | endtry"
     )
 
 

@@ -125,7 +125,14 @@ def _dirty_row(pane_id: str, marker: str) -> tuple[int, str]:
     return row, lines[row]
 
 
-def _assert_no_prompt(pane_id: str) -> None:
+def _assert_no_prompt(pane_id: str, wait_until: Callable[..., bool]) -> None:
+    # goto_file's line wraps over many rows at 49 columns and itself contains
+    # the text "E37" (its catch pattern), so a capture taken while Vim is still
+    # echoing it reads as an E37 on screen — measured under load 8, 2026-09-23.
+    # Wait for the echo to go; the result is deliberately not asserted: a
+    # real prompt stays on screen indefinitely, so this can only delay the
+    # checks below, never hide what they look for.
+    wait_until(lambda: "vaf_p" not in _capture(pane_id), timeout=5.0, interval=0.05)
     pane = _capture(pane_id)
     assert "E37" not in pane, f"E37 is on screen after goto_file:\n{pane}"
     assert "Press ENTER" not in pane, f"a hit-enter prompt is pending:\n{pane}"
@@ -187,7 +194,7 @@ def test_goto_file_on_the_current_dirty_buffer_shows_no_prompt(
     TmuxVimFollower(pane_id=follower_pane_id).goto_file(target)
 
     assert wait_until(lambda: "hello world" in _capture(follower_pane_id), timeout=5.0)
-    _assert_no_prompt(follower_pane_id)
+    _assert_no_prompt(follower_pane_id, wait_until)
     _assert_plain_key_lands_as_a_command(follower_pane_id, row, line_before, wait_until)
 
 
@@ -224,7 +231,7 @@ def test_goto_file_to_a_dirty_buffer_in_another_tab_shows_no_prompt(
     assert wait_until(lambda: "unsaved content" in _capture(follower_pane_id), timeout=5.0), (
         "goto_file never switched to the other tab"
     )
-    _assert_no_prompt(follower_pane_id)
+    _assert_no_prompt(follower_pane_id, wait_until)
     _assert_plain_key_lands_as_a_command(follower_pane_id, row, line_before, wait_until)
 
 
@@ -255,7 +262,7 @@ def test_goto_file_to_a_dirty_buffer_shown_in_no_window_shows_no_prompt(
     assert wait_until(lambda: "hidden unsaved" in _capture(follower_pane_id), timeout=5.0), (
         "goto_file never brought the hidden buffer back on screen"
     )
-    _assert_no_prompt(follower_pane_id)
+    _assert_no_prompt(follower_pane_id, wait_until)
     row, line_before = _dirty_row(follower_pane_id, "hidden unsaved")
     _assert_plain_key_lands_as_a_command(follower_pane_id, row, line_before, wait_until)
 
@@ -273,7 +280,7 @@ def test_goto_file_to_a_file_with_no_buffer_yet_opens_it_with_no_prompt(
     TmuxVimFollower(pane_id=follower_pane_id).goto_file(str(target))
 
     assert wait_until(lambda: "real disk content" in _capture(follower_pane_id), timeout=5.0)
-    _assert_no_prompt(follower_pane_id)
+    _assert_no_prompt(follower_pane_id, wait_until)
 
 
 def test_goto_file_to_a_clean_buffer_in_another_tab_still_switches(
@@ -283,9 +290,10 @@ def test_goto_file_to_a_clean_buffer_in_another_tab_still_switches(
     wait_until: Callable[..., bool],
 ) -> None:
     """Parity guard for the unchanged path: the E37 wrapper must not alter
-    how a CLEAN target already open in another tab is reached — it is still
-    a plain `:tab drop`, still switches to the existing tab, and still does
-    not open a duplicate."""
+    how a CLEAN target already open in another tab is reached — it still
+    switches to the existing tab (by buffer number now, not `:tab drop`,
+    which would re-read the clean buffer from disk) and still does not open
+    a duplicate."""
     follower_pane_id = _start_follower(tmux_session, monkeypatch, wait_until)
     target = tmp_path / "clean_elsewhere.py"
     target.write_text("clean elsewhere body\n")
@@ -301,7 +309,7 @@ def test_goto_file_to_a_clean_buffer_in_another_tab_still_switches(
     TmuxVimFollower(pane_id=follower_pane_id).goto_file(str(target))
 
     assert wait_until(lambda: "clean elsewhere body" in _capture(follower_pane_id), timeout=5.0)
-    _assert_no_prompt(follower_pane_id)
+    _assert_no_prompt(follower_pane_id, wait_until)
     # Two tabs, not three: the existing tab was reused.
     tabline = _capture(follower_pane_id).splitlines()[0]
     assert tabline.count("current_tab2.py") == 1
@@ -341,5 +349,5 @@ def test_hook_post_on_a_target_left_dirty_by_a_pause_shows_no_prompt(
     TmuxVimFollower(pane_id=follower_pane_id).goto_file(str(target))
 
     assert wait_until(lambda: "another line unsaved" in _capture(follower_pane_id), timeout=5.0)
-    _assert_no_prompt(follower_pane_id)
+    _assert_no_prompt(follower_pane_id, wait_until)
     _assert_plain_key_lands_as_a_command(follower_pane_id, row, line_before, wait_until)

@@ -9,8 +9,10 @@ from vim_ai_follower.diff import EditOp
 
 class Follower(Protocol):
     """A target that can show and animate file edits. Multi-file navigation
-    is tab-based in both backends: the tmux backend's goto_file sends
-    `:tab drop` via keystrokes; the nvim backend's goto_file finds or opens
+    is tab-based in both backends: the tmux backend's goto_file sends one
+    Ex line via keystrokes that switches to an already-loaded buffer by
+    number and falls back to `:tab drop` only for a file no buffer holds
+    (a drop would re-read a clean buffer from disk); the nvim backend's goto_file finds or opens
     the tab via its RPC API (never an Ex command, to avoid discarding
     unsaved-but-never-written buffer content — E37 / silent disk reload).
     Either way, close_tab is the generic eviction primitive the hook calls
