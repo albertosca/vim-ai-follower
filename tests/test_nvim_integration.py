@@ -796,3 +796,30 @@ def test_a_leftover_status_buffer_does_not_block_the_float(headless_nvim: str) -
     assert len(floating) == 1, "a leftover vaf-status buffer blocked the float"
     lines = nvim.api.buf_get_lines(nvim.api.win_get_buf(floating[0]), 0, -1, True)
     assert any("Writing..." in line for line in lines)
+
+
+@pytest.mark.integration
+def test_the_status_float_follows_the_animation_to_the_current_tab(headless_nvim: str) -> None:
+    """A writer float opened in tab 1 used to receive "Writing..." while the
+    animation ran in tab 2, where nobody could see it: _find_window walked
+    list_wins() across ALL tabs. The float must move to the current tab and
+    keep the writer's title — and there must never be two of them."""
+    surface = NvimStatusSurface(socket_path=headless_nvim)
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    surface.set_writer("code-reviewer", "colour78")
+    nvim.command("tabnew")
+
+    surface.set_state("Writing...")
+
+    current = [
+        w
+        for w in nvim.api.tabpage_list_wins(nvim.api.get_current_tabpage())
+        if nvim.api.win_get_config(w)["relative"] != ""
+    ]
+    assert len(current) == 1, "no status float on the tab the animation runs in"
+    config = nvim.api.win_get_config(current[0])
+    assert any("code-reviewer" in chunk[0] for chunk in config["title"])
+    assert "FloatBorder:" in nvim.api.win_get_option(current[0], "winhighlight")
+    lines = nvim.api.buf_get_lines(nvim.api.win_get_buf(current[0]), 0, -1, True)
+    assert any("Writing..." in line for line in lines)
+    assert len(_floating_windows(nvim)) == 1, "a second status float was left behind"

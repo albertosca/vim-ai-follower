@@ -200,6 +200,8 @@ def test_set_writer_reuses_an_existing_floating_window_and_clears_the_color_when
     nvim.api.win_get_buf.return_value = 7
     nvim.api.buf_get_name.return_value = "vaf-status"
     nvim.api.buf_get_lines.return_value = ["old-label", "Claude waiting"]
+    # the float is already on the current tab: reused in place, not moved
+    nvim.api.win_get_tabpage.return_value = nvim.api.get_current_tabpage.return_value
     nvim.api.win_get_cursor.return_value = (1, 0)
 
     with patch("pynvim.attach", return_value=nvim):
@@ -239,6 +241,8 @@ def test_set_state_reuses_an_existing_window_without_recreating_it() -> None:
     nvim.api.win_get_buf.return_value = 7
     nvim.api.buf_get_name.return_value = "vaf-status"
     nvim.api.buf_get_lines.return_value = ["code-reviewer"]
+    # the float is already on the current tab: reused in place, not moved
+    nvim.api.win_get_tabpage.return_value = nvim.api.get_current_tabpage.return_value
 
     with patch("pynvim.attach", return_value=nvim):
         NvimStatusSurface(socket_path="/tmp/x.sock").set_state("Claude waiting")

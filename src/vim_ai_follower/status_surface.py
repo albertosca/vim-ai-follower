@@ -176,6 +176,8 @@ class NvimStatusSurface:
         none yet."""
         win = self._find_window(nvim)
         if win is not None:
+            if nvim.api.win_get_tabpage(win) != nvim.api.get_current_tabpage():
+                win = self._move_to_current_tab(nvim, win)
             return win, nvim.api.win_get_buf(win)
         # A buffer already carrying the name makes buf_set_name raise E95,
         # which the callers' suppress() swallows — and the cue then never
@@ -193,6 +195,22 @@ class NvimStatusSurface:
         nvim.api.buf_set_name(buf, _STATUS_BUFFER_NAME)
         win = self._open_window(nvim, buf)
         return win, buf
+
+    def _move_to_current_tab(self, nvim: pynvim.Nvim, win: Any) -> Any:
+        """Floats belong to one tabpage. A persistent writer float opened in
+        tab A kept receiving "Writing..." while the animation ran in tab B,
+        where nobody could see it (reproduced 2026-09-23). Re-open it here on
+        the SAME buffer — shown by the new window, so closing the old one
+        does not wipe it — carrying the writer's title and border colour."""
+        buf = nvim.api.win_get_buf(win)
+        # Every status float is opened with a title (_DEFAULT_TITLE at least).
+        title = nvim.api.win_get_config(win)["title"]
+        highlight = nvim.api.win_get_option(win, "winhighlight")
+        moved = self._open_window(nvim, buf)
+        nvim.api.win_set_config(moved, {"title": title, "title_pos": "center"})
+        nvim.api.win_set_option(moved, "winhighlight", highlight)
+        nvim.api.win_close(win, True)
+        return moved
 
     def _mark_cursor(self, nvim: pynvim.Nvim, label: str, color: str | None) -> None:
         """The "at the edit point" cue: a SUBTLE virtual-text extmark near the
