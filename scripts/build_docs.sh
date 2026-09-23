@@ -24,6 +24,7 @@ cp -R .docs-build/pt site/pt
 
 mkdir -p site/assets site/stylesheets site/pt/stylesheets
 if [ -d assets/diagrams ]; then cp -R assets/diagrams site/assets/diagrams; fi
+if [ -d assets/demo ]; then mkdir -p site/assets/demo && cp assets/demo/follow.mp4 assets/demo/follow.gif site/assets/demo/; fi
 cp assets/site/gruvbox.css site/stylesheets/gruvbox.css
 cp assets/site/gruvbox.css site/pt/stylesheets/gruvbox.css
 if [ -f assets/site/social-preview.png ]; then mkdir -p site/assets/site && cp assets/site/social-preview.png site/assets/site/; fi

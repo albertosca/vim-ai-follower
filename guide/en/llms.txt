@@ -1,3 +1,25 @@
 # vim-ai-follower
 
-> Watch Claude Code type into your own Vim. Open-source Claude Code plugin (Python, `PreToolUse`/`PostToolUse` hooks, tmux + Neovim backends) that snapshots each file edit, diffs it, and replays it keystroke by keystroke into a real Vim or Neovim pane, at a pace you can actually read, so you can pause it and take the keyboard back.
+> Watch Claude Code type into your own Vim. Open-source Claude Code plugin (Python, MIT, `PreToolUse`/`PostToolUse` hooks, tmux + Neovim backends) that snapshots each file edit, diffs it, and replays it line by line into a real Vim or Neovim pane, at a pace you can actually read, so you can pause it, take the keyboard, and hand it back.
+
+<!-- facts -->700+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim backends · v0.2.8<!-- /facts -->
+
+vim-ai-follower is for developers who run Claude Code inside tmux with Vim or Neovim and want to follow each edit as it happens instead of reading a diff afterwards. The default backend types into an unmodified Vim with tmux `send-keys`; the `nvim` backend drives Neovim over msgpack-RPC and can adopt the nvim you already have open. It never writes your files (follower buffers are never saved), every hook exits 0 so it never fails a Claude Code tool call, and nothing leaves your machine. The animation does take time; speed keys, interrupt and mute are the controls for that. Built by Alberto Cavalcanti (https://www.linkedin.com/in/albertosca/).
+
+## Docs
+
+- [Install](https://albertosca.github.io/vim-ai-follower/getting-started/install/): requirements, the Claude Code plugin install, the manual install with hand-wired hooks
+- [Follow your first edit](https://albertosca.github.io/vim-ai-follower/getting-started/first-follow/): start the follower from Claude Code and watch an edit animate
+- [Pause, take over, speed and mute](https://albertosca.github.io/vim-ai-follower/guides/controls/): the tmux prefix keys P, S, +, _ and F
+- [Multi-file tabs](https://albertosca.github.io/vim-ai-follower/guides/multi-file-tabs/): one Vim tab per file, recency-ordered, capped at max_tabs
+- [Adopting an editor](https://albertosca.github.io/vim-ai-follower/guides/adopting-an-editor/): let the follower drive the Vim you already have open, and its risks
+- [Neovim backend](https://albertosca.github.io/vim-ai-follower/guides/nvim-backend/): drive Neovim over msgpack-RPC, adopt or launch
+- [Command line](https://albertosca.github.io/vim-ai-follower/reference/cli/): claude-follow subcommands, start flags, slash commands
+- [Configuration](https://albertosca.github.io/vim-ai-follower/reference/config/): config.json keys and defaults
+- [Keybindings](https://albertosca.github.io/vim-ai-follower/reference/keybindings/): the tmux prefix keys and who owns them
+- [Engineering](https://albertosca.github.io/vim-ai-follower/engineering/): how it works, five design decisions and their trade-offs, with commits and tests
+- [FAQ](https://albertosca.github.io/vim-ai-follower/faq/): does it slow Claude down, does it touch my files, what leaves the machine, limitations
+
+## Source
+
+- [GitHub repository](https://github.com/albertosca/vim-ai-follower): code, issues; installed through the Claude Code plugin marketplace (`/plugin marketplace add albertosca/vim-ai-follower`)

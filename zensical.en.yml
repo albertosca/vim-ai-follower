@@ -36,4 +36,18 @@ extra:
       lang: pt
 nav:
   - Home: index.md
+  - Getting started:
+      - Install: getting-started/install.md
+      - First follow: getting-started/first-follow.md
+  - Guides:
+      - Pause, take over, speed and mute: guides/controls.md
+      - Multi-file tabs: guides/multi-file-tabs.md
+      - Adopting an editor: guides/adopting-an-editor.md
+      - Neovim backend: guides/nvim-backend.md
+  - Reference:
+      - CLI: reference/cli.md
+      - Configuration: reference/config.md
+      - Keybindings: reference/keybindings.md
+  - Engineering: engineering.md
+  - FAQ: faq.md
   - LinkedIn: https://www.linkedin.com/in/albertosca/
