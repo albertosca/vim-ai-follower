@@ -8,6 +8,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from vim_ai_follower import cache
@@ -118,6 +119,51 @@ def _saved_bindings_path() -> Path:
     return cache.CACHE_DIR / "saved-keybindings.json"
 
 
+@dataclass(frozen=True)
+class Owner:
+    """Who the server-global prefix keys currently belong to: the executable
+    path embedded in the bindings, and the installation it came from."""
+
+    executable: str
+    installation: str
+
+
+def _owner_path() -> Path:
+    return cache.CACHE_DIR / "keybindings-owner.json"
+
+
+def _installation_id(executable: str) -> str:
+    """The installation `executable` belongs to. Running as a plugin, every
+    version of it is ONE installation: the id is CLAUDE_PLUGIN_ROOT's parent,
+    because the root itself is version-stamped (installPath ends in
+    `/<version>`) and `plugin update` replaces it. That layout is observed in
+    installed_plugins.json on 2026-09-22, not a documented contract; if it
+    changes, each path becomes its own installation and a dead old path is
+    still taken, only a kept-alive old one is warned about instead of
+    refreshed. Anything else (dev checkout wrapper, venv script) is
+    identified by its own path."""
+    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    if plugin_root and Path(executable).is_relative_to(plugin_root):
+        return str(Path(plugin_root).parent)
+    return executable
+
+
+def current_owner() -> Owner:
+    executable = _claude_follow_executable()
+    return Owner(executable, _installation_id(executable))
+
+
+def read_owner() -> Owner | None:
+    """The recorded owner, or None when there is none or it is unreadable —
+    a truncated or foreign-schema record must degrade to "no owner", never
+    raise out of a hook."""
+    try:
+        data = json.loads(_owner_path().read_text())
+        return Owner(str(data["executable"]), str(data["installation"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
 def _existing_binding(key: str) -> str | None:
     # List the whole prefix table and filter ourselves: tmux 3.7b returns
     # empty output for `list-keys -T prefix <key>` even when the binding
@@ -150,7 +196,8 @@ def register() -> None:
         # user's original binding.
         saved_path.parent.mkdir(parents=True, exist_ok=True)
         saved_path.write_text(json.dumps({key: _existing_binding(key) for key, _ in _KEYBINDINGS}))
-    executable = shlex.quote(_claude_follow_executable())
+    owner = current_owner()
+    executable = shlex.quote(owner.executable)
     for key, subcommand in _KEYBINDINGS:
         subprocess.run(
             [
@@ -177,6 +224,9 @@ def register() -> None:
             ],
             check=True,
         )
+    _owner_path().write_text(
+        json.dumps({"executable": owner.executable, "installation": owner.installation})
+    )
 
 
 def unregister() -> None:
@@ -196,3 +246,4 @@ def unregister() -> None:
         else:
             subprocess.run(["tmux", "unbind-key", "-T", "prefix", key], check=False)
     saved_path.unlink(missing_ok=True)
+    _owner_path().unlink(missing_ok=True)
