@@ -25,5 +25,19 @@ jobs:
       # The floor is the unit suite's own measured coverage (99% branch on
       # 2026-09-21); the full suite with integration tests reaches 100%
       # locally, which is the number the project holds itself to.
+      # tests/scripts is plain-pytest (not integration-marked), so it is
+      # already collected here — a separate `pytest tests/scripts` step
+      # would just rerun the same tests twice.
       - name: Unit tests with coverage
-        run: pytest -m "not integration" -q --cov=vim_ai_follower --cov-branch --cov-fail-under=98
+        run: |
+          pytest -m "not integration" -q --cov=vim_ai_follower --cov-branch \
+            --cov-fail-under=98 --junitxml=unit-report.xml
+
+      # check_readme_facts.py and check_docs_parity.py are pure-stdlib (no
+      # zensical import), so the docs extra is not installed in this job —
+      # scripts/build_docs.sh (which does need zensical) runs in docs.yml.
+      - name: README facts and links
+        run: python scripts/check_readme_facts.py --junit unit-report.xml
+
+      - name: Docs EN/PT parity
+        run: python scripts/check_docs_parity.py guide

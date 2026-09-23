@@ -1,0 +1,70 @@
+name: Docs
+
+# Builds the bilingual guide/ site and deploys it to GitHub Pages. A PR touching the
+# site's inputs gets a strict, unstamped build (proves it still builds); a push to
+# main stamps revision dates into guide/ and deploys. Enabling Pages itself (repo
+# Settings > Pages > Source: GitHub Actions) is a manual step outside this file.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'guide/**'
+      - 'zensical.*.yml'
+      - 'assets/**'
+      - 'overrides/**'
+      - 'README*.md'
+      - 'scripts/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # full history: a shallow clone dates every page with the newest commit
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@v10.2.0
+
+      # PRs only prove the site still builds (build_docs.sh runs uv run --extra docs
+      # zensical build --strict) — no --stamp, since a PR build isn't published.
+      - name: Build (strict, unstamped)
+        if: github.event_name == 'pull_request'
+        run: bash scripts/build_docs.sh
+
+      # Pushes to main are what gets deployed: --stamp writes real git revision
+      # dates into guide/ pages before the build.
+      - name: Build (stamped, checked)
+        if: github.event_name != 'pull_request'
+        run: bash scripts/build_docs.sh --stamp
+
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
