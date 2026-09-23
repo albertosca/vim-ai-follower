@@ -192,13 +192,14 @@ def test_a_live_owners_swap_is_edited_anyway_and_the_owner_still_writes(
     world.start("tmux", "instant")
     pane = _narrow_follower(world)
     owner = _open_owner_vim(world, target)
-    owner_before = world.vim_buffer_bytes(owner)
+    disk_before = target.read_bytes()
 
     _navigate_and_assert_clean(world, pane, target)
 
-    # The PASS row "its content was touched" is a FAIL: the follower's
-    # edit-anyway must not have reached into the owner's buffer.
-    assert world.vim_buffer_bytes(owner) == owner_before
+    # The PASS row "its content was touched" is a FAIL. The owner is another
+    # process: the only channel the follower has into its content is the FILE
+    # (a write the owner would then reload), so that is what must not move.
+    assert target.read_bytes() == disk_before
     world.tmux("send-keys", "-t", owner, "Go# owner edit", "Escape", ":w", "Enter")
     world.wait_until(lambda: "# owner edit" in target.read_text(), "the owner Vim's :w")
 
@@ -253,7 +254,10 @@ def _assert_clean_log_and_usable_owner(world: E2EFollower, owner: str) -> None:
     is still USABLE" — proved by making it run a command, not by its pane
     merely existing."""
     log_path = world.cache_dir / "hook.log"
-    log = log_path.read_text() if log_path.exists() else ""
+    # Every hook configures logging (creating the file) before doing anything,
+    # so a missing log means the grep below would search nothing.
+    assert log_path.exists(), "no hook.log: the hooks never ran, or logged elsewhere"
+    log = log_path.read_text()
     for needle in ("traceback", "error", "e325"):
         assert needle not in log.lower(), f"{needle!r} in hook.log:\n{log}"
     probe = world.workdir / f"owner_alive_{owner.lstrip('%')}.txt"
