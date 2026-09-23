@@ -31,7 +31,7 @@ Every edit replayed line by line, at a pace you can actually read — pause it, 
 ## What it won't do
 
 - **It never writes your files.** Follower buffers are never saved, and are locked read-only between animations (an adopted Neovim is the exception: it is your own editor, so it is never locked).
-- **It never fails a Claude Code tool call.** The hooks are built to exit `0` and log problems to `hook.log` instead of failing the tool call. The animation does take time — that's what the speed keys and interrupt are for.
+- **It never fails a Claude Code tool call.** The hooks are built to exit `0` and log problems to `hook.log` instead of failing the tool call. The animation does take time — that's what the speed keys and mute are for.
 - **Nothing leaves your machine.** The package imports no network module, and Neovim is reached over a local socket.
 
 ## Built with care
