@@ -629,7 +629,7 @@ check).
 ONE nvim — not stacked windows, and not one tab whose content is silently
 replaced by each new file (`7abf023`, fixed further in `5253e00`/`142b76d`).
 
-**Machine-verified** by `tests/test_e2e_battery_tranche2.py::test_three_writes_land_as_three_real_tabs` (one tab per file, each buffer holding only its own marker, read over RPC) — the whole PASS table is covered; run this by hand only as a fallback or to eyeball the tab line.
+**Machine-verified** by `tests/test_e2e_battery_tranche2.py::test_three_writes_land_as_three_real_tabs` (exactly three tabs, one window each, one tab per file, each buffer holding only its own marker, read over RPC) — the whole PASS table is covered; run this by hand only as a fallback or to eyeball the tab line.
 
 **Setup:**
 
@@ -975,7 +975,7 @@ answers a prompt instead of navigating. The fix is Vim's own
 `goto_file`'s single Ex line — scoped by TIME, so a user `:e` of a swapped
 file afterwards still gets the normal dialog.
 
-**Machine-verified** by `tests/test_e2e_battery_tranche2.py::test_a_live_owners_swap_is_edited_anyway_and_the_owner_still_writes` and `::test_a_stale_swap_is_edited_anyway_and_left_on_disk` (at 49 columns: no E325/ATTENTION in `:messages`, cursor not parked on the bottom row, real content in the buffer, the owner still `:w`s, the stale swap survives) — the whole PASS table is covered; run this by hand only as a fallback.
+**Machine-verified** by `tests/test_e2e_battery_tranche2.py::test_a_live_owners_swap_is_edited_anyway_and_the_owner_still_writes` and `::test_a_stale_swap_is_edited_anyway_and_left_on_disk` (at 49 columns: no E325/ATTENTION in `:messages`, cursor not parked on the bottom row, real content in the buffer, the owner still `:w`s, the stale swap survives). Not machine-checked: that the owner Vim's own content was left untouched — glance at it in a manual run.
 
 **Setup — two steps, in order:**
 
@@ -1042,7 +1042,7 @@ for Read navigation, and `apply_edit`'s vanished-buffer branch). The buffer's
 own `swapfile` is now turned off between `bufadd` and `bufload`, which is
 safe because this backend's buffers are display-only and never written.
 
-**Machine-verified** by `tests/test_e2e_battery_tranche2.py::test_a_swap_held_file_opens_in_nvim_and_the_hook_survives` (exit 0 through the real CLI, empty stderr, disk content in the buffer, no Traceback/E325 in `hook.log`, owner nvim alive) — the whole PASS table is covered; run this by hand only as a fallback.
+**Machine-verified** by `tests/test_e2e_battery_tranche2.py::test_a_swap_held_file_opens_in_nvim_and_the_hook_survives` (exit 0 through the real CLI, empty stderr, disk content in the buffer, no Traceback/E325 in `hook.log`, owner nvim's pane alive) — through the Read caller only. Not machine-checked: the broader `grep -i error` of the log, the owner nvim still being USABLE (only its pane is checked), and `apply_edit`'s vanished-buffer caller.
 
 **Setup:**
 

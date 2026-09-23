@@ -44,6 +44,11 @@ def test_three_writes_land_as_three_real_tabs(world: E2EFollower) -> None:
         _write_through_hooks(world, path, f"# TAB {name.upper()}\nvalue = '{name}'\n")
 
     nvim = world._nvim(sock)
+    tabs = nvim.api.list_tabpages()
+    # The PASS table's other rows: exactly three tabs (no leftover blank one)
+    # and one window each (not splits stacked inside a tab).
+    assert len(tabs) == 3, f"expected 3 tabs, found {len(tabs)}"
+    assert [len(nvim.api.tabpage_list_wins(tab)) for tab in tabs] == [1, 1, 1]
     shown = [
         Path(nvim.api.buf_get_name(nvim.api.win_get_buf(nvim.api.tabpage_get_win(tab)))).resolve()
         for tab in nvim.api.list_tabpages()
