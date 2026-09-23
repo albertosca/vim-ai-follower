@@ -37,7 +37,7 @@ LINK_FILES = ("README.md", "README.pt.md")
 STALE_BAND = 100
 
 _BLOCK = re.compile(r"<!-- facts -->(.*?)<!-- /facts -->", re.DOTALL)
-_TESTS = re.compile(r"(\d[\d.,]*)\+\s*(?:tests|testes)")
+_TESTS = re.compile(r"(\d[\d.,]*)\+\s*(?:unit\s+)?(?:tests|testes)")
 _COVERAGE = re.compile(r"(\d+)%")
 _VERSION = re.compile(r"\bv(\d+\.\d+\.\d+)\b")
 _COV_GATE = re.compile(r"--cov-fail-under=(\d+)")

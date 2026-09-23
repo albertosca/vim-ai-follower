@@ -35,6 +35,28 @@ def test_portuguese_thousands_separator_parses() -> None:
     assert _crf().fact_problems("README.md", text, _facts(tests=1700)) == []
 
 
+def test_mandated_proof_line_wording_parses() -> None:
+    text = _block(
+        "700+ unit tests in CI · 100% branch coverage on the full suite · "
+        "Vim + Neovim backends · v0.2.8"
+    )
+    assert _crf().fact_problems("README.md", text, _facts()) == []
+
+
+def test_mandated_proof_line_wording_parses_pt() -> None:
+    text = _block(
+        "700+ testes de unidade no CI · 100% de cobertura de branches na suíte completa · "
+        "backends Vim + Neovim · v0.2.8"
+    )
+    assert _crf().fact_problems("README.pt.md", text, _facts()) == []
+
+
+def test_a_unit_test_count_above_reality_is_a_false_claim() -> None:
+    text = _block("800+ unit tests in CI · 100% · v0.2.8")
+    [problem] = _crf().fact_problems("README.md", text, _facts(tests=757))
+    assert "false" in problem and "800" in problem and "757" in problem
+
+
 def test_a_test_count_above_reality_is_a_false_claim() -> None:
     [problem] = _crf().fact_problems("README.md", _block("800+ tests · 100% · v0.2.8"), _facts())
     assert "false" in problem and "800" in problem and "700" in problem
