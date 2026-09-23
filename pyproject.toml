@@ -42,7 +42,7 @@ quote-style = "double"
 
 [tool.mypy]
 strict = true
-files = ["src", "tests"]
+files = ["src", "tests", "scripts"]
 
 [[tool.mypy.overrides]]
 module = "pynvim.*"
