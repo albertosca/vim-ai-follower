@@ -28,7 +28,7 @@ Feito por Alberto Cavalcanti · [Conecte-se no LinkedIn](https://www.linkedin.co
 - O `Edit` ou o `Write` do Claude Code chega ao disco primeiro; um hook `PreToolUse` já tinha guardado o conteúdo antigo.
 - Um hook `PostToolUse` compara o conteúdo antigo com o novo e reproduz a mudança no seu Vim (`tmux send-keys`) ou no Neovim (RPC).
 - Num `Read`, o follower navega até aquele arquivo e linha.
-- Você continua no controle: `prefix` `P` pausa, `prefix` `S` pega o teclado, e salvar a sua versão devolve o controle.
+- Você continua no controle: `prefix` `P` pausa, `prefix` `S` pega o teclado, e salvar a sua versão devolve o controle (use `:w!` se o Vim acusar E13).
 
 ## O que ele não faz
 

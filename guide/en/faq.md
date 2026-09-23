@@ -12,7 +12,7 @@ A Claude Code plugin that replays every file edit Claude makes into a real Vim o
 
 ### Does it slow Claude down?
 
-Yes, while it animates. Claude's edit is already on disk when the animation starts, but the hook holds Claude's turn until the animation finishes, so a long edit at a slow pace takes real time. For speed, `prefix` `+` steps the pace up, one notch at a time, up to `instant` (no pacing), and `prefix` `F` mutes the follower: while muted, edits are not animated at all. `prefix` `S` is not a speed control: it stops the animation and hands you the buffer, and Claude's turn then waits until you save your version (or press `S` again to discard your edits and let the animation resume). See [Pause, take over, speed and mute](guides/controls.md).
+Yes, while it animates. Claude's edit is already on disk when the animation starts, but the hook holds Claude's turn until the animation finishes, so a long edit at a slow pace takes real time. For speed, `prefix` `+` steps the pace up, one notch at a time, up to `instant` (no pacing), and `prefix` `F` mutes the follower: while muted, edits are not animated at all. `prefix` `S` is not a speed control: it stops the animation and hands you the buffer, and Claude's turn then waits until you save your version (use `:w!` if Vim reports E13 on hand-back) or press `S` again to discard your edits and let the animation resume. See [Pause, take over, speed and mute](guides/controls.md).
 
 ### Does it touch my files?
 

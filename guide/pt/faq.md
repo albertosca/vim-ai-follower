@@ -12,7 +12,7 @@ Um plugin do Claude Code que reproduz cada edição de arquivo que o Claude faz 
 
 ### Isso deixa o Claude mais lento?
 
-Sim, enquanto anima. A edição do Claude já está no disco quando a animação começa, mas o hook segura a vez do Claude até a animação terminar, então uma edição longa num ritmo lento consome tempo real. Pra velocidade, `prefix` `+` acelera o ritmo, uma marcação de cada vez, até `instant` (sem ritmo algum), e `prefix` `F` muta o follower: enquanto mutado, as edições não são animadas. `prefix` `S` não é um controle de velocidade: ele para a animação e entrega o buffer pra você, e a vez do Claude fica esperando até você salvar a sua versão (ou apertar `S` de novo pra descartar suas edições e deixar a animação retomar). Veja [Pausar, assumir, velocidade e mudo](guides/controls.md).
+Sim, enquanto anima. A edição do Claude já está no disco quando a animação começa, mas o hook segura a vez do Claude até a animação terminar, então uma edição longa num ritmo lento consome tempo real. Pra velocidade, `prefix` `+` acelera o ritmo, uma marcação de cada vez, até `instant` (sem ritmo algum), e `prefix` `F` muta o follower: enquanto mutado, as edições não são animadas. `prefix` `S` não é um controle de velocidade: ele para a animação e entrega o buffer pra você, e a vez do Claude fica esperando até você salvar a sua versão (use `:w!` se o Vim acusar E13 ao devolver) ou apertar `S` de novo pra descartar suas edições e deixar a animação retomar. Veja [Pausar, assumir, velocidade e mudo](guides/controls.md).
 
 ### Isso toca nos meus arquivos?
 

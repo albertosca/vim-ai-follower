@@ -19,7 +19,7 @@ If the hook process is killed (e.g. hook timeout) while paused, a crash-fallback
 **Interrupt** (`S`) hands the buffer to you: edit it and save your own version, and Claude is told you took over (it re-reads your version from disk rather than restoring its own).
 
 1. While an edit is animating, press `prefix` `S`. The follower hands you the buffer.
-2. Edit it, then save your version to hand it back. Claude is told you took over, and re-reads your version from disk.
+2. Edit it, then save your version to hand it back (use `:w!` if Vim reports E13 — Claude created the file, so Vim treats the buffer as unassociated with it). Claude is told you took over, and re-reads your version from disk.
 3. Changed your mind? Pressing `S` again during the hand-off discards your unsaved edits and resumes following the file Claude wrote.
 
 ## How to speed up or slow down the animation
