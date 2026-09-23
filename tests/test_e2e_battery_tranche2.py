@@ -234,3 +234,28 @@ def test_a_swap_held_file_opens_in_nvim_and_the_hook_survives(world: E2EFollower
         assert needle not in log, f"{needle} in hook.log:\n{log}"
     panes = world.tmux("list-panes", "-a", "-F", "#{pane_id}").stdout.split()
     assert owner in panes, "the owner nvim died"
+
+
+# --------------------------------------------------------------- Check 19
+
+
+def test_read_navigation_shows_disk_and_clamps_the_offset(world: E2EFollower) -> None:
+    """Battery check 19 — guards 98b6201. A Read of a never-animated file
+    opened an EMPTY buffer (ensure_showing delegated to goto_file, which never
+    reads disk), and an offset past EOF then raised "Invalid cursor line" out
+    of the hook. The adopted-nvim half stays manual (see the battery); this
+    nvim is launched, so the buffer must end nomodifiable."""
+    target = world.workdir / "read_nav.py"
+    lines = [f"row_{i} = {i}" for i in range(1, 47)]
+    target.write_text("".join(line + "\n" for line in lines))
+    world.start("nvim", "instant")
+    sock = world.follower_target()
+    nvim = world._nvim(sock)
+
+    world.cli("hook", "post", stdin=payload("Read", target, offset=5))
+    assert world.nvim_buffer_lines(sock, target) == lines
+    assert nvim.api.win_get_cursor(0)[0] == 5
+
+    world.cli("hook", "post", stdin=payload("Read", target, offset=9999))
+    assert nvim.api.win_get_cursor(0)[0] == len(lines)
+    assert nvim.eval("&modifiable") == 0
