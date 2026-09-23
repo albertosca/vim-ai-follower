@@ -15,7 +15,7 @@ vim-ai-follower types into an editor you are looking at, from hooks that run ins
 
 `claude-follow` is a single Python CLI that is both the control surface (`start`/`stop`/`status`, pause/interrupt, speed, toggle) and the Claude Code hook handler. On each `Edit`/`MultiEdit`/`Write`, a `PreToolUse` hook snapshots the file's old content and a `PostToolUse` hook diffs it against the new content and replays the change into the follower with `tmux send-keys` (or over RPC, on the [nvim backend](guides/nvim-backend.md)). On each `Read`, the follower navigates to that file (and line).
 
-The follower buffer is kept read-only between animations, so a stray keystroke can never corrupt what you are watching; the animation unlocks around itself and relocks (with a silent disk resync) when it finishes.
+The follower buffer is kept read-only between animations (an adopted Neovim is the exception: it is your own editor, so it is never locked), so a stray keystroke can never corrupt what you are watching; the animation unlocks around itself and relocks (with a silent disk resync) when it finishes.
 
 ## Decisions and the trade-offs accepted
 
@@ -33,7 +33,7 @@ The `tmux` backend drives an unmodified Vim by typing into its pane with `send-k
 
 ### Hooks never fail a tool call
 
-Every hook path exits `0`, and problems go to `~/.cache/claude-vim-follower/hook.log`, not to Claude. An animation can still die mid-way — a hook timeout kills the process while you have it paused. The remainder and the partly typed text are persisted to disk, so the next hook rebuilds the buffer from that partial and catches up instead of reinterpreting a half-typed line ([`d1620ff`](https://github.com/albertosca/vim-ai-follower/commit/d1620ff); end to end through the real CLI in `test_crash_fallback_catches_up_after_the_hook_is_killed`, [`tests/test_e2e_cli_controls.py`](https://github.com/albertosca/vim-ai-follower/blob/main/tests/test_e2e_cli_controls.py)). The trade-off: when something goes wrong, the tool call still succeeds and the only trace is the log.
+The hooks are built to exit `0` and log problems to `~/.cache/claude-vim-follower/hook.log` instead of failing the tool call. An animation can still die mid-way — a hook timeout kills the process while you have it paused. The remainder and the partly typed text are persisted to disk, so the next hook rebuilds the buffer from that partial and catches up instead of reinterpreting a half-typed line ([`d1620ff`](https://github.com/albertosca/vim-ai-follower/commit/d1620ff); end to end through the real CLI in `test_crash_fallback_catches_up_after_the_hook_is_killed`, [`tests/test_e2e_cli_controls.py`](https://github.com/albertosca/vim-ai-follower/blob/main/tests/test_e2e_cli_controls.py)). The trade-off: when something goes wrong, the tool call still succeeds and the only trace is the log.
 
 ### Window identity is recalled, never inferred
 

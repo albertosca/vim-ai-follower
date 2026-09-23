@@ -12,15 +12,15 @@ A Claude Code plugin that replays every file edit Claude makes into a real Vim o
 
 ### Does it slow Claude down?
 
-Yes, while it animates. Claude's edit is already on disk when the animation starts, but the hook holds Claude's turn until the animation finishes, so a long edit at a slow pace takes real time. That is what the controls are for: `prefix` `+` steps the pace up (down to `instant`, no pacing), `prefix` `S` interrupts, and `prefix` `F` mutes the follower so edits are ignored. See [Pause, take over, speed and mute](guides/controls.md). On the tmux backend, an animation that would run past 60 seconds stops pacing and sends the rest in one go.
+Yes, while it animates. Claude's edit is already on disk when the animation starts, but the hook holds Claude's turn until the animation finishes, so a long edit at a slow pace takes real time. For speed, `prefix` `+` steps the pace up, one notch at a time, up to `instant` (no pacing), and `prefix` `F` mutes the follower: while muted, edits are not animated at all. `prefix` `S` is not a speed control: it stops the animation and hands you the buffer, and Claude's turn then waits until you save your version (or press `S` again to discard your edits and let the animation resume). See [Pause, take over, speed and mute](guides/controls.md).
 
 ### Does it touch my files?
 
-No. The edit reaches your file through Claude Code's own `Edit`/`Write` tool; the follower only replays it. Follower buffers are never saved, and between animations they are locked read-only, so a stray keystroke can't change what you are watching. The one time a file is written from the follower is when you take over with `prefix` `S` and save your own version yourself.
+No. The edit reaches your file through Claude Code's own `Edit`/`Write` tool; the follower only replays it. Follower buffers are never saved, and between animations they are locked read-only, so a stray keystroke can't change what you are watching (an adopted Neovim is the exception: it is your own editor, so it is never locked). The one time a file is written from the follower is when you take over with `prefix` `S` and save your own version yourself.
 
 ### Can it break a Claude Code tool call?
 
-No. Every hook path exits `0`, and problems go to `~/.cache/claude-vim-follower/hook.log`, not to Claude. The trade-off is that a failure is silent in Claude: if the follower does nothing, read the log.
+No. The hooks are built to exit `0` and log problems to `~/.cache/claude-vim-follower/hook.log` instead of failing the tool call. The trade-off is that a failure is silent in Claude: if the follower does nothing, read the log.
 
 ### Does anything leave my machine?
 
@@ -43,4 +43,4 @@ For the default `tmux` backend, yes: `claude` has to run inside a tmux session, 
 - One follower per tmux window (state is keyed by tmux window id).
 - Two `claude` processes in the same tmux window share that window's follower.
 - Binary files are navigated to, not animated.
-- On the tmux backend, very large files degrade to a block paste once an animation would run long, rather than pacing keystroke by keystroke.
+- On the tmux backend, a single edit hunk whose own keystrokes would take more than 60 seconds to pace is sent unpaced from that point on.

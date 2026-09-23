@@ -4,7 +4,7 @@
 
 <!-- facts -->700+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim backends · v0.2.8<!-- /facts -->
 
-vim-ai-follower is for developers who run Claude Code inside tmux with Vim or Neovim and want to follow each edit as it happens instead of reading a diff afterwards. The default backend types into an unmodified Vim with tmux `send-keys`; the `nvim` backend drives Neovim over msgpack-RPC and can adopt the nvim you already have open. It never writes your files (follower buffers are never saved), every hook exits 0 so it never fails a Claude Code tool call, and nothing leaves your machine. The animation does take time; speed keys, interrupt and mute are the controls for that. Built by Alberto Cavalcanti (https://www.linkedin.com/in/albertosca/).
+vim-ai-follower is for developers who run Claude Code inside tmux with Vim or Neovim and want to follow each edit as it happens instead of reading a diff afterwards. The default backend types into an unmodified Vim with tmux `send-keys`; the `nvim` backend drives Neovim over msgpack-RPC and can adopt the nvim you already have open. It never writes your files (follower buffers are never saved), its hooks are built to exit 0 and log problems instead, so it never fails a Claude Code tool call, and nothing leaves your machine. The animation does take time; the speed keys and mute are the controls for that, and interrupt hands you the keyboard mid-edit. Built by Alberto Cavalcanti (https://www.linkedin.com/in/albertosca/).
 
 ## Docs
 

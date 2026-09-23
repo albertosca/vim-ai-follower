@@ -30,8 +30,8 @@ Every edit replayed line by line, at a pace you can actually read — pause it, 
 
 ## What it won't do
 
-- **It never writes your files.** Follower buffers are never saved, and are locked read-only between animations.
-- **It never fails a Claude Code tool call.** Every hook exits `0`, and problems go to `hook.log`. The animation does take time — that's what the speed keys and interrupt are for.
+- **It never writes your files.** Follower buffers are never saved, and are locked read-only between animations (an adopted Neovim is the exception: it is your own editor, so it is never locked).
+- **It never fails a Claude Code tool call.** The hooks are built to exit `0` and log problems to `hook.log` instead of failing the tool call. The animation does take time — that's what the speed keys and interrupt are for.
 - **Nothing leaves your machine.** The package imports no network module, and Neovim is reached over a local socket.
 
 ## Built with care
@@ -51,7 +51,7 @@ Then run `/vim-ai-follower:start` inside the tmux session where `claude` runs. R
 
 - [Install](getting-started/install.md) — requirements, the plugin, the manual install
 - [Follow your first edit](getting-started/first-follow.md) — start the follower and watch an edit land
-- [Pause, take over, speed and mute](guides/controls.md) — the four tmux keys that control a running animation
+- [Pause, take over, speed and mute](guides/controls.md) — the five tmux keys that control a running animation
 - [Multi-file tabs](guides/multi-file-tabs.md) — one Vim tab per file, capped at `max_tabs`
 - [Adopting an editor](guides/adopting-an-editor.md) — let Claude type into the Vim you already have open
 - [Neovim backend](guides/nvim-backend.md) — drive Neovim over RPC instead of keystrokes

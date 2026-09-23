@@ -2,7 +2,7 @@
 
 # Pause, take over, speed and mute
 
-Four tmux prefix keys control a running follower: pause, interrupt (take the keyboard), speed and mute. Each press acts only on the follower of the window it was pressed in. The full key table is in [Keybindings](../reference/keybindings.md). Back to the [README](https://github.com/albertosca/vim-ai-follower#readme).
+Five tmux prefix keys control a running follower: pause (`P`), interrupt to take the keyboard (`S`), faster (`+`), slower (`_`) and mute (`F`). Each press acts only on the follower of the window it was pressed in. The full key table is in [Keybindings](../reference/keybindings.md). Back to the [README](https://github.com/albertosca/vim-ai-follower#readme).
 
 ## How to pause Claude Code's edits in Vim
 

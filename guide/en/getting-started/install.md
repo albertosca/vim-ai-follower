@@ -28,7 +28,7 @@ The plugin declares the hooks itself, so there is no `settings.json` to edit. Th
     pip install pynvim
     ```
 
-Hooks never fail a tool call — every path exits `0`, and problems go to `~/.cache/claude-vim-follower/hook.log`, not to Claude.
+Hooks never fail a tool call: they are built to exit `0` and log problems to `~/.cache/claude-vim-follower/hook.log` instead of reporting them to Claude.
 
 Next: [follow your first edit](first-follow.md).
 

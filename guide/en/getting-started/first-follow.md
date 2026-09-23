@@ -13,7 +13,7 @@ A dedicated tmux pane (or a running Neovim) mirrors every file Claude Code reads
 
 `/vim-ai-follower:start` passes its arguments straight through to `claude-follow start` (flags in the [CLI reference](../reference/cli.md)), e.g. `/vim-ai-follower:start --backend nvim --speed lento`. `/vim-ai-follower:toggle` mutes and unmutes it.
 
-The follower buffer is kept read-only between animations, so a stray keystroke can never corrupt what you are watching; the animation unlocks around itself and relocks (with a silent disk resync) when it finishes.
+The follower buffer is kept read-only between animations (an adopted Neovim is the exception: it is your own editor, so it is never locked), so a stray keystroke can never corrupt what you are watching; the animation unlocks around itself and relocks (with a silent disk resync) when it finishes.
 
 ## How to open the follower automatically
 
