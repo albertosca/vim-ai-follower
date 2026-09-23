@@ -11,7 +11,7 @@ cd "$(dirname "$0")/.."
 
 STAMP="${1:-}"
 if [ "$STAMP" = "--stamp" ]; then
-  : # Task 3: uv run python scripts/stamp_revision_dates.py guide
+  uv run python scripts/stamp_revision_dates.py guide
 fi
 
 rm -rf .docs-build site
