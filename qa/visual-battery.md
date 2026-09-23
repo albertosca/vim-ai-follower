@@ -629,6 +629,8 @@ check).
 ONE nvim — not stacked windows, and not one tab whose content is silently
 replaced by each new file (`7abf023`, fixed further in `5253e00`/`142b76d`).
 
+**Machine-verified** by `tests/test_e2e_battery_tranche2.py::test_three_writes_land_as_three_real_tabs` (one tab per file, each buffer holding only its own marker, read over RPC) — the whole PASS table is covered; run this by hand only as a fallback or to eyeball the tab line.
+
 **Setup:**
 
 ```sh
@@ -674,6 +676,8 @@ blank box. `0998397`+`c42b77a`: the colorscheme is now forced explicitly
 highlight is defined, because `:colorscheme` runs `hi clear` first and was
 silently wiping `VafTypingLine` (and transiently `VafWriterCue`) on every
 animation.
+
+**Machine-verified** by `tests/test_e2e_battery_tranche2.py::test_first_animation_shows_writing_and_keeps_the_typing_highlight` — the float body reads `Writing...` mid-animation on the FIRST and a SECOND animation, `VafTypingLine` survives the colorscheme's `hi clear` (against a stand-in gruvbox, since the isolated HOME has none), and the float closes afterwards. In a manual run, judge only what a test cannot: whether the real gruvbox colours READ well from the first line, and the optional tmux border-title variant.
 
 **Setup:**
 
@@ -971,6 +975,8 @@ answers a prompt instead of navigating. The fix is Vim's own
 `goto_file`'s single Ex line — scoped by TIME, so a user `:e` of a swapped
 file afterwards still gets the normal dialog.
 
+**Machine-verified** by `tests/test_e2e_battery_tranche2.py::test_a_live_owners_swap_is_edited_anyway_and_the_owner_still_writes` and `::test_a_stale_swap_is_edited_anyway_and_left_on_disk` (at 49 columns: no E325/ATTENTION in `:messages`, cursor not parked on the bottom row, real content in the buffer, the owner still `:w`s, the stale swap survives) — the whole PASS table is covered; run this by hand only as a fallback.
+
 **Setup — two steps, in order:**
 
 ```sh
@@ -1036,6 +1042,8 @@ for Read navigation, and `apply_edit`'s vanished-buffer branch). The buffer's
 own `swapfile` is now turned off between `bufadd` and `bufload`, which is
 safe because this backend's buffers are display-only and never written.
 
+**Machine-verified** by `tests/test_e2e_battery_tranche2.py::test_a_swap_held_file_opens_in_nvim_and_the_hook_survives` (exit 0 through the real CLI, empty stderr, disk content in the buffer, no Traceback/E325 in `hook.log`, owner nvim alive) — the whole PASS table is covered; run this by hand only as a fallback.
+
 **Setup:**
 
 ```sh
@@ -1099,6 +1107,8 @@ REAL on-disk text, and that an offset past EOF lands on the last line
 no-buffer fallback creates an EMPTY named buffer and never reads disk — so a
 Read opened a blank tab, and the `goto_line(offset)` that follows then raised
 nvim's "Invalid cursor line: out of range" out of the hook process.
+
+**Machine-verified** by `tests/test_e2e_battery_tranche2.py::test_read_navigation_shows_disk_and_clamps_the_offset` (disk content, cursor on line 5 then on the last line, exit 0 both times, `nomodifiable`) — the launched half is covered; the adopted-nvim note below stays manual.
 
 **Setup:**
 
