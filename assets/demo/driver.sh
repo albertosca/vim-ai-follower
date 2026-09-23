@@ -131,13 +131,38 @@ press_prefix P
 wait "$first"
 sleep 1.5
 
-# --- 2. A second file, interrupted mid-typing and taken over ---------------
-# Both steps are Writes of new files on purpose. An Edit of an existing file
-# was tried and dropped: on the tmux backend, the navigation before the diff
-# reloaded the already-written file from disk, so the finished content
-# flashed up first, the ops then typed duplicates on top, and the closing
-# relock snapped it back (measured 2026-09-23, with and without this demo's
-# .vimrc). That is a product bug to fix, not something to showcase.
+# --- 2. An Edit of the open file: only the change is animated ------------
+echo
+claude_says "Edit fib.py (add a memoized fib)"
+payload Edit "$FILE" | "$CF" hook pre
+cat > "$FILE" <<'PY'
+"""Fibonacci numbers."""
+
+
+def fib(n):
+    """Return the n-th Fibonacci number."""
+    a, b = 0, 1
+    for _ in range(n):
+        a, b = b, a + b
+    return a
+
+
+def fib_memo(n, cache={0: 0, 1: 1}):
+    """The same number, by memoized recursion."""
+    if n not in cache:
+        cache[n] = fib_memo(n - 1) + fib_memo(n - 2)
+    return cache[n]
+
+
+if __name__ == "__main__":
+    print([fib(i) for i in range(10)])
+PY
+payload Edit "$FILE" | "$CF" hook post >> "$HOOK_LOG" 2>&1 &
+edit=$!
+wait "$edit"
+sleep 1.5
+
+# --- 3. A second file, interrupted mid-typing and taken over ---------------
 TESTS="$WORK/test_fib.py"
 echo
 claude_says "Write test_fib.py"
@@ -159,7 +184,7 @@ def test_never_shrinks():
     assert all(fib(i) <= fib(i + 1) for i in range(30))
 PY
 payload Write "$TESTS" | "$CF" hook post > "$WORK/tests-hook.out" 2>> "$HOOK_LOG" &
-second=$!
+tests=$!
 wait_for_state running
 wait_for_screen "def test_zero"
 
@@ -178,7 +203,7 @@ sleep 1
 # border cue says ":w releases". The hand-off message in cmd_pause says :w!.
 type_into "$follower" ":w!"
 tmux send-keys -t "$follower" Enter
-wait "$second"
+wait "$tests"
 sleep 0.5
 
 echo

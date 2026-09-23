@@ -12,7 +12,7 @@ Every edit replayed line by line, at a pace you can actually read — pause it, 
 
 ## See it
 
-<video src="https://albertosca.github.io/vim-ai-follower/assets/demo/follow.mp4" autoplay loop muted playsinline controls width="100%" aria-label="Claude writes fib.py into the follower Vim line by line; it is paused and resumed; during the next file the keyboard is taken, a line is added and saved, which hands the turn back."></video>
+<video src="https://albertosca.github.io/vim-ai-follower/assets/demo/follow.mp4" autoplay loop muted playsinline controls width="100%" aria-label="Claude writes fib.py into the follower Vim line by line; it is paused and resumed; an Edit then adds a function, animated as a diff; during the next file the keyboard is taken, a line is added and saved, which hands the turn back."></video>
 
 *Scripted hook payloads, real follower — recorded with vhs from [`assets/demo/follow.tape`](https://github.com/albertosca/vim-ai-follower/blob/main/assets/demo/follow.tape).*
 

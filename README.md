@@ -14,7 +14,7 @@ Built by Alberto Cavalcanti · [Connect on LinkedIn](https://www.linkedin.com/in
 
 ## See it
 
-<img src="assets/demo/follow.gif" alt="Claude writes fib.py into the follower Vim line by line; it is paused and resumed; during the next file the keyboard is taken, a line is added and saved, which hands the turn back." width="100%">
+<img src="assets/demo/follow.gif" alt="Claude writes fib.py into the follower Vim line by line; it is paused and resumed; an Edit then adds a function, animated as a diff; during the next file the keyboard is taken, a line is added and saved, which hands the turn back." width="100%">
 
 *Scripted hook payloads, real follower — recorded with vhs from [`assets/demo/follow.tape`](assets/demo/follow.tape).*
 

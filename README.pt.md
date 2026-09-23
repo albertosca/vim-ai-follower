@@ -14,7 +14,7 @@ Feito por Alberto Cavalcanti · [Conecte-se no LinkedIn](https://www.linkedin.co
 
 ## Veja funcionando
 
-<img src="assets/demo/follow.gif" alt="O Claude escreve fib.py no Vim do follower linha a linha; a animação é pausada e retomada; no arquivo seguinte o teclado é tomado, uma linha é adicionada e salva, e isso devolve a vez ao Claude." width="100%">
+<img src="assets/demo/follow.gif" alt="O Claude escreve fib.py no Vim do follower linha a linha; a animação é pausada e retomada; um Edit adiciona uma função, animado como diff; no arquivo seguinte o teclado é tomado, uma linha é adicionada e salva, e isso devolve a vez ao Claude." width="100%">
 
 *Payloads de hook roteirizados, follower real — gravado com vhs a partir de [`assets/demo/follow.tape`](assets/demo/follow.tape).*
 
