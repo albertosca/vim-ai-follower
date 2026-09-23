@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-label="vim-ai-follower: Watch Claude Code type into your own Vim. 700+ unit tests, 100% branch coverage, Vim and Neovim backends.">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-label="vim-ai-follower: Watch Claude Code type into your own Vim. 700+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim">
   <title>vim-ai-follower: Watch Claude Code type into your own Vim.</title>
   <!-- The proof line below is an image, so scripts/check_readme_facts.py cannot read it.
        Keep the same NUMBERS as the facts blocks (the wording is shorter on purpose)
@@ -13,14 +13,16 @@
     </g>
     <!-- the human step: the only accent -->
     <g font-size="28">
-      <rect x="96" y="428" width="44" height="44" rx="8" fill="#FABD2F"/>
-      <text x="118" y="460" font-weight="700" fill="#282828" text-anchor="middle">P</text>
-      <text x="154" y="460">pause</text>
-      <rect x="262" y="428" width="44" height="44" rx="8" fill="#FABD2F"/>
-      <text x="284" y="460" font-weight="700" fill="#282828" text-anchor="middle">S</text>
-      <text x="320" y="460">take the keyboard</text>
+      <rect x="97" y="429" width="104" height="42" rx="8" fill="none" stroke="#EBDBB2" stroke-width="2"/>
+      <text x="149" y="459" text-anchor="middle">prefix</text>
+      <rect x="221" y="428" width="44" height="44" rx="8" fill="#FABD2F"/>
+      <text x="243" y="460" font-weight="700" fill="#282828" text-anchor="middle">P</text>
+      <text x="277" y="460">pause</text>
+      <rect x="381" y="428" width="44" height="44" rx="8" fill="#FABD2F"/>
+      <text x="403" y="460" font-weight="700" fill="#282828" text-anchor="middle">S</text>
+      <text x="437" y="460">take the keyboard</text>
     </g>
-    <text x="96" y="566" font-size="30" fill="#B8BB26">700+ unit tests · 100% branch coverage · Vim + Neovim</text>
+    <text x="96" y="566" font-size="30" fill="#B8BB26">700+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim</text>
   </g>
   <!-- the motif: your own Vim, mid-keystroke -->
   <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="24">
@@ -29,7 +31,7 @@
       <text x="806" y="150">1</text><text x="806" y="186">2</text><text x="806" y="222">3</text><text x="806" y="258">4</text><text x="806" y="294">5</text>
     </g>
     <g fill="#EBDBB2">
-      <text x="826" y="150"><tspan fill="#FB4934">def</tspan> <tspan fill="#B8BB26">fib</tspan>(n):</text>
+      <text x="826" y="150"><tspan fill="#FB4934">def</tspan> fib(n):</text>
       <text x="884" y="186">a, b = <tspan fill="#D3869B">0</tspan>, <tspan fill="#D3869B">1</tspan></text>
       <text x="884" y="222"><tspan fill="#FB4934">for</tspan> _ <tspan fill="#FB4934">in</tspan> range(n):</text>
       <text x="942" y="258">a, b = b, a + b</text>

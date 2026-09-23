@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 540" width="520" height="540" role="img" aria-label="Claude's edit lands on disk first; the follower only replays the diff into your Vim or Neovim, and you are the only one who types into it.">
-  <title>Claude's edit lands on disk first; the follower only replays the diff into your Vim or Neovim, and you are the only one who types into it.</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 540" width="520" height="540" role="img" aria-label="The edit lands on disk first; the follower only replays it; you control it — pause, or take the keyboard.">
+  <title>The edit lands on disk first; the follower only replays it; you control it — pause, or take the keyboard.</title>
   <rect x="0" y="0" width="520" height="540" fill="#282828"/>
   <defs>
     <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#EBDBB2"/></marker>
@@ -43,6 +43,7 @@
     <line x1="370" y1="456" x2="292" y2="456" stroke="#EBDBB2" stroke-width="2" marker-end="url(#a)"/>
     <text x="331" y="448" text-anchor="middle">types</text>
     <g text-anchor="middle">
+      <text x="430" y="360">tmux prefix, then</text>
       <text x="430" y="378"><tspan font-weight="700">P</tspan> pause</text>
       <text x="430" y="396"><tspan font-weight="700">S</tspan> take the keyboard</text>
       <text x="430" y="414"><tspan font-weight="700">+ _</tspan> speed</text>
