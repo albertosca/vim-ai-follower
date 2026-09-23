@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-label="vim-ai-follower: Watch Claude Code type into your own Vim. 700+ unit tests, 100% branch coverage, Vim and Neovim backends.">
+  <title>vim-ai-follower: Watch Claude Code type into your own Vim.</title>
+  <!-- The proof line below is an image, so scripts/check_readme_facts.py cannot read it.
+       Keep the same NUMBERS as the facts blocks (the wording is shorter on purpose)
+       and update it in the same commit whenever those numbers change. -->
+  <rect width="1280" height="640" fill="#282828"/>
+  <g font-family="system-ui, -apple-system, Segoe UI, sans-serif" fill="#EBDBB2">
+    <text x="96" y="130" font-size="28" fill="#928374">vim-ai-follower</text>
+    <g font-size="64" font-weight="700">
+      <text x="96" y="230">Watch Claude Code</text>
+      <text x="96" y="306">type into your</text>
+      <text x="96" y="382">own Vim.</text>
+    </g>
+    <!-- the human step: the only accent -->
+    <g font-size="28">
+      <rect x="96" y="428" width="44" height="44" rx="8" fill="#FABD2F"/>
+      <text x="118" y="460" font-weight="700" fill="#282828" text-anchor="middle">P</text>
+      <text x="154" y="460">pause</text>
+      <rect x="262" y="428" width="44" height="44" rx="8" fill="#FABD2F"/>
+      <text x="284" y="460" font-weight="700" fill="#282828" text-anchor="middle">S</text>
+      <text x="320" y="460">take the keyboard</text>
+    </g>
+    <text x="96" y="566" font-size="30" fill="#B8BB26">700+ unit tests · 100% branch coverage · Vim + Neovim</text>
+  </g>
+  <!-- the motif: your own Vim, mid-keystroke -->
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="24">
+    <rect x="760" y="96" width="424" height="392" rx="10" fill="#1D2021" stroke="#504945" stroke-width="2"/>
+    <g fill="#7C6F64" text-anchor="end">
+      <text x="806" y="150">1</text><text x="806" y="186">2</text><text x="806" y="222">3</text><text x="806" y="258">4</text><text x="806" y="294">5</text>
+    </g>
+    <g fill="#EBDBB2">
+      <text x="826" y="150"><tspan fill="#FB4934">def</tspan> <tspan fill="#B8BB26">fib</tspan>(n):</text>
+      <text x="884" y="186">a, b = <tspan fill="#D3869B">0</tspan>, <tspan fill="#D3869B">1</tspan></text>
+      <text x="884" y="222"><tspan fill="#FB4934">for</tspan> _ <tspan fill="#FB4934">in</tspan> range(n):</text>
+      <text x="942" y="258">a, b = b, a + b</text>
+      <text x="884" y="294"><tspan fill="#FB4934">return</tspan> a</text>
+    </g>
+    <rect x="1000" y="274" width="15" height="28" fill="#EBDBB2"/>
+    <g fill="#504945"><text x="806" y="330" text-anchor="end">~</text><text x="806" y="366" text-anchor="end">~</text><text x="806" y="402" text-anchor="end">~</text></g>
+    <rect x="762" y="420" width="420" height="34" fill="#3C3836"/>
+    <text x="780" y="444" font-size="20" fill="#EBDBB2">fib.py</text>
+    <text x="1166" y="444" font-size="20" fill="#928374" text-anchor="end">5,13</text>
+    <text x="780" y="476" font-size="20" fill="#EBDBB2" font-weight="700">-- INSERT --</text>
+  </g>
+</svg>

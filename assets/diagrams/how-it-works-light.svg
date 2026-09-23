@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 540" width="520" height="540" role="img" aria-label="Claude's edit lands on disk first; the follower only replays the diff into your Vim or Neovim, and you are the only one who types into it.">
+  <title>Claude's edit lands on disk first; the follower only replays the diff into your Vim or Neovim, and you are the only one who types into it.</title>
+  <rect x="0" y="0" width="520" height="540" fill="#FBF1C7"/>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#3C3836"/></marker>
+    <marker id="m" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#928374"/></marker>
+  </defs>
+  <g font-family="system-ui, -apple-system, Segoe UI, sans-serif" font-size="13" fill="#3C3836">
+    <!-- Time runs top to bottom: the hooks bracket Claude's own write. -->
+    <g text-anchor="middle">
+      <rect x="70" y="30" width="220" height="52" rx="6" fill="none" stroke="#3C3836"/>
+      <text x="180" y="52" font-weight="600">Claude Code</text><text x="180" y="70">Edit · Write</text>
+
+      <rect x="70" y="130" width="220" height="52" rx="6" fill="none" stroke="#3C3836"/>
+      <text x="180" y="152" font-weight="600">PreToolUse hook</text><text x="180" y="170">snapshot</text>
+
+      <rect x="70" y="230" width="220" height="52" rx="6" fill="none" stroke="#3C3836" stroke-width="2"/>
+      <text x="180" y="261" font-weight="600">file on disk</text>
+
+      <rect x="70" y="330" width="220" height="52" rx="6" fill="none" stroke="#3C3836"/>
+      <text x="180" y="352" font-weight="600">PostToolUse hook</text><text x="180" y="370">diff</text>
+
+      <rect x="70" y="430" width="220" height="52" rx="6" fill="none" stroke="#3C3836"/>
+      <text x="180" y="452" font-weight="600">your Vim / Neovim</text><text x="180" y="470">replays the diff</text>
+    </g>
+
+    <!-- the chain -->
+    <line x1="180" y1="82" x2="180" y2="128" stroke="#3C3836" marker-end="url(#a)"/><text x="192" y="110">before the edit</text>
+    <line x1="180" y1="182" x2="180" y2="228" stroke="#3C3836" marker-end="url(#a)"/><text x="192" y="210">Claude writes</text>
+    <line x1="180" y1="282" x2="180" y2="328" stroke="#3C3836" marker-end="url(#a)"/><text x="192" y="310">after the edit</text>
+    <line x1="180" y1="382" x2="180" y2="428" stroke="#3C3836" marker-end="url(#a)"/><text x="192" y="410">tmux keys · RPC</text>
+
+    <!-- the snapshot is what the diff compares against -->
+    <path d="M70 156 H40 V356 H68" fill="none" stroke="#928374" stroke-dasharray="4 3" marker-end="url(#m)"/>
+    <text x="0" y="0" text-anchor="middle" transform="translate(30 256) rotate(-90)">before vs after</text>
+
+    <!-- the follower never writes back -->
+    <text x="180" y="506" font-style="italic" text-anchor="middle">buffers never saved</text>
+
+    <!-- the human: the only accent, the only hand on the follower's keyboard -->
+    <rect x="370" y="430" width="120" height="52" rx="26" fill="#FABD2F"/>
+    <text x="430" y="461" font-weight="700" fill="#282828" text-anchor="middle">you</text>
+    <line x1="370" y1="456" x2="292" y2="456" stroke="#3C3836" stroke-width="2" marker-end="url(#a)"/>
+    <text x="331" y="448" text-anchor="middle">types</text>
+    <g text-anchor="middle">
+      <text x="430" y="378"><tspan font-weight="700">P</tspan> pause</text>
+      <text x="430" y="396"><tspan font-weight="700">S</tspan> take the keyboard</text>
+      <text x="430" y="414"><tspan font-weight="700">+ _</tspan> speed</text>
+    </g>
+  </g>
+</svg>
