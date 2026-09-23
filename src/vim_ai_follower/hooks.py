@@ -430,10 +430,13 @@ def _ensure_buffer(window_id: str, follower: Follower, file_path: str) -> None:
     """Switches the follower to file_path's tab (a by-number buffer switch,
     or `:tab drop` for a file no buffer holds yet, on tmux; an RPC-based tab
     lookup on nvim). Used for Read navigation and binary files, where
-    showing the real on-disk content is exactly what's wanted when the file
-    is not open yet — an already-open buffer is switched to, never re-read
-    (both backends) — unlike a fresh text edit, which goes through show_fresh
-    instead so the finished content is never flashed before it's typed.
+    showing the real on-disk content is exactly what's wanted. The backends
+    differ on an already-open buffer: tmux re-reads it when it is CLEAN (the
+    swap-guarded `_RELOAD_IF_CLEAN`, so a file rewritten outside Claude's
+    Edits is not shown stale) and leaves a modified one alone; nvim switches
+    to it and never re-reads it (a known backlog item). A fresh text edit
+    never comes here: it goes through show_fresh, so the finished content is
+    never flashed before it's typed.
     Always runs the preamble — it's cheap and self-healing, immune to the
     user having closed or reordered tabs since the last time this file was
     current."""

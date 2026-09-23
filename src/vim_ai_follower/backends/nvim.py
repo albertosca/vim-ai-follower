@@ -786,14 +786,19 @@ class NvimFollower:
     def ensure_showing(self, file_path: str) -> None:
         """Show file_path with its REAL on-disk content — the Read-navigation
         and binary-file entry point, where the finished content is exactly
-        what should appear because nothing is animated afterwards (parity
-        with the tmux backend's `:tab drop` + its `_LOCK_READONLY`).
+        what should appear because nothing is animated afterwards.
 
         This is THE disk-reading entry point of this backend; goto_file is
         the one that NEVER reads disk, because show_fresh's callers rely on
         the finished file not being flashed before it is typed. An existing
         buffer is therefore switched to and never reloaded: it may hold
         typed-but-unsaved content, which in this backend is the norm.
+
+        This is NOT parity with the tmux backend. Its ensure_showing re-reads
+        a CLEAN open buffer on a Read (`_RELOAD_IF_CLEAN`), so a file
+        rewritten outside Claude's Edits (a formatter, `sed -i`, a checkout)
+        shows its new content there. Here the same file stays stale until the
+        next animation. That asymmetry is a known backlog item.
 
         Both branches lock the buffer (nomodifiable) before returning, via
         the same `buf_set_option` call `_drive`'s completion relock uses —
