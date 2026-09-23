@@ -29,4 +29,4 @@ cp assets/site/gruvbox.css site/pt/stylesheets/gruvbox.css
 if [ -f assets/site/social-preview.png ]; then mkdir -p site/assets/site && cp assets/site/social-preview.png site/assets/site/; fi
 REQUIRE_DATES=""
 if [ "$STAMP" = "--stamp" ]; then REQUIRE_DATES="--require-dates"; fi
-# Task 4: uv run python scripts/check_built_site.py site guide $REQUIRE_DATES
+uv run python scripts/check_built_site.py site guide $REQUIRE_DATES
