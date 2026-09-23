@@ -1,229 +1,77 @@
-# vim-ai-follower
-
 🇺🇸 [English](README.md) · 🇧🇷 [Português](README.pt.md)
 
-[![CI](https://github.com/albertosca/vim-ai-follower/actions/workflows/ci.yml/badge.svg)](https://github.com/albertosca/vim-ai-follower/actions/workflows/ci.yml)
-[![Lint](https://github.com/albertosca/vim-ai-follower/actions/workflows/lint.yml/badge.svg)](https://github.com/albertosca/vim-ai-follower/actions/workflows/lint.yml)
-[![Coverage: 99% unit · 100% full](https://img.shields.io/badge/coverage-99%25%20unit%20%C2%B7%20100%25%20full-brightgreen.svg)](https://github.com/albertosca/vim-ai-follower/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
-[![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2.svg)](https://code.claude.com/docs/en/plugins)
+<img src="assets/site/social-preview.png" alt="vim-ai-follower — Watch Claude Code type into your own Vim." width="100%">
 
-Acompanhe o Claude Code editando arquivos **ao vivo, dentro de um Vim de
-verdade** — sem migrar de editor, sem GUI. Um painel tmux dedicado (ou um Neovim
-já aberto) espelha cada arquivo que o Claude Code lê ou escreve, animando cada
-mudança linha a linha, como se o Claude estivesse digitando no seu próprio
-editor.
+# Veja o Claude Code digitar no seu próprio Vim.
 
-Instala como um plugin do Claude Code que conecta os próprios hooks, e funciona
-em qualquer projeto onde o `claude` rode dentro do tmux.
+Cada edição é reproduzida linha a linha, num ritmo que dá pra acompanhar de verdade — pause, pegue o teclado, devolva quando quiser.
+
+Feito por Alberto Cavalcanti · [Conecte-se no LinkedIn](https://www.linkedin.com/in/albertosca/) · [Leia a documentação](https://albertosca.github.io/vim-ai-follower/pt/) · [Instalação](#instalação)
+
+<!-- facts -->700+ testes de unidade no CI · 100% de branch coverage na suíte completa · backends Vim + Neovim · v0.2.8<!-- /facts -->
+
+[![CI](https://github.com/albertosca/vim-ai-follower/actions/workflows/ci.yml/badge.svg)](https://github.com/albertosca/vim-ai-follower/actions/workflows/ci.yml) [![Lint](https://github.com/albertosca/vim-ai-follower/actions/workflows/lint.yml/badge.svg)](https://github.com/albertosca/vim-ai-follower/actions/workflows/lint.yml) [![Coverage: 99% unit · 100% full](https://img.shields.io/badge/coverage-99%25%20unit%20%C2%B7%20100%25%20full-brightgreen.svg)](https://github.com/albertosca/vim-ai-follower/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml) [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2.svg)](https://code.claude.com/docs/en/plugins)
+
+## Veja funcionando
+
+<img src="assets/demo/follow.gif" alt="O Claude escreve fib.py no Vim do follower linha a linha; a animação é pausada e retomada; no arquivo seguinte o teclado é tomado, uma linha é adicionada e salva, e isso devolve a vez ao Claude." width="100%">
+
+*Payloads de hook roteirizados, follower real — gravado com vhs a partir de [`assets/demo/follow.tape`](assets/demo/follow.tape).*
 
 ## Como funciona
 
-`claude-follow` é uma única CLI em Python que é ao mesmo tempo a superfície de
-controle (`start`/`stop`/`status`, pausa/interrupção, velocidade, toggle) e o
-handler dos hooks do Claude Code. A cada `Edit`/`MultiEdit`/`Write`, um hook
-`PreToolUse` guarda o conteúdo antigo do arquivo e um hook `PostToolUse` faz o
-diff contra o conteúdo novo e reproduz a mudança no follower via
-`tmux send-keys`. A cada `Read`, o follower navega até aquele arquivo (e linha).
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/diagrams/how-it-works-dark.svg">
+  <img alt="A edição chega ao disco primeiro; o follower só a reproduz; você controla — pause, ou pegue o teclado." src="assets/diagrams/how-it-works-light.svg" width="520">
+</picture>
 
-O buffer do follower fica somente-leitura entre as animações, então uma tecla
-acidental nunca corrompe o que você está assistindo; a animação destrava em
-volta de si mesma e trava de novo (com um resync silencioso do disco) quando
-termina.
+- O `Edit` ou o `Write` do Claude Code chega ao disco primeiro; um hook `PreToolUse` já tinha guardado o conteúdo antigo.
+- Um hook `PostToolUse` compara o conteúdo antigo com o novo e reproduz a mudança no seu Vim (`tmux send-keys`) ou no Neovim (RPC).
+- Num `Read`, o follower navega até aquele arquivo e linha.
+- Você continua no controle: `prefix` `P` pausa, `prefix` `S` pega o teclado, e salvar a sua versão devolve o controle.
 
-## Requisitos
+## O que ele não faz
 
-- tmux, com o `claude` rodando dentro de uma sessão tmux
-- Vim (backend padrão `tmux`) ou Neovim ≥ 0.10 (o backend `nvim` de primeira classe)
-- Python 3.11+
+- **Nunca escreve nos seus arquivos.** Os buffers do follower nunca são salvos, e ficam travados como somente-leitura entre as animações (um Neovim adotado é a exceção: é o seu próprio editor, então nunca é travado).
+- **Nunca derruba uma chamada de ferramenta do Claude Code.** Os hooks são construídos para sair com `0` e registrar problemas em `hook.log`, em vez de falhar a chamada.
+- **Nada sai da sua máquina.** O pacote não importa nenhum módulo de rede, e o Neovim é acessado por um socket local.
+
+A animação leva tempo mesmo — é pra isso que servem as teclas de velocidade e o mudo.
+
+## Decisões de engenharia
+
+O vim-ai-follower digita num editor que você está olhando, a partir de hooks que rodam dentro de cada chamada de ferramenta do Claude Code. Então a régua é: nunca corromper o que você vê, nunca atrapalhar o Claude, e nunca digitar na janela errada. Cada decisão abaixo comprou uma dessas coisas a um preço; a [página de Engenharia](https://albertosca.github.io/vim-ai-follower/pt/engineering/) registra o que cada uma custou e onde conferir no código.
+
+| Decisão | Trade-off aceito, e a evidência |
+|---|---|
+| [Dois backends: `send-keys` do tmux pra qualquer Vim, RPC pro Neovim](https://albertosca.github.io/vim-ai-follower/pt/engineering/#dois-backends-send-keys-do-tmux-pra-qualquer-vim-rpc-pro-neovim) | Duas implementações de um mesmo protocolo de follower. As colunas do RPC são offsets em bytes: um travessão corrompia o texto digitado até [`ffaed50`](https://github.com/albertosca/vim-ai-follower/commit/ffaed50), agora preso por um teste contra um Neovim real |
+| [Hooks nunca derrubam uma chamada de ferramenta](https://albertosca.github.io/vim-ai-follower/pt/engineering/#hooks-nunca-derrubam-uma-chamada-de-ferramenta) (a animação segura o hook enquanto roda) | Uma falha vira uma linha no `hook.log`, não um erro no Claude. Uma animação que morre é retomada a partir do parcial persistido ([`d1620ff`](https://github.com/albertosca/vim-ai-follower/commit/d1620ff)) |
+| [A identidade da janela é lembrada de `session_id` → janela, nunca inferida](https://albertosca.github.io/vim-ai-follower/pt/engineering/#a-identidade-da-janela-e-lembrada-nunca-inferida) | Quando nada prova a janela, a edição não é animada. O `display-message` foi medido e rejeitado: ele aponta a janela errada ([`4cda388`](https://github.com/albertosca/vim-ai-follower/commit/4cda388)) |
+| [As teclas globais do tmux têm um dono, então sobrevivem a uma atualização do plugin](https://albertosca.github.io/vim-ai-follower/pt/engineering/#as-teclas-globais-do-tmux-tem-um-dono) | Uma segunda instalação viva fica sem teclas até você passar `--take-keys`. A revisão da branch inteira achou dois buracos de posse que todas as revisões por task deixaram passar ([`de74e9e`](https://github.com/albertosca/vim-ai-follower/commit/de74e9e)) |
+| [100% de branch coverage é gate; a bateria de QA visual virou testes e2e](https://albertosca.github.io/vim-ai-follower/pt/engineering/#100-de-branch-coverage-como-gate-qa-visual-virado-teste-e2e) | A suíte completa precisa de tmux, Vim e Neovim reais, então o CI roda só a suíte de unidade. A primeira leva passou por canário teste a teste ([`431526f`](https://github.com/albertosca/vim-ai-follower/commit/431526f)), e a conversão achou um bug que a bateria manual nunca mostrou ([`4e73cb1`](https://github.com/albertosca/vim-ai-follower/commit/4e73cb1)) |
 
 ## Instalação
 
-**Como plugin do Claude Code (recomendado).** O plugin declara os próprios
-hooks, então não há `settings.json` para editar:
+Você precisa do tmux com o `claude` rodando dentro dele, de Vim ou Neovim ≥ 0.10, e de Python 3.11+. No Claude Code:
 
 ```
 /plugin marketplace add albertosca/vim-ai-follower
 /plugin install vim-ai-follower
 ```
 
-O backend `tmux` padrão **não precisa de `pip`** — o plugin embute a CLI
-stdlib-only e a roda no lugar. Para o backend `nvim`, instale também o pynvim no
-`python3` do seu `PATH`:
+Depois rode `/vim-ai-follower:start` dentro da sessão tmux onde o `claude` está rodando. O backend padrão, de Vim, não precisa de `pip install`; o extra do Neovim, os requisitos e a instalação manual estão no [guia de instalação →](https://albertosca.github.io/vim-ai-follower/pt/getting-started/install/)
 
-```sh
-pip install pynvim
-```
+## Mapa
 
-Os hooks nunca bloqueiam nem falham uma chamada de ferramenta — todo caminho sai
-com `0`, e problemas vão para `~/.cache/claude-vim-follower/hook.log`, não para o
-Claude.
+- [Acompanhe sua primeira edição](https://albertosca.github.io/vim-ai-follower/pt/getting-started/first-follow/) — inicie o follower e veja uma edição chegar
+- [Pausar, assumir, velocidade e mudo](https://albertosca.github.io/vim-ai-follower/pt/guides/controls/) — as cinco teclas de prefixo do tmux que controlam uma animação em andamento
+- [Abas multi-arquivo](https://albertosca.github.io/vim-ai-follower/pt/guides/multi-file-tabs/) — uma aba de Vim por arquivo, limitada por `max_tabs`
+- [Adotando um editor](https://albertosca.github.io/vim-ai-follower/pt/guides/adopting-an-editor/) — deixe o Claude digitar no Vim que você já tem aberto
+- [Backend Neovim](https://albertosca.github.io/vim-ai-follower/pt/guides/nvim-backend/) — controle o Neovim via RPC em vez de teclas simuladas
+- [Linha de comando](https://albertosca.github.io/vim-ai-follower/pt/reference/cli/), [Configuração](https://albertosca.github.io/vim-ai-follower/pt/reference/config/), [Atalhos](https://albertosca.github.io/vim-ai-follower/pt/reference/keybindings/) — a referência
+- [Engenharia](https://albertosca.github.io/vim-ai-follower/pt/engineering/) — as decisões, o que custaram, e onde o código vive
+- [FAQ](https://albertosca.github.io/vim-ai-follower/pt/faq/) — se deixa o Claude mais lento, se toca nos seus arquivos, limitações atuais
 
-### Instalação manual / desenvolvimento
+---
 
-A partir de um clone — para desenvolvimento, ou se preferir não usar o plugin:
-
-```sh
-pip install -e .          # instala o script `claude-follow`
-pip install -e '.[nvim]'  # adiciona o extra pynvim para o backend nvim
-```
-
-Depois conecte os hooks à mão: adicione em `~/.claude/settings.json` (use o
-caminho absoluto do `claude-follow` instalado):
-
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      { "matcher": "Edit|MultiEdit|Write",
-        "hooks": [{ "type": "command", "command": "claude-follow hook pre" }] }
-    ],
-    "PostToolUse": [
-      { "matcher": "Edit|MultiEdit|Write",
-        "hooks": [{ "type": "command", "command": "claude-follow hook post" }] },
-      { "matcher": "Read",
-        "hooks": [{ "type": "command", "command": "claude-follow hook post" }] }
-    ]
-  }
-}
-```
-
-## Uso
-
-**Se você instalou o plugin**, controle-o pelos slash commands, de um painel dentro da sessão tmux onde o `claude` roda: `/vim-ai-follower:start`, `/vim-ai-follower:status`, `/vim-ai-follower:stop`, `/vim-ai-follower:toggle`. O `/vim-ai-follower:start` repassa os argumentos direto para o `claude-follow start` (flags abaixo), ex.: `/vim-ai-follower:start --backend nvim --speed lento`. O wrapper `claude-follow` embutido de propósito não fica no `PATH` do seu shell — ele só roda a partir da própria ferramenta Bash do Claude Code e dos keybindings do tmux abaixo (veja o comentário de cabeçalho em `bin/claude-follow`). Se você também quiser rodar o `claude-follow` direto no seu shell, crie um symlink do wrapper embutido para qualquer diretório no seu `PATH` (ex.: `~/.local/bin`) — o diretório de versão varia conforme o que o plugin baixou por último, então liste primeiro:
-
-```sh
-ls ~/.claude/plugins/cache/vim-ai-follower/vim-ai-follower/                       # encontre a <versão> instalada
-ln -s ~/.claude/plugins/cache/vim-ai-follower/vim-ai-follower/<versão>/bin/claude-follow ~/.local/bin/claude-follow
-```
-
-**Se você usou a instalação manual/de desenvolvimento**, o `pip install -e .` já colocou o `claude-follow` no `PATH` do seu shell, então rode direto de um painel dentro da sessão tmux onde o `claude` roda:
-
-```sh
-claude-follow start      # abre um painel follower (ou adota um Vim existente)
-claude-follow status     # mostra o follower ativo e o arquivo em exibição
-claude-follow stop       # desmonta o follower e remove os keybindings
-```
-
-`start` aceita:
-
-- `--backend {tmux,nvim}` — padrão `tmux`.
-- `--on-failure {silent,reopen}` — o que fazer se o painel do follower morrer no meio da sessão.
-- `--speed {instant,muito_rapido,rapido,normal,lento}` — ritmo inicial da animação.
-- `--take-keys` — move as teclas de prefixo do tmux para esta instalação mesmo quando outra instalação viva (checkout de dev, pip install, plugin) é a dona; sem ela, o `start` as deixa onde estão e avisa.
-
-Com `open_policy` em `always` ou `code` (veja abaixo), você nem precisa do
-`start`: a primeira edição correspondente abre o follower automaticamente.
-
-## Configuração
-
-JSON opcional em `~/.config/claude-vim-follower/config.json`. Toda chave tem um
-padrão, e um valor inválido cai silenciosamente para ele.
-
-| Chave           | Valores                                                   | Padrão     | Significado                                                                              |
-| --------------- | --------------------------------------------------------- | ---------- | --------------------------------------------------------------------------------------- |
-| `backend`       | `tmux`, `nvim`                                            | `tmux`     | `tmux`: dirige um Vim inalterado num painel tmux via `send-keys`. `nvim`: dirige um Neovim real via msgpack-RPC (adota um nvim já rodando na janela, ou lança um dedicado — veja Backends). Requer o extra de instalação `nvim`. |
-| `open_policy`   | `always`, `code`, `manual`                                | `manual`   | `manual`: só o `start` abre follower. `code`: auto-abre em edições/leituras de arquivos de código; arquivos não-código também são ignorados (nunca animados) mesmo com um follower iniciado manualmente. `always`: auto-abre em qualquer arquivo. |
-| `adopt_existing`| `true`, `false`                                           | `false`    | Ao abrir automaticamente (ou no `start`), reutiliza um Vim já rodando na janela em vez de dividir um novo painel. |
-| `max_tabs`      | inteiro ≥ 1                                                | `5`        | Quantas abas de arquivo o follower mantém. A aba menos recentemente usada é fechada ao passar do limite. |
-| `on_failure`    | `silent`, `reopen`                                        | `silent`   | Se o painel do follower morrer, `reopen` redivide um novo a partir de onde começou; `silent` apenas para de seguir. |
-| `speed`         | `instant`, `muito_rapido`, `rapido`, `normal`, `lento`    | `rapido`   | Ritmo da animação (segundos por fronteira de linha: `0`, `0.01`, `0.03`, `0.08`, `0.15`). |
-
-## Keybindings
-
-`start` (e o auto-open) registram keybindings de **prefixo** do tmux, restaurados
-no `stop`:
-
-| Tecla         | Comando      | Efeito                                                                     |
-| ------------- | ------------ | -------------------------------------------------------------------------- |
-| `prefix` `P`  | pause        | Pausa uma animação em andamento; aperte de novo para retomar.              |
-| `prefix` `S`  | interrupt    | Interrompe: entrega o buffer para você assumir e salvar sua própria versão. Aperte de novo durante o hand-off para descartar suas edições e retomar a do Claude. |
-| `prefix` `+`  | speed-up     | Uma marcha mais rápida (satura no `instant`).                          |
-| `prefix` `_`  | speed-down   | Uma marcha mais lenta (satura no `lento`).                           |
-| `prefix` `F`  | toggle       | Muta/desmuta o follower.                                                   |
-
-Os keybindings são **globais no servidor** tmux, compartilhados por todos os
-followers; cada tecla age só no follower da janela onde foi pressionada, e o
-último `stop` restaura seus bindings originais.
-
-## Detalhes de comportamento
-
-### Abas multi-arquivo
-
-Cada arquivo que o Claude toca ganha sua própria aba no Vim. Editar um arquivo já
-aberto navega de volta para a aba dele primeiro (por nome, então sobrevive a você
-fechar ou reordenar abas), anima ali e volta — nunca digita na aba que
-por acaso estiver ativa. A lista de abas é ordenada por uso recente; a aba menos
-recentemente usada é fechada ao ultrapassar `max_tabs`. O arquivo sendo animado
-ou entregue nunca é o despejado.
-
-### Velocidade ao vivo
-
-`prefix` `+` / `prefix` `_` releem o ritmo na hora: uma animação em andamento
-acelera ou desacelera na **próxima fronteira de linha**, não só na animação
-seguinte. A escala satura nas duas pontas; o popup sinaliza os limites
-(`lento (slowest)`, `instant (fastest)`).
-
-### Pausa e interrupção
-
-- **Pausa** (`P`) segura o turno do Claude no lugar até você retomar — a animação
-  termina visualmente antes de o Claude continuar. Se o processo do hook for
-  morto (ex: timeout do hook) durante a pausa, um crash-fallback deixa o teclado
-  terminar a animação.
-- **Interrupção** (`S`) entrega o buffer para você: edite e dê `:w` na sua
-  versão, e o Claude é avisado de que você assumiu (ele relê a sua versão do
-  disco em vez de restaurar a dele). Apertar `S` de novo durante o hand-off
-  descarta suas edições não salvas e retoma seguindo o arquivo que o Claude
-  escreveu.
-
-### Toggle de mute
-
-`prefix` `F` muta o follower: edições seguintes são ignoradas e o painel de
-origem é dado zoom para o follower sair do caminho. Apertar `F` de novo desmuta,
-tira o zoom e força a próxima edição a **ressincronizar com uma redigitação
-completa** — o arquivo mudou no disco enquanto estava mutado, então animar um
-diff contra o buffer velho produziria lixo. As abas existentes continuam abertas
-para leitura.
-
-### Adotar um Vim existente (opt-in)
-
-Com `adopt_existing: true`, em vez de dividir um novo painel o follower dirige um
-Vim que você já tem aberto na mesma janela tmux. Como é o **seu** editor:
-
-- A adoção é estritamente opt-in.
-- A aba em que você estava nunca é renomeada por cima — um arquivo novo sempre
-  abre na própria aba.
-- No `stop`, a adoção nunca mata o seu Vim; só fecha as abas que ela abriu.
-- **Disciplina:** pause (`P`) antes de navegar durante uma animação. Uma animação
-  adotada dirige o seu cursor ao vivo, e digitar ou trocar de aba no meio da
-  animação pode se misturar com as teclas injetadas.
-- Risco residual: o follower não distingue as suas teclas das dele no nível do
-  tty, então uma edição mal cronometrada durante uma animação não pausada ainda
-  pode cair no lugar errado. O lock somente-leitura protege o buffer entre
-  animações, não durante uma que você interrompa digitando.
-
-## Backends
-
-- **`tmux`** (padrão): dirige um Vim não modificado num painel tmux via
-  `send-keys`.
-- **`nvim`** (requer `pip install '.[nvim]'`, Neovim ≥ 0.10): dirige um Neovim
-  real inteiramente via msgpack-RPC — sem `send-keys`, então a classe de bugs de
-  corrupção de teclas que o backend tmux precisa enfrentar simplesmente não
-  existe. Toda animação, mudança de velocidade ao vivo, pausa/interrupção e a
-  passagem de controle no des-interrupt funcionam igual ao tmux. **Adotar ou
-  lançar:** com `adopt_existing: true` (ou `start --backend nvim` numa janela que
-  já tem um nvim rodando) ele adota esse nvim — o seu próprio editor, nunca
-  travado em somente-leitura; caso contrário lança um nvim headless dedicado para
-  a janela. O Neovim também abre abas de verdade — a mesma experiência de
-  circular entre abas do tmux, mantida via sua API RPC; a remoção por arquivo
-  ainda vale (`max_tabs`).
-
-## Limitações
-
-- Um follower por janela tmux (o estado é indexado pelo id da janela tmux).
-- Dois processos `claude` na mesma janela tmux compartilham o follower daquela
-  janela.
-- Arquivos binários são navegados, não animados.
-- Arquivos muito grandes degradam para um paste em bloco quando a animação
-  ficaria longa demais, em vez de ritmar tecla a tecla.
+Feito por Alberto Cavalcanti — [Conecte-se no LinkedIn](https://www.linkedin.com/in/albertosca/) · MIT — veja a [LICENSE](LICENSE)
