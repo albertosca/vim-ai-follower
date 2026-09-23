@@ -24,9 +24,9 @@ Se o processo do hook for morto (por exemplo, um timeout de hook) enquanto pausa
 
 ## Como acelerar ou desacelerar a animação
 
-`prefix` `+` / `prefix` `_` releem o ritmo na hora: uma animação em execução acelera ou desacelera na **próxima quebra de linha**, não só na próxima animação. A escala satura nas duas pontas; o popup identifica os limites (`lento (mais lento)`, `instant (mais rápido)`).
+`prefix` `+` / `prefix` `_` releem o ritmo na hora: uma animação em execução acelera ou desacelera na **próxima quebra de linha**, não só na próxima animação. A escala satura nas duas pontas; o popup identifica os limites com o texto literal da CLI — `lento (slowest)` (o mais lento) e `instant (fastest)` (o mais rápido).
 
-1. Aperte `prefix` `+` pra uma marcação mais rápido, ou `prefix` `_` pra uma marcação mais lento.
+1. Aperte `prefix` `+` pra acelerar uma marcação, ou `prefix` `_` pra desacelerar uma marcação.
 2. Pra escolher o ritmo com que um follower começa, passe `--speed` pro [`start`](../reference/cli.md) ou defina `speed` no [arquivo de configuração](../reference/config.md).
 
 ## Como mutar o follower

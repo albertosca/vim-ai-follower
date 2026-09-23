@@ -10,8 +10,8 @@
 | ------------- | ------------ | ------------------------------------------------------------------------- |
 | `prefix` `P`  | pause        | Pausa uma animação em execução; aperte de novo pra retomar.               |
 | `prefix` `S`  | interrupt    | Interrompe: entrega o buffer pra você assumir e salvar sua própria versão. Aperte de novo durante a entrega pra descartar suas edições e retomar a do Claude. |
-| `prefix` `+`  | speed-up     | Avança a animação uma marcação mais rápido (satura em `instant`).         |
-| `prefix` `_`  | speed-down   | Avança a animação uma marcação mais lento (satura em `lento`).            |
+| `prefix` `+`  | speed-up     | Acelera a animação uma marcação (satura em `instant`).                    |
+| `prefix` `_`  | speed-down   | Desacelera a animação uma marcação (satura em `lento`).                   |
 | `prefix` `F`  | toggle       | Muta/desmuta o follower.                                                  |
 
 Como cada uma se comporta está no [guia de controles](../guides/controls.md).
