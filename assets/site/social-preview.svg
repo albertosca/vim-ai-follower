@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-label="vim-ai-follower: Watch Claude Code type into your own Vim. 700+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim">
-  <title>vim-ai-follower: Watch Claude Code type into your own Vim.</title>
+  <title>vim-ai-follower: Watch Claude Code type into your own Vim. 700+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim</title>
   <!-- The proof line below is an image, so scripts/check_readme_facts.py cannot read it.
        Keep the same NUMBERS as the facts blocks (the wording is shorter on purpose)
        and update it in the same commit whenever those numbers change. -->

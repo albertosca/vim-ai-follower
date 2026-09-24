@@ -43,4 +43,4 @@ For the default `tmux` backend, yes: `claude` has to run inside a tmux session, 
 - One follower per tmux window (state is keyed by tmux window id).
 - Two `claude` processes in the same tmux window share that window's follower.
 - Binary files are navigated to, not animated.
-- On the tmux backend, a single edit hunk whose own keystrokes would take more than 60 seconds to pace is sent unpaced from that point on.
+- On the tmux backend, a single changed line or block whose own keystrokes would take more than 60 seconds to pace is sent unpaced from that point on.

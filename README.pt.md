@@ -2,7 +2,7 @@
 
 # Veja o Claude Code digitar no seu próprio Vim.
 
-Cada edição é reproduzida linha a linha, num ritmo que dá pra acompanhar de verdade — pause, pegue o teclado, devolva quando quiser.
+Cada edição é reproduzida linha a linha, num ritmo que dá pra acompanhar de verdade — pause, pegue o teclado, devolva.
 
 Feito por Alberto Cavalcanti · [Conecte-se no LinkedIn](https://www.linkedin.com/in/albertosca/) · [Leia a documentação](https://albertosca.github.io/vim-ai-follower/pt/) · [Instalação](#instalação)
 

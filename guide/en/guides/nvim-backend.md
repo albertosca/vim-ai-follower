@@ -14,7 +14,7 @@ vim-ai-follower has two backends. Back to the [README](https://github.com/albert
 
 ## What the nvim backend does differently
 
-The `nvim` backend drives a real Neovim entirely over msgpack-RPC — no `send-keys`, so the keystroke-corruption bug class the tmux backend has to fight simply does not exist. Every animation, live-speed change, pause/interrupt, and des-interrupt hand-over works the same as tmux.
+The `nvim` backend drives a real Neovim entirely over msgpack-RPC — no `send-keys`, so the keystroke-corruption bug class the tmux backend has to fight simply does not exist. Every animation, live-speed change, pause/interrupt, and the hand-back after an interrupt works the same as tmux.
 
 **Adopt-or-launch:** with `adopt_existing: true` (or `start --backend nvim` in a window that already has a running nvim) it adopts that nvim — your own editor, never locked read-only; otherwise it launches a dedicated headless nvim for the window.
 

@@ -4,7 +4,7 @@
 
 **Veja o Claude Code digitar no seu próprio Vim.**
 
-Cada edição é reproduzida linha a linha, num ritmo que dá pra acompanhar de verdade — pause, pegue o teclado, devolva quando quiser.
+Cada edição é reproduzida linha a linha, num ritmo que dá pra acompanhar de verdade — pause, pegue o teclado, devolva.
 
 <!-- facts -->700+ testes de unidade no CI · 100% de branch coverage na suíte completa · backends Vim + Neovim · v0.2.9<!-- /facts -->
 

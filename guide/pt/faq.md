@@ -43,4 +43,4 @@ Pro backend padrão `tmux`, sim: o `claude` precisa rodar dentro de uma sessão 
 - Um follower por janela de tmux (o estado é indexado pelo id da janela do tmux).
 - Dois processos `claude` na mesma janela de tmux compartilham o follower daquela janela.
 - Arquivos binários recebem navegação, não animação.
-- No backend tmux, um único trecho de edição cujas próprias teclas levariam mais de 60 segundos no ritmo escolhido é enviado sem ritmo a partir daquele ponto.
+- No backend tmux, uma única linha ou bloco alterado cujas próprias teclas levariam mais de 60 segundos no ritmo escolhido é enviado sem ritmo a partir daquele ponto.
