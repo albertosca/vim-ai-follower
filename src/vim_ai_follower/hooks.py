@@ -22,7 +22,7 @@ from vim_ai_follower.session import Session, other_live_followers, resolve_sessi
 from vim_ai_follower.snapshot import load as load_snapshot
 from vim_ai_follower.snapshot import save as save_snapshot
 from vim_ai_follower.state import FollowerState, touch_open_files
-from vim_ai_follower.status_surface import status_surface_for
+from vim_ai_follower.status_surface import StatusSurface, status_surface_for
 from vim_ai_follower.tmux import adopt_target, show_popup
 
 LOG_PATH = cache.CACHE_DIR / "hook.log"
@@ -637,7 +637,12 @@ def _replay_remainder(
 
 
 def _await_user_handoff(
-    current: FollowerState, session: Session, file_path: str, after: str, partial_content: str
+    current: FollowerState,
+    session: Session,
+    file_path: str,
+    after: str,
+    partial_content: str,
+    surface: StatusSurface | None = None,
 ) -> None:
     """The user interrupted and owns the buffer: hold Claude's turn until
     they save their version (release Claude with it, via the notification)
@@ -666,7 +671,12 @@ def _await_user_handoff(
     # itself is a tmux display-popup — there is no tmux pane to target
     # standalone, so it's skipped there; the border/floating-window cue
     # above still carries the message.
-    surface = status_surface_for(current)
+    # Pass the animation's own surface: a fresh one would save the animation's
+    # "Writing..." as the title to restore, and the release would leave the
+    # border saying "Writing..." with nothing writing (found recording the
+    # demo, 2026-09-23). The tmux surface saves only on its FIRST set_state.
+    if surface is None:
+        surface = status_surface_for(current)
     try:
         while True:
             # Re-marked every cycle: the replay's own animation envelope
@@ -949,7 +959,8 @@ def _animate_edit(
     # pause-resume/des-interrupt-replay special cases that happened to set
     # this string already. The completion refresh (_refresh_writer_cue,
     # already correct) clears it or re-asserts the writer cue once done.
-    status_surface_for(current).set_state("Writing...")
+    surface = status_surface_for(current)
+    surface.set_state("Writing...")
 
     # Evict/persist BEFORE animating so the tab shuffle never lands
     # mid-typing — touch_open_files never puts the just-touched file_path in
@@ -980,7 +991,7 @@ def _animate_edit(
                 file_path=file_path,
                 partial=partial,
             )
-            _await_user_handoff(current, session, file_path, after, partial)
+            _await_user_handoff(current, session, file_path, after, partial, surface)
         else:
             # The retype ran to the end, so whatever was stale about this
             # buffer is gone — it now holds the whole file.
@@ -1008,7 +1019,7 @@ def _animate_edit(
             file_path=file_path,
             partial=partial,
         )
-        _await_user_handoff(current, session, file_path, after, partial)
+        _await_user_handoff(current, session, file_path, after, partial, surface)
     else:
         _refresh_writer_cue(session.window_id, current.target, payload)
     return 0

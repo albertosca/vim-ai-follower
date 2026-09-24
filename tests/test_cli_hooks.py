@@ -1537,6 +1537,59 @@ def test_handoff_shows_a_durable_cue_and_periodic_reminders(
     assert len(reminder_popups) >= 1  # at least one periodic reminder fired
 
 
+@pytest.mark.parametrize("already_open", [True, False], ids=["diff", "fresh-retype"])
+def test_handoff_release_restores_the_title_from_before_the_animation(
+    tmp_path: Path, already_open: bool
+) -> None:
+    # The animation raises "Writing..." on one surface and the hand-off wait
+    # used to open a SECOND one, which saved "Writing..." as the title to
+    # restore — so after the user's save the border said "Writing..." with
+    # nothing writing (measured while recording the demo, 2026-09-23). The
+    # shared mock answers every display-message with the window id, which
+    # hid it; this fake remembers the title it was given.
+    target = tmp_path / "f.txt"
+    target.write_text("hello\nworld\n")
+    snapshot.save("@1", str(target), "hello\nworld\n")
+    _register_fake_follower(
+        "@1",
+        "%2",
+        current_file=str(target),
+        open_files=(str(target),) if already_open else (),
+        shown_any=True,
+    )
+    target.write_text("hello\nvim ai follower\n")
+    base = _mock_tmux_run()
+    title = {"%2": "before"}
+
+    def _stateful_title(cmd: list[str], **kwargs: object) -> MagicMock:
+        if cmd[:2] == ["tmux", "select-pane"] and "-T" in cmd:
+            title[cmd[cmd.index("-t") + 1]] = cmd[-1]
+        if cmd[:2] == ["tmux", "display-message"] and cmd[-1] == "#{pane_title}":
+            return MagicMock(returncode=0, stdout=title[cmd[cmd.index("-t") + 1]] + "\n")
+        return base(cmd, **kwargs)
+
+    calls = {"n": 0}
+
+    def _interrupt_then_save(window_id: str, base_dir: Path | None = None) -> str | None:
+        calls["n"] += 1
+        if calls["n"] == 2:
+            return "interrupt"
+        if calls["n"] == 5:
+            target.write_text("user version\n")
+        return None
+
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_stateful_title),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()),
+        patch("vim_ai_follower.control.check_signal", side_effect=_interrupt_then_save),
+        patch("vim_ai_follower.hooks.time.sleep"),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    assert title["%2"] == "before"
+
+
 def test_file_paths_are_canonicalized_through_symlinks(tmp_path: Path) -> None:
     # macOS: /tmp is a symlink to /private/tmp, and Vim resolves buffer
     # names to the real path — a :tab drop with the symlinked spelling
