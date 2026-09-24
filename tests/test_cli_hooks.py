@@ -57,6 +57,15 @@ def _goto(path: object) -> str:
     )
 
 
+def _rename(path: object) -> str:
+    """show_fresh's `:file {path}` rename-in-place line, escaped: `#`, `%`
+    and a space are live on Vim's command line, so the path goes through a
+    Vim string literal and fnameescape(), same as _goto above. Spelled out
+    for the same reason: importing tmux_vim's f-string would agree with any
+    change to it."""
+    return ":exe 'file ' . fnameescape('" + str(path).replace("'", "''") + "')"
+
+
 # ensure_showing's clean-only disk re-read, spelled out for the same reason
 # as _goto: importing tmux_vim._RELOAD_IF_CLEAN would agree with any change.
 _RELOAD_IF_CLEAN = (
@@ -209,7 +218,7 @@ def test_hook_post_first_open_retypes_from_scratch_instead_of_pasting(tmp_path: 
 
     sends = _literal_sends(run)
     assert not any(text.startswith(":e ") for text in sends)
-    assert f":file {target}" in sends
+    assert _rename(target) in sends
     assert ":%d" in sends
     assert "hello" in sends
     assert "world" in sends
@@ -379,7 +388,7 @@ def test_edit_of_untracked_file_is_fresh_and_updates_open_files(tmp_path: Path) 
 
     sends = _literal_sends(run)
     assert ":tabnew" in sends  # show_fresh's in_new_tab, since shown_any was already True
-    assert f":file {b}" in sends  # renamed in place — the show_fresh path, not apply_edit
+    assert _rename(b) in sends  # renamed in place — the show_fresh path, not apply_edit
 
     refreshed = state.FollowerState.read("@1")
     assert refreshed is not None
@@ -408,7 +417,7 @@ def test_edit_of_tracked_file_uses_apply_edit_even_when_not_current(tmp_path: Pa
     # job, not cli.py's — then the diff is applied in place; show_fresh's
     # rename-in-place (":file <path>") never runs.
     assert _goto(a) in sends
-    assert not any(text.startswith(":file ") for text in sends)
+    assert not any(text.startswith(":exe 'file '") for text in sends)
     assert "print('a changed')" in sends
 
 
@@ -438,7 +447,7 @@ def test_eviction_closes_oldest_tab_before_animating(
     # buffer-name pattern — and the wipe closes the tab by itself, so there
     # is no :tabclose (see close_tab).
     close_index = next(i for i, text in enumerate(sends) if f"fnamemodify('{a}', ':p')" in text)
-    rename_index = sends.index(f":file {c}")
+    rename_index = sends.index(_rename(c))
     assert close_index < rename_index
     assert not any("tabclose" in text for text in sends)
 
@@ -1527,7 +1536,7 @@ def test_stale_file_is_retyped_fresh_and_the_mark_clears_on_completion(tmp_path:
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = _literal_sends(run)
-    assert f":file {file_path}" in sends  # show_fresh's rename in place
+    assert _rename(file_path) in sends  # show_fresh's rename in place
     assert _goto(file_path) not in sends  # ...not apply_edit's navigation
     assert "print('after')" in sends
 

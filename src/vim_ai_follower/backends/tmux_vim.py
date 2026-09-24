@@ -474,7 +474,12 @@ class TmuxVimFollower:
         if in_new_tab:
             pane.send_text(":tabnew")
             pane.send_key("Enter")
-        pane.send_text(f":file {file_path}")
+        # file_path goes through _vim_string + fnameescape(), same as
+        # _GOTO_FILE: raw on the command line, `#`, `%` and a space rename
+        # the buffer onto the wrong name (measured 2026-09-24: a space alone
+        # left the buffer unnamed), and the by-number lookup that a later
+        # Edit's goto_file does then misses it and opens a duplicate tab.
+        pane.send_text(f":exe 'file ' . fnameescape({_vim_string(file_path)})")
         pane.send_key("Enter")
         # `:filetype detect` must run BEFORE 'paste' is enabled below: it
         # loads the filetype's indent/ftplugin scripts, which can turn

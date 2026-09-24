@@ -264,7 +264,7 @@ def test_show_fresh_renames_current_buffer_without_ever_loading_the_real_file(
     assert commands[1] == ("Escape", False)
     assert commands[2] == (_wipe("'/tmp/f.txt'"), True)
     assert commands[3] == ("Enter", False)
-    assert commands[4] == (":file /tmp/f.txt", True)
+    assert commands[4] == (_rename("/tmp/f.txt"), True)
     assert commands[5] == ("Enter", False)
     assert commands[6] == (":filetype detect", True)
     assert commands[7] == ("Enter", False)
@@ -302,7 +302,7 @@ def test_show_fresh_with_empty_content_still_wipes_and_relocks(tmp_path: Path) -
         ("Escape", False),
         (_wipe("'/tmp/f.txt'"), True),
         ("Enter", False),
-        (":file /tmp/f.txt", True),
+        (_rename("/tmp/f.txt"), True),
         ("Enter", False),
         (":filetype detect", True),
         ("Enter", False),
@@ -551,6 +551,14 @@ def _wipe(quoted_path: str) -> str:
     )
 
 
+def _rename(path: str) -> str:
+    """show_fresh's `:file {path}` rename-in-place line, escaped: `#`, `%`
+    and a space are live on Vim's command line, so the raw path is wrong —
+    it goes through a Vim string literal and fnameescape(), same as _goto.
+    Spelled out for the same reason as _goto/_wipe above."""
+    return ":exe 'file ' . fnameescape('" + path.replace("'", "''") + "')"
+
+
 def test_close_tab_wipes_by_buffer_number_and_never_double_closes() -> None:
     """The exact Ex traffic of one eviction.
 
@@ -619,7 +627,7 @@ def test_show_fresh_in_new_tab_opens_tab_before_renaming(
     follower.show_fresh("/tmp/new.py", "line1\n", in_new_tab=True)
     wipe = sent.index("text::" + _wipe("'/tmp/new.py'"))
     tabnew = sent.index("text:::tabnew")
-    rename = sent.index("text:::file /tmp/new.py")
+    rename = sent.index("text::" + _rename("/tmp/new.py"))
     assert wipe < tabnew < rename
 
 
