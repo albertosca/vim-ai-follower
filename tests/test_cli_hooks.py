@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -623,6 +625,79 @@ def test_main_non_hook_command_still_raises_on_error(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(commands, "cmd_status", _boom)
     with pytest.raises(RuntimeError, match="injected status boom"):
         cli.main(["status"])
+
+
+def test_run_hook_configure_logging_failure_still_exits_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix round 1 (review Critical): _configure_logging() used to run
+    BEFORE run_hook's try, so an unwritable cache dir or a full disk (the
+    FileHandler open failing) escaped uncaught — and did so on EVERY hook
+    invocation, since each hook is a fresh process re-running it. It must
+    now be inside the same try as everything else."""
+
+    def _boom(*args: object, **kwargs: object) -> logging.FileHandler:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(logging, "FileHandler", _boom)
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"tool_name": "Bash"}'))
+    assert cli.main(["hook", "post"]) == 0
+
+
+def test_run_hook_stdin_read_failure_still_exits_zero(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fix round 1 (review Critical): cli.py used to call `sys.stdin.read()`
+    as an ARGUMENT to run_hook, evaluated before the call and therefore
+    outside its try — a UnicodeDecodeError from non-UTF-8 stdin (or any
+    other I/O error) escaped. run_hook must take the stream itself and read
+    it inside its own protected path."""
+
+    class _BoomStdin:
+        def read(self) -> str:
+            raise UnicodeDecodeError("utf-8", b"\xff\xfe", 0, 1, "invalid start byte")
+
+    monkeypatch.setattr("sys.stdin", _BoomStdin())
+    assert cli.main(["hook", "pre"]) == 0
+    log_text = hooks.LOG_PATH.read_text() if hooks.LOG_PATH.exists() else ""
+    assert "hook pre crashed" in log_text
+    assert "UnicodeDecodeError" in log_text
+
+
+def test_run_hook_real_subprocess_non_utf8_stdin_exits_zero(tmp_path: Path) -> None:
+    """The same non-UTF-8-stdin scenario as above, but through the REAL CLI
+    as a real subprocess with real bytes on stdin — proving the in-process
+    fake-.read() test above matches what Python's own text-mode stdin does
+    with invalid bytes, not just what a hand-written stub does. HOME is
+    redirected to an isolated tmp dir so this can never touch the real
+    ~/.cache/claude-vim-follower on the machine running the suite."""
+    result = subprocess.run(
+        [sys.executable, "-m", "vim_ai_follower.cli", "hook", "pre"],
+        input=b"\xff\xfe not valid utf-8 \x80\x81",
+        capture_output=True,
+        env={**os.environ, "HOME": str(tmp_path)},
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+
+
+def test_run_hook_logging_the_crash_itself_also_fails_still_exits_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fix round 1 (review Critical): the except handler's own attempt to
+    log the crash is wrapped in a second, unconditional try — if hook.log
+    itself is what's broken, logging the ORIGINAL crash can raise too, and
+    that second failure must not escape either. Both the dispatch AND the
+    logging of its failure raise here."""
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"tool_name": "Bash"}'))
+
+    def _boom_dispatch(env: dict[str, str], payload: dict[str, object]) -> int:
+        raise RuntimeError("dispatch boom")
+
+    def _boom_log(*args: object, **kwargs: object) -> None:
+        raise OSError("log write also failed")
+
+    monkeypatch.setattr(hooks, "cmd_hook_post", _boom_dispatch)
+    monkeypatch.setattr(hooks.logger, "exception", _boom_log)
+    assert cli.main(["hook", "post"]) == 0
 
 
 def _interrupt_then_user_saves(

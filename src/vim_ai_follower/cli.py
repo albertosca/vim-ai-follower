@@ -64,7 +64,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "toggle":
         return commands.cmd_toggle(env)
 
-    return hooks.run_hook(args.hook_command, env, sys.stdin.read())
+    # sys.stdin is passed as-is, unread: run_hook reads it inside its own
+    # try, so a raising .read() (non-UTF-8 bytes, a broken pipe) is caught
+    # there too, not left to escape from this call site.
+    return hooks.run_hook(args.hook_command, env, sys.stdin)
 
 
 if __name__ == "__main__":  # pragma: no cover

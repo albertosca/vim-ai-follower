@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
 import logging
@@ -10,7 +11,7 @@ import subprocess
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from vim_ai_follower import binding, cache, config, control, keybindings, writer_cue
 from vim_ai_follower import diff as diff_module
@@ -688,26 +689,39 @@ def _await_user_handoff(
         control.clear_animating(window_id)
 
 
-def run_hook(hook_command: str, env: dict[str, str], stdin_text: str) -> int:
+class _Readable(Protocol):
+    def read(self) -> str: ...
+
+
+def run_hook(hook_command: str, env: dict[str, str], stdin: _Readable) -> int:
     """Entry point for the `hook pre|post` CLI subcommands, and ONLY those:
     the design intent ("Hooks never fail a tool call", guide/en/faq.md) does
     not cover start/stop/status/etc, which must keep raising normally.
 
-    Malformed stdin JSON (cli.py's old bare `json.loads`) or any exception
-    raised inside cmd_hook_pre/cmd_hook_post used to propagate all the way
-    out of `main`, exiting 1 with a traceback that Claude Code reports as a
-    hook error (BACKLOG "Hooks have no top-level catch"). This always
-    returns 0 instead, logging the traceback to hook.log — the same
-    "silent failure, read the log" contract every other hook error already
-    has."""
-    _configure_logging()
+    This ALWAYS returns 0 — every step that can fail is inside the one try:
+    `_configure_logging()` itself (an unwritable cache dir, a full disk),
+    reading stdin (a UnicodeDecodeError from non-UTF-8 bytes, or any other
+    I/O error — `stdin.read()` is called in here, not by the caller, so a
+    raising read is caught too), malformed JSON (cli.py's old bare
+    `json.loads`), and any exception raised inside cmd_hook_pre/
+    cmd_hook_post. All of these used to propagate out of `main`, exiting 1
+    with a traceback that Claude Code reports as a hook error (BACKLOG
+    "Hooks have no top-level catch").
+
+    The except handler's own attempt to log is wrapped in a second,
+    unconditional try: if hook.log itself is what's broken (the same full
+    disk, the same unwritable directory), there is nothing left to write —
+    but that second failure must not escape either, or a broken log would
+    defeat the one guarantee this function exists to make."""
     try:
-        payload: dict[str, Any] = json.loads(stdin_text)
+        _configure_logging()
+        payload: dict[str, Any] = json.loads(stdin.read())
         if hook_command == "pre":
             return cmd_hook_pre(env, payload)
         return cmd_hook_post(env, payload)
     except Exception:
-        logger.exception("hook %s crashed", hook_command)
+        with contextlib.suppress(Exception):
+            logger.exception("hook %s crashed", hook_command)
         return 0
 
 
