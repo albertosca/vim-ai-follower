@@ -323,6 +323,87 @@ def test_interrupted_edit_hands_over_the_persisted_partial_not_the_finished_file
     assert not thread.is_alive()
 
 
+def test_pause_then_resume_never_shows_the_finished_file_before_typing_it(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    """Pause mid-Edit-animation, then resume: the same two invariants as
+    the plain Edit test above, now exercised across a pause/resume cycle —
+    previously only measured by hand (docs/superpowers/evidence/
+    2026-09-23-tmux-edit-reload/fix/m-fixed-src-pausemid.txt) with no
+    committed test (BACKLOG.md item (e), Edit-reload fix residuals).
+
+    This guards the invariant ACROSS a pause/resume, not pause's own logic —
+    on a revert to v0.2.8's tmux_vim.py the failure fires on the very first
+    assertion, `after not in states_at_pause`, i.e. the finished file is
+    already on screen before the pause signal is even sent. The reload bug
+    (goto_file's `:tab drop`) precedes and subsumes the pause path here; it
+    is not this test proving anything pause-specific. Do not read a pass
+    here as evidence the pause/resume mechanics themselves are exercised
+    beyond "the fix still holds while they run".
+
+    No sleeps for synchronization: every wait is on a marker
+    (`control.animating_state`) or on the observer's own log. The `finally`
+    block deliberately resumes whenever it observes "paused" (a no-op once
+    it hasn't) so a failed assertion between the pause and the resume can
+    never leave the hook thread parked in `_wait_while_paused` forever —
+    measured the hard way in an earlier draft, where exactly that ordering
+    hung the whole pytest process for minutes with a live, un-resumable
+    animation thread."""
+    log, _, window_id = _observed_follower(
+        tmux_session, monkeypatch, tmp_path, wait_until, "--speed", "lento"
+    )
+    target = tmp_path / "sample.py"
+    _write(monkeypatch, log, wait_until, target, ONE_DEF)
+    after = THREE_DEFS.splitlines()
+
+    with log.open("a") as handle:
+        handle.write(_MARK + "\n")
+    _hook(monkeypatch, "pre", "Edit", target)
+    target.write_text(THREE_DEFS)
+    body = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(target)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(body))
+    # daemon=True: a backstop only — see the docstring's last paragraph for
+    # the real release (the finally block below).
+    thread = threading.Thread(target=lambda: cli.main(["hook", "post"]), daemon=True)
+    thread.start()
+    try:
+        assert wait_until(lambda: control.animating_state(window_id) == "running", timeout=10.0)
+        # Let some of the edit type (lento) before pausing mid-animation.
+        assert wait_until(lambda: len(_states(log, target.name)) >= 2, timeout=15.0)
+        control.request_pause(window_id)
+        assert wait_until(lambda: control.animating_state(window_id) == "paused", timeout=10.0)
+        states_at_pause = _states(log, target.name)
+    finally:
+
+        def _release() -> bool:
+            # Fires the P toggle's resume exactly once, only while genuinely
+            # paused — a no-op once it has (state moves on to "running" and
+            # then None), so this converges regardless of where the try
+            # block above stopped.
+            state = control.animating_state(window_id)
+            if state == "paused":
+                control.request_pause(window_id)
+            return state is None
+
+        wait_until(_release, timeout=30.0)
+        thread.join(timeout=10.0)
+    assert not thread.is_alive()
+
+    states = _states(log, target.name)
+    trace = "\n".join(f"defs={_defs(s)} lines={len(s)}" for s in states)
+    assert after not in states_at_pause, f"finished file shown before pausing:\n{trace}"
+    # Resume must have actually continued typing, not just fast-forwarded to
+    # the end while nobody was looking — otherwise the invariants below would
+    # pass vacuously on a pause that landed after the animation was done.
+    assert len(states) > len(states_at_pause), f"resume typed nothing new:\n{trace}"
+    assert states[-1] == after
+    assert after not in states[:-1], f"finished file shown before the animation ended:\n{trace}"
+    assert max(_defs(s) for s in states) <= _defs(after), f"duplicated defs:\n{trace}"
+
+
 def test_read_of_an_open_clean_file_changed_outside_claude_shows_the_new_content(
     tmux_session: str,
     monkeypatch: pytest.MonkeyPatch,
