@@ -261,7 +261,10 @@ def test_hook_post_skips_binary_files_on_first_open(tmp_path: Path) -> None:
     ]
 
 
-def test_hook_post_skips_binary_files_on_subsequent_edit(tmp_path: Path) -> None:
+def test_hook_post_shows_a_rewritten_binary_on_subsequent_edit(tmp_path: Path) -> None:
+    # Binaries are never animated, but an edit to one already open must still
+    # navigate there and re-read it (clean buffer) — the old `== []` pin dated
+    # from before the reload-if-clean existed and left the stale bytes showing.
     target = tmp_path / "f.bin"
     target.write_bytes(b"\x00\x01\x02")
     snapshot.save("@1", str(target), "")
@@ -273,7 +276,11 @@ def test_hook_post_skips_binary_files_on_subsequent_edit(tmp_path: Path) -> None
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
-    assert _literal_sends(run) == []
+    assert _literal_sends(run) == [
+        _goto(target),
+        _RELOAD_IF_CLEAN,
+        ":setlocal readonly nomodifiable",
+    ]
 
 
 def test_hook_post_read_without_offset_does_not_navigate(tmp_path: Path) -> None:

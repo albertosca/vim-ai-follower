@@ -947,9 +947,10 @@ def _animate_edit(
 
     if binary:
         # Binary files are never animated, so it's safe to just navigate to
-        # them normally (real content shown immediately, nothing to spoil).
-        if is_fresh:
-            _ensure_buffer(session.window_id, follower, file_path)
+        # them normally (real content shown immediately, nothing to spoil) —
+        # fresh or not: an already-open one was rewritten on disk and its
+        # clean buffer must be re-read, or the old bytes stay on screen.
+        _ensure_buffer(session.window_id, follower, file_path)
         _touch_and_evict(session.window_id, follower, current, file_path, cfg.max_tabs)
         return 0
 
