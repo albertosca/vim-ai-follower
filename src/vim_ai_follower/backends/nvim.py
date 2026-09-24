@@ -19,6 +19,7 @@ import pynvim
 
 from vim_ai_follower import config, control
 from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult, _wait_while_paused
+from vim_ai_follower.backends import buffer_forms
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
 from vim_ai_follower.diff import EditOp, apply_ops
 from vim_ai_follower.state import FollowerState
@@ -782,6 +783,25 @@ class NvimFollower:
         nvim.command("filetype detect")
         if not self._is_adopted():
             nvim.api.buf_set_option(bufnr, "modifiable", False)
+
+    def buffer_holds(self, file_path: str, content: str) -> bool:
+        """Whether file_path's buffer is LOADED and holds exactly `content` —
+        the base an edit script is about to be typed onto. Read straight over
+        RPC. An unloaded buffer (its tab closed under 'nohidden') holds
+        nothing: goto_file's win_set_buf would load the finished file from
+        disk. It needs no check of its own: buf_get_lines of an unloaded
+        buffer is an empty list (measured, nvim 0.12), a loaded buffer always
+        has a line, and buffer_forms never yields an empty list. Pure reads —
+        no navigation, no lock change, adopted or not. buf_get_lines decodes
+        with surrogateescape, so a buffer holding bytes that are not UTF-8
+        never equals the hook's decoded `content`, and the answer is the safe
+        False."""
+        nvim = self._connect()
+        bufnr = _buffer_number(nvim, file_path)
+        if bufnr == -1:
+            return False
+        lines: list[str] = nvim.api.buf_get_lines(bufnr, 0, -1, False)
+        return lines in buffer_forms(content)
 
     def ensure_showing(self, file_path: str) -> None:
         """Show file_path with its REAL on-disk content — the Read-navigation

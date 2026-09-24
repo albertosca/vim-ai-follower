@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import logging
+import secrets
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
-from vim_ai_follower import config
+from vim_ai_follower import cache, config
 from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult, run_lines, run_ops
+from vim_ai_follower.backends import buffer_forms
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
 from vim_ai_follower.diff import EditOp
 from vim_ai_follower.state import FollowerState
@@ -172,11 +177,14 @@ _SWAP_ANSWER_OPEN = (
     ' | exe "augroup END"'
 )
 _SWAP_ANSWER_CLOSE = f'exe "autocmd! {_SWAP_GROUP}" | exe "augroup! {_SWAP_GROUP}"'
-_GOTO_FILE = (
+# `g:vaf_n` = the number of the buffer named `g:vaf_p`, or -1 (see above).
+_FIND_BUFFER = (
     ":let g:vaf_p = {file}"
     " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
     " && fnamemodify(bufname(v:val), '':p'') ==# fnamemodify(g:vaf_p, '':p'')'), 0, -1)"
-    f" | {_SWAP_ANSWER_OPEN}"
+)
+_GOTO_FILE = (
+    _FIND_BUFFER + f" | {_SWAP_ANSWER_OPEN}"
     " | try"
     " | if g:vaf_n < 0 | exe 'tab drop ' . fnameescape(g:vaf_p)"
     " | elseif g:vaf_n != bufnr('%')"
@@ -213,6 +221,52 @@ _RELOAD_IF_CLEAN = (
     " | try | if !&modified | silent edit | endif"
     f" | finally | {_SWAP_ANSWER_CLOSE} | endtry"
 )
+
+
+# buffer_holds' read-back: the one place this keystroke-driven backend asks
+# Vim a question. Vim writes the lines of the buffer file_path names into a
+# probe file that Python polls for. It looks the buffer up by NUMBER exactly
+# like _GOTO_FILE (never a name pattern) and never navigates: `:tab sbuffer`
+# on an unloaded buffer is the very disk read the question exists to avoid.
+#
+#   - getbufline() of an unloaded buffer (listed, but its tab was closed under
+#     'nohidden') and of a missing one (-1) is an empty list, while a loaded
+#     buffer always has at least one line — so "no lines" already means "holds
+#     no base", with no status field to keep in sync (buffer_forms never
+#     yields an empty list);
+#   - a nonce closes the dump, so a half-written file, or one left by an
+#     older probe that timed out and landed late, is never read as this
+#     probe's answer;
+#   - the lines themselves, not a `sha256()` of them: that needs +cryptv, and
+#     an E117 at 49 columns is a hit-enter prompt that would eat the
+#     animation's keystrokes.
+_PROBE_BUFFER = (
+    _FIND_BUFFER + " | call writefile(getbufline(g:vaf_n, 1, '$') + [{nonce}], {probe})"
+    " | unlet! g:vaf_p g:vaf_n"
+)
+# How long buffer_holds waits for Vim's answer before taking the safe side (a
+# full retype). Measured 2026-09-24 against a real tmux+vim at load 4-6: a
+# median of ~50 ms and a worst of ~100 ms per probe, for 50- and 2000-line
+# buffers alike, so this only runs out when Vim is stuck or the machine is
+# drowning, and then retyping is the right call anyway.
+_PROBE_TIMEOUT_SECONDS = 2.0
+_PROBE_POLL_SECONDS = 0.01
+
+logger = logging.getLogger("vim_ai_follower")
+
+
+def _read_probe(probe: Path, nonce: str) -> list[str] | None:
+    """The buffer lines the probe reported, or None while the file is not
+    (yet) this probe's complete answer."""
+    try:
+        raw = probe.read_bytes()
+    except OSError:
+        return None
+    # writefile() ends every item with a newline, the last one included.
+    items = raw.decode("utf-8", errors="replace").split("\n")[:-1]
+    if not items or items[-1] != nonce:
+        return None
+    return items[:-1]
 
 
 def _vim_string(value: str) -> str:
@@ -396,6 +450,39 @@ class TmuxVimFollower:
         # typing at the tty level, so it must explicitly unlock around itself.
         pane.send_text(_LOCK_READONLY)
         pane.send_key("Enter")
+
+    def buffer_holds(self, file_path: str, content: str) -> bool:
+        """Whether Vim holds file_path's buffer LOADED with exactly `content`
+        — the base an edit script is about to be typed onto. The probe is a
+        round-trip (_PROBE_BUFFER): Vim dumps the buffer to a file and this
+        polls for it. No answer within _PROBE_TIMEOUT_SECONDS is a False,
+        because the hook's safe side of an unknown base is a full retype."""
+        probe = cache.CACHE_DIR / f"probe-{self.pane_id.lstrip('%')}.txt"
+        probe.parent.mkdir(parents=True, exist_ok=True)
+        probe.unlink(missing_ok=True)
+        nonce = secrets.token_hex(8)
+        pane = TmuxPane(pane_id=self.pane_id)
+        self._normal_mode(pane)
+        pane.send_text(
+            _PROBE_BUFFER.format(
+                file=_vim_string(file_path),
+                nonce=_vim_string(nonce),
+                probe=_vim_string(str(probe)),
+            )
+        )
+        pane.send_key("Enter")
+        deadline = time.monotonic() + _PROBE_TIMEOUT_SECONDS
+        while (lines := _read_probe(probe, nonce)) is None:
+            if time.monotonic() >= deadline:
+                logger.warning(
+                    "no answer from the follower's Vim about %s within %.1fs; retyping it",
+                    file_path,
+                    _PROBE_TIMEOUT_SECONDS,
+                )
+                return False
+            time.sleep(_PROBE_POLL_SECONDS)
+        probe.unlink(missing_ok=True)
+        return lines in buffer_forms(content)
 
     def _with_unlocked(
         self, relock: str, run: Callable[[TmuxPane], AnimationResult]

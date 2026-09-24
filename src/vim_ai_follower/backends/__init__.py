@@ -22,6 +22,12 @@ class Follower(Protocol):
 
     def ensure_showing(self, file_path: str) -> None: ...
 
+    # Whether file_path's buffer is loaded and holds exactly `content` — the
+    # base an edit script is about to be typed onto. The hook retypes the
+    # whole file whenever this is False, so a backend that cannot tell must
+    # answer False, never guess True.
+    def buffer_holds(self, file_path: str, content: str) -> bool: ...
+
     def goto_file(self, file_path: str) -> None: ...
 
     def close_tab(self, file_path: str) -> None: ...
@@ -54,6 +60,24 @@ class Follower(Protocol):
     ) -> AnimationResult: ...
 
     def hand_over(self) -> None: ...
+
+
+def buffer_forms(content: str) -> list[list[str]]:
+    """The line lists an editor buffer holding the file `content` can show.
+
+    One trailing newline is the last line's terminator, not an extra empty
+    line (an editor's buffer of "a\nb\n" is ["a", "b"]), and an empty file is
+    a single empty line. A file whose every line ends in CR is also accepted
+    without them, because Vim and nvim load it with fileformat=dos and strip
+    the CRs from the buffer. Splits on "\n" only, never str.splitlines(),
+    which would also break on form feeds and U+2028 that stay inside an
+    editor's line."""
+    text = content[:-1] if content.endswith("\n") else content
+    lines = text.split("\n")
+    forms = [lines]
+    if all(line.endswith("\r") for line in lines):
+        forms.append([line[:-1] for line in lines])
+    return forms
 
 
 def get_follower(
