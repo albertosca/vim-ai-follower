@@ -28,6 +28,7 @@ from vim_ai_follower import (
 )
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends.nvim import _FIND_BUFFER_LUA
+from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.session import Session
 
 
@@ -419,7 +420,13 @@ def test_edit_of_tracked_file_uses_apply_edit_even_when_not_current(tmp_path: Pa
     )
 
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(a)}}
-    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+    # The mocked tmux has no Vim to answer the base probe; a's buffer holding
+    # the snapshot is this test's premise (tests/test_hooks_base_mismatch.py
+    # covers the other answer).
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+        patch.object(TmuxVimFollower, "buffer_holds", return_value=True),
+    ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = _literal_sends(run)
@@ -739,9 +746,11 @@ def test_hook_post_edit_interrupted_prints_notification_and_leaves_buffer_unlock
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
     # before the single replace op's delete-half's Enter is sent, "interrupt"
-    # fires — the ex-command text gets typed but never committed
+    # fires — the ex-command text gets typed but never committed. The buffer
+    # holding the snapshot is the premise (no Vim here answers the probe).
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+        patch.object(TmuxVimFollower, "buffer_holds", return_value=True),
         patch(
             "vim_ai_follower.control.check_signal",
             side_effect=_interrupt_then_user_saves(target, at_check=2),

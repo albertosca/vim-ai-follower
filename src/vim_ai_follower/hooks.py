@@ -436,8 +436,10 @@ def _ensure_buffer(window_id: str, follower: Follower, file_path: str) -> None:
     swap-guarded `_RELOAD_IF_CLEAN`, so a file rewritten outside Claude's
     Edits is not shown stale) and leaves a modified one alone; nvim switches
     to it and never re-reads it (a known backlog item). A fresh text edit
-    never comes here: it goes through show_fresh, so the finished content is
-    never flashed before it's typed.
+    never comes here, and neither does an Edit whose buffer does not hold
+    the diff's base (listed but unloaded, or changed on disk outside
+    Claude — see _buffer_holds_base): both go through show_fresh, so the
+    finished content is never flashed before it's typed.
     Always runs the preamble — it's cheap and self-healing, immune to the
     user having closed or reordered tabs since the last time this file was
     current."""
@@ -896,6 +898,23 @@ def _consume_pending_catchup(
     follower.resume(dataclasses.replace(pending, pace_seconds=0.0), seeded=not pending.partial)
 
 
+def _buffer_holds_base(follower: Follower, file_path: str, before: str) -> bool:
+    """Whether the follower's buffer for file_path holds `before`, the base
+    the edit script is computed against. Two ways it does not, both invisible
+    to FollowerState (open_files still lists the file): the buffer is listed
+    but UNLOADED (the user closed its tab under 'nohidden', and navigating to
+    it would load the finished file from disk first), or it is open and
+    clean while something other than Claude rewrote the file (a formatter,
+    `sed -i`, a checkout). A probe that fails is a False: hooks never fail
+    the tool call, and the safe side of an unknown base is a full retype,
+    never a diff."""
+    try:
+        return follower.buffer_holds(file_path, before)
+    except Exception:
+        logger.exception("could not ask the follower what %s's buffer holds; retyping", file_path)
+        return False
+
+
 def _animate_edit(
     payload: dict[str, Any],
     session: Session,
@@ -924,9 +943,10 @@ def _animate_edit(
         window_id=session.window_id,
     )
     # "Fresh" means the follower holds no buffer this edit's diff could be
-    # applied onto: either the file was never opened, or it has a tab whose
-    # buffer a skipped edit left behind (stale_files). Both need the whole
-    # file retyped; a diff would land on the wrong base.
+    # applied onto, so the whole file is retyped; a diff would land on the
+    # wrong base. Known here from state: the file was never opened, or its
+    # tab's buffer is one a skipped edit left behind (stale_files). What state
+    # cannot know is asked of the editor further down (_buffer_holds_base).
     is_fresh = file_path not in current.open_files or file_path in current.stale_files
     binary = diff_module.is_binary(raw_after)
 
@@ -969,14 +989,23 @@ def _animate_edit(
     # one just closed.
     _touch_and_evict(session.window_id, follower, current, file_path, cfg.max_tabs)
 
+    # After the catch-up above, never before it: the replay is what brings
+    # the buffer to this edit's base, and probing first would see its
+    # half-typed partial and throw the catch-up away.
+    before = load_snapshot(session.window_id, file_path)
+    if not is_fresh and not _buffer_holds_base(follower, file_path, before):
+        is_fresh = True
+
     if is_fresh:
         result = follower.show_fresh(file_path, after, in_new_tab=current.shown_any)
         if result.outcome == "interrupted":
             # Clear the display-only pointer — the user owns the buffer now
             # and may change it under us. Freshness is keyed on open_files,
             # which the interrupt path never touches, so the next edit is
-            # still a diff (apply_edit) against the pre-edit snapshot, never
-            # a full retype. Even a killed handoff self-heals: the partial
+            # still a diff (apply_edit) against the pre-edit snapshot as long
+            # as the buffer holds that snapshot once any pending catch-up has
+            # run (_buffer_holds_base); otherwise it is retyped. Even a
+            # killed handoff self-heals: the partial
             # buffer converges to disk at the next completed animation via
             # the `:silent! e!` relock.
             # (_await_user_handoff restores tracking on a des-interrupt.)
@@ -1001,7 +1030,6 @@ def _animate_edit(
             _refresh_writer_cue(session.window_id, current.target, payload)
         return 0
 
-    before = load_snapshot(session.window_id, file_path)
     ops = diff_module.compute_edit_script(before, after)
     # `before` goes along for the tmux backend: its driver cannot read the
     # buffer, so this is the only way its pause-time crash fallback can record
