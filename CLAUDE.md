@@ -10,6 +10,7 @@ uv run ruff check src tests && uv run ruff format --check src tests
 uv run mypy                                  # bare — pyproject's files = src + tests; CI runs the same
 bash scripts/full_suite.sh   # full suite, ~7 min, real tmux+vim+nvim; its gate is the 100% the README claims
 uv run pytest -q -m "not integration"        # what CI runs (~15 s); coverage floor there is 98 (unit-only is ~99%)
+bash scripts/build_docs.sh && uv run python scripts/preview_docs.py 8000   # docs site at http://localhost:8000/vim-ai-follower/ (prod URLs rewritten to the working copy)
 ```
 
 The project's bar is 100% branch coverage on the full suite; the coverage gate lives in the command line, not in pyproject. Integration tests (`@pytest.mark.integration`) need `tmux`, `vim` and `nvim` on PATH.

@@ -18,10 +18,8 @@ Every edit replayed line by line, at a pace you can actually read — pause it, 
 
 ## How it works
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://albertosca.github.io/vim-ai-follower/assets/diagrams/how-it-works-dark.svg">
-  <img alt="The edit lands on disk first; the follower only replays it; you control it — pause, or take the keyboard." src="https://albertosca.github.io/vim-ai-follower/assets/diagrams/how-it-works-light.svg" width="520">
-</picture>
+<img alt="The edit lands on disk first; the follower only replays it; you control it — pause, or take the keyboard." src="https://albertosca.github.io/vim-ai-follower/assets/diagrams/how-it-works-light.svg#gh-light-mode-only" width="520">
+<img alt="The edit lands on disk first; the follower only replays it; you control it — pause, or take the keyboard." src="https://albertosca.github.io/vim-ai-follower/assets/diagrams/how-it-works-dark.svg#gh-dark-mode-only" width="520">
 
 - Claude Code's `Edit` or `Write` lands on disk first; a `PreToolUse` hook has already snapshotted the old content.
 - A `PostToolUse` hook diffs old against new and replays the change into your Vim (tmux `send-keys`) or Neovim (RPC).

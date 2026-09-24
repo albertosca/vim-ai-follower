@@ -144,3 +144,34 @@ def test_a_bare_url_ending_a_sentence_keeps_its_punctuation_out(tmp_path: Path) 
         "https://albertosca.github.io/vim-ai-follower/llms.txt!",
     )
     assert _cbs().site_problems(site, guide, require_dates=False) == []
+
+
+def test_a_scheme_suffix_on_an_image_url_is_not_an_anchor(tmp_path: Path) -> None:
+    site, guide = _good_site(tmp_path)
+    base = "https://albertosca.github.io/vim-ai-follower/assets/diagrams/how-light.svg"
+    _write(
+        guide / "en/index.md",
+        f'<img src="{base}#gh-light-mode-only"> <img src="{base}#gh-dark-mode-only">',
+    )
+    assert _cbs().site_problems(site, guide, require_dates=False) == []
+
+
+def test_a_picture_that_follows_the_os_scheme_is_reported(tmp_path: Path) -> None:
+    # <picture media="(prefers-color-scheme: dark)"> ignores the site's own
+    # light/dark toggle; site pages swap by #gh-*-mode-only suffixes instead.
+    site, guide = _good_site(tmp_path)
+    _write(
+        guide / "pt/index.md",
+        '<picture><source media="(prefers-color-scheme: dark)" srcset="x.svg"></picture>',
+    )
+    assert _cbs().site_problems(site, guide, require_dates=False) == [
+        f"{guide / 'pt/index.md'}: <picture> by prefers-color-scheme ignores the site"
+        " toggle; use #gh-light-mode-only / #gh-dark-mode-only images"
+    ]
+
+
+def test_the_readme_may_keep_its_os_scheme_picture(tmp_path: Path) -> None:
+    # GitHub has no site toggle; the README's <picture> is the right tool there.
+    site, guide = _good_site(tmp_path)
+    _write(tmp_path / "README.md", '<source media="(prefers-color-scheme: dark)">')
+    assert _cbs().site_problems(site, guide, require_dates=False) == []

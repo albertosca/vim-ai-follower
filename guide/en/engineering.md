@@ -6,10 +6,8 @@ vim-ai-follower types into an editor you are looking at, from hooks that run ins
 
 ## How vim-ai-follower works
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://albertosca.github.io/vim-ai-follower/assets/diagrams/how-it-works-dark.svg">
-  <img alt="The edit lands on disk first; the follower only replays it; you control it — pause, or take the keyboard." src="https://albertosca.github.io/vim-ai-follower/assets/diagrams/how-it-works-light.svg" width="520">
-</picture>
+<img alt="The edit lands on disk first; the follower only replays it; you control it — pause, or take the keyboard." src="https://albertosca.github.io/vim-ai-follower/assets/diagrams/how-it-works-light.svg#gh-light-mode-only" width="520">
+<img alt="The edit lands on disk first; the follower only replays it; you control it — pause, or take the keyboard." src="https://albertosca.github.io/vim-ai-follower/assets/diagrams/how-it-works-dark.svg#gh-dark-mode-only" width="520">
 
 *The edit lands on disk first; the follower only replays it; you control it — pause, or take the keyboard.*
 

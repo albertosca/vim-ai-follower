@@ -18,10 +18,8 @@ Cada edição é reproduzida linha a linha, num ritmo que dá pra acompanhar de 
 
 ## Como funciona
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://albertosca.github.io/vim-ai-follower/assets/diagrams/how-it-works-dark.svg">
-  <img alt="The edit lands on disk first; the follower only replays it; you control it — pause, or take the keyboard." src="https://albertosca.github.io/vim-ai-follower/assets/diagrams/how-it-works-light.svg" width="520">
-</picture>
+<img alt="A edição chega ao disco primeiro; o follower só a reproduz; você controla — pause, ou pegue o teclado." src="https://albertosca.github.io/vim-ai-follower/assets/diagrams/how-it-works-light.svg#gh-light-mode-only" width="520">
+<img alt="A edição chega ao disco primeiro; o follower só a reproduz; você controla — pause, ou pegue o teclado." src="https://albertosca.github.io/vim-ai-follower/assets/diagrams/how-it-works-dark.svg#gh-dark-mode-only" width="520">
 
 - O `Edit` ou o `Write` do Claude Code chega ao disco primeiro; um hook `PreToolUse` já tinha guardado o conteúdo antigo.
 - Um hook `PostToolUse` compara o conteúdo antigo com o novo e reproduz a mudança no seu Vim (`tmux send-keys`) ou no Neovim (RPC).

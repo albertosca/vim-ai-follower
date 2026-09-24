@@ -10,7 +10,11 @@ assets. This checks that:
   dead-link the README with the build green); the READMEs are the root README.md and
   README.pt.md plus packages/*/README*.md, the repository root being GUIDE's parent;
 - every guide page produced an HTML page, and (with --require-dates) that page renders a
-  revision date — proof the stamp ran and the dates reached the theme.
+  revision date — proof the stamp ran and the dates reached the theme;
+- no guide page swaps an image with <picture> by prefers-color-scheme: that follows the
+  OS, not the site's own toggle. Pages use #gh-light-mode-only / #gh-dark-mode-only
+  suffixes, which the theme's CSS honours by toggle and GitHub by its own theme; those
+  suffixes are display hints, never anchors.
 
 Usage:
     python scripts/check_built_site.py SITE GUIDE [--require-dates]
@@ -27,6 +31,8 @@ _PAGES_URL = re.compile(re.escape(SITE_URL) + r"([^\s\"'()<>]*)")
 _TRAILING_PUNCTUATION = ".,;:!?"
 _DATE_MARK = "md-source-file__fact"
 _LANG_OUTPUT = {"en": Path(), "pt": Path("pt")}
+_SCHEME_SUFFIXES = {"gh-light-mode-only", "gh-dark-mode-only", "only-light", "only-dark"}
+_OS_SCHEME_PICTURE = "prefers-color-scheme"
 
 
 def page_output(rel_md: Path) -> Path:
@@ -56,6 +62,8 @@ def _url_problem(source: Path, site: Path, rel: str) -> str | None:
     if not target.is_file():
         return f"{source}: {SITE_URL}{rel} is not in the built site"
     fragment = rel.partition("#")[2]
+    if fragment in _SCHEME_SUFFIXES:
+        return None
     if fragment and f'id="{fragment}"' not in target.read_text():
         return f'{source}: {SITE_URL}{rel} has no id="{fragment}" in {target}'
     return None
@@ -70,6 +78,11 @@ def site_problems(site: Path, guide: Path, require_dates: bool) -> list[str]:
         problems.append("missing llms.txt at the site root")
     sources = sorted([*guide.rglob("*.md"), *guide.rglob("*.txt")]) + _readmes(guide.parent)
     for source in sources:
+        if source.is_relative_to(guide) and _OS_SCHEME_PICTURE in source.read_text():
+            problems.append(
+                f"{source}: <picture> by prefers-color-scheme ignores the site toggle;"
+                " use #gh-light-mode-only / #gh-dark-mode-only images"
+            )
         for rel in pages_urls(source.read_text()):
             problem = _url_problem(source, site, rel)
             if problem:
