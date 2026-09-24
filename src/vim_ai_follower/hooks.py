@@ -688,6 +688,29 @@ def _await_user_handoff(
         control.clear_animating(window_id)
 
 
+def run_hook(hook_command: str, env: dict[str, str], stdin_text: str) -> int:
+    """Entry point for the `hook pre|post` CLI subcommands, and ONLY those:
+    the design intent ("Hooks never fail a tool call", guide/en/faq.md) does
+    not cover start/stop/status/etc, which must keep raising normally.
+
+    Malformed stdin JSON (cli.py's old bare `json.loads`) or any exception
+    raised inside cmd_hook_pre/cmd_hook_post used to propagate all the way
+    out of `main`, exiting 1 with a traceback that Claude Code reports as a
+    hook error (BACKLOG "Hooks have no top-level catch"). This always
+    returns 0 instead, logging the traceback to hook.log — the same
+    "silent failure, read the log" contract every other hook error already
+    has."""
+    _configure_logging()
+    try:
+        payload: dict[str, Any] = json.loads(stdin_text)
+        if hook_command == "pre":
+            return cmd_hook_pre(env, payload)
+        return cmd_hook_post(env, payload)
+    except Exception:
+        logger.exception("hook %s crashed", hook_command)
+        return 0
+
+
 def cmd_hook_pre(env: dict[str, str], payload: dict[str, Any]) -> int:
     _configure_logging()
     if payload.get("tool_name") not in _EDIT_TOOLS:

@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
-from typing import Any
 
 from vim_ai_follower import commands, config, hooks
 
@@ -66,10 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "toggle":
         return commands.cmd_toggle(env)
 
-    payload: dict[str, Any] = json.loads(sys.stdin.read())
-    if args.hook_command == "pre":
-        return hooks.cmd_hook_pre(env, payload)
-    return hooks.cmd_hook_post(env, payload)
+    return hooks.run_hook(args.hook_command, env, sys.stdin.read())
 
 
 if __name__ == "__main__":  # pragma: no cover

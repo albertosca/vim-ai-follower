@@ -15,6 +15,7 @@ from helpers import register_fake_follower as _register_fake_follower
 from vim_ai_follower import (
     cache,
     cli,
+    commands,
     config,
     control,
     hooks,
@@ -577,6 +578,51 @@ def test_main_hook_post_reads_stdin_json(monkeypatch: pytest.MonkeyPatch, tmp_pa
     ):
         monkeypatch.setenv("TMUX_PANE", "%1")
         assert cli.main(["hook", "post"]) == 0
+
+
+def test_main_hook_pre_malformed_stdin_exits_zero_and_logs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BACKLOG "Hooks have no top-level catch": malformed stdin JSON at
+    cli.py's json.loads used to propagate as an uncaught exception, exiting
+    1 with a traceback that Claude Code reports as a hook error. The
+    top-level catch scoped to `hook pre|post` must swallow it, exit 0 and
+    leave the traceback in hook.log instead."""
+    monkeypatch.setattr("sys.stdin", io.StringIO("not valid json"))
+    assert cli.main(["hook", "pre"]) == 0
+    log_text = hooks.LOG_PATH.read_text() if hooks.LOG_PATH.exists() else ""
+    assert "hook pre crashed" in log_text
+    assert "JSONDecodeError" in log_text
+
+
+def test_main_hook_post_exception_exits_zero_and_logs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An exception raised inside cmd_hook_post itself (not just malformed
+    stdin) must be caught the same way: exit 0, traceback in hook.log."""
+    monkeypatch.setattr("sys.stdin", io.StringIO('{"tool_name": "Bash"}'))
+
+    def _boom(env: dict[str, str], payload: dict[str, object]) -> int:
+        raise RuntimeError("injected hook boom")
+
+    monkeypatch.setattr(hooks, "cmd_hook_post", _boom)
+    assert cli.main(["hook", "post"]) == 0
+    log_text = hooks.LOG_PATH.read_text() if hooks.LOG_PATH.exists() else ""
+    assert "hook post crashed" in log_text
+    assert "injected hook boom" in log_text
+    assert "Traceback" in log_text
+
+
+def test_main_non_hook_command_still_raises_on_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The catch-all is scoped to `hook pre|post` only: every other
+    subcommand must keep failing loudly, never silently swallowed to 0."""
+
+    def _boom(env: dict[str, str]) -> int:
+        raise RuntimeError("injected status boom")
+
+    monkeypatch.setattr(commands, "cmd_status", _boom)
+    with pytest.raises(RuntimeError, match="injected status boom"):
+        cli.main(["status"])
 
 
 def _interrupt_then_user_saves(
