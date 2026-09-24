@@ -152,7 +152,11 @@ def link_problems(repo: Path, rel_file: str) -> list[str]:
 def main(argv: list[str]) -> int:
     args = dict(zip(argv[1::2], argv[2::2], strict=False))
     repo = Path(args.get("--repo", Path(__file__).resolve().parents[1]))
-    real = real_facts(repo, Path(args["--junit"]))
+    try:
+        real = real_facts(repo, Path(args["--junit"]))
+    except ValueError as error:
+        print(error, file=sys.stderr)
+        return 1
     problems: list[str] = []
     for name in FACT_FILES:
         problems += fact_problems(name, (repo / name).read_text(), real)
