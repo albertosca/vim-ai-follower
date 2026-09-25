@@ -50,7 +50,7 @@ def test_ensure_showing_disables_the_buffers_swapfile_before_loading_it() -> Non
         nvim, call.api.buf_set_option(42, "swapfile", False)
     )
     assert _order(nvim, call.api.buf_set_option(42, "swapfile", False)) < _order(
-        nvim, call.funcs.bufload(42)
+        nvim, call.api.exec2("call bufload(42)", {"output": True})
     )
 
 
@@ -65,7 +65,7 @@ def test_apply_edits_vanished_buffer_branch_also_disables_the_swapfile() -> None
         result = follower.apply_edit("/tmp/f.py", ops)
     assert result == AnimationResult("completed", 1)
     assert _order(nvim, call.api.buf_set_option(42, "swapfile", False)) < _order(
-        nvim, call.funcs.bufload(42)
+        nvim, call.api.exec2("call bufload(42)", {"output": True})
     )
 
 
@@ -86,7 +86,13 @@ def test_the_disk_loading_branch_writes_exactly_three_buffer_options() -> None:
     ]
     nvim.api.set_option.assert_not_called()
     nvim.api.set_option_value.assert_not_called()
-    assert [c.args[0] for c in nvim.command.call_args_list] == ["tabnew", "filetype detect"]
+    # The event-firing commands go through exec2 (plugin output captured and
+    # logged, see nvim_prompt.exec_logged); only tabnew stays a plain command.
+    assert [c.args[0] for c in nvim.command.call_args_list] == ["tabnew"]
+    assert [c.args[0] for c in nvim.api.exec2.call_args_list] == [
+        "call bufload(42)",
+        "filetype detect",
+    ]
 
 
 def test_an_adopted_follower_still_disables_the_swapfile_but_not_modifiable(

@@ -1185,7 +1185,9 @@ def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
     if current is None:
         _warn_lost_window_identity(session)
         return 0
-    follower = get_follower(current.backend, current.target)
+    # window_id is what lets an NvimFollower read its FollowerState: without
+    # it an adopted nvim looks dedicated (locked on Read, its prompts answered).
+    follower = get_follower(current.backend, current.target, window_id=session.window_id)
     _ensure_buffer(session.window_id, follower, file_path)
     _touch_and_evict(session.window_id, follower, current, file_path, cfg.max_tabs)
     offset = _tool_input(payload).get("offset")

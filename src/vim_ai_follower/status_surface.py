@@ -7,9 +7,11 @@ nvim floating-window implementation."""
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from vim_ai_follower.backends.nvim_prompt import prompt_guard
 from vim_ai_follower.state import FollowerState
 from vim_ai_follower.tmux import TmuxPane
 
@@ -178,14 +180,30 @@ class NvimStatusSurface:
     check=False): any nvim RPC failure — a dead socket, a closed instance —
     is swallowed so it can never fail the hook it's called from. pynvim is
     imported lazily inside each method: this module is imported by hooks.py,
-    which must stay importable without the optional `nvim` extra installed."""
+    which must stay importable without the optional `nvim` extra installed.
+
+    A cue is a hook's first ordinary (non-fast) call into the follower's nvim —
+    "Writing..." precedes every animation — so on a DEDICATED follower each
+    method runs under nvim_prompt's sweep + watchdog: a hit-enter prompt a
+    plugin left behind would otherwise freeze the hook right here, before the
+    follower's own entry point could sweep it. `adopted` (from FollowerState,
+    via status_surface_for) turns that off for the user's own editor."""
 
     socket_path: str
+    adopted: bool = False
 
     def _connect(self) -> pynvim.Nvim:
         import pynvim
 
         return pynvim.attach("socket", path=self.socket_path)
+
+    @contextlib.contextmanager
+    def _guarded(self) -> Iterator[pynvim.Nvim]:
+        nvim = self._connect()
+        with prompt_guard(
+            nvim, self._connect, key=self.socket_path, adopted=self.adopted, label="status cue"
+        ):
+            yield nvim
 
     def _find_window(self, nvim: pynvim.Nvim) -> Any | None:
         for win in nvim.api.list_wins():
@@ -275,8 +293,7 @@ class NvimStatusSurface:
         done (live finding, 2026-08-25 battery Check 5). Transient text is
         set_state's job. The identity color is set for both cterm and gui
         (guifg), so it shows under termguicolors too."""
-        with contextlib.suppress(Exception):
-            nvim = self._connect()
+        with contextlib.suppress(Exception), self._guarded() as nvim:
             win, buf = self._ensure_window(nvim)
             title_hl = "Title"
             if color is not None:
@@ -303,8 +320,7 @@ class NvimStatusSurface:
         if text is None:
             self.clear()
             return
-        with contextlib.suppress(Exception):
-            nvim = self._connect()
+        with contextlib.suppress(Exception), self._guarded() as nvim:
             _, buf = self._ensure_window(nvim)
             nvim.api.buf_set_lines(buf, 0, -1, True, _centered_box([text]))
 
@@ -315,8 +331,7 @@ class NvimStatusSurface:
         del texts
 
     def clear(self) -> None:
-        with contextlib.suppress(Exception):
-            nvim = self._connect()
+        with contextlib.suppress(Exception), self._guarded() as nvim:
             win = self._find_window(nvim)
             if win is not None:
                 buf = nvim.api.win_get_buf(win)
@@ -335,5 +350,5 @@ class NvimStatusSurface:
 def status_surface_for(state: FollowerState, target: str | None = None) -> StatusSurface:
     addr = state.target if target is None else target
     if state.backend == "nvim":
-        return NvimStatusSurface(socket_path=addr)
+        return NvimStatusSurface(socket_path=addr, adopted=state.adopted)
     return TmuxStatusSurface(pane_id=addr)

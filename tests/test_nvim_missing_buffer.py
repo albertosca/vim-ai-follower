@@ -25,7 +25,7 @@ def test_ensure_showing_switches_to_an_existing_buffer_without_touching_disk() -
     ):
         follower.ensure_showing("/tmp/f.py")
     goto_file.assert_called_once_with("/tmp/f.py")
-    nvim.funcs.bufload.assert_not_called()
+    assert not [c for c in nvim.api.exec2.call_args_list if "bufload" in c.args[0]]
 
 
 def test_ensure_showing_loads_the_real_disk_content_when_no_buffer_exists() -> None:
@@ -40,7 +40,7 @@ def test_ensure_showing_loads_the_real_disk_content_when_no_buffer_exists() -> N
         follower.ensure_showing("/tmp/f.py")
     goto_file.assert_not_called()
     nvim.funcs.bufadd.assert_called_once_with("/tmp/f.py")
-    nvim.funcs.bufload.assert_called_once_with(42)
+    nvim.api.exec2.assert_any_call("call bufload(42)", {"output": True})
     # swapfile off first (before bufload, so a live second editor's swap
     # cannot raise E325 — see test_nvim_swap.py), then buflisted, then
     # locked (nomodifiable) — tmux-parity lock (see test_nvim_lock_parity.py
@@ -50,7 +50,13 @@ def test_ensure_showing_loads_the_real_disk_content_when_no_buffer_exists() -> N
         call(42, "buflisted", True),
         call(42, "modifiable", False),
     ]
-    assert [c.args[0] for c in nvim.command.call_args_list] == ["tabnew", "filetype detect"]
+    # The event-firing commands go through exec2 (plugin output captured and
+    # logged, see nvim_prompt.exec_logged); only tabnew stays a plain command.
+    assert [c.args[0] for c in nvim.command.call_args_list] == ["tabnew"]
+    assert [c.args[0] for c in nvim.api.exec2.call_args_list] == [
+        "call bufload(42)",
+        "filetype detect",
+    ]
     nvim.api.win_set_buf.assert_called_once_with(0, 42)
 
 
@@ -93,7 +99,7 @@ def test_apply_edit_shows_disk_content_instead_of_animating_into_nothing() -> No
         result = follower.apply_edit("/tmp/f.py", ops)
     assert result == AnimationResult("completed", 2)
     goto_file.assert_not_called()
-    nvim.funcs.bufload.assert_called_once_with(42)
+    nvim.api.exec2.assert_any_call("call bufload(42)", {"output": True})
     nvim.api.win_set_buf.assert_called_once_with(0, 42)
     # nothing was animated into the freshly loaded buffer
     nvim.api.buf_set_lines.assert_not_called()
@@ -122,7 +128,7 @@ def test_resume_apply_edit_returns_completed_and_touches_nothing_when_the_buffer
     assert result == AnimationResult("completed", 2)
     goto_file.assert_not_called()
     nvim.funcs.bufadd.assert_not_called()
-    nvim.funcs.bufload.assert_not_called()
+    assert not [c for c in nvim.api.exec2.call_args_list if "bufload" in c.args[0]]
     nvim.api.create_buf.assert_not_called()
     nvim.api.buf_set_lines.assert_not_called()
     nvim.command.assert_not_called()
@@ -164,5 +170,5 @@ def test_apply_edit_animates_normally_when_the_buffer_is_still_there(tmp_path: P
         result = follower.apply_edit("/tmp/f.py", [op])
     assert result == AnimationResult("completed", 1)
     goto_file.assert_called_once_with("/tmp/f.py")
-    nvim.funcs.bufload.assert_not_called()
+    assert not [c for c in nvim.api.exec2.call_args_list if "bufload" in c.args[0]]
     nvim.api.buf_set_text.assert_any_call(7, 0, 0, 0, 0, ["a"])

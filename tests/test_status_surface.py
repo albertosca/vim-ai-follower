@@ -170,7 +170,10 @@ def test_set_writer_creates_a_floating_window_when_none_exists() -> None:
     with patch("pynvim.attach", return_value=nvim) as attach:
         NvimStatusSurface(socket_path="/tmp/x.sock").set_writer("code-reviewer", "colour78")
 
-    attach.assert_called_once_with("socket", path="/tmp/x.sock")
+    # Every connection targets the follower's socket (the cue's own, plus the
+    # hit-enter watchdog's on a dedicated follower — see nvim_prompt).
+    assert attach.call_args_list
+    assert all(c == call("socket", path="/tmp/x.sock") for c in attach.call_args_list)
     nvim.api.create_buf.assert_called_once_with(False, True)
     nvim.api.buf_set_name.assert_called_once()
     nvim.api.open_win.assert_called_once()
@@ -331,3 +334,53 @@ def test_nvim_retire_state_touches_nothing() -> None:
     with patch("pynvim.attach") as attach:
         NvimStatusSurface(socket_path="/tmp/x").retire_state("other cue", "old cue")
     assert attach.call_args_list == []
+
+
+# --- hit-enter prompt (nvim_prompt) ------------------------------------------
+
+
+def _prompt_blocked_nvim() -> MagicMock:
+    """A mock nvim whose first get_mode reports a plugin's hit-enter prompt."""
+    nvim = MagicMock()
+    modes = iter([{"mode": "r", "blocking": True}])
+    nvim.api.get_mode.side_effect = lambda: next(modes, {"mode": "n", "blocking": False})
+    nvim.api.exec2.return_value = {"output": ""}
+    nvim.api.list_wins.return_value = []
+    return nvim
+
+
+def test_a_dedicated_followers_cue_sweeps_a_leftover_prompt_before_drawing() -> None:
+    # "Writing..." is a hook's first ordinary call into the follower's nvim:
+    # a prompt left there would freeze the hook before the follower's own
+    # entry point could sweep it.
+    nvim = _prompt_blocked_nvim()
+    with patch("pynvim.attach", return_value=nvim):
+        NvimStatusSurface(socket_path="/tmp/x.sock").set_state("Writing...")
+    nvim.api.input.assert_called_once_with("<CR>")
+    assert nvim.mock_calls.index(call.api.input("<CR>")) < nvim.mock_calls.index(
+        call.api.list_wins()
+    )
+
+
+def test_an_adopted_editors_cue_never_answers_its_prompts() -> None:
+    nvim = _prompt_blocked_nvim()
+    with patch("pynvim.attach", return_value=nvim) as attach:
+        NvimStatusSurface(socket_path="/tmp/x.sock", adopted=True).set_state("Writing...")
+    nvim.api.get_mode.assert_not_called()
+    nvim.api.input.assert_not_called()
+    assert attach.call_count == 1  # no watchdog connection
+
+
+def test_status_surface_for_carries_the_adopted_flag_to_the_nvim_surface() -> None:
+    state = FollowerState(
+        backend="nvim",
+        target="/tmp/nvim-@1.sock",
+        current_file=None,
+        origin="%1",
+        on_failure="reopen",
+        speed="normal",
+        adopted=True,
+    )
+    surface = status_surface_for(state)
+    assert isinstance(surface, NvimStatusSurface)
+    assert surface.adopted is True

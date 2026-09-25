@@ -1987,7 +1987,12 @@ def test_apply_writer_cue_routes_nvim_backed_windows_to_the_nvim_status_surface(
         hooks._apply_writer_cue(
             "@1", "/tmp/x.sock", {"agent_id": "a9", "agent_type": "code-reviewer"}
         )
-    attach.assert_called_once_with("socket", path="/tmp/x.sock")
+    # Every connection targets the socket: the cue's own, plus the hit-enter
+    # watchdog's on a dedicated follower (see backends/nvim_prompt.py).
+    assert attach.call_args_list
+    assert all(
+        c.args == ("socket",) and c.kwargs == {"path": "/tmp/x.sock"} for c in attach.call_args_list
+    )
     border_calls = [c.args[0] for c in run.call_args_list if "pane-border-style" in c.args[0]]
     assert border_calls == []
 
@@ -2269,3 +2274,28 @@ def test_refresh_writer_cue_is_a_noop_when_state_vanished(
     hooks._refresh_writer_cue("@gone", "%2", {"session_id": "$1"})
     surface.clear.assert_not_called()
     surface.set_writer.assert_not_called()
+
+
+def test_hook_post_read_builds_the_follower_with_its_window_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Without the window id an NvimFollower cannot read its FollowerState, so
+    # an ADOPTED nvim looked dedicated on Read navigation: the hit-enter
+    # watchdog would answer the user's own prompts (backends/nvim_prompt.py),
+    # and ensure_showing would lock the user's buffer nomodifiable.
+    target = tmp_path / "f.py"
+    target.write_text("a\n")
+    state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=True)
+    current = state.FollowerState.read("@1")
+    captured: dict[str, object] = {}
+
+    def _fake_get_follower(backend: str, follower_target: str, **kwargs: object) -> MagicMock:
+        captured.update(kwargs)
+        return MagicMock()
+
+    monkeypatch.setattr(hooks, "get_follower", _fake_get_follower)
+    monkeypatch.setattr(hooks, "_live_follower_healing_keys", lambda session: current)
+    payload: dict[str, object] = {"tool_name": "Read", "tool_input": {"file_path": str(target)}}
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+    assert captured.get("window_id") == "@1"
