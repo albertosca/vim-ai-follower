@@ -65,7 +65,11 @@ class Follower(Protocol):
     def rewrite_buffer(self, file_path: str, content: str) -> AnimationResult: ...
 
     def resume(
-        self, pending: PendingApplyEdit | PendingShowFresh, *, seeded: bool = False
+        self,
+        pending: PendingApplyEdit | PendingShowFresh,
+        *,
+        seeded: bool = False,
+        reload: bool = True,
     ) -> AnimationResult: ...
 
     def hand_over(self) -> None: ...

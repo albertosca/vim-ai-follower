@@ -591,7 +591,11 @@ class NvimFollower:
         return result
 
     def resume(
-        self, pending: PendingApplyEdit | PendingShowFresh, *, seeded: bool = False
+        self,
+        pending: PendingApplyEdit | PendingShowFresh,
+        *,
+        seeded: bool = False,
+        reload: bool = True,
     ) -> AnimationResult:
         """Replay a saved animation remainder (des-interrupt live replay, or a
         pace-0 crash-fallback consume). Mirrors the tmux backend: re-select the
@@ -622,7 +626,12 @@ class NvimFollower:
         des-interrupt replay can never reach this branch: hooks._await_user_
         handoff always calls rewrite_buffer first, which goes through goto_file
         and therefore recreates the buffer, and only resumes when that returned
-        completed."""
+        completed.
+
+        `reload` is part of the Follower protocol for the tmux backend, whose
+        relock re-reads disk unless told not to (see TmuxVimFollower.resume).
+        This relock never reads disk, so it is ignored."""
+        del reload
         nvim = self._connect()
         if pending.file_path and _buffer_number(nvim, pending.file_path) == -1:
             remaining = pending.ops if isinstance(pending, PendingApplyEdit) else pending.lines

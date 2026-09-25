@@ -54,6 +54,9 @@ def test_catchup_rebuilds_from_the_persisted_partial_before_resuming() -> None:
     # rewrite_buffer rebuilt the buffer to exactly the partial, so there is no
     # seed blank for the replay to type in front of.
     assert follower.resume.call_args.kwargs["seeded"] is False
+    # The catch-up must end at the NEW edit's base, not re-read the file:
+    # disk already holds the new edit (tmux's relock `:e!` loaded it).
+    assert follower.resume.call_args.kwargs["reload"] is False
 
 
 def test_catchup_treats_an_empty_partial_as_seeded() -> None:

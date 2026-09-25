@@ -288,6 +288,9 @@ def test_an_interrupted_rebuild_re_arms_with_the_untouched_remainder(
     assert saved == [("show_fresh", ("l1", "l2"), 0.03, True)]  # untouched
     fake.resume.assert_called_once()
     assert fake.resume.call_args.args[0].lines == ("l1", "l2")
+    # The des-interrupt replays THIS hook's own edit, so the relock's re-read
+    # of disk is the finished file it is typing: keep it (unlike the catch-up).
+    assert fake.resume.call_args.kwargs.get("reload", True) is True
     assert fake.hand_over.call_count == 1
 
 

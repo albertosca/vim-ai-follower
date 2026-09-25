@@ -21,7 +21,9 @@ from vim_ai_follower.tmux import TmuxPane
 # disk sync (the buffer's name already matches the file Claude wrote, so the
 # reload is visually a no-op but clears W11 staleness). The two relocks differ
 # only in whether they re-assert `readonly`: a fresh retype gets the stronger
-# read-only lock, an in-place edit is merely made unmodifiable.
+# read-only lock, an in-place edit is merely made unmodifiable. The one relock
+# without the `:e!` is the pre-edit catch-up's (resume with reload=False),
+# whose end state is the next edit's base, not the file on disk.
 #
 # The unlock clears 'readonly' as well. Typing into a readonly buffer raises
 # `W10: Warning: Changing a readonly file`, which at the follower pane's 49
@@ -33,8 +35,10 @@ from vim_ai_follower.tmux import TmuxPane
 # _GOTO_FILE), the unlock has to say it (measured 2026-09-23).
 _LOCK_READONLY = ":setlocal readonly nomodifiable"
 _UNLOCK_FOR_ANIMATION = ":setlocal noreadonly modifiable paste"
-_RELOCK_SYNCED = ":silent! e! | setlocal nomodifiable nopaste"
-_RELOCK_READONLY_SYNCED = ":silent! e! | setlocal readonly nomodifiable nopaste"
+_RELOCK = ":setlocal nomodifiable nopaste"
+_RELOCK_READONLY = ":setlocal readonly nomodifiable nopaste"
+_RELOCK_SYNCED = ":silent! e! | " + _RELOCK[1:]
+_RELOCK_READONLY_SYNCED = ":silent! e! | " + _RELOCK_READONLY[1:]
 
 # CoC's inlay hints (parameter names, inferred return types — coc-pyright's
 # pyright.inlayHints.* etc.) render as virtual text once the follower's
@@ -625,8 +629,30 @@ class TmuxVimFollower:
         return self._with_unlocked(_RELOCK_READONLY_SYNCED, run)
 
     def resume(
-        self, pending: PendingApplyEdit | PendingShowFresh, *, seeded: bool = False
+        self,
+        pending: PendingApplyEdit | PendingShowFresh,
+        *,
+        seeded: bool = False,
+        reload: bool = True,
     ) -> AnimationResult:
+        """Replay a saved remainder. A completed replay relocks with the
+        silent `:e!` disk sync (see _with_unlocked) unless `reload` is False.
+
+        reload=False is the pre-edit catch-up (hooks._consume_pending_
+        catchup): the remainder belongs to an EARLIER edit, and its end state
+        is the base the NEW edit's diff was computed against. By `hook post`
+        Claude has already written the new edit, so the `:e!` would load the
+        finished file: it flashed on screen, and the base probe that follows
+        then saw "differs", so an adopted Vim got a false cue and no
+        animation, and a dedicated one wiped and retyped the whole file
+        (reproduced 2026-09-25). What the `:e!` protects (grounding the
+        buffer's timestamp, so a bare `:w` raises no W11) is still done by
+        the new edit's own animation, which runs next and ends in the same
+        `:e!`; until then the buffer is in the state every animation is in
+        mid-typing. (An adopted Vim whose buffer then turns out not to be the
+        base is left alone, with the cue that offers `:e!`.) The des-interrupt
+        replay keeps the default: it finishes THIS hook's edit, which is
+        exactly what disk holds."""
         # `seeded` is part of the Follower protocol for the nvim backend's
         # explicit seed-provenance; tmux resyncs from disk on relock, so the
         # buffer's exact shape is behaviorally invisible here — ignored.
@@ -647,7 +673,7 @@ class TmuxVimFollower:
         # a base — the consumer's live-buffer fallback must stay meaningful.
         if isinstance(pending, PendingApplyEdit):
             return self._with_unlocked(
-                _RELOCK_SYNCED,
+                _RELOCK_SYNCED if reload else _RELOCK,
                 lambda pane: run_ops(
                     pane,
                     self.window_id,
@@ -659,7 +685,7 @@ class TmuxVimFollower:
                 ),
             )
         return self._with_unlocked(
-            _RELOCK_READONLY_SYNCED,
+            _RELOCK_READONLY_SYNCED if reload else _RELOCK_READONLY,
             lambda pane: run_lines(
                 pane,
                 self.window_id,

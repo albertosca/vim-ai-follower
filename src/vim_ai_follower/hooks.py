@@ -904,10 +904,16 @@ def _consume_pending_catchup(
     buffer, which still carries its seed blank (show_fresh only drops that on
     a completed outcome); an empty partial makes rewrite_buffer force a single
     blank line, since nvim cannot hold a truly empty buffer. A non-empty
-    partial rebuilds seedless. (A PendingApplyEdit ignores seeded entirely.)"""
+    partial rebuilds seedless. (A PendingApplyEdit ignores seeded entirely.)
+
+    reload=False: the replay must END at the new edit's base. Disk already
+    holds the new edit, so a relock that re-reads it (tmux's `:e!`) would
+    show the finished file and make the base probe below answer "differs"."""
     if pending.partial is not None:
         follower.rewrite_buffer(file_path, pending.partial)
-    follower.resume(dataclasses.replace(pending, pace_seconds=0.0), seeded=not pending.partial)
+    follower.resume(
+        dataclasses.replace(pending, pace_seconds=0.0), seeded=not pending.partial, reload=False
+    )
 
 
 def _probe_base(follower: Follower, file_path: str, before: str) -> BufferProbe:

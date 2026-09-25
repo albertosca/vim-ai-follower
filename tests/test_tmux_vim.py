@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from helpers import register_fake_follower as _register_fake_follower
 
 from vim_ai_follower import config, control, state
@@ -421,6 +422,42 @@ def test_resume_show_fresh_replays_remaining_lines_and_relocks_with_readonly(
     assert commands[-2] == (":silent! e! | setlocal readonly nomodifiable nopaste", True)
     assert commands[-1] == ("Enter", False)
     assert result == AnimationResult("completed", 2)
+
+
+@pytest.mark.parametrize(
+    ("pending", "relock"),
+    [
+        (
+            control.PendingApplyEdit(
+                ops=[EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))],
+                pace_seconds=0.0,
+            ),
+            ":setlocal nomodifiable nopaste",
+        ),
+        (
+            control.PendingShowFresh(lines=("b", "c"), pace_seconds=0.0),
+            ":setlocal readonly nomodifiable nopaste",
+        ),
+    ],
+    ids=["apply_edit", "show_fresh"],
+)
+def test_resume_without_reload_relocks_without_reading_disk(
+    pending: control.PendingApplyEdit | control.PendingShowFresh, relock: str, tmp_path: Path
+) -> None:
+    # The catch-up's end state is the NEXT edit's base, and by hook post disk
+    # already holds that next edit: an `:e!` here would load the finished file.
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+    ):
+        result = follower.resume(pending, reload=False)
+    commands = _sent_commands(run)
+    assert commands[-2] == (relock, True)
+    assert commands[-1] == ("Enter", False)
+    assert not any("e!" in text for text, _ in commands)
+    assert result.outcome == "completed"
 
 
 def test_resume_navigates_to_the_pending_files_tab_first(tmp_path: Path) -> None:
