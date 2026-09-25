@@ -15,7 +15,7 @@ from typing import Any, Protocol
 
 from vim_ai_follower import binding, cache, config, control, keybindings, writer_cue
 from vim_ai_follower import diff as diff_module
-from vim_ai_follower.backends import Follower, get_follower
+from vim_ai_follower.backends import BufferProbe, Follower, get_follower
 from vim_ai_follower.backends.nvim_connect import launch_standalone_nvim, resolve_nvim_target
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.session import Session, other_live_followers, resolve_session
@@ -438,7 +438,8 @@ def _ensure_buffer(window_id: str, follower: Follower, file_path: str) -> None:
     to it and never re-reads it (a known backlog item). A fresh text edit
     never comes here, and neither does an Edit whose buffer does not hold
     the diff's base (listed but unloaded, or changed on disk outside
-    Claude — see _buffer_holds_base): both go through show_fresh, so the
+    Claude — see _probe_base): both go through show_fresh (or, in an
+    adopted editor, are left alone — _leave_adopted_buffer_alone), so the
     finished content is never flashed before it's typed.
     Always runs the preamble — it's cheap and self-healing, immune to the
     user having closed or reordered tabs since the last time this file was
@@ -514,6 +515,12 @@ def _print_unchanged_save_notification(file_path: str) -> None:
 _HANDOFF_POLL_SECONDS = 0.2
 _HANDOFF_REMINDER_POLLS = 150  # ~30s at the poll cadence above
 _HANDOFF_CUE = "Claude waiting \u2014 :w releases \u00b7 S discards"
+
+# Shown when an adopted editor's buffer is not the base of Claude's edit (see
+# _leave_adopted_buffer_alone). 40 characters: measured in a real 49-column
+# tmux pane with pane-border-status top, it renders whole inside the border
+# title (`┬──2 "…"` plus the mouse controls) where 45 lost its last letter.
+BASE_DIFFERS_CUE = "buffer differs \u2014 :e! shows Claude's edit"
 
 
 def _poll_until_interrupt(
@@ -898,21 +905,47 @@ def _consume_pending_catchup(
     follower.resume(dataclasses.replace(pending, pace_seconds=0.0), seeded=not pending.partial)
 
 
-def _buffer_holds_base(follower: Follower, file_path: str, before: str) -> bool:
-    """Whether the follower's buffer for file_path holds `before`, the base
-    the edit script is computed against. Two ways it does not, both invisible
-    to FollowerState (open_files still lists the file): the buffer is listed
-    but UNLOADED (the user closed its tab under 'nohidden', and navigating to
-    it would load the finished file from disk first), or it is open and
-    clean while something other than Claude rewrote the file (a formatter,
-    `sed -i`, a checkout). A probe that fails is a False: hooks never fail
-    the tool call, and the safe side of an unknown base is a full retype,
-    never a diff."""
+def _probe_base(follower: Follower, file_path: str, before: str) -> BufferProbe:
+    """What the follower's buffer for file_path holds relative to `before`,
+    the base the edit script is computed against. FollowerState cannot see
+    either way the buffer stops being that base: a buffer listed but
+    UNLOADED (its tab closed under 'nohidden' — navigating to it would load
+    the finished file from disk first), or one that is loaded with other
+    content (a formatter, `sed -i` or a checkout rewrote the file outside
+    Claude; or, in an adopted editor, the user typed into it). A probe that
+    raises is "unknown": hooks never fail the tool call."""
     try:
-        return follower.buffer_holds(file_path, before)
+        return follower.probe_buffer(file_path, before)
     except Exception:
-        logger.exception("could not ask the follower what %s's buffer holds; retyping", file_path)
-        return False
+        logger.exception("could not ask the follower what %s's buffer holds", file_path)
+        return "unknown"
+
+
+def _leave_adopted_buffer_alone(
+    current: FollowerState, window_id: str, file_path: str, probe: BufferProbe
+) -> None:
+    """An ADOPTED editor's buffer for file_path is not the edit's base
+    (Alberto's policy, 2026-09-25): never wipe it, never animate into it.
+
+    A retype starts with show_fresh's `bwipeout!`, and in the user's own
+    editor the buffer may hold their unsaved typing — nvim follower buffers
+    are never written, so 'modified' cannot tell the user's typing from the
+    follower's, and the rule applies to a clean buffer changed outside Claude
+    too. A diff onto the wrong base garbles it. So the file is marked stale
+    (a no-op for a file the follower never opened: stale is a subset of
+    open) and the status surface says what happened and how to get Claude's
+    version. The cue stays until the follower next animates in this window
+    (_animate_edit retires it before "Writing..."), so it outlives this hook
+    instead of being cleared by it. The next edit of the file probes again,
+    so once `:e!` makes the buffer the base it animates as a diff."""
+    FollowerState.mark_stale(window_id, file_path)
+    logger.warning(
+        "adopted editor: the buffer for %s is not the edit's base (%s); left it alone,"
+        " marked stale",
+        file_path,
+        probe,
+    )
+    status_surface_for(current).set_state(BASE_DIFFERS_CUE)
 
 
 def _animate_edit(
@@ -946,7 +979,7 @@ def _animate_edit(
     # applied onto, so the whole file is retyped; a diff would land on the
     # wrong base. Known here from state: the file was never opened, or its
     # tab's buffer is one a skipped edit left behind (stale_files). What state
-    # cannot know is asked of the editor further down (_buffer_holds_base).
+    # cannot know is asked of the editor further down (_probe_base).
     is_fresh = file_path not in current.open_files or file_path in current.stale_files
     binary = diff_module.is_binary(raw_after)
 
@@ -976,11 +1009,40 @@ def _animate_edit(
 
     after = raw_after.decode("utf-8", errors="replace")
 
+    # After the catch-up above, never before it: the replay is what brings
+    # the buffer to this edit's base, and probing first would see its
+    # half-typed partial and throw the catch-up away. And before anything is
+    # drawn or evicted, because an adopted editor's buffer that is not the
+    # base gets no animation at all.
+    #
+    # A dedicated follower owns its buffers: anything but "holds" is retyped,
+    # and a fresh file is retyped without asking. An ADOPTED editor is asked
+    # even for a fresh file, because show_fresh's wipe would take a buffer the
+    # user opened there themselves; only "absent" (nothing in it to lose) may
+    # be retyped, and "holds" — including a stale file the user resynced with
+    # `:e!` — is a diff onto the user's own buffer.
+    before = load_snapshot(session.window_id, file_path)
+    if not is_fresh or current.adopted:
+        probe = _probe_base(follower, file_path, before)
+        if probe == "holds":
+            if file_path in current.stale_files:
+                FollowerState.clear_stale(session.window_id, file_path)
+            is_fresh = False
+        elif current.adopted and probe != "absent":
+            _leave_adopted_buffer_alone(current, session.window_id, file_path, probe)
+            return 0
+        else:
+            is_fresh = True
+
     # Show the "Writing..." cue for the whole animation, not just the
     # pause-resume/des-interrupt-replay special cases that happened to set
     # this string already. The completion refresh (_refresh_writer_cue,
     # already correct) clears it or re-asserts the writer cue once done.
     surface = status_surface_for(current)
+    # An earlier edit's "buffer differs" cue is not this animation's to keep:
+    # left in place, a tmux surface would save it as the title to restore and
+    # a hand-off release would put it back on the border.
+    surface.retire_state(BASE_DIFFERS_CUE)
     surface.set_state("Writing...")
 
     # Evict/persist BEFORE animating so the tab shuffle never lands
@@ -988,13 +1050,6 @@ def _animate_edit(
     # the evicted slice, so the file about to be animated can never be the
     # one just closed.
     _touch_and_evict(session.window_id, follower, current, file_path, cfg.max_tabs)
-
-    # After the catch-up above, never before it: the replay is what brings
-    # the buffer to this edit's base, and probing first would see its
-    # half-typed partial and throw the catch-up away.
-    before = load_snapshot(session.window_id, file_path)
-    if not is_fresh and not _buffer_holds_base(follower, file_path, before):
-        is_fresh = True
 
     if is_fresh:
         result = follower.show_fresh(file_path, after, in_new_tab=current.shown_any)
@@ -1004,7 +1059,8 @@ def _animate_edit(
             # which the interrupt path never touches, so the next edit is
             # still a diff (apply_edit) against the pre-edit snapshot as long
             # as the buffer holds that snapshot once any pending catch-up has
-            # run (_buffer_holds_base); otherwise it is retyped. Even a
+            # run (_probe_base); otherwise it is retyped (or, in an adopted
+            # editor, left alone). Even a
             # killed handoff self-heals: the partial
             # buffer converges to disk at the next completed animation via
             # the `:silent! e!` relock.

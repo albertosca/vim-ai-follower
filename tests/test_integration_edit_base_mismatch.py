@@ -122,22 +122,23 @@ def test_edit_after_an_outside_rewrite_never_types_the_diff_onto_the_stale_buffe
     assert max(_defs(s) for s in states) <= _defs(after), f"duplicated defs:\n{trace}"
 
 
-def test_buffer_holds_answers_from_the_real_vim_buffer(
+def test_probe_buffer_answers_from_the_real_vim_buffer(
     tmux_session: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     wait_until: Callable[..., bool],
 ) -> None:
-    """The Vim half of the probe, end to end: loaded and matching, loaded
-    and stale, listed but unloaded, and never opened."""
+    """The Vim half of the probe, end to end: loaded and matching (holds),
+    loaded and stale (differs), never opened and listed-but-unloaded
+    (absent)."""
     log, follower_pane, _ = _observed_follower(tmux_session, monkeypatch, tmp_path, wait_until)
     target = tmp_path / "a.py"
     _write(monkeypatch, log, wait_until, target, ONE_DEF)
     _write(monkeypatch, log, wait_until, tmp_path / "b.py", OTHER)
     follower = TmuxVimFollower(pane_id=follower_pane)
 
-    assert follower.buffer_holds(str(target), ONE_DEF) is True
-    assert follower.buffer_holds(str(target), FORMATTED) is False
-    assert follower.buffer_holds(str(tmp_path / "never.py"), "") is False
+    assert follower.probe_buffer(str(target), ONE_DEF) == "holds"
+    assert follower.probe_buffer(str(target), FORMATTED) == "differs"
+    assert follower.probe_buffer(str(tmp_path / "never.py"), "") == "absent"
     _unload_a_behind_b(follower_pane, target, tmp_path, wait_until)
-    assert follower.buffer_holds(str(target), ONE_DEF) is False
+    assert follower.probe_buffer(str(target), ONE_DEF) == "absent"

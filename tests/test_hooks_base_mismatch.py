@@ -3,16 +3,23 @@ holds the diff's base.
 
 `compute_edit_script(before, after)` is only meaningful on a buffer holding
 `before`, the PreToolUse snapshot of the file on disk. Two measured ways the
-follower's buffer does not: a tmux buffer that is listed but UNLOADED (its tab
+follower's buffer does not: a buffer that is listed but UNLOADED (its tab
 closed without 'hidden' — the navigation then loads the finished file from
-disk and the diff is typed on top of it), and an open clean buffer whose file
-was rewritten outside Claude (a formatter, `sed -i`, a checkout). The hook
-asks the follower whether the buffer holds `before` (Follower.buffer_holds)
-and, when it does not — or the answer never comes — retypes the whole file
-through show_fresh instead. These pin that decision; the backends' answers are
-pinned in tests/test_tmux_buffer_holds.py and
-tests/test_nvim_integration_buffer_holds.py, and the on-screen effect in
-tests/test_integration_edit_base_mismatch.py.
+disk and the diff is typed on top of it), and a loaded buffer with other
+content (a formatter, `sed -i` or a checkout rewrote the file outside Claude;
+in an adopted editor, the user typed into it). The hook asks the follower
+(Follower.probe_buffer) and:
+
+- dedicated follower: anything but "holds" is retyped through show_fresh;
+- ADOPTED editor (the user's own): "absent" is retyped (nothing to lose),
+  "holds" is a diff even for a file the follower would call fresh, and
+  "differs"/"unknown" is left alone — no wipe, no animation — with the file
+  marked stale and a status cue (Alberto's policy, 2026-09-25).
+
+These pin that decision; the backends' answers are pinned in
+tests/test_tmux_probe_buffer.py and tests/test_nvim_integration_probe_buffer.py,
+and the on-screen effect in tests/test_integration_edit_base_mismatch.py,
+tests/test_integration_adopted_base_mismatch.py and their nvim twins.
 """
 
 from __future__ import annotations
@@ -32,20 +39,22 @@ BEFORE = "a\nb\nc\n"
 AFTER = "a\nB\nc\n"
 
 
-def _follower(holds: object) -> MagicMock:
+def _follower(probe: object) -> MagicMock:
     follower = MagicMock()
     follower.apply_edit.return_value = AnimationResult("completed", 1)
     follower.show_fresh.return_value = AnimationResult("completed", 3)
     follower.rewrite_buffer.return_value = AnimationResult("completed", 1)
     follower.resume.return_value = AnimationResult("completed", 1)
-    if isinstance(holds, BaseException):
-        follower.buffer_holds.side_effect = holds
+    if isinstance(probe, BaseException):
+        follower.probe_buffer.side_effect = probe
     else:
-        follower.buffer_holds.return_value = holds
+        follower.probe_buffer.return_value = probe
     return follower
 
 
-def _setup(tmp_path: Path, *, stale: bool = False) -> tuple[Path, str]:
+def _setup(
+    tmp_path: Path, *, stale: bool = False, adopted: bool = False, is_open: bool = True
+) -> tuple[Path, str]:
     target = tmp_path / "f.txt"
     target.write_text(AFTER)
     resolved = os.path.realpath(str(target))
@@ -53,18 +62,21 @@ def _setup(tmp_path: Path, *, stale: bool = False) -> tuple[Path, str]:
         "@1",
         "nvim",
         "/tmp/x.sock",
-        current_file=resolved,
-        open_files=(resolved,),
+        current_file=resolved if is_open else None,
+        open_files=(resolved,) if is_open else (),
         stale_files=(resolved,) if stale else (),
         shown_any=True,
+        adopted=adopted,
     )
     snapshot.save("@1", resolved, BEFORE)
     return target, resolved
 
 
-def _run_hook(target: Path, follower: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+def _run_hook(target: Path, follower: MagicMock, monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """Runs the post hook; returns the one status surface every call shares."""
+    surface = MagicMock()
     monkeypatch.setattr(hooks, "get_follower", lambda *a, **k: follower)
-    monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: surface)
     monkeypatch.setattr(hooks, "show_popup", lambda *a, **k: None)
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
     with (
@@ -73,17 +85,18 @@ def _run_hook(target: Path, follower: MagicMock, monkeypatch: pytest.MonkeyPatch
         patch("pynvim.attach", return_value=MagicMock()),
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+    return surface
 
 
 def test_a_buffer_holding_the_base_gets_the_diff(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target, resolved = _setup(tmp_path)
-    follower = _follower(True)
+    follower = _follower("holds")
     _run_hook(target, follower, monkeypatch)
 
     # Asked about the pre-edit snapshot, not the finished file on disk.
-    assert follower.buffer_holds.call_args == call(resolved, BEFORE)
+    assert follower.probe_buffer.call_args == call(resolved, BEFORE)
     assert follower.apply_edit.call_args.args[0] == resolved
     assert follower.show_fresh.call_args_list == []
 
@@ -92,7 +105,7 @@ def test_a_buffer_not_holding_the_base_is_retyped_in_full(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     target, resolved = _setup(tmp_path)
-    follower = _follower(False)
+    follower = _follower("differs")
     _run_hook(target, follower, monkeypatch)
 
     assert follower.apply_edit.call_args_list == []
@@ -122,10 +135,10 @@ def test_an_already_fresh_edit_skips_the_probe(
     """A stale-marked (or never-opened) file is retyped anyway; asking the
     editor would be a wasted round-trip."""
     target, _ = _setup(tmp_path, stale=True)
-    follower = _follower(True)
+    follower = _follower("holds")
     _run_hook(target, follower, monkeypatch)
 
-    assert follower.buffer_holds.call_args_list == []
+    assert follower.probe_buffer.call_args_list == []
     assert follower.show_fresh.call_args_list != []
 
 
@@ -148,10 +161,10 @@ def test_the_probe_runs_after_the_pending_catch_up(
 
         return _record
 
-    follower = _follower(True)
+    follower = _follower("holds")
     follower.rewrite_buffer.side_effect = _step("rewrite", AnimationResult("completed", 1))
     follower.resume.side_effect = _step("resume", AnimationResult("completed", 2))
-    follower.buffer_holds.side_effect = _step("probe", True)
+    follower.probe_buffer.side_effect = _step("probe", "holds")
     _run_hook(target, follower, monkeypatch)
 
     assert order == ["rewrite", "resume", "probe"]
@@ -165,7 +178,7 @@ def test_a_retype_after_a_mismatch_that_is_interrupted_persists_a_show_fresh_rem
     machinery included: the pending is a show_fresh remainder of `after`,
     not an apply_edit one built on a base the buffer never held."""
     target, resolved = _setup(tmp_path)
-    follower = _follower(False)
+    follower = _follower("differs")
     follower.show_fresh.return_value = AnimationResult("interrupted", 1)
     saved: dict[str, object] = {}
     monkeypatch.setattr(
@@ -180,3 +193,102 @@ def test_a_retype_after_a_mismatch_that_is_interrupted_persists_a_show_fresh_rem
         "file_path": resolved,
         "partial": "a\n",
     }
+
+
+@pytest.mark.parametrize("probe", ["absent", "unknown"])
+def test_a_dedicated_follower_retypes_on_every_answer_but_holds(
+    probe: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target, resolved = _setup(tmp_path)
+    follower = _follower(probe)
+    _run_hook(target, follower, monkeypatch)
+    assert follower.apply_edit.call_args_list == []
+    assert follower.show_fresh.call_args == call(resolved, AFTER, in_new_tab=True)
+
+
+@pytest.mark.parametrize("probe", ["differs", "unknown", OSError("socket gone")])
+def test_an_adopted_buffer_that_is_not_the_base_is_left_alone(
+    probe: object, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Never wipe (show_fresh), never animate (apply_edit): mark stale, say
+    so on the surface, log it — and draw nothing else on the surface."""
+    target, resolved = _setup(tmp_path, adopted=True)
+    follower = _follower(probe)
+    surface = _run_hook(target, follower, monkeypatch)
+
+    assert follower.show_fresh.call_args_list == []
+    assert follower.apply_edit.call_args_list == []
+    assert follower.close_tab.call_args_list == []
+    fs = state.FollowerState.read("@1")
+    assert fs is not None
+    assert fs.stale_files == (resolved,)
+    # The cue is the surface's last word: nothing clears or overwrites it.
+    assert surface.method_calls[-1] == call.set_state(hooks.BASE_DIFFERS_CUE)
+    assert call.set_state("Writing...") not in surface.method_calls
+    assert resolved in hooks.LOG_PATH.read_text()
+
+
+def test_an_adopted_fresh_file_the_user_has_loaded_is_left_alone_untracked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The pre-B2 analog: the follower never opened the file, so the edit is
+    fresh — but the user has it loaded with other content. Not wiped, and not
+    pulled into open_files (where eviction would later wipe it); nothing to
+    mark stale, since stale is a subset of open."""
+    target, resolved = _setup(tmp_path, adopted=True, is_open=False)
+    follower = _follower("differs")
+    surface = _run_hook(target, follower, monkeypatch)
+
+    assert follower.probe_buffer.call_args == call(resolved, BEFORE)
+    assert follower.show_fresh.call_args_list == []
+    fs = state.FollowerState.read("@1")
+    assert fs is not None
+    assert fs.open_files == ()
+    assert surface.method_calls[-1] == call.set_state(hooks.BASE_DIFFERS_CUE)
+
+
+def test_an_adopted_fresh_file_with_nothing_loaded_is_retyped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target, resolved = _setup(tmp_path, adopted=True, is_open=False)
+    follower = _follower("absent")
+    _run_hook(target, follower, monkeypatch)
+    assert follower.show_fresh.call_args == call(resolved, AFTER, in_new_tab=True)
+
+
+def test_an_adopted_fresh_file_the_user_has_loaded_as_the_base_gets_a_diff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A buffer the user opened that holds exactly the base is animated into
+    like any other — the retype would wipe it (undo history, marks) for
+    nothing."""
+    target, resolved = _setup(tmp_path, adopted=True, is_open=False)
+    follower = _follower("holds")
+    _run_hook(target, follower, monkeypatch)
+    assert follower.show_fresh.call_args_list == []
+    assert follower.apply_edit.call_args.args[0] == resolved
+
+
+def test_an_adopted_stale_file_the_user_resynced_gets_a_diff_and_loses_the_mark(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After `:e!` the buffer is the base again: the stale mark must not keep
+    routing it to the retype (which in an adopted editor is the wipe)."""
+    target, resolved = _setup(tmp_path, adopted=True, stale=True)
+    follower = _follower("holds")
+    surface = _run_hook(target, follower, monkeypatch)
+
+    assert follower.show_fresh.call_args_list == []
+    assert follower.apply_edit.call_args.args[0] == resolved
+    fs = state.FollowerState.read("@1")
+    assert fs is not None
+    assert fs.stale_files == ()
+    # The earlier cue comes down before this animation's own cue goes up.
+    retire = surface.method_calls.index(call.retire_state(hooks.BASE_DIFFERS_CUE))
+    assert retire < surface.method_calls.index(call.set_state("Writing..."))
+
+
+def test_the_cue_fits_the_follower_pane() -> None:
+    """Measured in a real 49-column tmux pane (border status top, mouse on):
+    40 characters render whole; 45 lost the last letter. See the B2 report."""
+    assert len(hooks.BASE_DIFFERS_CUE) <= 41

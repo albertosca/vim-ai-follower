@@ -9,7 +9,7 @@ from pathlib import Path
 
 from vim_ai_follower import cache, config
 from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult, run_lines, run_ops
-from vim_ai_follower.backends import buffer_forms
+from vim_ai_follower.backends import BufferProbe, classify_buffer
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
 from vim_ai_follower.diff import EditOp
 from vim_ai_follower.state import FollowerState
@@ -223,7 +223,7 @@ _RELOAD_IF_CLEAN = (
 )
 
 
-# buffer_holds' read-back: the one place this keystroke-driven backend asks
+# probe_buffer's read-back: the one place this keystroke-driven backend asks
 # Vim a question. Vim writes the lines of the buffer file_path names into a
 # probe file that Python polls for. It looks the buffer up by NUMBER exactly
 # like _GOTO_FILE (never a name pattern) and never navigates: `:tab sbuffer`
@@ -231,9 +231,8 @@ _RELOAD_IF_CLEAN = (
 #
 #   - getbufline() of an unloaded buffer (listed, but its tab was closed under
 #     'nohidden') and of a missing one (-1) is an empty list, while a loaded
-#     buffer always has at least one line — so "no lines" already means "holds
-#     no base", with no status field to keep in sync (buffer_forms never
-#     yields an empty list);
+#     buffer always has at least one line — so "no lines" already means
+#     "absent", with no status field to keep in sync (classify_buffer);
 #   - a nonce closes the dump, so a half-written file, or one left by an
 #     older probe that timed out and landed late, is never read as this
 #     probe's answer;
@@ -244,8 +243,9 @@ _PROBE_BUFFER = (
     _FIND_BUFFER + " | call writefile(getbufline(g:vaf_n, 1, '$') + [{nonce}], {probe})"
     " | unlet! g:vaf_p g:vaf_n"
 )
-# How long buffer_holds waits for Vim's answer before taking the safe side (a
-# full retype). Measured 2026-09-24 against a real tmux+vim at load 4-6: a
+# How long probe_buffer waits for Vim's answer before calling it "unknown"
+# (the hook's safe side: a retype, or in an adopted Vim, leaving it alone).
+# Measured 2026-09-24 against a real tmux+vim at load 4-6: a
 # median of ~50 ms and a worst of ~100 ms per probe, for 50- and 2000-line
 # buffers alike, so this only runs out when Vim is stuck or the machine is
 # drowning, and then retyping is the right call anyway.
@@ -451,12 +451,12 @@ class TmuxVimFollower:
         pane.send_text(_LOCK_READONLY)
         pane.send_key("Enter")
 
-    def buffer_holds(self, file_path: str, content: str) -> bool:
-        """Whether Vim holds file_path's buffer LOADED with exactly `content`
-        — the base an edit script is about to be typed onto. The probe is a
-        round-trip (_PROBE_BUFFER): Vim dumps the buffer to a file and this
-        polls for it. No answer within _PROBE_TIMEOUT_SECONDS is a False,
-        because the hook's safe side of an unknown base is a full retype."""
+    def probe_buffer(self, file_path: str, content: str) -> BufferProbe:
+        """What Vim's buffer for file_path holds relative to `content`, the
+        base an edit script is about to be typed onto (see BufferProbe). The
+        probe is a round-trip (_PROBE_BUFFER): Vim dumps the buffer to a file
+        and this polls for it. No answer within _PROBE_TIMEOUT_SECONDS is
+        "unknown"."""
         probe = cache.CACHE_DIR / f"probe-{self.pane_id.lstrip('%')}.txt"
         probe.parent.mkdir(parents=True, exist_ok=True)
         probe.unlink(missing_ok=True)
@@ -475,14 +475,14 @@ class TmuxVimFollower:
         while (lines := _read_probe(probe, nonce)) is None:
             if time.monotonic() >= deadline:
                 logger.warning(
-                    "no answer from the follower's Vim about %s within %.1fs; retyping it",
+                    "no answer from the follower's Vim about %s within %.1fs",
                     file_path,
                     _PROBE_TIMEOUT_SECONDS,
                 )
-                return False
+                return "unknown"
             time.sleep(_PROBE_POLL_SECONDS)
         probe.unlink(missing_ok=True)
-        return lines in buffer_forms(content)
+        return classify_buffer(lines, content)
 
     def _with_unlocked(
         self, relock: str, run: Callable[[TmuxPane], AnimationResult]

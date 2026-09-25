@@ -6,7 +6,7 @@ tests pin the surface's own command sequence directly."""
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from helpers import make_mock_tmux_run
 
@@ -301,3 +301,33 @@ def test_all_methods_swallow_a_dead_socket_instead_of_raising() -> None:
         surface.set_state("Claude waiting")
         surface.set_state(None)
         surface.clear()
+
+
+def test_tmux_retire_state_takes_down_a_matching_leftover_cue() -> None:
+    from vim_ai_follower.status_surface import TmuxStatusSurface
+
+    with (
+        patch("vim_ai_follower.status_surface.TmuxPane.title", return_value="old cue"),
+        patch.object(TmuxStatusSurface, "clear") as clear,
+    ):
+        TmuxStatusSurface(pane_id="%9").retire_state("old cue")
+    assert clear.call_args_list == [call()]
+
+
+def test_tmux_retire_state_leaves_any_other_title_alone() -> None:
+    from vim_ai_follower.status_surface import TmuxStatusSurface
+
+    with (
+        patch("vim_ai_follower.status_surface.TmuxPane.title", return_value="writer label"),
+        patch.object(TmuxStatusSurface, "clear") as clear,
+    ):
+        TmuxStatusSurface(pane_id="%9").retire_state("old cue")
+    assert clear.call_args_list == []
+
+
+def test_nvim_retire_state_touches_nothing() -> None:
+    from vim_ai_follower.status_surface import NvimStatusSurface
+
+    with patch("pynvim.attach") as attach:
+        NvimStatusSurface(socket_path="/tmp/x").retire_state("old cue")
+    assert attach.call_args_list == []

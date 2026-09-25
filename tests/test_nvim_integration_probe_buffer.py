@@ -1,4 +1,4 @@
-"""NvimFollower.buffer_holds against a real headless nvim: the answer the
+"""NvimFollower.probe_buffer against a real headless nvim: the answer the
 base-mismatch guard in hooks._animate_edit acts on. nvim can read its own
 buffer over RPC, so this is a direct comparison, no probe file."""
 
@@ -23,23 +23,23 @@ def test_a_buffer_holding_the_content_holds_it(headless_nvim: str, tmp_path: Pat
     target = tmp_path / "f.py"
     follower = _follower(headless_nvim)
     follower.show_fresh(str(target), "a\nb\n")
-    assert follower.buffer_holds(str(target), "a\nb\n") is True
+    assert follower.probe_buffer(str(target), "a\nb\n") == "holds"
 
 
-def test_a_buffer_holding_other_content_does_not(headless_nvim: str, tmp_path: Path) -> None:
+def test_a_buffer_holding_other_content_differs(headless_nvim: str, tmp_path: Path) -> None:
     """The outside-change case: the buffer still holds what the follower
     typed, while the new base is what a formatter wrote to disk."""
     target = tmp_path / "f.py"
     follower = _follower(headless_nvim)
     follower.show_fresh(str(target), "a\nb\n")
-    assert follower.buffer_holds(str(target), "a\nFORMATTED\n") is False
+    assert follower.probe_buffer(str(target), "a\nFORMATTED\n") == "differs"
 
 
-def test_a_file_no_buffer_holds_is_not_held(headless_nvim: str, tmp_path: Path) -> None:
-    assert _follower(headless_nvim).buffer_holds(str(tmp_path / "nope.py"), "") is False
+def test_a_file_no_buffer_holds_is_absent(headless_nvim: str, tmp_path: Path) -> None:
+    assert _follower(headless_nvim).probe_buffer(str(tmp_path / "nope.py"), "") == "absent"
 
 
-def test_an_unloaded_buffer_is_not_held(headless_nvim: str, tmp_path: Path) -> None:
+def test_an_unloaded_buffer_is_absent(headless_nvim: str, tmp_path: Path) -> None:
     """Under 'nohidden' a closed tab unloads its buffer; goto_file's
     win_set_buf would then load the finished file from disk."""
     target = tmp_path / "f.py"
@@ -51,4 +51,4 @@ def test_an_unloaded_buffer_is_not_held(headless_nvim: str, tmp_path: Path) -> N
     buf = nvim.funcs.bufadd(str(target))
     nvim.command(f"bunload! {buf}")
     assert nvim.api.buf_is_loaded(buf) is False
-    assert follower.buffer_holds(str(target), "a\nb\n") is False
+    assert follower.probe_buffer(str(target), "a\nb\n") == "absent"

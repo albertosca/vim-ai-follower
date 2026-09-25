@@ -28,6 +28,8 @@ def _fake_follower() -> MagicMock:
     follower = MagicMock()
     follower.rewrite_buffer.return_value = AnimationResult("completed", 1)
     follower.resume.return_value = AnimationResult("completed", 1)
+    # These tests are about the diff path: the buffer is the edit's base.
+    follower.probe_buffer.return_value = "holds"
     return follower
 
 

@@ -425,7 +425,7 @@ def test_edit_of_tracked_file_uses_apply_edit_even_when_not_current(tmp_path: Pa
     # covers the other answer).
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
-        patch.object(TmuxVimFollower, "buffer_holds", return_value=True),
+        patch.object(TmuxVimFollower, "probe_buffer", return_value="holds"),
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
@@ -750,7 +750,7 @@ def test_hook_post_edit_interrupted_prints_notification_and_leaves_buffer_unlock
     # holding the snapshot is the premise (no Vim here answers the probe).
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
-        patch.object(TmuxVimFollower, "buffer_holds", return_value=True),
+        patch.object(TmuxVimFollower, "probe_buffer", return_value="holds"),
         patch(
             "vim_ai_follower.control.check_signal",
             side_effect=_interrupt_then_user_saves(target, at_check=2),

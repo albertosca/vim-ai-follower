@@ -1,10 +1,20 @@
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Literal, Protocol
 
 from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
 from vim_ai_follower.diff import EditOp
+
+# The answer to "is this buffer the edit's base?", in the four shapes the hook
+# acts on differently:
+#   - "holds": loaded, and exactly `content` — a diff can be typed onto it;
+#   - "absent": no buffer, or one that is listed but unloaded — nothing is in
+#     it, so replacing it (show_fresh's wipe) loses nothing;
+#   - "differs": loaded with other content — in an ADOPTED editor that may be
+#     the user's unsaved typing, which a wipe would destroy;
+#   - "unknown": the editor never answered.
+BufferProbe = Literal["holds", "differs", "absent", "unknown"]
 
 
 class Follower(Protocol):
@@ -22,11 +32,10 @@ class Follower(Protocol):
 
     def ensure_showing(self, file_path: str) -> None: ...
 
-    # Whether file_path's buffer is loaded and holds exactly `content` — the
-    # base an edit script is about to be typed onto. The hook retypes the
-    # whole file whenever this is False, so a backend that cannot tell must
-    # answer False, never guess True.
-    def buffer_holds(self, file_path: str, content: str) -> bool: ...
+    # What file_path's buffer holds relative to `content`, the base an edit
+    # script is about to be typed onto (see BufferProbe). A backend that
+    # cannot tell answers "unknown", never a guess.
+    def probe_buffer(self, file_path: str, content: str) -> BufferProbe: ...
 
     def goto_file(self, file_path: str) -> None: ...
 
@@ -78,6 +87,16 @@ def buffer_forms(content: str) -> list[list[str]]:
     if all(line.endswith("\r") for line in lines):
         forms.append([line[:-1] for line in lines])
     return forms
+
+
+def classify_buffer(lines: list[str], content: str) -> BufferProbe:
+    """What a buffer showing `lines` holds relative to the file `content`. An
+    empty list is "absent": a loaded buffer always has at least one line, so
+    only a missing or unloaded buffer reads back as none (getbufline() in Vim,
+    buf_get_lines in nvim)."""
+    if not lines:
+        return "absent"
+    return "holds" if lines in buffer_forms(content) else "differs"
 
 
 def get_follower(
