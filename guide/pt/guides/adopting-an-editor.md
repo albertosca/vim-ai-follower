@@ -22,10 +22,13 @@ Porque é **o seu** editor:
 
 O follower anima a edição do Claude como um diff sobre o buffer que tem o arquivo. No seu próprio editor esse buffer pode ter outra coisa: linhas que você digitou e não salvou, ou uma cópia antiga de um arquivo que um formatador ou um `git checkout` reescreveu. Redigitar o arquivo apagaria esse buffer primeiro, e um diff cairia sobre o texto errado, então um editor adotado não recebe nenhum dos dois:
 
-- O buffer fica exatamente como está, com a digitação não salva, e a edição do Claude não é animada.
+- O buffer fica exatamente como está, com a digitação não salva, e a edição do Claude não é animada. O mesmo vale pra uma animação que foi interrompida ou pausada e nunca terminou: o que sobrou dela é descartado, em vez de ser reaplicado por cima do que você digitou depois.
 - O aviso de status (a borda do pane no tmux, a caixa flutuante no Neovim) mostra `buffer differs — :e! shows Claude's edit`, e o evento vai pro `~/.cache/claude-vim-follower/hook.log`. O aviso fica até o follower animar a próxima edição naquela janela.
-- A edição do Claude já está no disco. Rode `:e!` nesse buffer pra carregá-la (isso descarta o que você digitou e não salvou ali), ou salve a sua versão antes.
+- A edição do Claude já está no disco. `:e!` nesse buffer carrega ela e descarta o que você digitou e não salvou ali.
+- Salvar (`:w`) faz o contrário: grava o seu buffer, o texto antigo mais a sua digitação, por cima do arquivo que o Claude acabou de escrever, e a edição do Claude se perde. Pra ficar com as duas, copie a sua digitação pra outro lugar (outro buffer, um registrador), rode `:e!` e aplique a sua digitação de novo.
 - Quando o buffer volta a bater com o arquivo, a próxima edição dele é animada normalmente.
+
+Se o follower não consegue conferir o buffer (o seu editor não respondeu à consulta dele, por exemplo um Vim no backend tmux que não consegue escrever em `~/.cache/claude-vim-follower/`), ele joga no seguro do mesmo jeito: a edição não é mostrada e o aviso mostra `can't check buffer — edit not shown`. `:e!` não resolve esse. Ele se repete a cada edição enquanto a consulta continuar sem resposta, e o `hook.log` registra o motivo.
 
 Isso vale também pra um arquivo que você mesmo abriu antes de o Claude editá-lo pela primeira vez. Um follower dedicado (não adotado) é dono dos buffers dele e redigita o arquivo inteiro.
 

@@ -22,10 +22,13 @@ Because it is **your** editor:
 
 The follower animates Claude's edit as a diff onto the buffer that holds the file. In your own editor that buffer may hold something else: lines you typed and have not saved, or an older copy of a file that a formatter or `git checkout` rewrote. Retyping the file would first wipe that buffer, and a diff would land on the wrong text, so an adopted editor gets neither:
 
-- The buffer is left exactly as it is, unsaved typing included, and Claude's edit is not animated.
+- The buffer is left exactly as it is, unsaved typing included, and Claude's edit is not animated. The same holds for an animation that was interrupted or paused and never finished: its leftover is dropped rather than replayed over what you typed since.
 - The status cue (the pane border on tmux, the floating box on Neovim) reads `buffer differs — :e! shows Claude's edit`, and the event is logged to `~/.cache/claude-vim-follower/hook.log`. The cue stays until the follower animates its next edit in that window.
-- Claude's edit is already on disk. Run `:e!` in that buffer to load it (that discards your unsaved typing there), or save your own version first.
+- Claude's edit is already on disk. `:e!` in that buffer loads it and discards your unsaved typing there.
+- Saving (`:w`) does the opposite: it writes your buffer, the old text plus your typing, over the file Claude just wrote, and Claude's edit is lost. To keep both, copy your typing somewhere else (another buffer, a register), run `:e!`, then apply your typing again.
 - Once the buffer matches the file again, the next edit to it animates normally.
+
+If the follower cannot check the buffer at all (your editor did not answer its probe, for example a Vim on the tmux backend that cannot write into `~/.cache/claude-vim-follower/`), it plays safe the same way: the edit is not shown and the cue reads `can't check buffer — edit not shown`. `:e!` does not clear that one. It repeats on every edit for as long as the probe goes unanswered, and `hook.log` records why.
 
 This also covers a file you opened yourself before Claude first edited it. A dedicated follower (not adopted) owns its buffers and retypes the whole file instead.
 
