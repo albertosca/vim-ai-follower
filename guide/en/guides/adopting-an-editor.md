@@ -28,7 +28,7 @@ The follower animates Claude's edit as a diff onto the buffer that holds the fil
 - Saving (`:w`) does the opposite: it writes your buffer, the old text plus your typing, over the file Claude just wrote, and Claude's edit is lost. To keep both, copy your typing somewhere else (another buffer, a register), run `:e!`, then apply your typing again.
 - Once the buffer matches the file again, the next edit to it animates normally.
 
-If the follower cannot check the buffer at all (your editor did not answer its probe, for example a Vim on the tmux backend that cannot write into `~/.cache/claude-vim-follower/`), it plays safe the same way: the edit is not shown and the cue reads `can't check buffer — edit not shown`. `:e!` does not clear that one. It repeats on every edit for as long as the probe goes unanswered, and `hook.log` records why.
+If the follower cannot check the buffer at all (your editor did not answer its probe, for example a Vim on the tmux backend that cannot write into `~/.cache/claude-vim-follower/`), it plays safe the same way: the edit is not shown and the cue reads `can't check buffer — edit not shown`. `:e!` does not clear that one. When the probe goes unanswered, it repeats on every edit for as long as that lasts, and `hook.log` records why. The same cue also appears once, without repeating, when a leftover from an interrupted or paused animation whose hook was stopped recorded nothing to check your buffer against: the leftover is dropped rather than replayed, your buffer is left alone, and `:e!` shows Claude's edit.
 
 This also covers a file you opened yourself before Claude first edited it. A dedicated follower (not adopted) owns its buffers and retypes the whole file instead.
 
