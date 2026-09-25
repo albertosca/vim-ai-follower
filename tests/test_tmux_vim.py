@@ -570,6 +570,34 @@ def test_reload_and_relock_navigates_then_reloads_and_relocks() -> None:
     ]
 
 
+def test_reload_from_disk_discards_under_the_swap_answer_and_locks() -> None:
+    # The catch-up grounding (hooks._ground_caught_up_buffer): the buffer holds
+    # only follower text, so `edit!` discards it; the same scoped (E)dit-anyway
+    # answer as every disk-reading line, and `silent` against a 49-column
+    # hit-enter prompt.
+    follower = TmuxVimFollower(pane_id="%2")
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        follower.reload_from_disk("/tmp/a.py")
+    assert _sent_commands(run) == [
+        ("Escape", False),
+        ("Escape", False),
+        (_goto("/tmp/a.py"), True),
+        ("Enter", False),
+        (
+            ':exe "augroup vim_ai_follower_swap"'
+            " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
+            ' | exe "augroup END"'
+            " | try | silent edit!"
+            ' | finally | exe "autocmd! vim_ai_follower_swap"'
+            ' | exe "augroup! vim_ai_follower_swap" | endtry',
+            True,
+        ),
+        ("Enter", False),
+        (":setlocal readonly nomodifiable", True),
+        ("Enter", False),
+    ]
+
+
 def _wipe(quoted_path: str) -> str:
     """The exact Ex line an eviction sends to wipe `quoted_path`'s buffer.
 

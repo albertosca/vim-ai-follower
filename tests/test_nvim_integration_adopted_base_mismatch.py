@@ -219,6 +219,28 @@ def test_a_killed_hand_off_catch_up_still_replays_onto_an_untouched_buffer(
     assert BASE_DIFFERS_CUE not in _status_text(nvim)
 
 
+def test_a_catch_up_an_outside_change_left_behind_is_reloaded_from_disk(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The nvim twin of tests/test_integration_catchup_grounding.py: the
+    catch-up completes (the buffer held the partial), but a formatter also
+    rewrote the file, so the buffer is not the new edit's base. It holds only
+    follower text, so it is reloaded from disk: not modified, equal to disk,
+    no cue, not stale."""
+    nvim, target = _animated_then_pending(headless_nvim, tmp_path, monkeypatch)
+    target.write_text("x = 1\ny = 3\n# fmt\n")  # outside Claude
+
+    _edit(target, "x = 1\ny = 3\n# fmt\nz = 4\n")
+
+    buffer = _buffer(nvim, "a.py")
+    assert buffer[:] == ["x = 1", "y = 3", "# fmt", "z = 4"]
+    assert nvim.api.buf_get_option(buffer.handle, "modified") is False
+    assert BASE_DIFFERS_CUE not in _status_text(nvim)
+    state = FollowerState.read(_WINDOW)
+    assert state is not None
+    assert str(target) not in state.stale_files
+
+
 def test_a_pause_that_outlived_its_hook_reaches_the_same_guard(
     headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

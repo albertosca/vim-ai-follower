@@ -393,3 +393,101 @@ def test_both_cues_fit_the_follower_pane() -> None:
     see the B2 report. 41 characters is the longest measured whole."""
     assert len(hooks.BASE_DIFFERS_CUE) <= 41
     assert len(hooks.PROBE_UNKNOWN_CUE) <= 41
+
+
+# --- after a completed catch-up: ground, don't leave alone ----------------
+
+
+def _caught_up_follower(adopted: bool, base_answer: object) -> MagicMock:
+    """An adopted catch-up asks about the partial first ("holds"); both then
+    ask about the new edit's base."""
+    follower = _follower("holds")
+    answers: list[object] = ["holds", base_answer] if adopted else [base_answer]
+    follower.probe_buffer.side_effect = answers
+    return follower
+
+
+@pytest.mark.parametrize(
+    ("adopted", "answer"),
+    [(True, "differs"), (False, "differs"), (True, "unknown")],
+    ids=["adopted-differs", "dedicated-differs", "adopted-unknown"],
+)
+def test_a_completed_catch_up_that_is_not_the_base_is_reloaded_from_disk(
+    adopted: bool, answer: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The catch-up just rebuilt the buffer from the partial and typed the
+    rest, so it holds only follower text. An outside change since (a
+    formatter, `sed -i`) makes it "differs": reload it from disk, with no
+    animation, no cue and no stale mark. Left alone it stays modified while
+    disk moved on, and `:checktime` raises W12 (controller ruling,
+    2026-09-25). An adopted "unknown" is grounded by the same reasoning."""
+    target, resolved = _setup(tmp_path, adopted=adopted)
+    _pending_apply_edit(resolved, "a\nb\nc\n")
+    follower = _caught_up_follower(adopted, answer)
+    surface = _run_hook(target, follower, monkeypatch)
+
+    assert follower.resume.call_args_list != []
+    assert follower.reload_from_disk.call_args_list == [call(resolved)]
+    assert follower.apply_edit.call_args_list == []
+    assert follower.show_fresh.call_args_list == []
+    assert call.set_state(hooks.BASE_DIFFERS_CUE) not in surface.method_calls
+    assert call.set_state(hooks.PROBE_UNKNOWN_CUE) not in surface.method_calls
+    assert call.set_state("Writing...") not in surface.method_calls
+    assert surface.method_calls[-1] == call.retire_state(
+        hooks.BASE_DIFFERS_CUE, hooks.PROBE_UNKNOWN_CUE
+    )
+    fs = state.FollowerState.read("@1")
+    assert fs is not None
+    assert resolved not in fs.stale_files
+    assert fs.current_file == resolved
+    assert "reloaded" in hooks.LOG_PATH.read_text()
+
+
+def test_a_dedicated_catch_up_whose_base_probe_goes_unanswered_still_retypes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dedicated "unknown" keeps the retype: show_fresh's relock grounds the
+    buffer on disk anyway, and the edit stays visible."""
+    target, resolved = _setup(tmp_path)
+    _pending_apply_edit(resolved, "a\nb\nc\n")
+    follower = _caught_up_follower(False, "unknown")
+    _run_hook(target, follower, monkeypatch)
+
+    assert follower.reload_from_disk.call_args_list == []
+    assert follower.show_fresh.call_args == call(resolved, AFTER, in_new_tab=True)
+
+
+@pytest.mark.parametrize("stopped", ["rewrite", "resume"])
+@pytest.mark.parametrize("adopted", [True, False], ids=["adopted", "dedicated"])
+def test_a_catch_up_that_did_not_complete_is_never_grounded(
+    stopped: str, adopted: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An interrupted catch-up is not a buffer of follower text only: the
+    usual policy applies (adopted: left alone with the cue; dedicated:
+    retyped)."""
+    target, resolved = _setup(tmp_path, adopted=adopted)
+    _pending_apply_edit(resolved, "a\nb\nc\n")
+    follower = _caught_up_follower(adopted, "differs")
+    getattr(
+        follower, f"{stopped}_buffer" if stopped == "rewrite" else stopped
+    ).return_value = AnimationResult("interrupted", 0)
+    surface = _run_hook(target, follower, monkeypatch)
+
+    assert follower.reload_from_disk.call_args_list == []
+    if adopted:
+        assert surface.method_calls[-1] == call.set_state(hooks.BASE_DIFFERS_CUE)
+    else:
+        assert follower.show_fresh.call_args == call(resolved, AFTER, in_new_tab=True)
+
+
+def test_a_reload_that_raises_never_fails_the_hook(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target, resolved = _setup(tmp_path, adopted=True)
+    _pending_apply_edit(resolved, "a\nb\nc\n")
+    follower = _caught_up_follower(True, "differs")
+    follower.reload_from_disk.side_effect = OSError("pane gone")
+    _run_hook(target, follower, monkeypatch)  # asserts the hook returned 0
+
+    assert follower.apply_edit.call_args_list == []
+    assert "could not reload" in hooks.LOG_PATH.read_text()

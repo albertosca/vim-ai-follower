@@ -88,6 +88,39 @@ def test_catchup_without_a_recorded_partial_keeps_trusting_the_live_buffer() -> 
     assert follower.resume.call_args.kwargs["seeded"] is True
 
 
+_DONE = AnimationResult("completed", 0)
+_CUT = AnimationResult("interrupted", 0)
+
+
+@pytest.mark.parametrize(
+    ("rebuilt", "resumed", "partial", "expected"),
+    [
+        (_DONE, _DONE, "a\n", True),
+        (_DONE, _CUT, "a\n", False),
+        (_CUT, _DONE, "a\n", False),
+        (None, _DONE, None, True),
+        (None, _CUT, None, False),
+    ],
+)
+def test_catchup_reports_whether_it_ran_to_the_end(
+    rebuilt: AnimationResult | None,
+    resumed: AnimationResult,
+    partial: str | None,
+    expected: bool,
+) -> None:
+    """True only when the buffer now holds nothing but follower text, which is
+    what lets _animate_edit reload it from disk after an outside change."""
+    follower = _fake_follower()
+    if rebuilt is not None:
+        follower.rewrite_buffer.return_value = rebuilt
+    follower.resume.return_value = resumed
+    pending = control.PendingApplyEdit(
+        ops=[_OP], pace_seconds=0.2, file_path="/tmp/f.py", partial=partial
+    )
+
+    assert hooks._consume_pending_catchup(follower, "/tmp/f.py", pending) is expected
+
+
 def test_a_pending_file_written_without_the_partial_key_loads_as_none(tmp_path: Path) -> None:
     # The on-disk half of the same guarantee, against a literal legacy file:
     # a missing key must mean "not recorded", never a crash.

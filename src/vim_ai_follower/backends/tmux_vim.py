@@ -226,6 +226,14 @@ _RELOAD_IF_CLEAN = (
     f" | finally | {_SWAP_ANSWER_CLOSE} | endtry"
 )
 
+# reload_from_disk's re-read: _RELOAD_IF_CLEAN without the clean check, for a
+# buffer that holds only follower text the hook has decided to discard (see
+# hooks._animate_edit, after a completed catch-up). Same scoped swap answer
+# and the same `silent`, for the same reasons.
+_RELOAD_DISCARDING = (
+    f":{_SWAP_ANSWER_OPEN} | try | silent edit! | finally | {_SWAP_ANSWER_CLOSE} | endtry"
+)
+
 
 # probe_buffer's read-back: the one place this keystroke-driven backend asks
 # Vim a question. Vim writes the lines of the buffer file_path names into a
@@ -421,6 +429,19 @@ class TmuxVimFollower:
         self.goto_file(file_path)
         pane = TmuxPane(pane_id=self.pane_id)
         pane.send_text(":e!")
+        pane.send_key("Enter")
+        pane.send_text(_LOCK_READONLY)
+        pane.send_key("Enter")
+
+    def reload_from_disk(self, file_path: str) -> None:
+        """Ground the buffer on the file as it is on disk, discarding what it
+        holds, and lock it. Only for a buffer holding nothing but follower
+        text: a catch-up that just completed (hooks._animate_edit). Without
+        it that buffer stays modified while disk moved on, and the next
+        `:checktime` raises the blocking W12 dialog."""
+        self.goto_file(file_path)
+        pane = TmuxPane(pane_id=self.pane_id)
+        pane.send_text(_RELOAD_DISCARDING)
         pane.send_key("Enter")
         pane.send_text(_LOCK_READONLY)
         pane.send_key("Enter")

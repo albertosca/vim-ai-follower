@@ -184,3 +184,12 @@ def test_resume_fresh_pause_excludes_the_trailing_seed_blank_from_the_partial(
         assert follower.resume(pending, seeded=True) == AnimationResult("completed", 2)
 
     assert saved == [("a\nb\n", True)]
+
+
+def test_reload_from_disk_is_the_des_interrupt_reload() -> None:
+    """The catch-up grounding reuses reload_and_relock's `edit!` and its
+    adopted-never-locked rule rather than a second copy of them."""
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
+    with patch.object(NvimFollower, "reload_and_relock") as reload:
+        follower.reload_from_disk("/tmp/f.py")
+    reload.assert_called_once_with("/tmp/f.py")

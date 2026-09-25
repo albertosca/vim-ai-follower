@@ -543,6 +543,13 @@ class NvimFollower:
                 buf = nvim.api.get_current_buf().handle
                 nvim.api.buf_set_option(buf, "modifiable", False)
 
+    def reload_from_disk(self, file_path: str) -> None:
+        """Ground a buffer holding only follower text on the file on disk (a
+        catch-up that just completed, hooks._animate_edit). Exactly the
+        des-interrupt's reload: `edit!`, then the lock a dedicated follower
+        gets; an adopted nvim is never locked."""
+        self.reload_and_relock(file_path)
+
     def rewrite_buffer(self, file_path: str, content: str) -> AnimationResult:
         """Instantly (no animation) rebuild the buffer to `content` — the
         des-interrupt replay needs the buffer back at the interrupt-point state,

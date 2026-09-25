@@ -868,7 +868,7 @@ def _consume_pending_catchup(
     follower: Follower,
     file_path: str,
     pending: control.PendingApplyEdit | control.PendingShowFresh,
-) -> None:
+) -> bool:
     """Silently fast-forward a crash-fallback remainder so the buffer holds
     the state the new edit's ops were computed against.
 
@@ -908,12 +908,17 @@ def _consume_pending_catchup(
 
     reload=False: the replay must END at the new edit's base. Disk already
     holds the new edit, so a relock that re-reads it (tmux's `:e!`) would
-    show the finished file and make the base probe below answer "differs"."""
+    show the finished file and make the base probe below answer "differs".
+
+    True means the catch-up ran to the end, so the buffer now holds only
+    follower text (_animate_edit may then reload it from disk)."""
+    rebuilt = True
     if pending.partial is not None:
-        follower.rewrite_buffer(file_path, pending.partial)
-    follower.resume(
+        rebuilt = follower.rewrite_buffer(file_path, pending.partial).outcome == "completed"
+    result = follower.resume(
         dataclasses.replace(pending, pace_seconds=0.0), seeded=not pending.partial, reload=False
     )
+    return rebuilt and result.outcome == "completed"
 
 
 def _probe_base(follower: Follower, file_path: str, before: str) -> BufferProbe:
@@ -962,6 +967,53 @@ def _leave_adopted_buffer_alone(
     )
     cue = PROBE_UNKNOWN_CUE if probe == "unknown" else BASE_DIFFERS_CUE
     status_surface_for(current).set_state(cue)
+
+
+def _ground_caught_up_buffer(
+    window_id: str,
+    follower: Follower,
+    current: FollowerState,
+    file_path: str,
+    probe: BufferProbe,
+    cfg: config.Config,
+) -> None:
+    """A catch-up just completed, but the buffer it left is still not this
+    edit's base: something outside Claude (a formatter hook, `sed -i`, a
+    checkout) rewrote the file after the remainder was saved. Reload it from
+    disk: Claude's finished file is shown, with no animation, no cue and no
+    stale mark, in adopted and dedicated mode alike (controller ruling,
+    2026-09-25).
+
+    Safe in an adopted editor, unlike _leave_adopted_buffer_alone's case: the
+    partial probe said "holds" and the follower then typed the rest, so the
+    buffer holds only follower text. Left alone it would stay modified while
+    disk moved on — the next `:checktime` (FocusGained with 'autoread') raises
+    the blocking W12 dialog, and a `:w` writes that stale text over Claude's
+    and the formatter's edits (reproduced 2026-09-25).
+
+    "unknown" (the editor did not answer the probe) is grounded in an adopted
+    editor by the same reasoning: the buffer holds nothing of the user's, and
+    leaving it alone would leave it modified, the W12 hazard above. A
+    dedicated follower keeps retyping on "unknown", as for any buffer it
+    cannot check: show_fresh's own relock ends in the same disk sync, so it is
+    grounded either way, and the edit stays visible."""
+    logger.info(
+        "reloaded %s from disk after a catch-up: its buffer %s",
+        file_path,
+        "is not the edit's base (changed outside Claude since the remainder was saved)"
+        if probe == "differs"
+        else "could not be checked",
+    )
+    try:
+        follower.reload_from_disk(file_path)
+    except Exception:
+        logger.exception("could not reload %s after a catch-up", file_path)
+        return
+    # Never stale here: a stale file is fresh, and a fresh file gets no
+    # catch-up. Nor is it marked: the buffer now matches disk.
+    FollowerState.update_current_file(window_id, file_path)
+    status_surface_for(current).retire_state(BASE_DIFFERS_CUE, PROBE_UNKNOWN_CUE)
+    _touch_and_evict(window_id, follower, current, file_path, cfg.max_tabs)
 
 
 _WHY = {
@@ -1021,6 +1073,7 @@ def _animate_edit(
     # buffer ("absent") has nothing to lose and nothing to replay onto: the
     # probe below sends the new edit to the retype.
     pending = control.load_pending_animation(session.window_id)
+    caught_up = False
     if (
         pending is not None
         and (pending.file_path == file_path or pending.file_path == "")
@@ -1028,7 +1081,7 @@ def _animate_edit(
         and not binary
     ):
         if not current.adopted:
-            _consume_pending_catchup(follower, file_path, pending)
+            caught_up = _consume_pending_catchup(follower, file_path, pending)
         elif pending.partial is None:
             _leave_adopted_buffer_alone(
                 current,
@@ -1041,7 +1094,7 @@ def _animate_edit(
         else:
             held = _probe_base(follower, file_path, pending.partial)
             if held == "holds":
-                _consume_pending_catchup(follower, file_path, pending)
+                caught_up = _consume_pending_catchup(follower, file_path, pending)
             elif held != "absent":
                 _leave_adopted_buffer_alone(
                     current,
@@ -1082,6 +1135,9 @@ def _animate_edit(
             if file_path in current.stale_files:
                 FollowerState.clear_stale(session.window_id, file_path)
             is_fresh = False
+        elif caught_up and (probe == "differs" or (probe == "unknown" and current.adopted)):
+            _ground_caught_up_buffer(session.window_id, follower, current, file_path, probe, cfg)
+            return 0
         elif current.adopted and probe != "absent":
             _leave_adopted_buffer_alone(current, session.window_id, file_path, probe, _WHY[probe])
             return 0
