@@ -238,10 +238,27 @@ _RELOAD_IF_CLEAN = (
 #     probe's answer;
 #   - the lines themselves, not a `sha256()` of them: that needs +cryptv, and
 #     an E117 at 49 columns is a hit-enter prompt that would eat the
-#     animation's keystrokes.
+#     animation's keystrokes;
+#   - everything inside `try | … | catch | finally | … | endtry`, with an
+#     empty catch-all: no failure may leave a prompt in the pane. Measured
+#     2026-09-25 on a real Vim at 49 columns: an unwritable probe directory
+#     raised `E482: Can't create file <path>`, whose long path wrapped into
+#     "Press ENTER or type command to continue" — and in an adopted Vim nothing
+#     is sent after the probe to dismiss it. Swallowed, the error just means
+#     no answer, which the poll turns into "unknown" at the timeout. `silent!`
+#     was not used: it scopes to one command, and the lookup's filter() can
+#     fail too;
+#   - `let g:vaf_r = writefile(…)`, never `call writefile(…)`: measured on the
+#     same Vim, a `:call` whose function fails skips the REST OF THE LINE, so
+#     `catch`/`finally`/`endtry` were never read and the unclosed `:try` left
+#     the command line waiting for more (a `:  ` continuation prompt) —
+#     no hit-enter message, but every later keystroke fed an open block. A
+#     failing `:let` hands over to the catch and the line completes.
 _PROBE_BUFFER = (
-    _FIND_BUFFER + " | call writefile(getbufline(g:vaf_n, 1, '$') + [{nonce}], {probe})"
-    " | unlet! g:vaf_p g:vaf_n"
+    ":try | "
+    + _FIND_BUFFER.removeprefix(":")
+    + " | let g:vaf_r = writefile(getbufline(g:vaf_n, 1, '$') + [{nonce}], {probe})"
+    " | catch | finally | unlet! g:vaf_p g:vaf_n g:vaf_r | endtry"
 )
 # How long probe_buffer waits for Vim's answer before calling it "unknown"
 # (the hook's safe side: a retype, or in an adopted Vim, leaving it alone).
@@ -253,6 +270,11 @@ _PROBE_TIMEOUT_SECONDS = 2.0
 _PROBE_POLL_SECONDS = 0.01
 
 logger = logging.getLogger("vim_ai_follower")
+
+
+def _probe_path(pane_id: str) -> Path:
+    """Where Vim writes probe_buffer's answer for this pane."""
+    return cache.CACHE_DIR / f"probe-{pane_id.lstrip('%')}.txt"
 
 
 def _read_probe(probe: Path, nonce: str) -> list[str] | None:
@@ -457,7 +479,7 @@ class TmuxVimFollower:
         probe is a round-trip (_PROBE_BUFFER): Vim dumps the buffer to a file
         and this polls for it. No answer within _PROBE_TIMEOUT_SECONDS is
         "unknown"."""
-        probe = cache.CACHE_DIR / f"probe-{self.pane_id.lstrip('%')}.txt"
+        probe = _probe_path(self.pane_id)
         probe.parent.mkdir(parents=True, exist_ok=True)
         probe.unlink(missing_ok=True)
         nonce = secrets.token_hex(8)

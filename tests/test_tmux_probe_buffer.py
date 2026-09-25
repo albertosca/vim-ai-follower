@@ -28,11 +28,11 @@ def _probe_line(path: str, probe: Path) -> str:
     unintended change to the constant is caught — same rule as
     test_tmux_vim._goto."""
     return (
-        ":let g:vaf_p = '" + path.replace("'", "''") + "'"
+        ":try | let g:vaf_p = '" + path.replace("'", "''") + "'"
         " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
         " && fnamemodify(bufname(v:val), '':p'') ==# fnamemodify(g:vaf_p, '':p'')'), 0, -1)"
-        f" | call writefile(getbufline(g:vaf_n, 1, '$') + ['{NONCE}'], '{probe}')"
-        " | unlet! g:vaf_p g:vaf_n"
+        f" | let g:vaf_r = writefile(getbufline(g:vaf_n, 1, '$') + ['{NONCE}'], '{probe}')"
+        " | catch | finally | unlet! g:vaf_p g:vaf_n g:vaf_r | endtry"
     )
 
 
