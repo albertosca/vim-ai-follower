@@ -22,6 +22,10 @@ Não. A edição chega ao seu arquivo pelo próprio `Edit`/`Write` do Claude Cod
 
 Não. Os hooks são feitos para sair com `0` e registrar problemas em `~/.cache/claude-vim-follower/hook.log`, em vez de falhar a chamada de ferramenta. O trade-off é que uma falha fica silenciosa pro Claude: se o follower não fizer nada, leia o log.
 
+### Um erro de plugin travou meu follower Neovim. E agora?
+
+Um plugin da sua configuração do Neovim pode imprimir uma mensagem mais alta que a linha de comando enquanto o follower abre um arquivo; o caso comum é um servidor de linguagem que não consegue iniciar. O Neovim então fica esperando num prompt "Press ENTER", e a animação ficava esperando junto. O follower `nvim` dedicado agora responde esse prompt sozinho e escreve o que o plugin disse em `~/.cache/claude-vim-follower/hook.log`. Procure no log por `nvim follower:`: uma linha `dismissed a hit-enter prompt` vem seguida de `:messages after ...` com a própria mensagem, e uma linha `` `filetype detect` printed: `` (ou `` `call bufload(N)` printed: ``) traz uma mensagem capturada antes de conseguir abrir um prompt. O erro em si continua lá, e corrigi-lo é do seu lado. Um caso real: um servidor de linguagem instalado como binário x86_64 num Mac Apple Silicon sem Rosetta falha com `Unknown system error -86`, e reinstalá-lo como binário arm64 faz a mensagem sumir. Um Neovim adotado não é tocado: é o seu próprio editor, então os prompts dele continuam sendo seus.
+
 ### Alguma coisa sai da minha máquina?
 
 Não. O pacote não importa nenhum módulo de rede; o tmux é controlado pela própria CLI dele, e o Neovim é acessado por um socket local. Não existe servidor nem telemetria.
