@@ -18,6 +18,17 @@ Porque é **o seu** editor:
 - A aba em que você estava nunca é renomeada por cima — um arquivo novo sempre abre na sua própria aba.
 - No `stop`, a adoção nunca mata o seu Vim; ela só fecha as abas que abriu.
 
+## Quando o seu buffer não é o que o Claude editou
+
+O follower anima a edição do Claude como um diff sobre o buffer que tem o arquivo. No seu próprio editor esse buffer pode ter outra coisa: linhas que você digitou e não salvou, ou uma cópia antiga de um arquivo que um formatador ou um `git checkout` reescreveu. Redigitar o arquivo apagaria esse buffer primeiro, e um diff cairia sobre o texto errado, então um editor adotado não recebe nenhum dos dois:
+
+- O buffer fica exatamente como está, com a digitação não salva, e a edição do Claude não é animada.
+- O aviso de status (a borda do pane no tmux, a caixa flutuante no Neovim) mostra `buffer differs — :e! shows Claude's edit`, e o evento vai pro `~/.cache/claude-vim-follower/hook.log`. O aviso fica até o follower animar a próxima edição naquela janela.
+- A edição do Claude já está no disco. Rode `:e!` nesse buffer pra carregá-la (isso descarta o que você digitou e não salvou ali), ou salve a sua versão antes.
+- Quando o buffer volta a bater com o arquivo, a próxima edição dele é animada normalmente.
+
+Isso vale também pra um arquivo que você mesmo abriu antes de o Claude editá-lo pela primeira vez. Um follower dedicado (não adotado) é dono dos buffers dele e redigita o arquivo inteiro.
+
 ## Riscos enquanto anima
 
 - **Disciplina:** pause (`P`) antes de navegar por aí durante uma animação. Uma animação adotada controla seu cursor ao vivo, e digitar ou trocar de aba no meio de uma animação pode se intercalar com as teclas injetadas.

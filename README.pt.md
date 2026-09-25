@@ -6,7 +6,7 @@ Cada edição é reproduzida linha a linha, num ritmo que dá pra acompanhar de 
 
 Feito por Alberto Cavalcanti · [Conecte-se no LinkedIn](https://www.linkedin.com/in/albertosca/) · [Leia a documentação](https://albertosca.github.io/vim-ai-follower/pt/) · [Instalação](#instalação)
 
-<!-- facts -->700+ testes de unidade no CI · 100% de branch coverage na suíte completa · backends Vim + Neovim · v0.2.9<!-- /facts -->
+<!-- facts -->800+ testes de unidade no CI · 100% de branch coverage na suíte completa · backends Vim + Neovim · v0.2.9<!-- /facts -->
 
 [![CI](https://github.com/albertosca/vim-ai-follower/actions/workflows/ci.yml/badge.svg)](https://github.com/albertosca/vim-ai-follower/actions/workflows/ci.yml) [![Lint](https://github.com/albertosca/vim-ai-follower/actions/workflows/lint.yml/badge.svg)](https://github.com/albertosca/vim-ai-follower/actions/workflows/lint.yml) [![Coverage: 99% unit · 100% full](https://img.shields.io/badge/coverage-99%25%20unit%20%C2%B7%20100%25%20full-brightgreen.svg)](https://github.com/albertosca/vim-ai-follower/actions/workflows/ci.yml) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml) [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2.svg)](https://code.claude.com/docs/en/plugins)
 
