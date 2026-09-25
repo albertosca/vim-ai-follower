@@ -33,7 +33,8 @@ from test_nvim_integration_edit_base_mismatch import (  # noqa: E402
     _wait,
 )
 
-from vim_ai_follower import cache, hooks  # noqa: E402
+from vim_ai_follower import cache, control, hooks  # noqa: E402
+from vim_ai_follower.diff import compute_edit_script  # noqa: E402
 from vim_ai_follower.hooks import BASE_DIFFERS_CUE  # noqa: E402
 from vim_ai_follower.state import FollowerState  # noqa: E402
 
@@ -165,3 +166,75 @@ def test_a_dedicated_follower_still_retypes(
     _edit(target, "x = 1\nFORMATTED = 3\n")
     assert _buffer(nvim, "a.py")[:] == ["x = 1", "FORMATTED = 3"]
     assert BASE_DIFFERS_CUE not in _status_text(nvim)
+
+
+def _animated_then_pending(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Any, Path]:
+    """a.py animated by a Write, then an Edit (y = 2 -> y = 3) whose hook died
+    holding the hand-off: its remainder is still pending, with `partial` =
+    what the interrupt left on screen (here, nothing of the edit applied)."""
+    _, nvim = _adopted_nvim(headless_nvim, tmp_path, monkeypatch)
+    target = (tmp_path / "a.py").resolve()
+    target.write_text("x = 1\ny = 2\n")
+    assert hooks.cmd_hook_post(_ENV, _payload("Write", target)) == 0
+    target.write_text("x = 1\ny = 3\n")  # the killed Edit's write
+    control.save_pending_apply_edit(
+        _WINDOW,
+        compute_edit_script("x = 1\ny = 2\n", "x = 1\ny = 3\n"),
+        0.0,
+        file_path=str(target),
+        partial="x = 1\ny = 2\n",
+    )
+    return nvim, target
+
+
+def test_a_killed_hand_off_catch_up_never_wipes_the_users_typing(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-review reproduction: the catch-up's rewrite_buffer(partial) ran
+    BEFORE the base probe and discarded the line the user typed after the
+    hand-off. In an adopted editor the catch-up now only replays onto a
+    buffer that still holds the partial; otherwise the remainder is dropped
+    and the buffer left alone."""
+    nvim, target = _animated_then_pending(headless_nvim, tmp_path, monkeypatch)
+    _buffer(nvim, "a.py").append(USER_LINE, 0)
+
+    _edit(target, "x = 1\ny = 3\nz = 4\n")
+
+    _assert_left_alone(nvim, tmp_path, target, [USER_LINE, "x = 1", "y = 2"])
+    assert control.load_pending_animation(_WINDOW) is None
+
+
+def test_a_killed_hand_off_catch_up_still_replays_onto_an_untouched_buffer(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The user typed nothing: the buffer still holds the partial, so the
+    catch-up replays and the new edit animates on top — adopted or not."""
+    nvim, target = _animated_then_pending(headless_nvim, tmp_path, monkeypatch)
+
+    _edit(target, "x = 1\ny = 3\nz = 4\n")
+
+    assert _buffer(nvim, "a.py")[:] == ["x = 1", "y = 3", "z = 4"]
+    assert BASE_DIFFERS_CUE not in _status_text(nvim)
+
+
+def test_a_pause_that_outlived_its_hook_reaches_the_same_guard(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other way a remainder outlives its hook: paused mid-retype and the
+    hook killed. Its pending is a show_fresh one with a partial; the user's
+    line typed since must survive the next edit just the same."""
+    _, nvim = _adopted_nvim(headless_nvim, tmp_path, monkeypatch)
+    target = (tmp_path / "a.py").resolve()
+    target.write_text("x = 1\ny = 2\n")
+    assert hooks.cmd_hook_post(_ENV, _payload("Write", target)) == 0
+    control.save_pending_show_fresh(
+        _WINDOW, ("y = 2",), 0.0, continuation=True, file_path=str(target), partial="x = 1\n"
+    )
+    _buffer(nvim, "a.py").append(USER_LINE, 0)
+
+    _edit(target, "x = 1\ny = 2\nz = 3\n")
+
+    _assert_left_alone(nvim, tmp_path, target, [USER_LINE, "x = 1", "y = 2"])
+    assert control.load_pending_animation(_WINDOW) is None

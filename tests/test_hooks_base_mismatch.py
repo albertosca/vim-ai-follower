@@ -32,7 +32,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 from helpers import make_mock_tmux_run
 
-from vim_ai_follower import control, hooks, snapshot, state
+from vim_ai_follower import control, diff, hooks, snapshot, state
 from vim_ai_follower.animate import AnimationResult
 
 BEFORE = "a\nb\nc\n"
@@ -223,7 +223,8 @@ def test_an_adopted_buffer_that_is_not_the_base_is_left_alone(
     assert fs is not None
     assert fs.stale_files == (resolved,)
     # The cue is the surface's last word: nothing clears or overwrites it.
-    assert surface.method_calls[-1] == call.set_state(hooks.BASE_DIFFERS_CUE)
+    cue = hooks.BASE_DIFFERS_CUE if probe == "differs" else hooks.PROBE_UNKNOWN_CUE
+    assert surface.method_calls[-1] == call.set_state(cue)
     assert call.set_state("Writing...") not in surface.method_calls
     assert resolved in hooks.LOG_PATH.read_text()
 
@@ -283,12 +284,112 @@ def test_an_adopted_stale_file_the_user_resynced_gets_a_diff_and_loses_the_mark(
     fs = state.FollowerState.read("@1")
     assert fs is not None
     assert fs.stale_files == ()
-    # The earlier cue comes down before this animation's own cue goes up.
-    retire = surface.method_calls.index(call.retire_state(hooks.BASE_DIFFERS_CUE))
+    # The earlier cues come down before this animation's own cue goes up.
+    retire = surface.method_calls.index(
+        call.retire_state(hooks.BASE_DIFFERS_CUE, hooks.PROBE_UNKNOWN_CUE)
+    )
     assert retire < surface.method_calls.index(call.set_state("Writing..."))
 
 
-def test_the_cue_fits_the_follower_pane() -> None:
-    """Measured in a real 49-column tmux pane (border status top, mouse on):
-    40 characters render whole; 45 lost the last letter. See the B2 report."""
+def _pending_apply_edit(resolved: str, partial: str | None) -> None:
+    control.save_pending_apply_edit(
+        "@1",
+        diff.compute_edit_script(BEFORE, "a\nX\nc\n"),
+        0.01,
+        file_path=resolved,
+        partial=partial,
+    )
+
+
+@pytest.mark.parametrize(
+    ("probe", "partial", "cue"),
+    [
+        ("differs", "a\nb\nc\n", "BASE_DIFFERS_CUE"),
+        ("unknown", "a\nb\nc\n", "PROBE_UNKNOWN_CUE"),
+        (OSError("gone"), "a\nb\nc\n", "PROBE_UNKNOWN_CUE"),
+        ("holds", None, "PROBE_UNKNOWN_CUE"),  # tmux can leave no partial
+    ],
+)
+def test_an_adopted_catch_up_never_rewrites_a_buffer_not_holding_the_partial(
+    probe: object, partial: str | None, cue: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A remainder left by a killed hand-off or pause is replayed with
+    rewrite_buffer(partial), which discards whatever the buffer holds. In an
+    adopted editor that may be the user's typing since: replay only onto a
+    buffer that still holds the partial, else drop the remainder and leave
+    the buffer alone. Without a recorded partial nothing can be checked."""
+    target, resolved = _setup(tmp_path, adopted=True)
+    _pending_apply_edit(resolved, partial)
+    follower = _follower(probe)
+    surface = _run_hook(target, follower, monkeypatch)
+
+    assert follower.rewrite_buffer.call_args_list == []
+    assert follower.resume.call_args_list == []
+    assert follower.show_fresh.call_args_list == []
+    assert follower.apply_edit.call_args_list == []
+    assert control.load_pending_animation("@1") is None
+    fs = state.FollowerState.read("@1")
+    assert fs is not None
+    assert fs.stale_files == (resolved,)
+    assert surface.method_calls[-1] == call.set_state(getattr(hooks, cue))
+    if partial is not None:
+        assert follower.probe_buffer.call_args_list[0] == call(resolved, partial)
+    else:
+        assert follower.probe_buffer.call_args_list == []
+
+
+def test_an_adopted_catch_up_replays_onto_a_buffer_holding_the_partial(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target, resolved = _setup(tmp_path, adopted=True)
+    _pending_apply_edit(resolved, "a\nb\nc\n")
+    follower = _follower("holds")
+    _run_hook(target, follower, monkeypatch)
+
+    assert follower.rewrite_buffer.call_args == call(resolved, "a\nb\nc\n")
+    assert follower.resume.call_args_list != []
+    assert follower.apply_edit.call_args_list != []
+
+
+def test_an_adopted_catch_up_onto_a_vanished_buffer_is_dropped_and_retyped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ "absent": nothing in the buffer to lose and nothing to replay onto."""
+    target, resolved = _setup(tmp_path, adopted=True)
+    _pending_apply_edit(resolved, "a\nb\nc\n")
+    follower = _follower("absent")
+    _run_hook(target, follower, monkeypatch)
+
+    assert follower.rewrite_buffer.call_args_list == []
+    assert follower.show_fresh.call_args == call(resolved, AFTER, in_new_tab=True)
+
+
+def test_a_dedicated_catch_up_is_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A dedicated follower owns its buffers: the catch-up replays without
+    asking, exactly as before."""
+    target, resolved = _setup(tmp_path)
+    _pending_apply_edit(resolved, "a\nb\nc\n")
+    follower = _follower("holds")
+    _run_hook(target, follower, monkeypatch)
+
+    assert follower.rewrite_buffer.call_args == call(resolved, "a\nb\nc\n")
+    assert follower.probe_buffer.call_args_list == [call(resolved, BEFORE)]
+
+
+def test_an_unanswered_probe_gets_its_own_honest_cue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ "unknown" is not "differs": nothing is known to differ, and `:e!`
+    cannot make the probe answer."""
+    target, _ = _setup(tmp_path, adopted=True)
+    surface = _run_hook(target, _follower("unknown"), monkeypatch)
+    assert surface.method_calls[-1] == call.set_state(hooks.PROBE_UNKNOWN_CUE)
+    assert ":e!" not in hooks.PROBE_UNKNOWN_CUE
+    assert "did not answer" in hooks.LOG_PATH.read_text()
+
+
+def test_both_cues_fit_the_follower_pane() -> None:
+    """Measured in a real 49-column tmux pane (border status top, mouse on);
+    see the B2 report. 41 characters is the longest measured whole."""
     assert len(hooks.BASE_DIFFERS_CUE) <= 41
+    assert len(hooks.PROBE_UNKNOWN_CUE) <= 41

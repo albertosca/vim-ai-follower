@@ -68,9 +68,9 @@ class StatusSurface(Protocol):
         anything; otherwise resets to the neutral (no cue) state."""
         ...
 
-    def retire_state(self, text: str) -> None:
+    def retire_state(self, *texts: str) -> None:
         """Take down a transient cue an EARLIER hook left on purpose (the
-        adopted-editor "buffer differs" notice), if it is still showing —
+        adopted-editor leave-alone notices), if one of `texts` is showing —
         before this hook's own set_state would save it as the thing to
         restore."""
         ...
@@ -107,12 +107,14 @@ class TmuxStatusSurface:
         pane.set_title(text)
         pane.set_window_option(_BORDER_STATUS_OPTION, "top")
 
-    def retire_state(self, text: str) -> None:
+    def retire_state(self, *texts: str) -> None:
         # The notice's only trace is the pane title (the hook that set it has
         # exited, and its saved state with it). Reset to neutral like a clear()
         # with nothing saved: set_state would otherwise save it, and a
-        # hand-off release would restore it onto a visible border.
-        if TmuxPane(pane_id=self.pane_id).title() == text:
+        # hand-off release would restore it onto a visible border. The title
+        # from before the notice is not restored: nothing outlives the hook
+        # that could carry it.
+        if TmuxPane(pane_id=self.pane_id).title() in texts:
             self.clear()
 
     def clear(self) -> None:
@@ -306,11 +308,11 @@ class NvimStatusSurface:
             _, buf = self._ensure_window(nvim)
             nvim.api.buf_set_lines(buf, 0, -1, True, _centered_box([text]))
 
-    def retire_state(self, text: str) -> None:
+    def retire_state(self, *texts: str) -> None:
         """Nothing to do: the float saves and restores nothing, so the next
         set_state/set_writer simply overwrites its body and a completed
         animation's refresh closes or redraws it."""
-        del text
+        del texts
 
     def clear(self) -> None:
         with contextlib.suppress(Exception):
