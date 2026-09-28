@@ -291,6 +291,29 @@ _SWAP_BACK_ON = (
     " | redraw"
 )
 
+# show_fresh's read of the file into the buffer it just renamed, cleared again
+# at once. Renaming a buffer onto a path (`:file`, and nvim's buf_set_name)
+# marks it "not edited", and Vim refuses a plain `:w` of a not-edited buffer
+# over an existing file with `E13: File exists (add ! to override)`; only a
+# read or a write clears the mark (measured 2026-09-28, Vim and nvim alike).
+# Found recording the demo: the hand-off cue said ":w releases" and only
+# `:w!` worked. The read also gives the buffer the file's timestamp, so a
+# plain `:w` after something else rewrote the file asks "changed since reading
+# it" instead of overwriting silently (a not-edited buffer skipped that check).
+#
+#   - It runs on show_fresh's rename line: Vim does not redraw between the
+#     commands of one command line, so the file's content is never on screen
+#     (the rename still exists so that nothing else ever is).
+#   - `noautocmd`: no BufRead autocommands, so plugins (CoC) attach no
+#     earlier than they did (the relock's `:e!`), and none can force a redraw
+#     mid-line. `:filetype detect` runs afterwards anyway.
+#   - swap is already off (show_fresh sets `noswapfile` before the rename), so
+#     the read raises no ATTENTION; an adopted Vim's swap goes back on after.
+#   - `silent!`: a file that cannot be read must not leave a prompt at 49
+#     columns; the buffer then just stays not edited, as before.
+#   - `%d _` into the black-hole register, leaving the user's registers alone.
+_READ_THEN_CLEAR = "noautocmd silent! edit! | silent! %d _"
+
 _RELOAD_IF_CLEAN = (
     f":{_SWAP_ANSWER_OPEN}"
     " | try | if !&modified | silent edit | endif"
@@ -714,8 +737,21 @@ class TmuxVimFollower:
         # The rename also records "not the user's readonly" for the unlock
         # (see _UNLOCK_FOR_ANIMATION): whatever readonly the renamed buffer
         # carries belonged to the file it held before.
+        #
+        # Then it READS the file into the buffer and clears it again, on the
+        # same command line (see _READ_THEN_CLEAR): the rename left the buffer
+        # "not edited", and a plain `:w` over the existing file then failed
+        # with E13, so the hand-off cue's ":w releases" was false for every
+        # Write interrupted before the relock's `:e!`.
+        #
+        # The renamed-over buffer may be a plugin scratch screen (start
+        # screens set buftype=nofile); the rename inherits that and the
+        # user's :w after an interrupt would fail with E382. It is made a
+        # regular file buffer here, before the read, which is a file read
+        # only on a regular buffer.
         pane.send_text(
-            f":exe 'file ' . fnameescape({_vim_string(file_path)}) | let b:vaf_user_ro = 0"
+            f":exe 'file ' . fnameescape({_vim_string(file_path)})"
+            " | let b:vaf_user_ro = 0 | setlocal buftype= | " + _READ_THEN_CLEAR
         )
         pane.send_key("Enter")
         # An ADOPTED Vim is the user's own editor: its buffer gets swap back
@@ -730,12 +766,6 @@ class TmuxVimFollower:
         # whatever was active at the moment it's set, not anything enabled
         # afterwards.
         pane.send_text(":filetype detect")
-        pane.send_key("Enter")
-        # The renamed-over buffer may be a plugin scratch screen (start
-        # screens set buftype=nofile); the rename inherits that and the
-        # user's :w after an interrupt would fail with E382. Make it a
-        # regular file buffer.
-        pane.send_text(":setlocal buftype=")
         pane.send_key("Enter")
         lines = tuple(content.splitlines())
 

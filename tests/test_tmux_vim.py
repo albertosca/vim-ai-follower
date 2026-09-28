@@ -275,8 +275,11 @@ def test_interrupted_animation_never_sends_a_disk_sync_reload(tmp_path: Path) ->
         result = follower.show_fresh("/tmp/f.txt", "a\nb\n")
     commands = _sent_commands(run)
     assert result.outcome == "interrupted"
-    # no disk sync of any shape (the relock carries it as `silent! edit!`)
-    assert not any("edit!" in text or "e!" in text for text, _ in commands)
+    # no disk sync of any shape once the animation has started (the relock
+    # carries it as `silent! edit!`); the rename line's read-then-clear runs
+    # before the unlock, on a buffer nothing has been typed into yet
+    started = commands.index((_UNLOCK_FOR_ANIMATION, True))
+    assert not any("edit!" in text or "e!" in text for text, _ in commands[started:])
 
 
 def test_get_follower_forwards_pace_seconds_for_tmux_backend() -> None:
@@ -294,9 +297,12 @@ def test_get_follower_forwards_window_id_for_tmux_backend() -> None:
 def test_show_fresh_renames_current_buffer_without_ever_loading_the_real_file(
     tmp_path: Path,
 ) -> None:
-    # No `:e` here on purpose: loading the real file would flash its final
-    # content on screen before the wipe+retype, spoiling the "watch it type"
-    # effect. Instead the current buffer is wiped and renamed in place.
+    # No separate `:e` on purpose: loading the real file would flash its
+    # final content on screen before the wipe+retype, spoiling the "watch it
+    # type" effect. Instead the current buffer is wiped and renamed in place,
+    # and the one read it gets (which clears the rename's "not edited" mark,
+    # the E13 on a plain `:w` after an interrupt) sits on the rename line and
+    # is cleared on that same line, where Vim never redraws in between.
     #
     # `:filetype detect` must run BEFORE 'paste' is enabled: loading the
     # filetype's indent/ftplugin scripts can turn cindent/smartindent/
@@ -320,21 +326,20 @@ def test_show_fresh_renames_current_buffer_without_ever_loading_the_real_file(
     # raise E325 (see tests/test_e2e_battery_tranche2.py)
     assert commands[4] == (":setlocal noswapfile", True)
     assert commands[5] == ("Enter", False)
+    # the rename line also resets buftype (a plugin scratch screen's
+    # buftype=nofile, inherited, made the user's :w fail with E382) BEFORE
+    # its read, which only reads a file into a regular buffer
     assert commands[6] == (_rename("/tmp/f.txt"), True)
     assert commands[7] == ("Enter", False)
     assert commands[8] == (":filetype detect", True)
     assert commands[9] == ("Enter", False)
-    # the renamed-over buffer may be a plugin scratch screen with
-    # buftype=nofile — inherited, it makes the user's :w fail with E382
-    assert commands[10] == (":setlocal buftype=", True)
+    assert commands[10] == (":silent! CocDisable", True)
     assert commands[11] == ("Enter", False)
-    assert commands[12] == (":silent! CocDisable", True)
+    assert commands[12] == (_UNLOCK_FOR_ANIMATION, True)
     assert commands[13] == ("Enter", False)
-    assert commands[14] == (_UNLOCK_FOR_ANIMATION, True)
+    assert commands[14] == (":%d", True)
     assert commands[15] == ("Enter", False)
-    assert commands[16] == (":%d", True)
-    assert commands[17] == ("Enter", False)
-    assert commands[18] == ("i", True)
+    assert commands[16] == ("i", True)
     assert commands[-4:] == [
         (_RELOCK_READONLY_SYNCED, True),
         ("Enter", False),
@@ -367,8 +372,6 @@ def test_show_fresh_with_empty_content_still_wipes_and_relocks(tmp_path: Path) -
         (_rename("/tmp/f.txt"), True),
         ("Enter", False),
         (":filetype detect", True),
-        ("Enter", False),
-        (":setlocal buftype=", True),
         ("Enter", False),
         (":silent! CocDisable", True),
         ("Enter", False),
@@ -701,7 +704,12 @@ def _rename(path: str) -> str:
     and a space are live on Vim's command line, so the raw path is wrong —
     it goes through a Vim string literal and fnameescape(), same as _goto.
     Spelled out for the same reason as _goto/_wipe above."""
-    return ":exe 'file ' . fnameescape('" + path.replace("'", "''") + "') | let b:vaf_user_ro = 0"
+    return (
+        ":exe 'file ' . fnameescape('"
+        + path.replace("'", "''")
+        + "') | let b:vaf_user_ro = 0 | setlocal buftype="
+        + " | noautocmd silent! edit! | silent! %d _"
+    )
 
 
 def test_close_tab_wipes_by_buffer_number_and_never_double_closes() -> None:

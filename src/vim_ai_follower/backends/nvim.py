@@ -231,6 +231,15 @@ _SWAP_BACK_ON = (
 )
 
 
+# show_fresh's read-then-clear of the buffer it just named; see the tmux
+# backend's _READ_THEN_CLEAR for why (E13 on a plain `:w`) and for each piece.
+# One nvim_command: nvim redraws only between requests, so the file's content
+# is never on screen. This is a disk read outside ensure_showing, but not a
+# navigation: it lands on the freshly created, empty buffer show_fresh is
+# about to type into, so there is nothing to discard and no E37 to meet.
+_READ_THEN_CLEAR = "noautocmd silent! edit! | silent! %d _"
+
+
 def _name_without_swap(nvim: pynvim.Nvim, buf: pynvim.api.Buffer, file_path: str) -> None:
     """Name a new, empty buffer after file_path, opted out of swap first.
 
@@ -387,6 +396,12 @@ class NvimFollower:
             else:
                 nvim.command("enew")
             _name_without_swap(nvim, nvim.current.buffer, file_path)
+            # Read the file in and clear it, in ONE command (nvim redraws only
+            # between requests, so the content is never on screen): naming
+            # left the buffer "not edited", and a plain `:w` after an
+            # interrupt failed with E13. Same fix and reasons as the tmux
+            # backend's _READ_THEN_CLEAR; swap is still off here.
+            nvim.command(_READ_THEN_CLEAR)
             self._restore_swap_if_adopted(nvim)
             self._exec(nvim, "filetype detect")
             nvim.command("setlocal buftype=")

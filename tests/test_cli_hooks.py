@@ -76,7 +76,10 @@ def _rename(path: object) -> str:
     for the same reason: importing tmux_vim's f-string would agree with any
     change to it."""
     return (
-        ":exe 'file ' . fnameescape('" + str(path).replace("'", "''") + "') | let b:vaf_user_ro = 0"
+        ":exe 'file ' . fnameescape('"
+        + str(path).replace("'", "''")
+        + "') | let b:vaf_user_ro = 0 | setlocal buftype="
+        + " | noautocmd silent! edit! | silent! %d _"
     )
 
 
