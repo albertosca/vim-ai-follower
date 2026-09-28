@@ -2,7 +2,7 @@
 
 > Watch Claude Code type into your own Vim. Open-source Claude Code plugin (Python, MIT, `PreToolUse`/`PostToolUse` hooks, tmux + Neovim backends) that snapshots each file edit, diffs it, and replays it line by line into a real Vim or Neovim pane, at a pace you can actually read, so you can pause it, take the keyboard, and hand it back.
 
-<!-- facts -->800+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim backends · v0.2.9<!-- /facts -->
+<!-- facts -->900+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim backends · v0.2.9<!-- /facts -->
 
 vim-ai-follower is for developers who run Claude Code inside tmux with Vim or Neovim and want to follow each edit as it happens instead of reading a diff afterwards. The default backend types into an unmodified Vim with tmux `send-keys`; the `nvim` backend drives Neovim over msgpack-RPC and can adopt the nvim you already have open. It never writes your files (follower buffers are never saved), its hooks are built to exit 0 and log problems instead, so it never fails a Claude Code tool call, and nothing leaves your machine. The animation does take time; the speed keys and mute are the controls for that, and interrupt hands you the keyboard mid-edit. Built by Alberto Cavalcanti (https://www.linkedin.com/in/albertosca/).
 

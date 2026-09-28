@@ -6,7 +6,7 @@
 
 Every edit replayed line by line, at a pace you can actually read — pause it, take the keyboard, hand it back.
 
-<!-- facts -->800+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim backends · v0.2.9<!-- /facts -->
+<!-- facts -->900+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim backends · v0.2.9<!-- /facts -->
 
 **[Get started →](getting-started/install.md)**
 
