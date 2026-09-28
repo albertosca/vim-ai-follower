@@ -20,7 +20,7 @@ import pynvim
 from vim_ai_follower import config, control
 from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult, _wait_while_paused
 from vim_ai_follower.backends import BufferProbe, classify_buffer
-from vim_ai_follower.backends.nvim_prompt import dismiss_hit_enter, exec_logged, prompt_guard
+from vim_ai_follower.backends.nvim_prompt import dismiss_prompt, exec_logged, prompt_guard
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
 from vim_ai_follower.diff import EditOp, apply_ops
 from vim_ai_follower.state import FollowerState
@@ -243,6 +243,16 @@ class NvimFollower:
         state = FollowerState.read(self.window_id)
         return state is not None and state.adopted
 
+    def _is_dedicated(self) -> bool:
+        """Positively a launched, dedicated follower: its FollowerState exists
+        and says not adopted. The prompt guard asks THIS, not `not
+        _is_adopted()`, because it presses keys: with the state gone (a
+        concurrent `claude-follow stop` between two entry points of one hook,
+        or no window id) nothing proves the nvim isn't the user's own editor,
+        so it fails closed."""
+        state = FollowerState.read(self.window_id)
+        return state is not None and not state.adopted
+
     def is_alive(self) -> bool:
         """A FAST request on purpose: nvim answers get_mode even while a
         hit-enter prompt blocks every other call, so a follower stuck on a
@@ -262,7 +272,7 @@ class NvimFollower:
         on an adopted nvim, and when an outer entry point already guards this
         socket."""
         with prompt_guard(
-            nvim, self._connect, key=self.socket_path, adopted=self._is_adopted(), label=label
+            nvim, self._connect, key=self.socket_path, adopted=not self._is_dedicated(), label=label
         ):
             yield
 
@@ -932,5 +942,6 @@ class NvimFollower:
             return
         with contextlib.suppress(Exception):
             nvim = self._connect()
-            dismiss_hit_enter(nvim)
+            if self._is_dedicated():  # keys only where the state proves it (_is_dedicated)
+                dismiss_prompt(nvim)
             nvim.command("qall!")

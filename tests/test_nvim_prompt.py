@@ -19,7 +19,7 @@ from vim_ai_follower.backends.nvim import NvimFollower
 from vim_ai_follower.backends.nvim_prompt import (
     WATCHDOG_THREAD_NAME,
     close_connection,
-    dismiss_hit_enter,
+    dismiss_prompt,
     exec_logged,
     prompt_guard,
 )
@@ -50,29 +50,71 @@ def _wait_for(predicate: Any, timeout: float = 3.0) -> bool:
     return False
 
 
-# --- dismiss_hit_enter: only a blocking "r" ----------------------------------
+# --- dismiss_prompt: only a blocking "r" ----------------------------------
 
 
 def test_a_blocking_hit_enter_prompt_is_answered_with_enter() -> None:
     nvim = _nvim(_PROMPT)
-    assert dismiss_hit_enter(nvim) == _PROMPT
+    assert dismiss_prompt(nvim) == _PROMPT
     nvim.api.input.assert_called_once_with("<CR>")
+
+
+def test_a_blocking_more_prompt_is_quit_with_q() -> None:
+    # A message taller than the screen pages with the more-prompt: it offers
+    # no choice, and Enter would only advance it one line, so `q` ends it.
+    more = {"mode": "rm", "blocking": True}
+    nvim = _nvim(more)
+    assert dismiss_prompt(nvim) == more
+    nvim.api.input.assert_called_once_with("q")
 
 
 @pytest.mark.parametrize(
     "mode",
     [
         {"mode": "r?", "blocking": True},  # a confirm prompt: Enter would pick a choice
-        {"mode": "rm", "blocking": True},  # the more-prompt
         {"mode": "n", "blocking": True},  # blocked, but not on a prompt (pending keys)
         {"mode": "r", "blocking": False},
+        {"mode": "rm", "blocking": False},
         _IDLE,
     ],
 )
-def test_anything_but_a_blocking_r_is_left_alone(mode: dict[str, Any]) -> None:
+def test_anything_but_a_blocking_r_or_rm_is_left_alone(mode: dict[str, Any]) -> None:
     nvim = _nvim(mode)
-    assert dismiss_hit_enter(nvim) is None
+    assert dismiss_prompt(nvim) is None
     nvim.api.input.assert_not_called()
+
+
+def test_after_answering_it_waits_for_the_prompt_to_go() -> None:
+    # Returning while nvim has not yet processed the key would let the next
+    # poll see the same prompt and send a spare key into normal mode.
+    nvim = _nvim(_PROMPT, _PROMPT, _PROMPT)
+    assert dismiss_prompt(nvim) == _PROMPT
+    nvim.api.input.assert_called_once_with("<CR>")
+    assert nvim.api.get_mode.call_count == 4  # the prompt, 2 still up, then gone
+
+
+def test_a_prompt_that_stays_up_is_answered_once_per_settle_window() -> None:
+    nvim = MagicMock()
+    nvim.api.get_mode.return_value = _PROMPT
+    started = time.monotonic()
+    with patch.object(nvim_prompt, "_SETTLE_SECONDS", 0.1):
+        assert dismiss_prompt(nvim) == _PROMPT
+    assert time.monotonic() - started >= 0.1
+    nvim.api.input.assert_called_once_with("<CR>")
+
+
+def test_the_watchdog_never_sends_a_second_key_while_nvim_is_still_on_the_first() -> None:
+    # A slow nvim: the prompt stays up after the watchdog's <CR>. Within the
+    # settle window no second <CR> may follow it.
+    dog = MagicMock()
+    dog.api.get_mode.return_value = _PROMPT
+    with (
+        patch.object(nvim_prompt, "_SETTLE_SECONDS", 0.4),
+        prompt_guard(_nvim(), lambda: dog, key="/s", adopted=False, label="x"),
+    ):
+        assert _wait_for(lambda: dog.api.input.called)
+        time.sleep(0.2)
+    dog.api.input.assert_called_once_with("<CR>")
 
 
 # --- prompt_guard -------------------------------------------------------------
@@ -323,6 +365,7 @@ def _follower_nvim() -> MagicMock:
 
 
 def test_a_dedicated_follower_sweeps_and_watches_its_entry_points() -> None:
+    state.FollowerState.set("@1", backend="nvim", target="/tmp/x.sock")
     nvim = _follower_nvim()
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim) as attach:
@@ -348,3 +391,45 @@ def test_is_alive_asks_a_fast_request_that_a_prompt_cannot_block() -> None:
         assert NvimFollower(socket_path="/tmp/x.sock").is_alive() is True
     nvim.api.get_mode.assert_called_once_with()
     nvim.api.get_current_buf.assert_not_called()
+
+
+def test_a_follower_with_no_state_fails_closed_no_sweep_no_watchdog() -> None:
+    # No FollowerState (a concurrent `claude-follow stop` removed it between
+    # two entry points, or no window id at all) cannot prove the nvim is a
+    # DEDICATED one — and pressing Enter in the user's own nvim is the one
+    # thing this must never do.
+    nvim = _follower_nvim()
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
+    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim) as attach:
+        assert follower.probe_buffer("/tmp/f.py", "x\n") == "absent"
+    nvim.api.get_mode.assert_not_called()
+    nvim.api.input.assert_not_called()
+    assert attach.call_count == 1
+
+
+def test_the_sweep_names_a_more_prompt_in_the_log(caplog: pytest.LogCaptureFixture) -> None:
+    nvim = _nvim({"mode": "rm", "blocking": True})
+    with (
+        caplog.at_level(logging.WARNING, logger="vim_ai_follower"),
+        prompt_guard(nvim, lambda: _nvim(), key="/s", adopted=False, label="show_fresh"),
+    ):
+        pass
+    nvim.api.input.assert_called_once_with("q")
+    assert "dismissed a more-prompt left before show_fresh (sweep)" in caplog.text
+
+
+def test_stop_sweeps_a_dedicated_follower_before_quitting() -> None:
+    state.FollowerState.set("@1", backend="nvim", target="/tmp/x.sock")
+    nvim = _nvim(_PROMPT)
+    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+        NvimFollower(socket_path="/tmp/x.sock", window_id="@1").stop()
+    assert nvim.mock_calls.index(call.api.input("<CR>")) < nvim.mock_calls.index(
+        call.command("qall!")
+    )
+
+
+def test_stop_presses_no_key_when_the_state_is_gone() -> None:
+    nvim = _nvim(_PROMPT)
+    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+        NvimFollower(socket_path="/tmp/x.sock", window_id="@1").stop()
+    nvim.api.input.assert_not_called()

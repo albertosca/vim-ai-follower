@@ -24,8 +24,12 @@ Rejected by measurement: `--clean` (loses the user's look), `nomore`,
 call), and capturing output with `nvim_exec2` alone (a message delivered after
 the call returns hangs the next one).
 
-Only mode "r" exactly is dismissed. "r?" is a confirm prompt and "rm" the
-more-prompt; answering those with Enter could pick a choice for the user.
+Two prompts are answered. The hit-enter prompt (mode "r") gets <CR>. The
+more-prompt (mode "rm"), which a message taller than the screen raises instead,
+gets `q`: it offers no choice, and <CR> would only page it one line (measured:
+`q` returns to normal mode and the blocked call completes). Every other mode is
+left alone, "r?" above all: a confirm prompt IS a choice, and a key would make
+it for the user.
 
 Never used on an ADOPTED nvim: that is the user's own editor, and its prompts
 are the user's to read — an automatic Enter would eat them.
@@ -38,6 +42,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import threading
+import time
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -49,6 +54,13 @@ POLL_SECONDS = 0.05
 # thread is a daemon either way — it cannot keep the hook process alive.
 _JOIN_SECONDS = 2.0
 _MESSAGES_TAIL = 5
+# After a key is sent, how long to wait for nvim to leave the prompt before
+# anyone may send another: a slow nvim still showing the SAME prompt on the
+# next poll would otherwise get a spare key, which lands in normal mode.
+_SETTLE_SECONDS = 0.4
+_SETTLE_POLL_SECONDS = 0.02
+_ANSWERS = {"r": "<CR>", "rm": "q"}
+_NAMES = {"r": "hit-enter prompt", "rm": "more-prompt"}
 WATCHDOG_THREAD_NAME = "vaf-hit-enter-watchdog"
 
 # Sockets with a guard already active in THIS thread: an entry point that calls
@@ -57,14 +69,21 @@ WATCHDOG_THREAD_NAME = "vaf-hit-enter-watchdog"
 _active = threading.local()
 
 
-def dismiss_hit_enter(nvim: Any) -> dict[str, Any] | None:
-    """Answer a hit-enter prompt with <CR> and return the mode that was seen,
-    or None when there was nothing to dismiss. Fast requests only."""
+def dismiss_prompt(nvim: Any) -> dict[str, Any] | None:
+    """Answer a blocking hit-enter (<CR>) or more-prompt (`q`) and return the
+    mode that was seen, or None when there was nothing to dismiss. After
+    answering, wait up to _SETTLE_SECONDS for nvim to leave that mode, so the
+    caller's next look cannot answer the same prompt twice. Fast requests
+    only."""
     mode: dict[str, Any] = nvim.api.get_mode()
-    if mode.get("blocking") and mode.get("mode") == "r":
-        nvim.api.input("<CR>")
-        return mode
-    return None
+    key = _ANSWERS.get(mode.get("mode", "")) if mode.get("blocking") else None
+    if key is None:
+        return None
+    nvim.api.input(key)
+    deadline = time.monotonic() + _SETTLE_SECONDS
+    while time.monotonic() < deadline and nvim.api.get_mode() == mode:
+        time.sleep(_SETTLE_POLL_SECONDS)
+    return mode
 
 
 def close_connection(nvim: Any) -> None:
@@ -89,8 +108,10 @@ def close_connection(nvim: Any) -> None:
 
 
 class Watchdog:
-    """Polls a second connection and dismisses hit-enter prompts until
-    stop(). Every failure — the connection refused, a poll raising — is
+    """Polls a second connection and dismisses hit-enter and more-prompts until
+    stop(). It stays alive for the whole guarded call, a pause included: a
+    user's own `:ls` in a PAUSED dedicated follower is dismissed too. Every
+    failure — the connection refused, a poll raising — is
     logged and ends the thread; nothing is ever raised to the hook. The
     connection is closed by the thread itself, on every exit path."""
 
@@ -114,11 +135,12 @@ class Watchdog:
             return
         try:
             while not self._stop.is_set():
-                seen = dismiss_hit_enter(nvim)
+                seen = dismiss_prompt(nvim)
                 if seen is not None:
                     self.dismissals += 1
                     logger.warning(
-                        "nvim follower: dismissed a hit-enter prompt during %s (watchdog)",
+                        "nvim follower: dismissed a %s during %s (watchdog)",
+                        _NAMES[seen["mode"]],
                         self._label,
                     )
                 self._stop.wait(POLL_SECONDS)
@@ -165,10 +187,13 @@ def prompt_guard(
         return
     _active.keys = guarded | {key}
     try:
-        swept = dismiss_hit_enter(nvim) is not None
-        if swept:
+        seen = dismiss_prompt(nvim)
+        swept = seen is not None
+        if seen is not None:
             logger.warning(
-                "nvim follower: dismissed a hit-enter prompt left before %s (sweep)", label
+                "nvim follower: dismissed a %s left before %s (sweep)",
+                _NAMES[seen["mode"]],
+                label,
             )
         watchdog = Watchdog(connect, label)
         watchdog.start()

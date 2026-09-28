@@ -10,7 +10,7 @@ mason x86_64 `ruff` on a Mac without Rosetta: "Unknown system error -86").
 Only a real UI reproduces it — headless nvim never raises the prompt — so each
 test runs nvim in a pane of a PRIVATE tmux server (the `tmux_session` fixture,
 with TMUX and TMUX_PANE unset), 49 columns wide, the follower pane's real
-width. Three triggers, parametrized:
+width, 30 rows. Four triggers, parametrized:
 
 - `lsp`: an LSP whose `cmd` is an EMPTY executable file. The spawn fails
   (ENOEXEC rather than -86, same message path, same prompt). A `cmd` that does
@@ -20,13 +20,21 @@ width. Three triggers, parametrized:
 - `deferred`: the same echo via `vim.defer_fn`, delivered AFTER the triggering
   call returned. This is the case that capturing output (`nvim_exec2`) alone
   cannot fix: nothing is left to capture it, and the next unrelated call hangs.
+- `tall`: a deferred ~3000-character echo, taller than the pane. nvim pages it
+  with the MORE-prompt (mode "rm") instead of the hit-enter prompt; Enter only
+  advances it a line, so the follower answers it with `q`.
+
+Only `deferred` and `tall` prove the sweep and the watchdog: `lsp` and `echo`
+print synchronously inside `filetype detect`/`bufload`, which the follower runs
+through `nvim_exec2` with output captured, so no prompt is ever raised there
+(measured: with the sweep and watchdog disabled, those two still pass the
+freeze checks). They stay as regressions for the capture and its logging.
 
 Every test runs the follower call on a worker thread with join(10), then — like
 the next hook would — a second step (`is_alive`, the status cue's `set_state`,
-`probe_buffer`) after the
-deferred message had time to land. A frozen call is reported as a failure, and
-the finally-block dismisses the prompt over a separate probe channel so the
-worker and the teardown can never hang."""
+`probe_buffer`) after the deferred message had time to land. A frozen call is
+reported as a failure, and the finally-block dismisses the prompt over a
+separate probe channel so the worker and the teardown can never hang."""
 
 from __future__ import annotations
 
@@ -46,6 +54,7 @@ import pytest
 
 pynvim = pytest.importorskip("pynvim")
 
+from vim_ai_follower import state  # noqa: E402
 from vim_ai_follower.backends import nvim_prompt  # noqa: E402
 from vim_ai_follower.backends.nvim import NvimFollower  # noqa: E402
 from vim_ai_follower.status_surface import NvimStatusSurface  # noqa: E402
@@ -53,6 +62,9 @@ from vim_ai_follower.status_surface import NvimStatusSurface  # noqa: E402
 _JOIN_SECONDS = 10.0
 _LONG = "string.rep('long plugin message ', 20)"
 _ECHO = "vim.api.nvim_echo({ { 'vaf-probe: ' .. " + _LONG + " } }, true, {})"
+_TALL = (
+    "vim.api.nvim_echo({ { 'vaf-probe: ' .. string.rep('long plugin message ', 150) } }, true, {})"
+)
 
 _TRIGGERS = {
     "lsp": (
@@ -67,6 +79,11 @@ _TRIGGERS = {
     "deferred": (
         "vim.api.nvim_create_autocmd('FileType', { pattern = 'python', callback = function()\n"
         f"  vim.defer_fn(function() {_ECHO} end, 300)\n"
+        "end })\n"
+    ),
+    "tall": (
+        "vim.api.nvim_create_autocmd('FileType', { pattern = 'python', callback = function()\n"
+        f"  vim.defer_fn(function() {_TALL} end, 300)\n"
         "end })\n"
     ),
 }
@@ -137,14 +154,14 @@ def _in_thread(fn: Callable[[], Any]) -> tuple[bool, dict[str, Any]]:
 
 
 def _unfreeze(probe: Any) -> None:
-    """Dismiss any hit-enter prompt so a frozen worker (and teardown) can
-    finish. get_mode and input are FAST requests: nvim answers them even
+    """Dismiss any hit-enter or more-prompt so a frozen worker (and teardown)
+    can finish. get_mode and input are FAST requests: nvim answers them even
     while a prompt blocks every other call."""
     for _ in range(20):
         mode = probe.api.get_mode()
         if not mode["blocking"]:
             return
-        probe.api.input("<CR>")
+        probe.api.input("q" if mode["mode"] == "rm" else "<CR>")
         time.sleep(0.1)
 
 
@@ -175,7 +192,7 @@ def _buffer_bytes(probe: Any, path: str) -> list[bytes]:
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("trigger", ["lsp", "echo", "deferred"])
+@pytest.mark.parametrize("trigger", ["lsp", "echo", "deferred", "tall"])
 @pytest.mark.parametrize("entry", ["show_fresh", "ensure_showing"])
 def test_a_plugin_prompt_never_freezes_the_dedicated_follower(
     ui_nvim: Callable[[str], str],
@@ -190,6 +207,8 @@ def test_a_plugin_prompt_never_freezes_the_dedicated_follower(
     probe = pynvim.attach("socket", path=sock)
     target = tmp_path / "a.py"
     target.write_text(_CONTENT)
+    # A dedicated follower has state: without it the guard fails CLOSED.
+    state.FollowerState.set("@1", "nvim", sock)
     follower = NvimFollower(socket_path=sock, window_id="@1", pace_seconds=0.05)
     try:
         if entry == "show_fresh":
