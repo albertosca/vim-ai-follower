@@ -43,6 +43,7 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -176,13 +177,13 @@ def watchdog_channels(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     opened: list[int] = []
     real_init = nvim_prompt.Watchdog.__init__
 
-    def spy(self: nvim_prompt.Watchdog, connect: Callable[[], Any], label: str) -> None:
+    def spy(self: nvim_prompt.Watchdog, connect: Callable[[], Any], label: str, key: str) -> None:
         def recording() -> Any:
             conn = connect()
             opened.append(conn.channel_id)
             return conn
 
-        real_init(self, recording, label)
+        real_init(self, recording, label, key)
 
     monkeypatch.setattr(nvim_prompt.Watchdog, "__init__", spy)
     return opened
@@ -308,5 +309,114 @@ def test_two_connections_both_answering_one_more_prompt_leave_nvim_usable(
         b.api.input(nvim_prompt._ANSWERS["rm"])
         time.sleep(0.3)
         assert _usable(probe), probe.api.get_mode()
+    finally:
+        _unfreeze(probe)
+
+
+# The user's config goes through every key that lands in NORMAL mode: a
+# spare answer (sent after the prompt it answered is already gone) is
+# remapped. With these two maps a spare <Esc> leaves nvim waiting forever
+# for the rest of `<Esc><Esc>` (notimeout -> {'mode': 'n', 'blocking': True})
+# and a spare <CR> edits the buffer. An answer made AT the prompt is not
+# remapped, so the only defence is that exactly one guard answers.
+_REMAPPING_CONFIG = (
+    "vim.o.timeout = false\n"
+    "vim.keymap.set('n', '<Esc><Esc>', ':nohlsearch<CR>')\n"
+    "vim.keymap.set('n', '<CR>', 'o<Esc>')\n"
+)
+_TRIGGERS["remapping"] = _REMAPPING_CONFIG
+
+# One guard, in its own process. It waits for a prompt, then calls the real
+# dismiss_prompt through a spy that counts the keys it sends and holds the
+# guards at two file barriers, pinning the race's worst case:
+#   1. after its FIRST prompt read, until every guard has seen the prompt;
+#   2. just before SENDING, until every other guard has either reached its own
+#      send or given up (returned without sending).
+# Without the answer lock both guards reach barrier 2 and both send. With it,
+# the guard that holds the lock waits at barrier 2 still holding it, so the
+# other one finds the lock busy and gives up — deterministically.
+_GUARD_SCRIPT = """
+import sys, time
+from pathlib import Path
+import pynvim
+from vim_ai_follower import cache
+from vim_ai_follower.backends import nvim_prompt
+
+sock, cache_dir, barriers, me, peers = sys.argv[1:6]
+cache.CACHE_DIR = Path(cache_dir)
+seen, send = Path(barriers, "seen"), Path(barriers, "send")
+real = pynvim.attach("socket", path=sock)
+
+def wait_for(directory):
+    deadline = time.monotonic() + 10
+    while len(list(directory.iterdir())) < int(peers):
+        assert time.monotonic() < deadline, f"barrier timeout at {directory.name}"
+        time.sleep(0.005)
+
+class Spy:
+    def __init__(self):
+        self.api = self
+        self.sent = 0
+        self.held = False
+    def get_mode(self):
+        mode = real.api.get_mode()
+        if mode["blocking"] and not self.held:
+            self.held = True
+            (seen / me).touch()
+            wait_for(seen)
+        return mode
+    def input(self, key):
+        (send / me).touch()
+        wait_for(send)
+        self.sent += 1
+        return real.api.input(key)
+
+deadline = time.monotonic() + 10
+while not real.api.get_mode()["blocking"]:
+    assert time.monotonic() < deadline, "no prompt"
+    time.sleep(0.01)
+spy = Spy()
+nvim_prompt.dismiss_prompt(spy, sock)
+(send / me).touch()  # gave up (or already sent): release a peer waiting to send
+print(spy.sent)
+"""
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("message", ["hit-enter", "more"])
+def test_two_guard_processes_seeing_one_prompt_send_exactly_one_answer(
+    ui_nvim: Callable[[str], str], tmp_path: Path, message: str
+) -> None:
+    sock = ui_nvim("remapping")
+    probe = pynvim.attach("socket", path=sock)
+    script = tmp_path / "guard.py"
+    script.write_text(_GUARD_SCRIPT)
+    barriers = tmp_path / "barriers"
+    (barriers / "seen").mkdir(parents=True)
+    (barriers / "send").mkdir()
+    cache_dir = tmp_path / "cache"
+    env = {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_PANE")}
+    try:
+        probe.api.buf_set_lines(0, 0, -1, True, ["keep"])
+        guards = [
+            subprocess.Popen(
+                [sys.executable, str(script), sock, str(cache_dir), str(barriers), name, "2"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+            )
+            for name in ("a", "b")
+        ]
+        echo = _ECHO if message == "hit-enter" else _TALL
+        probe.exec_lua("vim.defer_fn(function() " + echo + " end, 300)")
+        outputs = [g.communicate(timeout=20) for g in guards]
+        assert all(g.returncode == 0 for g in guards), outputs
+        time.sleep(0.3)
+        # The damage first (mode before any non-fast read), then its cause.
+        assert probe.api.get_mode() == {"mode": "n", "blocking": False}
+        assert _usable(probe)
+        assert probe.api.buf_get_lines(0, 0, -1, True) == ["keep"]
+        assert sorted(int(out) for out, _err in outputs) == [0, 1], outputs
     finally:
         _unfreeze(probe)

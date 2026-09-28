@@ -342,7 +342,7 @@ def test_nvim_retire_state_touches_nothing() -> None:
 def _prompt_blocked_nvim() -> MagicMock:
     """A mock nvim whose first get_mode reports a plugin's hit-enter prompt."""
     nvim = MagicMock()
-    modes = iter([{"mode": "r", "blocking": True}])
+    modes = iter([{"mode": "r", "blocking": True}] * 2)  # seen, then re-read under the lock
     nvim.api.get_mode.side_effect = lambda: next(modes, {"mode": "n", "blocking": False})
     nvim.api.exec2.return_value = {"output": ""}
     nvim.api.list_wins.return_value = []

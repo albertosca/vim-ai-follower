@@ -945,5 +945,5 @@ class NvimFollower:
             return
         with contextlib.suppress(Exception):
             nvim = self._connect()
-            dismiss_prompt(nvim)
+            dismiss_prompt(nvim, self.socket_path)
             nvim.command("qall!")

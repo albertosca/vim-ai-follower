@@ -29,7 +29,9 @@ _IDLE = {"mode": "n", "blocking": False}
 
 
 def _nvim(*modes: dict[str, Any]) -> MagicMock:
-    """A mock connection whose get_mode answers `modes` in turn, then idle."""
+    """A mock connection whose get_mode answers `modes` in turn, then idle. A
+    prompt that gets answered is read twice: once to see it, once more under
+    the answer lock."""
     nvim = MagicMock()
     answers = iter(modes)
     nvim.api.get_mode.side_effect = lambda: next(answers, _IDLE)
@@ -54,8 +56,8 @@ def _wait_for(predicate: Any, timeout: float = 3.0) -> bool:
 
 
 def test_a_blocking_hit_enter_prompt_is_answered_with_enter() -> None:
-    nvim = _nvim(_PROMPT)
-    assert dismiss_prompt(nvim) == _PROMPT
+    nvim = _nvim(_PROMPT, _PROMPT)
+    assert dismiss_prompt(nvim, "/s") == _PROMPT
     nvim.api.input.assert_called_once_with("<CR>")
 
 
@@ -65,8 +67,8 @@ def test_a_blocking_more_prompt_is_quit_with_esc() -> None:
     # Never `q`: a spare `q` starts macro recording and blocks nvim (see
     # test_nvim_integration_hit_enter.py's spare-answer tests).
     more = {"mode": "rm", "blocking": True}
-    nvim = _nvim(more)
-    assert dismiss_prompt(nvim) == more
+    nvim = _nvim(more, more)
+    assert dismiss_prompt(nvim, "/s") == more
     nvim.api.input.assert_called_once_with("<Esc>")
 
 
@@ -82,17 +84,18 @@ def test_a_blocking_more_prompt_is_quit_with_esc() -> None:
 )
 def test_anything_but_a_blocking_r_or_rm_is_left_alone(mode: dict[str, Any]) -> None:
     nvim = _nvim(mode)
-    assert dismiss_prompt(nvim) is None
+    assert dismiss_prompt(nvim, "/s") is None
     nvim.api.input.assert_not_called()
 
 
 def test_after_answering_it_waits_for_the_prompt_to_go() -> None:
     # Returning while nvim has not yet processed the key would let the next
     # poll see the same prompt and send a spare key into normal mode.
-    nvim = _nvim(_PROMPT, _PROMPT, _PROMPT)
-    assert dismiss_prompt(nvim) == _PROMPT
+    nvim = _nvim(_PROMPT, _PROMPT, _PROMPT, _PROMPT)
+    assert dismiss_prompt(nvim, "/s") == _PROMPT
     nvim.api.input.assert_called_once_with("<CR>")
-    assert nvim.api.get_mode.call_count == 4  # the prompt, 2 still up, then gone
+    # seen, re-read under the answer lock, 2 still up, then gone
+    assert nvim.api.get_mode.call_count == 5
 
 
 def test_a_prompt_that_stays_up_is_answered_once_per_settle_window() -> None:
@@ -100,7 +103,7 @@ def test_a_prompt_that_stays_up_is_answered_once_per_settle_window() -> None:
     nvim.api.get_mode.return_value = _PROMPT
     started = time.monotonic()
     with patch.object(nvim_prompt, "_SETTLE_SECONDS", 0.1):
-        assert dismiss_prompt(nvim) == _PROMPT
+        assert dismiss_prompt(nvim, "/s") == _PROMPT
     assert time.monotonic() - started >= 0.1
     nvim.api.input.assert_called_once_with("<CR>")
 
@@ -119,12 +122,72 @@ def test_the_watchdog_never_sends_a_second_key_while_nvim_is_still_on_the_first(
     dog.api.input.assert_called_once_with("<CR>")
 
 
+# --- the cross-process answer lock ------------------------------------------
+
+
+def test_a_busy_answer_lock_means_no_key() -> None:
+    # Another guard (thread or process) is answering this socket's prompt:
+    # a second answer would land spare, in normal mode, through the user's
+    # mappings. Not answering is safe — the next poll looks again.
+    nvim = _nvim(_PROMPT, _PROMPT)
+    with patch("vim_ai_follower.backends.nvim_prompt.fcntl.flock", side_effect=BlockingIOError()):
+        assert dismiss_prompt(nvim, "/s") is None
+    nvim.api.input.assert_not_called()
+
+
+def test_a_real_second_holder_blocks_the_answer() -> None:
+    nvim = _nvim(_PROMPT, _PROMPT)
+    with nvim_prompt._answer_lock("/s") as first:
+        assert first is True
+        assert dismiss_prompt(nvim, "/s") is None
+    nvim.api.input.assert_not_called()
+
+
+def test_a_guard_that_gets_the_lock_after_the_answer_sends_nothing() -> None:
+    # It saw the prompt, but by the time it holds the lock the other guard's
+    # answer has landed: the re-read under the lock finds it gone.
+    nvim = _nvim(_PROMPT, _IDLE)
+    assert dismiss_prompt(nvim, "/s") is None
+    nvim.api.input.assert_not_called()
+
+
+def test_an_unusable_lock_file_means_no_key_and_one_log_line(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    nvim = _nvim(_PROMPT, _PROMPT, _PROMPT, _PROMPT)
+    with (
+        caplog.at_level(logging.WARNING, logger="vim_ai_follower"),
+        patch("vim_ai_follower.backends.nvim_prompt.os.open", side_effect=OSError("read-only")),
+    ):
+        assert dismiss_prompt(nvim, "/ro") is None
+        assert dismiss_prompt(nvim, "/ro") is None
+    nvim.api.input.assert_not_called()
+    assert caplog.text.count("answer lock unusable") == 1
+
+
+def test_the_answer_lock_is_released_after_answering_and_after_a_raise() -> None:
+    assert dismiss_prompt(_nvim(_PROMPT, _PROMPT), "/s") == _PROMPT
+    with nvim_prompt._answer_lock("/s") as held:
+        assert held is True
+    boom = _nvim(_PROMPT, _PROMPT)
+    boom.api.input.side_effect = OSError("socket gone")
+    with pytest.raises(OSError, match="socket gone"):
+        dismiss_prompt(boom, "/s")
+    with nvim_prompt._answer_lock("/s") as held:
+        assert held is True
+
+
+def test_answer_locks_are_per_socket() -> None:
+    with nvim_prompt._answer_lock("/one") as one, nvim_prompt._answer_lock("/two") as two:
+        assert (one, two) == (True, True)
+
+
 # --- prompt_guard -------------------------------------------------------------
 
 
 def test_an_adopted_nvim_gets_no_sweep_and_no_watchdog() -> None:
     # The user's own editor: its prompts are the user's to read.
-    nvim = _nvim(_PROMPT)
+    nvim = _nvim(_PROMPT, _PROMPT)
     connect = MagicMock()
     with prompt_guard(nvim, connect, key="/s", adopted=True, label="x"):
         pass
@@ -136,7 +199,7 @@ def test_an_adopted_nvim_gets_no_sweep_and_no_watchdog() -> None:
 def test_the_sweep_dismisses_a_leftover_prompt_and_logs_the_messages_tail(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    nvim = _nvim(_PROMPT)
+    nvim = _nvim(_PROMPT, _PROMPT)
     nvim.api.exec2.return_value = {"output": "one\ntwo\nruff failed: -86\n"}
     with (
         caplog.at_level(logging.WARNING, logger="vim_ai_follower"),
@@ -167,7 +230,7 @@ def test_the_watchdog_dismisses_a_prompt_raised_inside_the_body(
 ) -> None:
     main = _nvim()
     main.api.exec2.return_value = {"output": "vaf-probe: long message\n"}
-    dog = _nvim(_IDLE, _PROMPT)
+    dog = _nvim(_IDLE, _PROMPT, _PROMPT)
     with (
         caplog.at_level(logging.WARNING, logger="vim_ai_follower"),
         prompt_guard(main, lambda: dog, key="/s", adopted=False, label="apply_edit"),
@@ -207,7 +270,7 @@ def test_a_nested_guard_on_the_same_socket_starts_no_second_watchdog() -> None:
     # send the spare Enter to normal mode.
     connect = MagicMock(side_effect=lambda: _nvim())
     with prompt_guard(_nvim(), connect, key="/s", adopted=False, label="outer"):
-        inner = _nvim(_PROMPT)
+        inner = _nvim(_PROMPT, _PROMPT)
         with prompt_guard(inner, connect, key="/s", adopted=False, label="inner"):
             pass
         inner.api.get_mode.assert_not_called()  # no second sweep either
@@ -280,7 +343,7 @@ def test_a_poll_failing_after_stop_is_the_expected_shutdown_not_logged(
 def test_a_failing_messages_read_is_logged_never_raised(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    nvim = _nvim(_PROMPT)
+    nvim = _nvim(_PROMPT, _PROMPT)
     nvim.api.exec2.side_effect = OSError("dead")
     with (
         caplog.at_level(logging.WARNING, logger="vim_ai_follower"),
@@ -361,7 +424,7 @@ def test_an_adopted_nvim_runs_event_commands_plainly() -> None:
 
 
 def _follower_nvim() -> MagicMock:
-    nvim = _nvim(_PROMPT)
+    nvim = _nvim(_PROMPT, _PROMPT)
     nvim.exec_lua.return_value = -1  # probe_buffer: "absent", no further reads
     return nvim
 
@@ -410,7 +473,7 @@ def test_a_follower_with_no_state_fails_closed_no_sweep_no_watchdog() -> None:
 
 
 def test_the_sweep_names_a_more_prompt_in_the_log(caplog: pytest.LogCaptureFixture) -> None:
-    nvim = _nvim({"mode": "rm", "blocking": True})
+    nvim = _nvim(*[{"mode": "rm", "blocking": True}] * 2)
     with (
         caplog.at_level(logging.WARNING, logger="vim_ai_follower"),
         prompt_guard(nvim, lambda: _nvim(), key="/s", adopted=False, label="show_fresh"),
@@ -422,7 +485,7 @@ def test_the_sweep_names_a_more_prompt_in_the_log(caplog: pytest.LogCaptureFixtu
 
 def test_stop_sweeps_a_dedicated_follower_before_quitting() -> None:
     state.FollowerState.set("@1", backend="nvim", target="/tmp/x.sock")
-    nvim = _nvim(_PROMPT)
+    nvim = _nvim(_PROMPT, _PROMPT)
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         NvimFollower(socket_path="/tmp/x.sock", window_id="@1").stop()
     assert nvim.mock_calls.index(call.api.input("<CR>")) < nvim.mock_calls.index(
@@ -433,7 +496,7 @@ def test_stop_sweeps_a_dedicated_follower_before_quitting() -> None:
 def test_stop_presses_no_key_and_quits_nothing_when_the_state_is_gone() -> None:
     # `qall!` is the most destructive thing this backend sends: without a
     # state proving the nvim is the follower's own, it may be the user's.
-    nvim = _nvim(_PROMPT)
+    nvim = _nvim(_PROMPT, _PROMPT)
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim) as attach:
         NvimFollower(socket_path="/tmp/x.sock", window_id="@1").stop()
     nvim.api.input.assert_not_called()

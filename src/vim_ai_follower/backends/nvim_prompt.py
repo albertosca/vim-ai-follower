@@ -33,9 +33,26 @@ two guards on one socket both saw the prompt, or the user pressed a key at the
 same moment — and then lands in normal mode, where `q` starts macro recording,
 leaves nvim blocking in mode "n" that nothing here answers, and hangs every
 later call (measured 2026-09-28: 4/40 frozen with two real watchdogs racing,
-0/40 with <Esc>). A spare <Esc> or <CR> in normal mode is harmless. Every
-other mode is left alone, "r?" above all: a confirm prompt IS a choice, and a
-key would make it for the user.
+0/40 with <Esc>). Every other mode is left alone, "r?" above all: a confirm
+prompt IS a choice, and a key would make it for the user.
+
+A spare answer is NOT harmless, whatever the key. An answer made AT a prompt is
+taken as the prompt's answer (measured 20/20 unmapped), but a spare one lands in
+normal mode and goes through the USER's mappings — the dedicated follower loads
+the user's whole config. Measured 2026-09-28: with `<Esc><Esc>` mapped and
+`notimeout`, a spare <Esc> leaves nvim blocking in mode "n" forever; with
+`nnoremap <CR> o<Esc>`, a spare <CR> edits the buffer (or, locked, raises E21
+and a new hit-enter prompt). So exactly ONE guard may answer a given prompt:
+the read-answer-settle sequence runs under a per-socket, CROSS-PROCESS answer
+lock (a non-blocking `flock` on a lock file in the cache directory), and a
+guard that cannot take it does not answer — it looks again on its next poll.
+Under the lock the prompt is read a second time, so a guard that got the lock
+only after another guard's answer landed finds it gone and sends nothing. The
+lock is held only for that sequence, never across the entry point's own RPC.
+
+Residual, not solvable here: the USER pressing a key at the very instant a
+guard answers. Their key then lands spare in normal mode, through their own
+mappings, exactly as they typed it.
 
 Never used on an ADOPTED nvim: that is the user's own editor, and its prompts
 are the user's to read — an automatic Enter would eat them.
@@ -46,11 +63,18 @@ keeps status_surface (imported by hooks) importable without the nvim extra."""
 from __future__ import annotations
 
 import contextlib
+import errno
+import fcntl
+import hashlib
 import logging
+import os
 import threading
 import time
 from collections.abc import Callable, Iterator
+from pathlib import Path
 from typing import Any
+
+from vim_ai_follower import cache
 
 logger = logging.getLogger("vim_ai_follower")
 
@@ -65,7 +89,7 @@ _MESSAGES_TAIL = 5
 # next poll would otherwise get a spare key, which lands in normal mode.
 _SETTLE_SECONDS = 0.4
 _SETTLE_POLL_SECONDS = 0.02
-# Each answer must be harmless when it arrives spare, in normal mode (above).
+# Sent only AT the prompt, by the one guard holding the answer lock (above).
 _ANSWERS = {"r": "<CR>", "rm": "<Esc>"}
 _NAMES = {"r": "hit-enter prompt", "rm": "more-prompt"}
 WATCHDOG_THREAD_NAME = "vaf-hit-enter-watchdog"
@@ -75,22 +99,83 @@ WATCHDOG_THREAD_NAME = "vaf-hit-enter-watchdog"
 # would answer the same prompt twice and send the spare Enter to normal mode.
 _active = threading.local()
 
+# Sockets whose answer lock already failed with a real error (not "busy"):
+# logged once per process, so a read-only cache cannot flood hook.log.
+_lock_errors_logged: set[str] = set()
 
-def dismiss_prompt(nvim: Any) -> dict[str, Any] | None:
+
+def _answer_lock_path(socket_path: str) -> Path:
+    """The answer lock for one nvim socket. In the cache directory, keyed by a
+    hash of the socket path, rather than beside the socket: an nvim socket can
+    live anywhere (standalone launches, a user-chosen path), and only the
+    cache directory is known to be ours and writable. Read at call time, so a
+    relocated cache (tests) is honoured."""
+    digest = hashlib.sha256(socket_path.encode()).hexdigest()[:16]
+    return cache.CACHE_DIR / "answer-locks" / f"{digest}.lock"
+
+
+@contextlib.contextmanager
+def _answer_lock(socket_path: str) -> Iterator[bool]:
+    """Try to take this socket's answer lock without waiting; yield whether it
+    is held. flock locks belong to the open file description, so two guards
+    in ONE process (two os.open calls) exclude each other exactly like two
+    processes do. Released and closed on every path. Any OSError other than
+    "busy" is logged once per socket and yields False: not answering is
+    always safe, the next poll tries again."""
+    fd = -1
+    held = False
+    try:
+        path = _answer_lock_path(socket_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        held = True
+    except OSError as exc:
+        if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN) and socket_path not in (
+            _lock_errors_logged
+        ):
+            _lock_errors_logged.add(socket_path)
+            logger.warning(
+                "nvim follower: answer lock unusable for %s, prompts left unanswered: %s",
+                socket_path,
+                exc,
+            )
+    try:
+        yield held
+    finally:
+        if fd != -1:
+            with contextlib.suppress(OSError):
+                if held:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+
+def _answer_for(mode: dict[str, Any]) -> str | None:
+    return _ANSWERS.get(mode.get("mode", "")) if mode.get("blocking") else None
+
+
+def dismiss_prompt(nvim: Any, socket_path: str) -> dict[str, Any] | None:
     """Answer a blocking hit-enter (<CR>) or more-prompt (<Esc>) and return the
-    mode that was seen, or None when there was nothing to dismiss. After
-    answering, wait up to _SETTLE_SECONDS for nvim to leave that mode, so the
-    caller's next look cannot answer the same prompt twice. Fast requests
-    only."""
-    mode: dict[str, Any] = nvim.api.get_mode()
-    key = _ANSWERS.get(mode.get("mode", "")) if mode.get("blocking") else None
-    if key is None:
-        return None
-    nvim.api.input(key)
-    deadline = time.monotonic() + _SETTLE_SECONDS
-    while time.monotonic() < deadline and nvim.api.get_mode() == mode:
-        time.sleep(_SETTLE_POLL_SECONDS)
-    return mode
+    mode that was answered, or None when nothing was sent. Only the guard
+    holding `socket_path`'s answer lock answers, and only if the prompt is
+    still up when it re-reads under the lock (module docstring). After
+    answering, still under the lock, it waits up to _SETTLE_SECONDS for nvim
+    to leave that mode, so no one — itself on its next poll included — sees
+    the same prompt again. Fast requests only."""
+    if _answer_for(nvim.api.get_mode()) is None:
+        return None  # the common case: no prompt, no lock file touched
+    with _answer_lock(socket_path) as held:
+        if not held:
+            return None
+        mode: dict[str, Any] = nvim.api.get_mode()
+        key = _answer_for(mode)
+        if key is None:
+            return None
+        nvim.api.input(key)
+        deadline = time.monotonic() + _SETTLE_SECONDS
+        while time.monotonic() < deadline and nvim.api.get_mode() == mode:
+            time.sleep(_SETTLE_POLL_SECONDS)
+        return mode
 
 
 def close_connection(nvim: Any) -> None:
@@ -122,9 +207,10 @@ class Watchdog:
     logged and ends the thread; nothing is ever raised to the hook. The
     connection is closed by the thread itself, on every exit path."""
 
-    def __init__(self, connect: Callable[[], Any], label: str) -> None:
+    def __init__(self, connect: Callable[[], Any], label: str, key: str) -> None:
         self._connect = connect
         self._label = label
+        self._key = key
         self._stop = threading.Event()
         self.dismissals = 0
         self._thread = threading.Thread(target=self._run, name=WATCHDOG_THREAD_NAME, daemon=True)
@@ -142,7 +228,7 @@ class Watchdog:
             return
         try:
             while not self._stop.is_set():
-                seen = dismiss_prompt(nvim)
+                seen = dismiss_prompt(nvim, self._key)
                 if seen is not None:
                     self.dismissals += 1
                     logger.warning(
@@ -194,7 +280,7 @@ def prompt_guard(
         return
     _active.keys = guarded | {key}
     try:
-        seen = dismiss_prompt(nvim)
+        seen = dismiss_prompt(nvim, key)
         swept = seen is not None
         if seen is not None:
             logger.warning(
@@ -202,7 +288,7 @@ def prompt_guard(
                 _NAMES[seen["mode"]],
                 label,
             )
-        watchdog = Watchdog(connect, label)
+        watchdog = Watchdog(connect, label, key)
         watchdog.start()
         try:
             yield
