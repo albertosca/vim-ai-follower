@@ -14,6 +14,13 @@ from vim_ai_follower.diff import EditOp, apply_ops
 from vim_ai_follower.tmux import TmuxPane
 
 DEFAULT_PACE_SECONDS = 0.05
+# The pacing budget of ONE animation (a run_lines or run_ops call): past it the
+# rest is sent unpaced, so a huge Write degrades to "dumped in a block" instead
+# of the hook running into its own timeout. The final content is identical.
+# Computed once per animation and handed down to every send_paced call: a
+# budget recomputed per call (per line / per op half) never ran out, so a long
+# file was paced line by line with no cap at all. Time spent paused does not
+# count: the deadline moves back by the length of every pause.
 MAX_ANIMATION_SECONDS = 60.0
 
 
@@ -190,6 +197,7 @@ def run_ops(
     )
     control.clear_signals(window_id, base_dir)
     control.mark_animating(window_id, base_dir)
+    deadline = time.monotonic() + MAX_ANIMATION_SECONDS
     try:
         index = 0
         while index < len(ops):
@@ -219,7 +227,12 @@ def run_ops(
             delete_seq = _delete_sequences(op)
             if delete_seq:
                 result = send_paced(
-                    pane, delete_seq, current_pace, window_id, control_base_dir=base_dir
+                    pane,
+                    delete_seq,
+                    current_pace,
+                    window_id,
+                    deadline=deadline,
+                    control_base_dir=base_dir,
                 )
                 if result.outcome != "completed":
                     _exit_insert_mode(pane)
@@ -229,8 +242,10 @@ def run_ops(
                         pane.send_text("u")
                     if result.outcome == "interrupted":
                         return AnimationResult("interrupted", index)
+                    paused_at = time.monotonic()
                     if not _wait_while_paused(window_id, save_pending, base_dir):
                         return AnimationResult("interrupted", index)
+                    deadline += time.monotonic() - paused_at
                     if on_resume is not None:
                         on_resume()
                     continue  # resumed: retry this op from its clean boundary
@@ -238,7 +253,12 @@ def run_ops(
             insert_seq, prefix_len = _insert_sequences(op)
             if insert_seq:
                 result = send_paced(
-                    pane, insert_seq, current_pace, window_id, control_base_dir=base_dir
+                    pane,
+                    insert_seq,
+                    current_pace,
+                    window_id,
+                    deadline=deadline,
+                    control_base_dir=base_dir,
                 )
                 if result.outcome != "completed":
                     _exit_insert_mode(pane)
@@ -254,8 +274,10 @@ def run_ops(
                         pane.send_text("u")
                     if result.outcome == "interrupted":
                         return AnimationResult("interrupted", index)
+                    paused_at = time.monotonic()
                     if not _wait_while_paused(window_id, save_pending, base_dir):
                         return AnimationResult("interrupted", index)
+                    deadline += time.monotonic() - paused_at
                     if on_resume is not None:
                         on_resume()
                     continue
@@ -317,6 +339,7 @@ def run_lines(
     )
     control.clear_signals(window_id, base_dir)
     control.mark_animating(window_id, base_dir)
+    deadline = time.monotonic() + MAX_ANIMATION_SECONDS
     try:
         index = 0
         while index < len(lines):
@@ -329,7 +352,14 @@ def run_lines(
             # below the cursor via `o`.
             opener = "o" if continuation or index > 0 else "i"
             sequences, undo_threshold = _line_sequences(line, opener)
-            result = send_paced(pane, sequences, current_pace, window_id, control_base_dir=base_dir)
+            result = send_paced(
+                pane,
+                sequences,
+                current_pace,
+                window_id,
+                deadline=deadline,
+                control_base_dir=base_dir,
+            )
             if result.outcome != "completed":
                 _exit_insert_mode(pane)
                 if result.sent_count >= undo_threshold:
@@ -352,8 +382,10 @@ def run_lines(
                         ),
                     )
 
+                paused_at = time.monotonic()
                 if not _wait_while_paused(window_id, save_pending, base_dir):
                     return AnimationResult("interrupted", index)
+                deadline += time.monotonic() - paused_at
                 if on_resume is not None:
                     on_resume()
                 continue  # resumed: retry this line (same opener, clean boundary)
@@ -369,16 +401,15 @@ def send_paced(
     pace_seconds: float,
     window_id: str,
     *,
-    max_seconds: float = MAX_ANIMATION_SECONDS,
+    deadline: float,
     control_base_dir: Path | None = None,
 ) -> ApplyResult:
     """Paces at pace_seconds per sequence, checking for a pause/interrupt
     signal before each one (see control.check_signal) and stopping
-    immediately — without sending that sequence — if one is found. Also
-    stops pacing (but keeps sending) once max_seconds of wall-clock time has
-    elapsed, so a long file degrades to "dumped in a block" instead of the
-    hook running long enough to hit its own timeout."""
-    deadline = time.monotonic() + max_seconds
+    immediately — without sending that sequence — if one is found. Stops
+    pacing (but keeps sending) once time.monotonic() reaches `deadline`, the
+    whole animation's budget that run_lines/run_ops compute once (see
+    MAX_ANIMATION_SECONDS)."""
     for sent_count, sequence in enumerate(sequences):
         signal = control.check_signal(window_id, control_base_dir)
         if signal is not None:
