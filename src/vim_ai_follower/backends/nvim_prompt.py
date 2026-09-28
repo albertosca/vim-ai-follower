@@ -26,10 +26,16 @@ the call returns hangs the next one).
 
 Two prompts are answered. The hit-enter prompt (mode "r") gets <CR>. The
 more-prompt (mode "rm"), which a message taller than the screen raises instead,
-gets `q`: it offers no choice, and <CR> would only page it one line (measured:
-`q` returns to normal mode and the blocked call completes). Every other mode is
-left alone, "r?" above all: a confirm prompt IS a choice, and a key would make
-it for the user.
+gets <Esc> (`:h more-prompt`): it offers no choice, and <CR> would only page
+it one line. <Esc> returns to normal mode and the blocked call completes. Never
+`q`, though it quits the prompt the same way: every answer can arrive SPARE —
+two guards on one socket both saw the prompt, or the user pressed a key at the
+same moment — and then lands in normal mode, where `q` starts macro recording,
+leaves nvim blocking in mode "n" that nothing here answers, and hangs every
+later call (measured 2026-09-28: 4/40 frozen with two real watchdogs racing,
+0/40 with <Esc>). A spare <Esc> or <CR> in normal mode is harmless. Every
+other mode is left alone, "r?" above all: a confirm prompt IS a choice, and a
+key would make it for the user.
 
 Never used on an ADOPTED nvim: that is the user's own editor, and its prompts
 are the user's to read — an automatic Enter would eat them.
@@ -59,7 +65,8 @@ _MESSAGES_TAIL = 5
 # next poll would otherwise get a spare key, which lands in normal mode.
 _SETTLE_SECONDS = 0.4
 _SETTLE_POLL_SECONDS = 0.02
-_ANSWERS = {"r": "<CR>", "rm": "q"}
+# Each answer must be harmless when it arrives spare, in normal mode (above).
+_ANSWERS = {"r": "<CR>", "rm": "<Esc>"}
 _NAMES = {"r": "hit-enter prompt", "rm": "more-prompt"}
 WATCHDOG_THREAD_NAME = "vaf-hit-enter-watchdog"
 
@@ -70,7 +77,7 @@ _active = threading.local()
 
 
 def dismiss_prompt(nvim: Any) -> dict[str, Any] | None:
-    """Answer a blocking hit-enter (<CR>) or more-prompt (`q`) and return the
+    """Answer a blocking hit-enter (<CR>) or more-prompt (<Esc>) and return the
     mode that was seen, or None when there was nothing to dismiss. After
     answering, wait up to _SETTLE_SECONDS for nvim to leave that mode, so the
     caller's next look cannot answer the same prompt twice. Fast requests

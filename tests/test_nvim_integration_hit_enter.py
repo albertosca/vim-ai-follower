@@ -22,7 +22,7 @@ width, 30 rows. Four triggers, parametrized:
   cannot fix: nothing is left to capture it, and the next unrelated call hangs.
 - `tall`: a deferred ~3000-character echo, taller than the pane. nvim pages it
   with the MORE-prompt (mode "rm") instead of the hit-enter prompt; Enter only
-  advances it a line, so the follower answers it with `q`.
+  advances it a line, so the follower answers it with <Esc>.
 
 Only `deferred` and `tall` prove the sweep and the watchdog: `lsp` and `echo`
 print synchronously inside `filetype detect`/`bufload`, which the follower runs
@@ -89,6 +89,7 @@ _TRIGGERS = {
 }
 
 _CONTENT = "x = 1\ny = 'é'\n"
+_TRIGGERS["none"] = ""
 
 
 @pytest.fixture
@@ -161,7 +162,9 @@ def _unfreeze(probe: Any) -> None:
         mode = probe.api.get_mode()
         if not mode["blocking"]:
             return
-        probe.api.input("q" if mode["mode"] == "rm" else "<CR>")
+        # <Esc> for anything but hit-enter: it quits a more-prompt, and it
+        # also ends a stray `q` macro recording (blocking normal mode).
+        probe.api.input("<CR>" if mode["mode"] == "r" else "<Esc>")
         time.sleep(0.1)
 
 
@@ -247,5 +250,63 @@ def test_a_plugin_prompt_never_freezes_the_dedicated_follower(
         assert wait_until(
             lambda: not {c["id"] for c in probe.api.list_chans()} & set(watchdog_channels)
         ), (watchdog_channels, probe.api.list_chans())
+    finally:
+        _unfreeze(probe)
+
+
+def _usable(nvim: Any) -> bool:
+    """nvim is not blocked and an ordinary (non-fast) call completes."""
+    if nvim.api.get_mode()["blocking"]:
+        return False
+    finished, _box = _in_thread(lambda: nvim.command("let g:vaf_usable = 1"))
+    return finished
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("prompt_mode", sorted(nvim_prompt._ANSWERS))
+def test_a_spare_answer_leaves_nvim_usable(ui_nvim: Callable[[str], str], prompt_mode: str) -> None:
+    # The answer lands AFTER the prompt is gone — a second guard (another hook
+    # process) answered the same prompt, or the user pressed the key at the
+    # same moment — so nvim reads it as a normal-mode key. It must not leave
+    # nvim blocked: `q` did (it starts macro recording, get_mode ->
+    # {'mode': 'n', 'blocking': True}) and every later RPC hung, answered by
+    # nothing, since neither the sweep nor the watchdog touches mode "n".
+    probe = pynvim.attach("socket", path=ui_nvim("none"))
+    try:
+        assert probe.api.get_mode() == {"mode": "n", "blocking": False}
+        probe.api.input(nvim_prompt._ANSWERS[prompt_mode])
+        time.sleep(0.2)
+        assert _usable(probe), probe.api.get_mode()
+    finally:
+        _unfreeze(probe)
+
+
+@pytest.mark.integration
+def test_two_connections_both_answering_one_more_prompt_leave_nvim_usable(
+    ui_nvim: Callable[[str], str],
+) -> None:
+    # Two guards on one socket (two hook processes) both read the same
+    # more-prompt before either answer lands, and both answer it. Driven
+    # deterministically: both reads happen before either key is sent. The
+    # racy form — two real Watchdogs against many prompts — froze 4/40 with
+    # `q` in the reviewer's run (scratchpad/rr/exp.py E3), but its outcome
+    # depends on thread scheduling, so it is not a test; this is its
+    # worst-case interleaving, pinned.
+    sock = ui_nvim("none")
+    probe = pynvim.attach("socket", path=sock)
+    a = pynvim.attach("socket", path=sock)
+    b = pynvim.attach("socket", path=sock)
+    try:
+        probe.exec_lua("vim.defer_fn(function() " + _TALL + " end, 50)")
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and probe.api.get_mode()["mode"] != "rm":
+            time.sleep(0.02)
+        more = {"mode": "rm", "blocking": True}
+        assert a.api.get_mode() == more
+        assert b.api.get_mode() == more
+        a.api.input(nvim_prompt._ANSWERS["rm"])
+        b.api.input(nvim_prompt._ANSWERS["rm"])
+        time.sleep(0.3)
+        assert _usable(probe), probe.api.get_mode()
     finally:
         _unfreeze(probe)

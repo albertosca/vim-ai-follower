@@ -931,17 +931,19 @@ class NvimFollower:
     def stop(self) -> None:
         # Quit the dedicated nvim this follower launched — its tmux split
         # closes with it. cmd_stop only routes a NON-adopted follower here (an
-        # adopted nvim goes to close_tab), but guard on _is_adopted anyway:
-        # quitting the user's own editor would be hostile. Best-effort — qall!
+        # adopted nvim goes to close_tab), and calls this BEFORE it clears the
+        # window's FollowerState. Guard anyway, failing CLOSED: qall! only
+        # when the state proves a dedicated follower (_is_dedicated) — an
+        # adopted nvim, or one whose state is gone, may be the user's own
+        # editor, and quitting it would be hostile. Best-effort — qall!
         # tears down the RPC channel, so the call itself may raise as the
         # socket drops.
         # A prompt left on screen would hold qall! in the queue behind it, so
         # sweep it first (fast requests only; no watchdog — its connection
         # would only drop with the process).
-        if self._is_adopted():
+        if not self._is_dedicated():
             return
         with contextlib.suppress(Exception):
             nvim = self._connect()
-            if self._is_dedicated():  # keys only where the state proves it (_is_dedicated)
-                dismiss_prompt(nvim)
+            dismiss_prompt(nvim)
             nvim.command("qall!")

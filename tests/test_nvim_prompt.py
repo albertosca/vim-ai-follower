@@ -59,13 +59,15 @@ def test_a_blocking_hit_enter_prompt_is_answered_with_enter() -> None:
     nvim.api.input.assert_called_once_with("<CR>")
 
 
-def test_a_blocking_more_prompt_is_quit_with_q() -> None:
+def test_a_blocking_more_prompt_is_quit_with_esc() -> None:
     # A message taller than the screen pages with the more-prompt: it offers
-    # no choice, and Enter would only advance it one line, so `q` ends it.
+    # no choice, and Enter would only advance it one line, so <Esc> ends it.
+    # Never `q`: a spare `q` starts macro recording and blocks nvim (see
+    # test_nvim_integration_hit_enter.py's spare-answer tests).
     more = {"mode": "rm", "blocking": True}
     nvim = _nvim(more)
     assert dismiss_prompt(nvim) == more
-    nvim.api.input.assert_called_once_with("q")
+    nvim.api.input.assert_called_once_with("<Esc>")
 
 
 @pytest.mark.parametrize(
@@ -414,7 +416,7 @@ def test_the_sweep_names_a_more_prompt_in_the_log(caplog: pytest.LogCaptureFixtu
         prompt_guard(nvim, lambda: _nvim(), key="/s", adopted=False, label="show_fresh"),
     ):
         pass
-    nvim.api.input.assert_called_once_with("q")
+    nvim.api.input.assert_called_once_with("<Esc>")
     assert "dismissed a more-prompt left before show_fresh (sweep)" in caplog.text
 
 
@@ -428,8 +430,12 @@ def test_stop_sweeps_a_dedicated_follower_before_quitting() -> None:
     )
 
 
-def test_stop_presses_no_key_when_the_state_is_gone() -> None:
+def test_stop_presses_no_key_and_quits_nothing_when_the_state_is_gone() -> None:
+    # `qall!` is the most destructive thing this backend sends: without a
+    # state proving the nvim is the follower's own, it may be the user's.
     nvim = _nvim(_PROMPT)
-    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim) as attach:
         NvimFollower(socket_path="/tmp/x.sock", window_id="@1").stop()
     nvim.api.input.assert_not_called()
+    nvim.command.assert_not_called()
+    attach.assert_not_called()
