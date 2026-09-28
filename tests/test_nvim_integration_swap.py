@@ -187,9 +187,10 @@ def test_goto_file_creates_the_buffer_of_a_file_a_live_nvim_holds_the_swap_for(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
 @pytest.mark.parametrize("entry", ["goto_file", "ensure_showing"])
 def test_a_listed_unloaded_buffer_of_a_swap_held_file_is_shown_without_e325(
-    entry: str, swap_aware_nvim: Callable[[], str], tmp_path: Path
+    entry: str, adopted: bool, swap_aware_nvim: Callable[[], str], tmp_path: Path
 ) -> None:
     """`nvim a.py b.py` leaves b.py listed but UNLOADED. goto_file's "buffer
     exists, no window" branch shows it with win_set_buf, which LOADS it, and
@@ -209,13 +210,19 @@ def test_a_listed_unloaded_buffer_of_a_swap_held_file_is_shown_without_e325(
     assert nvim.api.buf_is_loaded(bufnr) is False
     assert nvim.api.buf_get_option(bufnr, "swapfile") is True
 
+    if adopted:
+        state.FollowerState.set("@1", "nvim", follower_sock, adopted=True)
     follower = NvimFollower(socket_path=follower_sock, window_id="@1", pace_seconds=0.0)
     getattr(follower, entry)(str(target))
 
     assert nvim.api.get_current_buf().number == bufnr
     assert nvim.api.buf_get_lines(bufnr, 0, -1, True) == ["listed = 1"]
-    assert nvim.funcs.swapname(bufnr) == ""
     assert nvim.api.get_mode() == {"mode": "n", "blocking": False}
+    # Dedicated: display-only, no swap. Adopted: the user's own editor gets
+    # its swap back (a `.swo` beside the owner's), silently.
+    swap = nvim.funcs.swapname(bufnr)
+    assert (swap != "") is adopted
+    assert "A" not in nvim.api.get_option_value("shortmess", {})
 
 
 @pytest.mark.integration

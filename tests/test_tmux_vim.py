@@ -708,3 +708,40 @@ def test_show_fresh_default_renames_in_place(sent: list[str], follower: TmuxVimF
     # Vim commands carry their own leading ":", so the recorded entry has
     # three colons — "text::tabnew" would never match anything.
     assert "text:::tabnew" not in sent
+
+
+_SWAP_BACK_ON = (
+    # Spelled out, not imported, for the same reason as _goto/_wipe above.
+    ":let g:vaf_shortmess = &shortmess | set shortmess+=A"
+    " | try | setlocal swapfile"
+    " | finally | let &shortmess = g:vaf_shortmess | unlet g:vaf_shortmess | endtry"
+)
+
+
+@pytest.mark.parametrize("adopted", [True, False], ids=["adopted", "dedicated"])
+def test_show_fresh_turns_swap_back_on_after_the_rename_only_when_adopted(
+    adopted: bool,
+) -> None:
+    # The rename runs with swap off (a live Vim holding `.swp` made `:file`
+    # raise E325). An adopted Vim is the user's own editor, so its buffer
+    # gets swap back on right after, with ATTENTION suppressed for that one
+    # step; a dedicated follower's stays off.
+    _register_fake_follower("@1", "%2")
+    state.FollowerState.update("@1", adopted=adopted)
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
+    # (conftest's autouse cache isolation holds the state the follower reads)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+    ):
+        follower.show_fresh("/tmp/f.txt", "a\n")
+    commands = _sent_commands(run)
+    rename = commands.index((_rename("/tmp/f.txt"), True))
+    if adopted:
+        assert commands[rename + 1 : rename + 4] == [
+            ("Enter", False),
+            (_SWAP_BACK_ON, True),
+            ("Enter", False),
+        ]
+    else:
+        assert (_SWAP_BACK_ON, True) not in commands

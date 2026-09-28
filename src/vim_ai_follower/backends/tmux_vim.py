@@ -220,6 +220,21 @@ _GOTO_FILE = (
 #     wrapping into a hit-enter prompt at 49 columns without hiding errors.
 #   - `:edit` works on a 'nomodifiable' buffer and keeps the option; it
 #     resets 'readonly', which ensure_showing's lock re-asserts right after.
+# show_fresh's swap re-enable for an ADOPTED Vim (Alberto's ruling,
+# 2026-09-28): without a swap, a crash loses what the user types into the
+# buffer and a second editor opening the file gets no ATTENTION. Turning swap
+# on runs the swap check the rename's opt-out avoided; measured 2026-09-28 at
+# 49 columns with an owner Vim holding `.swp`, a plain `:setlocal swapfile`
+# left the ATTENTION block at `-- More --`, a scoped SwapExists answer does
+# not fire for an option toggle, and `shortmess+=A` saved and restored in
+# `finally` was silent, created `.swo`, and a second Vim opening the file
+# still got its SwapExists. The nvim backend sends the same line.
+_SWAP_BACK_ON = (
+    ":let g:vaf_shortmess = &shortmess | set shortmess+=A"
+    " | try | setlocal swapfile"
+    " | finally | let &shortmess = g:vaf_shortmess | unlet g:vaf_shortmess | endtry"
+)
+
 _RELOAD_IF_CLEAN = (
     f":{_SWAP_ANSWER_OPEN}"
     " | try | if !&modified | silent edit | endif"
@@ -381,6 +396,15 @@ class TmuxVimFollower:
         if state is None:
             return self.pace_seconds
         return config.pace_seconds_for(state.speed)
+
+    def _is_adopted(self) -> bool:
+        """The Vim is the user's own editor (FollowerState, as on nvim). Only
+        swap handling asks: this backend locks an adopted Vim like a
+        dedicated one (see CLAUDE.md)."""
+        if not self.window_id:
+            return False
+        state = FollowerState.read(self.window_id)
+        return state is not None and state.adopted
 
     def _normal_mode(self, pane: TmuxPane) -> None:
         # Two Escapes return to Normal mode from any mode. Never Ctrl-\
@@ -627,6 +651,12 @@ class TmuxVimFollower:
         # Edit's goto_file does then misses it and opens a duplicate tab.
         pane.send_text(f":exe 'file ' . fnameescape({_vim_string(file_path)})")
         pane.send_key("Enter")
+        # An ADOPTED Vim is the user's own editor: its buffer gets swap back
+        # on right after the rename, with the ATTENTION message suppressed for
+        # that one step (see _SWAP_BACK_ON). A dedicated follower's stays off.
+        if self._is_adopted():
+            pane.send_text(_SWAP_BACK_ON)
+            pane.send_key("Enter")
         # `:filetype detect` must run BEFORE 'paste' is enabled below: it
         # loads the filetype's indent/ftplugin scripts, which can turn
         # cindent/smartindent/indentexpr back on — 'paste' only suppresses

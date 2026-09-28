@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, call, patch
 
+import pytest
+
 from vim_ai_follower import state
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends.nvim import NvimFollower
@@ -195,3 +197,88 @@ def test_goto_file_leaves_a_loaded_buffers_swap_alone() -> None:
     nvim = _goto_hidden_buffer(loaded=True)
     assert "swapfile" not in [c.args[1] for c in nvim.api.buf_set_option.call_args_list]
     assert call.win_set_buf(0, 5) in nvim.api.mock_calls
+
+
+_SWAP_BACK_ON = (
+    # Spelled out, not imported: an import would agree with any change.
+    "let g:vaf_shortmess = &shortmess | set shortmess+=A"
+    " | try | setlocal swapfile"
+    " | finally | let &shortmess = g:vaf_shortmess | unlet g:vaf_shortmess | endtry"
+)
+
+
+@pytest.mark.parametrize("adopted", [True, False], ids=["adopted", "dedicated"])
+def test_show_fresh_turns_swap_back_on_after_naming_only_when_adopted(
+    adopted: bool, tmp_path: Path
+) -> None:
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
+    nvim = MagicMock()
+    nvim.exec_lua.return_value = -1
+    buf = nvim.current.buffer
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+    ):
+        state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=adopted)
+        follower.show_fresh("/tmp/f.py", "a\n")
+    calls = nvim.api.mock_calls
+    back_on = call.exec2(_SWAP_BACK_ON, {"output": True})
+    if adopted:
+        assert calls.index(call.buf_set_name(buf, "/tmp/f.py")) < calls.index(back_on)
+    else:
+        assert back_on not in calls
+
+
+@pytest.mark.parametrize("adopted", [True, False], ids=["adopted", "dedicated"])
+@pytest.mark.parametrize("existing", [-1, 5], ids=["created", "unloaded"])
+def test_goto_file_turns_swap_back_on_after_loading_only_when_adopted(
+    adopted: bool, existing: int, tmp_path: Path
+) -> None:
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
+    state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=adopted)
+    nvim = MagicMock()
+    nvim.exec_lua.return_value = existing
+    nvim.api.list_tabpages.return_value = []
+    nvim.api.buf_is_loaded.return_value = False
+    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+        follower.goto_file("/tmp/f.py")
+    calls = nvim.api.mock_calls
+    back_on = call.exec2(_SWAP_BACK_ON, {"output": True})
+    shown = [c for c in calls if c[0] == "win_set_buf"]
+    assert shown
+    if adopted:
+        assert calls.index(shown[-1]) < calls.index(back_on)
+    else:
+        assert back_on not in calls
+
+
+def test_goto_file_leaves_a_loaded_buffers_swap_alone_even_when_adopted() -> None:
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
+    state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=True)
+    nvim = MagicMock()
+    nvim.exec_lua.return_value = 5
+    nvim.api.list_tabpages.return_value = []
+    nvim.api.buf_is_loaded.return_value = True
+    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+        follower.goto_file("/tmp/f.py")
+    assert call.exec2(_SWAP_BACK_ON, {"output": True}) not in nvim.api.mock_calls
+
+
+@pytest.mark.parametrize("adopted", [True, False], ids=["adopted", "dedicated"])
+def test_open_from_disk_turns_swap_back_on_after_loading_only_when_adopted(
+    adopted: bool,
+) -> None:
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
+    state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=adopted)
+    nvim = MagicMock()
+    nvim.exec_lua.return_value = -1
+    nvim.funcs.bufadd.return_value = 42
+    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+        follower.ensure_showing("/tmp/f.py")
+    calls = nvim.api.mock_calls
+    back_on = call.exec2(_SWAP_BACK_ON, {"output": True})
+    if adopted:
+        assert calls.index(call.win_set_buf(0, 42)) < calls.index(back_on)
+    else:
+        assert back_on not in calls

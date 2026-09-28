@@ -206,6 +206,28 @@ def _animate_lines(
     return AnimationResult("completed", len(lines))
 
 
+# Turns the current buffer's swap back on in an ADOPTED nvim, after the
+# follower named or loaded it with swap off (_name_without_swap, goto_file,
+# _open_from_disk). An adopted nvim is the user's own editor: without a swap,
+# a crash loses what they type into that buffer and a second editor opening
+# the file gets no ATTENTION (Alberto's ruling, 2026-09-28). A dedicated
+# follower's buffers are display-only and stay swap-off.
+#
+# Turning swap on runs the same swap check the opt-out avoided. Measured
+# 2026-09-28 on a UI nvim in a tmux pane and on Vim at 49 columns, an owner
+# editor holding the swap: a plain `setlocal swapfile` raised E325 (and
+# `buf_set_option(swapfile, True)` blocked a UI nvim at the ATTENTION pager);
+# a scoped SwapExists answer does not help, because SwapExists never fires
+# for an option toggle; `shortmess+=A`, saved and restored in `finally`,
+# was silent in both editors and still created the swap (`.swo` beside a
+# held one), and a second editor opening the file then got its SwapExists.
+_SWAP_BACK_ON = (
+    "let g:vaf_shortmess = &shortmess | set shortmess+=A"
+    " | try | setlocal swapfile"
+    " | finally | let &shortmess = g:vaf_shortmess | unlet g:vaf_shortmess | endtry"
+)
+
+
 def _name_without_swap(nvim: pynvim.Nvim, buf: pynvim.api.Buffer, file_path: str) -> None:
     """Name a new, empty buffer after file_path, opted out of swap first.
 
@@ -218,7 +240,8 @@ def _name_without_swap(nvim: pynvim.Nvim, buf: pynvim.api.Buffer, file_path: str
     RPC call hung). Same override, and for the same reasons, as
     _open_from_disk's before bufload: the buffer is display-only and never
     written, and `swapfile` is buffer-local, so the check still runs for
-    every file the follower does not name."""
+    every file the follower does not name. In an adopted nvim the caller
+    turns swap back on once the buffer is current (_restore_swap_if_adopted)."""
     nvim.api.buf_set_option(buf, "swapfile", False)
     nvim.api.buf_set_name(buf, file_path)
 
@@ -293,6 +316,12 @@ class NvimFollower:
         ):
             yield
 
+    def _restore_swap_if_adopted(self, nvim: pynvim.Nvim) -> None:
+        """Swap back on for the CURRENT buffer, in an adopted nvim only, with
+        the ATTENTION message suppressed for that one step (_SWAP_BACK_ON)."""
+        if self._is_adopted():
+            nvim.api.exec2(_SWAP_BACK_ON, {"output": True})
+
     def _exec(self, nvim: pynvim.Nvim, command: str) -> None:
         """An event-firing Ex command (filetype detect, edit!, bufload): its
         synchronous plugin output is captured and logged, see exec_logged."""
@@ -344,6 +373,7 @@ class NvimFollower:
             else:
                 nvim.command("enew")
             _name_without_swap(nvim, nvim.current.buffer, file_path)
+            self._restore_swap_if_adopted(nvim)
             self._exec(nvim, "filetype detect")
             nvim.command("setlocal buftype=")
             buf = nvim.current.buffer.handle
@@ -768,16 +798,20 @@ class NvimFollower:
                 # ensure_showing), measured 2026-09-28. Opt it out first, as
                 # _open_from_disk does before bufload. A loaded buffer passed
                 # its check when it was loaded and keeps its swap.
-                if not nvim.api.buf_is_loaded(bufnr):
+                loading = not nvim.api.buf_is_loaded(bufnr)
+                if loading:
                     nvim.api.buf_set_option(bufnr, "swapfile", False)
                 nvim.command("tabnew")
                 nvim.api.win_set_buf(0, bufnr)
+                if loading:
+                    self._restore_swap_if_adopted(nvim)
                 return
             # No such buffer at all — create one fresh, in a new tab.
             nvim.command("tabnew")
             buf = nvim.api.create_buf(True, False)
             _name_without_swap(nvim, buf, file_path)
             nvim.api.win_set_buf(0, buf)
+            self._restore_swap_if_adopted(nvim)
 
     def _open_from_disk(self, nvim: pynvim.Nvim, file_path: str) -> None:
         """Open file_path's REAL on-disk content in a new tab.
@@ -865,6 +899,7 @@ class NvimFollower:
         nvim.api.buf_set_option(bufnr, "buflisted", True)
         nvim.command("tabnew")
         nvim.api.win_set_buf(0, bufnr)
+        self._restore_swap_if_adopted(nvim)
         self._exec(nvim, "filetype detect")
         if not self._is_adopted():
             nvim.api.buf_set_option(bufnr, "modifiable", False)
