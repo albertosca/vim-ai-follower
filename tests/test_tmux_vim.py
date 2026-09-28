@@ -67,7 +67,20 @@ _SYNC_FROM_DISK = (
     ' | exe "augroup! vim_ai_follower_swap" | endtry'
 )
 _RELOCK_SYNCED = _SYNC_FROM_DISK + " | setlocal nomodifiable nopaste"
-_RELOCK_READONLY_SYNCED = _SYNC_FROM_DISK + " | setlocal readonly nomodifiable nopaste"
+_RELOCK_READONLY_SYNCED = (
+    _SYNC_FROM_DISK
+    + " | setlocal readonly nomodifiable nopaste | let b:vaf_ro_tick = b:changedtick"
+)
+# The animation unlock, which records whose readonly it clears, spelled out
+# for the same reason as _goto.
+_UNLOCK_FOR_ANIMATION = (
+    ":if !exists('b:vaf_user_ro')"
+    " | let b:vaf_user_ro = &readonly && get(b:, 'vaf_ro_tick', -1) != b:changedtick"
+    " | endif | setlocal noreadonly modifiable paste"
+)
+# The readonly restore every animation exit sends (see
+# tmux_vim._UNLOCK_FOR_ANIMATION), spelled out for the same reason as _goto.
+_RESTORE_READONLY = ":if get(b:, 'vaf_user_ro') | setlocal readonly | endif | unlet! b:vaf_user_ro"
 _RELOAD_DISCARDING = (
     ':exe "augroup vim_ai_follower_swap"'
     " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
@@ -129,10 +142,14 @@ def test_apply_edit_unlocks_the_buffer_only_for_the_animation(tmp_path: Path) ->
     assert commands[3] == ("Enter", False)
     assert commands[4] == (":silent! CocDisable", True)
     assert commands[5] == ("Enter", False)
-    assert commands[6] == (":setlocal noreadonly modifiable paste", True)
+    assert commands[6] == (_UNLOCK_FOR_ANIMATION, True)
     assert commands[7] == ("Enter", False)
-    assert commands[-2] == (_RELOCK_SYNCED, True)
-    assert commands[-1] == ("Enter", False)
+    assert commands[-4:] == [
+        (_RELOCK_SYNCED, True),
+        ("Enter", False),
+        (_RESTORE_READONLY, True),
+        ("Enter", False),
+    ]
     assert result == AnimationResult("completed", 1)
 
 
@@ -158,7 +175,9 @@ def test_apply_edit_skips_relock_when_interrupted(tmp_path: Path) -> None:
         result = follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
     commands = _sent_commands(run)
     assert result.outcome == "interrupted"
-    assert not any(text == ":setlocal nomodifiable nopaste" for text, _ in commands)
+    assert (_RELOCK_SYNCED, True) not in commands
+    # ...but the user's own readonly still comes back at the hand-off.
+    assert commands[-2:] == [(_RESTORE_READONLY, True), ("Enter", False)]
 
 
 def test_apply_edit_relocks_after_pause_and_resume(tmp_path: Path) -> None:
@@ -177,7 +196,7 @@ def test_apply_edit_relocks_after_pause_and_resume(tmp_path: Path) -> None:
         result = follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
     commands = _sent_commands(run)
     assert result.outcome == "completed"
-    assert commands[-2] == (_RELOCK_SYNCED, True)
+    assert commands[-4] == (_RELOCK_SYNCED, True)
 
 
 def test_apply_edit_renavigates_to_its_own_tab_on_resume(tmp_path: Path) -> None:
@@ -221,8 +240,12 @@ def test_apply_edit_relocks_with_a_silent_disk_sync(tmp_path: Path) -> None:
     ):
         follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
     commands = _sent_commands(run)
-    assert commands[-2] == (_RELOCK_SYNCED, True)
-    assert commands[-1] == ("Enter", False)
+    assert commands[-4:] == [
+        (_RELOCK_SYNCED, True),
+        ("Enter", False),
+        (_RESTORE_READONLY, True),
+        ("Enter", False),
+    ]
 
 
 def test_show_fresh_relocks_with_a_silent_disk_sync(tmp_path: Path) -> None:
@@ -234,8 +257,12 @@ def test_show_fresh_relocks_with_a_silent_disk_sync(tmp_path: Path) -> None:
     ):
         follower.show_fresh("/tmp/f.txt", "a\nb\n")
     commands = _sent_commands(run)
-    assert commands[-2] == (_RELOCK_READONLY_SYNCED, True)
-    assert commands[-1] == ("Enter", False)
+    assert commands[-4:] == [
+        (_RELOCK_READONLY_SYNCED, True),
+        ("Enter", False),
+        (_RESTORE_READONLY, True),
+        ("Enter", False),
+    ]
 
 
 def test_interrupted_animation_never_sends_a_disk_sync_reload(tmp_path: Path) -> None:
@@ -303,13 +330,17 @@ def test_show_fresh_renames_current_buffer_without_ever_loading_the_real_file(
     assert commands[11] == ("Enter", False)
     assert commands[12] == (":silent! CocDisable", True)
     assert commands[13] == ("Enter", False)
-    assert commands[14] == (":setlocal noreadonly modifiable paste", True)
+    assert commands[14] == (_UNLOCK_FOR_ANIMATION, True)
     assert commands[15] == ("Enter", False)
     assert commands[16] == (":%d", True)
     assert commands[17] == ("Enter", False)
     assert commands[18] == ("i", True)
-    assert commands[-2] == (_RELOCK_READONLY_SYNCED, True)
-    assert commands[-1] == ("Enter", False)
+    assert commands[-4:] == [
+        (_RELOCK_READONLY_SYNCED, True),
+        ("Enter", False),
+        (_RESTORE_READONLY, True),
+        ("Enter", False),
+    ]
     typed = [text for text, literal in commands if literal]
     assert "a" in typed
     assert "b" in typed
@@ -341,11 +372,13 @@ def test_show_fresh_with_empty_content_still_wipes_and_relocks(tmp_path: Path) -
         ("Enter", False),
         (":silent! CocDisable", True),
         ("Enter", False),
-        (":setlocal noreadonly modifiable paste", True),
+        (_UNLOCK_FOR_ANIMATION, True),
         ("Enter", False),
         (":%d", True),
         ("Enter", False),
         (_RELOCK_READONLY_SYNCED, True),
+        ("Enter", False),
+        (_RESTORE_READONLY, True),
         ("Enter", False),
     ]
     assert result == AnimationResult("completed", 0)
@@ -373,7 +406,10 @@ def test_show_fresh_skips_relock_when_interrupted(tmp_path: Path) -> None:
         result = follower.show_fresh("/tmp/f.txt", "a\nb\n")
     commands = _sent_commands(run)
     assert result.outcome == "interrupted"
-    assert not any(text == ":setlocal readonly nomodifiable nopaste" for text, _ in commands)
+    assert not any(
+        text == ":setlocal readonly nomodifiable nopaste | let b:vaf_ro_tick = b:changedtick"
+        for text, _ in commands
+    )
 
 
 def test_live_pace_reads_current_state_speed() -> None:
@@ -428,10 +464,14 @@ def test_resume_apply_edit_replays_remaining_ops_and_relocks(tmp_path: Path) -> 
     commands = _sent_commands(run)
     assert commands[0] == (":silent! CocDisable", True)
     assert commands[1] == ("Enter", False)
-    assert commands[2] == (":setlocal noreadonly modifiable paste", True)
+    assert commands[2] == (_UNLOCK_FOR_ANIMATION, True)
     assert commands[3] == ("Enter", False)
-    assert commands[-2] == (_RELOCK_SYNCED, True)
-    assert commands[-1] == ("Enter", False)
+    assert commands[-4:] == [
+        (_RELOCK_SYNCED, True),
+        ("Enter", False),
+        (_RESTORE_READONLY, True),
+        ("Enter", False),
+    ]
     assert result == AnimationResult("completed", 1)
 
 
@@ -448,9 +488,13 @@ def test_resume_show_fresh_replays_remaining_lines_and_relocks_with_readonly(
         result = follower.resume(pending)
     commands = _sent_commands(run)
     assert commands[0] == (":silent! CocDisable", True)
-    assert commands[2] == (":setlocal noreadonly modifiable paste", True)
-    assert commands[-2] == (_RELOCK_READONLY_SYNCED, True)
-    assert commands[-1] == ("Enter", False)
+    assert commands[2] == (_UNLOCK_FOR_ANIMATION, True)
+    assert commands[-4:] == [
+        (_RELOCK_READONLY_SYNCED, True),
+        ("Enter", False),
+        (_RESTORE_READONLY, True),
+        ("Enter", False),
+    ]
     assert result == AnimationResult("completed", 2)
 
 
@@ -466,7 +510,7 @@ def test_resume_show_fresh_replays_remaining_lines_and_relocks_with_readonly(
         ),
         (
             control.PendingShowFresh(lines=("b", "c"), pace_seconds=0.0),
-            ":setlocal readonly nomodifiable nopaste",
+            ":setlocal readonly nomodifiable nopaste | let b:vaf_ro_tick = b:changedtick",
         ),
     ],
     ids=["apply_edit", "show_fresh"],
@@ -484,8 +528,12 @@ def test_resume_without_reload_relocks_without_reading_disk(
     ):
         result = follower.resume(pending, reload=False)
     commands = _sent_commands(run)
-    assert commands[-2] == (relock, True)
-    assert commands[-1] == ("Enter", False)
+    assert commands[-4:] == [
+        (relock, True),
+        ("Enter", False),
+        (_RESTORE_READONLY, True),
+        ("Enter", False),
+    ]
     assert not any("e!" in text for text, _ in commands)
     assert result.outcome == "completed"
 
@@ -550,6 +598,8 @@ def test_hand_over_unlocks_the_buffer() -> None:
         ("Enter", False),
         (":setlocal modifiable nopaste", True),
         ("Enter", False),
+        (_RESTORE_READONLY, True),
+        ("Enter", False),
     ]
 
 
@@ -577,7 +627,7 @@ def test_ensure_showing_navigates_by_tab_drop_and_locks() -> None:
         ("Enter", False),
         (_RELOAD_IF_CLEAN, True),
         ("Enter", False),
-        (":setlocal readonly nomodifiable", True),
+        (":setlocal readonly nomodifiable | let b:vaf_ro_tick = b:changedtick", True),
         ("Enter", False),
     ]
     assert (":e /tmp/a.py", True) not in commands
@@ -595,7 +645,7 @@ def test_reload_and_relock_navigates_then_reloads_and_relocks() -> None:
         ("Enter", False),
         (_RELOAD_DISCARDING, True),
         ("Enter", False),
-        (":setlocal readonly nomodifiable", True),
+        (":setlocal readonly nomodifiable | let b:vaf_ro_tick = b:changedtick", True),
         ("Enter", False),
     ]
 
@@ -623,7 +673,7 @@ def test_reload_from_disk_discards_under_the_swap_answer_and_locks() -> None:
             True,
         ),
         ("Enter", False),
-        (":setlocal readonly nomodifiable", True),
+        (":setlocal readonly nomodifiable | let b:vaf_ro_tick = b:changedtick", True),
         ("Enter", False),
     ]
 
@@ -651,7 +701,7 @@ def _rename(path: str) -> str:
     and a space are live on Vim's command line, so the raw path is wrong —
     it goes through a Vim string literal and fnameescape(), same as _goto.
     Spelled out for the same reason as _goto/_wipe above."""
-    return ":exe 'file ' . fnameescape('" + path.replace("'", "''") + "')"
+    return ":exe 'file ' . fnameescape('" + path.replace("'", "''") + "') | let b:vaf_user_ro = 0"
 
 
 def test_close_tab_wipes_by_buffer_number_and_never_double_closes() -> None:

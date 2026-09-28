@@ -33,10 +33,43 @@ from vim_ai_follower.tmux import TmuxPane
 # rescued by accident: goto_file's `:tab drop` re-read the file, and a reload
 # resets 'readonly'. Now that goto_file never reloads a loaded buffer (see
 # _GOTO_FILE), the unlock has to say it (measured 2026-09-23).
-_LOCK_READONLY = ":setlocal readonly nomodifiable"
-_UNLOCK_FOR_ANIMATION = ":setlocal noreadonly modifiable paste"
+#
+# But a readonly the USER set (`:view`, `vim -R`, in an adopted Vim) is theirs
+# to keep, and both the unlock and the completion relock's `:e!` (a reload
+# resets 'readonly') took it away, for good on the interrupted path. So the
+# unlock records in `b:vaf_user_ro` whether the readonly it clears was the
+# user's, and _RESTORE_READONLY puts it back on every exit: after the relock,
+# at an interrupt, and in hand_over. Paused time never leaves the run, so it
+# needs nothing. The record lives in the buffer, not in Python, so the paths
+# that never reach a restore (the hook killed mid-pause, an exception mid-run)
+# keep it: the unlock never overwrites an existing record, and the next
+# completion, interrupt or hand_over restores it.
+#
+# Whose readonly it is decides everything: the follower sets 'readonly' itself
+# (ensure_showing's lock, show_fresh's relock), and restoring THAT at an
+# interrupt would turn the hand-off's ":w releases" into E45. The follower's
+# own readonly locks stamp `b:changedtick` into `b:vaf_ro_tick`; every reload
+# moves the tick (measured 2026-09-28, like any change), so a readonly whose
+# stamp is stale was set by someone else since: a user `:view` of a file the
+# follower had locked counts as the user's. The one case it misreads is a bare
+# `:setlocal readonly` on a buffer the follower had already locked readonly,
+# which changes nothing the user can see either. show_fresh records "not the
+# user's" at its rename: the buffer it renames belonged to some other file.
+#
+# Applied on every follower, dedicated too: a dedicated follower's buffers are
+# only ever readonly by its own locks (stamped), so the restore only acts on a
+# readonly its user set by hand, and it only ever ADDS 'readonly', so the
+# dedicated relocks are untouched.
+_STAMP_OUR_READONLY = "let b:vaf_ro_tick = b:changedtick"
+_LOCK_READONLY = ":setlocal readonly nomodifiable | " + _STAMP_OUR_READONLY
+_UNLOCK_FOR_ANIMATION = (
+    ":if !exists('b:vaf_user_ro')"
+    " | let b:vaf_user_ro = &readonly && get(b:, 'vaf_ro_tick', -1) != b:changedtick"
+    " | endif | setlocal noreadonly modifiable paste"
+)
+_RESTORE_READONLY = ":if get(b:, 'vaf_user_ro') | setlocal readonly | endif | unlet! b:vaf_user_ro"
 _RELOCK = ":setlocal nomodifiable nopaste"
-_RELOCK_READONLY = ":setlocal readonly nomodifiable nopaste"
+_RELOCK_READONLY = ":setlocal readonly nomodifiable nopaste | " + _STAMP_OUR_READONLY
 
 # CoC's inlay hints (parameter names, inferred return types — coc-pyright's
 # pyright.inlayHints.* etc.) render as virtual text once the follower's
@@ -606,6 +639,10 @@ class TmuxVimFollower:
         if result.outcome != "interrupted":
             pane.send_text(relock)
             pane.send_key("Enter")
+        # After the relock, whose `:e!` resets 'readonly' (and on an interrupt,
+        # which leaves the buffer to the user without one).
+        pane.send_text(_RESTORE_READONLY)
+        pane.send_key("Enter")
         return result
 
     def apply_edit(
@@ -674,7 +711,12 @@ class TmuxVimFollower:
         # the buffer onto the wrong name (measured 2026-09-24: a space alone
         # left the buffer unnamed), and the by-number lookup that a later
         # Edit's goto_file does then misses it and opens a duplicate tab.
-        pane.send_text(f":exe 'file ' . fnameescape({_vim_string(file_path)})")
+        # The rename also records "not the user's readonly" for the unlock
+        # (see _UNLOCK_FOR_ANIMATION): whatever readonly the renamed buffer
+        # carries belonged to the file it held before.
+        pane.send_text(
+            f":exe 'file ' . fnameescape({_vim_string(file_path)}) | let b:vaf_user_ro = 0"
+        )
         pane.send_key("Enter")
         # An ADOPTED Vim is the user's own editor: its buffer gets swap back
         # on right after the rename, with the ATTENTION message suppressed for
@@ -795,6 +837,11 @@ class TmuxVimFollower:
         pane.send_text(_COC_ENABLE)
         pane.send_key("Enter")
         pane.send_text(":setlocal modifiable nopaste")
+        pane.send_key("Enter")
+        # A hand-off after rewrite_buffer's unlock (a replay interrupted
+        # mid-rebuild), or of a crash-orphaned remainder, gives back the
+        # user's readonly here (see _UNLOCK_FOR_ANIMATION).
+        pane.send_text(_RESTORE_READONLY)
         pane.send_key("Enter")
 
     def goto_line(self, offset: int) -> None:

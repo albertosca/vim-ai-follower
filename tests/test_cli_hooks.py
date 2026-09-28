@@ -36,6 +36,7 @@ from vim_ai_follower.session import Session
 _READONLY_RELOCK_TAIL = (
     '| try | silent! edit! | finally | exe "autocmd! vim_ai_follower_swap"'
     ' | exe "augroup! vim_ai_follower_swap" | endtry | setlocal readonly nomodifiable nopaste'
+    " | let b:vaf_ro_tick = b:changedtick"
 )
 
 
@@ -74,7 +75,9 @@ def _rename(path: object) -> str:
     Vim string literal and fnameescape(), same as _goto above. Spelled out
     for the same reason: importing tmux_vim's f-string would agree with any
     change to it."""
-    return ":exe 'file ' . fnameescape('" + str(path).replace("'", "''") + "')"
+    return (
+        ":exe 'file ' . fnameescape('" + str(path).replace("'", "''") + "') | let b:vaf_user_ro = 0"
+    )
 
 
 # ensure_showing's clean-only disk re-read, spelled out for the same reason
@@ -265,7 +268,7 @@ def test_hook_post_skips_binary_files_on_first_open(tmp_path: Path) -> None:
     assert _literal_sends(run) == [
         _goto(target),
         _RELOAD_IF_CLEAN,
-        ":setlocal readonly nomodifiable",
+        ":setlocal readonly nomodifiable | let b:vaf_ro_tick = b:changedtick",
     ]
 
 
@@ -287,7 +290,7 @@ def test_hook_post_shows_a_rewritten_binary_on_subsequent_edit(tmp_path: Path) -
     assert _literal_sends(run) == [
         _goto(target),
         _RELOAD_IF_CLEAN,
-        ":setlocal readonly nomodifiable",
+        ":setlocal readonly nomodifiable | let b:vaf_ro_tick = b:changedtick",
     ]
 
 
@@ -306,7 +309,7 @@ def test_hook_post_read_without_offset_does_not_navigate(tmp_path: Path) -> None
     assert _literal_sends(run) == [
         _goto(target),
         _RELOAD_IF_CLEAN,
-        ":setlocal readonly nomodifiable",
+        ":setlocal readonly nomodifiable | let b:vaf_ro_tick = b:changedtick",
     ]
 
 
@@ -346,7 +349,7 @@ def test_hook_post_read_navigates_to_file_and_offset(tmp_path: Path) -> None:
     assert _literal_sends(run) == [
         _goto(target),
         _RELOAD_IF_CLEAN,
-        ":setlocal readonly nomodifiable",
+        ":setlocal readonly nomodifiable | let b:vaf_ro_tick = b:changedtick",
         ":2",
     ]
 
@@ -369,7 +372,7 @@ def test_hook_post_read_navigates_even_when_file_already_current(tmp_path: Path)
     assert _literal_sends(run) == [
         _goto(target),
         _RELOAD_IF_CLEAN,
-        ":setlocal readonly nomodifiable",
+        ":setlocal readonly nomodifiable | let b:vaf_ro_tick = b:changedtick",
         ":2",
     ]
 
@@ -795,7 +798,10 @@ def test_hook_post_first_open_interrupted_prints_notification_with_partial_lines
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = _literal_sends(run)
-    assert not any(text == ":setlocal readonly nomodifiable nopaste" for text in sends)
+    assert not any(
+        text == ":setlocal readonly nomodifiable nopaste | let b:vaf_ro_tick = b:changedtick"
+        for text in sends
+    )
     out = json.loads(capsys.readouterr().out)
     context = out["hookSpecificOutput"]["additionalContext"]
     assert context.count("\n\na\n\n") == 1  # only the first line had been typed
@@ -1247,7 +1253,7 @@ def test_hook_post_des_interrupt_without_a_remainder_falls_back_to_reload(
     sends = _literal_sends(run)
     # the reload of the finished file, under the scoped (E)dit-anyway answer
     assert any("| try | silent edit! | finally |" in send for send in sends)
-    assert ":setlocal readonly nomodifiable" in sends
+    assert ":setlocal readonly nomodifiable | let b:vaf_ro_tick = b:changedtick" in sends
     assert capsys.readouterr().out == ""
 
 
