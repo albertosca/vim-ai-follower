@@ -56,6 +56,28 @@ _RELOAD_IF_CLEAN = (
 )
 
 
+# The completion relocks' `:e!` with the scoped (E)dit-anyway answer, and the
+# des-interrupt/grounding reload, spelled out for the same reason as _goto.
+_SYNC_FROM_DISK = (
+    ':exe "augroup vim_ai_follower_swap"'
+    " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
+    ' | exe "augroup END"'
+    " | try | silent! edit!"
+    ' | finally | exe "autocmd! vim_ai_follower_swap"'
+    ' | exe "augroup! vim_ai_follower_swap" | endtry'
+)
+_RELOCK_SYNCED = _SYNC_FROM_DISK + " | setlocal nomodifiable nopaste"
+_RELOCK_READONLY_SYNCED = _SYNC_FROM_DISK + " | setlocal readonly nomodifiable nopaste"
+_RELOAD_DISCARDING = (
+    ':exe "augroup vim_ai_follower_swap"'
+    " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
+    ' | exe "augroup END"'
+    " | try | silent edit!"
+    ' | finally | exe "autocmd! vim_ai_follower_swap"'
+    ' | exe "augroup! vim_ai_follower_swap" | endtry'
+)
+
+
 def test_is_alive_true_when_vim_is_running_in_pane() -> None:
     follower = TmuxVimFollower(pane_id="%2")
     fake_result = MagicMock(stdout="%1 zsh\n%2 vim\n")
@@ -109,7 +131,7 @@ def test_apply_edit_unlocks_the_buffer_only_for_the_animation(tmp_path: Path) ->
     assert commands[5] == ("Enter", False)
     assert commands[6] == (":setlocal noreadonly modifiable paste", True)
     assert commands[7] == ("Enter", False)
-    assert commands[-2] == (":silent! e! | setlocal nomodifiable nopaste", True)
+    assert commands[-2] == (_RELOCK_SYNCED, True)
     assert commands[-1] == ("Enter", False)
     assert result == AnimationResult("completed", 1)
 
@@ -155,7 +177,7 @@ def test_apply_edit_relocks_after_pause_and_resume(tmp_path: Path) -> None:
         result = follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
     commands = _sent_commands(run)
     assert result.outcome == "completed"
-    assert commands[-2] == (":silent! e! | setlocal nomodifiable nopaste", True)
+    assert commands[-2] == (_RELOCK_SYNCED, True)
 
 
 def test_apply_edit_renavigates_to_its_own_tab_on_resume(tmp_path: Path) -> None:
@@ -181,7 +203,7 @@ def test_apply_edit_renavigates_to_its_own_tab_on_resume(tmp_path: Path) -> None
     # once for the initial goto_file preamble, once more for the resume
     assert len(tab_drops) == 2
     # the second tab drop happens after the pause and before the relock
-    relock_index = commands.index((":silent! e! | setlocal nomodifiable nopaste", True))
+    relock_index = commands.index((_RELOCK_SYNCED, True))
     assert tab_drops[1] < relock_index
 
 
@@ -199,7 +221,7 @@ def test_apply_edit_relocks_with_a_silent_disk_sync(tmp_path: Path) -> None:
     ):
         follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
     commands = _sent_commands(run)
-    assert commands[-2] == (":silent! e! | setlocal nomodifiable nopaste", True)
+    assert commands[-2] == (_RELOCK_SYNCED, True)
     assert commands[-1] == ("Enter", False)
 
 
@@ -212,7 +234,7 @@ def test_show_fresh_relocks_with_a_silent_disk_sync(tmp_path: Path) -> None:
     ):
         follower.show_fresh("/tmp/f.txt", "a\nb\n")
     commands = _sent_commands(run)
-    assert commands[-2] == (":silent! e! | setlocal readonly nomodifiable nopaste", True)
+    assert commands[-2] == (_RELOCK_READONLY_SYNCED, True)
     assert commands[-1] == ("Enter", False)
 
 
@@ -226,7 +248,8 @@ def test_interrupted_animation_never_sends_a_disk_sync_reload(tmp_path: Path) ->
         result = follower.show_fresh("/tmp/f.txt", "a\nb\n")
     commands = _sent_commands(run)
     assert result.outcome == "interrupted"
-    assert not any(text.startswith(":silent! e!") for text, _ in commands)
+    # no disk sync of any shape (the relock carries it as `silent! edit!`)
+    assert not any("edit!" in text or "e!" in text for text, _ in commands)
 
 
 def test_get_follower_forwards_pace_seconds_for_tmux_backend() -> None:
@@ -285,7 +308,7 @@ def test_show_fresh_renames_current_buffer_without_ever_loading_the_real_file(
     assert commands[16] == (":%d", True)
     assert commands[17] == ("Enter", False)
     assert commands[18] == ("i", True)
-    assert commands[-2] == (":silent! e! | setlocal readonly nomodifiable nopaste", True)
+    assert commands[-2] == (_RELOCK_READONLY_SYNCED, True)
     assert commands[-1] == ("Enter", False)
     typed = [text for text, literal in commands if literal]
     assert "a" in typed
@@ -322,7 +345,7 @@ def test_show_fresh_with_empty_content_still_wipes_and_relocks(tmp_path: Path) -
         ("Enter", False),
         (":%d", True),
         ("Enter", False),
-        (":silent! e! | setlocal readonly nomodifiable nopaste", True),
+        (_RELOCK_READONLY_SYNCED, True),
         ("Enter", False),
     ]
     assert result == AnimationResult("completed", 0)
@@ -407,7 +430,7 @@ def test_resume_apply_edit_replays_remaining_ops_and_relocks(tmp_path: Path) -> 
     assert commands[1] == ("Enter", False)
     assert commands[2] == (":setlocal noreadonly modifiable paste", True)
     assert commands[3] == ("Enter", False)
-    assert commands[-2] == (":silent! e! | setlocal nomodifiable nopaste", True)
+    assert commands[-2] == (_RELOCK_SYNCED, True)
     assert commands[-1] == ("Enter", False)
     assert result == AnimationResult("completed", 1)
 
@@ -426,7 +449,7 @@ def test_resume_show_fresh_replays_remaining_lines_and_relocks_with_readonly(
     commands = _sent_commands(run)
     assert commands[0] == (":silent! CocDisable", True)
     assert commands[2] == (":setlocal noreadonly modifiable paste", True)
-    assert commands[-2] == (":silent! e! | setlocal readonly nomodifiable nopaste", True)
+    assert commands[-2] == (_RELOCK_READONLY_SYNCED, True)
     assert commands[-1] == ("Enter", False)
     assert result == AnimationResult("completed", 2)
 
@@ -570,7 +593,7 @@ def test_reload_and_relock_navigates_then_reloads_and_relocks() -> None:
         ("Escape", False),
         (_goto("/tmp/a.py"), True),
         ("Enter", False),
-        (":e!", True),
+        (_RELOAD_DISCARDING, True),
         ("Enter", False),
         (":setlocal readonly nomodifiable", True),
         ("Enter", False),
@@ -713,8 +736,9 @@ def test_show_fresh_default_renames_in_place(sent: list[str], follower: TmuxVimF
 _SWAP_BACK_ON = (
     # Spelled out, not imported, for the same reason as _goto/_wipe above.
     ":let g:vaf_shortmess = &shortmess | set shortmess+=A"
-    " | try | setlocal swapfile"
+    " | try | silent! setlocal swapfile"
     " | finally | let &shortmess = g:vaf_shortmess | unlet g:vaf_shortmess | endtry"
+    " | redraw"
 )
 
 

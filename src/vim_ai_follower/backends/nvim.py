@@ -10,6 +10,7 @@ does not exist here."""
 from __future__ import annotations
 
 import contextlib
+import logging
 import time
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
@@ -24,6 +25,8 @@ from vim_ai_follower.backends.nvim_prompt import dismiss_prompt, exec_logged, pr
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
 from vim_ai_follower.diff import EditOp, apply_ops
 from vim_ai_follower.state import FollowerState
+
+logger = logging.getLogger("vim_ai_follower")
 
 _NAMESPACE = "vaf"
 _TYPING_HL = "VafTypingLine"
@@ -318,9 +321,20 @@ class NvimFollower:
 
     def _restore_swap_if_adopted(self, nvim: pynvim.Nvim) -> None:
         """Swap back on for the CURRENT buffer, in an adopted nvim only, with
-        the ATTENTION message suppressed for that one step (_SWAP_BACK_ON)."""
-        if self._is_adopted():
+        the ATTENTION message suppressed for that one step (_SWAP_BACK_ON).
+
+        A toggle that fails (E303: no writable 'directory'; a user OptionSet
+        autocmd that errors) raises out of exec2. Uncaught, it aborted
+        show_fresh right after the rename and left an empty buffer. It is
+        logged instead, and the buffer is left swap-off: the state the
+        follower already chose before the re-enable, and the safe side."""
+        if not self._is_adopted():
+            return
+        try:
             nvim.api.exec2(_SWAP_BACK_ON, {"output": True})
+        except pynvim.NvimError as exc:
+            logger.warning("adopted nvim: could not turn swap back on, left off: %s", exc)
+            nvim.api.buf_set_option(nvim.api.get_current_buf(), "swapfile", False)
 
     def _exec(self, nvim: pynvim.Nvim, command: str) -> None:
         """An event-firing Ex command (filetype detect, edit!, bufload): its

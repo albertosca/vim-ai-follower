@@ -37,8 +37,6 @@ _LOCK_READONLY = ":setlocal readonly nomodifiable"
 _UNLOCK_FOR_ANIMATION = ":setlocal noreadonly modifiable paste"
 _RELOCK = ":setlocal nomodifiable nopaste"
 _RELOCK_READONLY = ":setlocal readonly nomodifiable nopaste"
-_RELOCK_SYNCED = ":silent! e! | " + _RELOCK[1:]
-_RELOCK_READONLY_SYNCED = ":silent! e! | " + _RELOCK_READONLY[1:]
 
 # CoC's inlay hints (parameter names, inferred return types — coc-pyright's
 # pyright.inlayHints.* etc.) render as virtual text once the follower's
@@ -181,6 +179,21 @@ _SWAP_ANSWER_OPEN = (
     ' | exe "augroup END"'
 )
 _SWAP_ANSWER_CLOSE = f'exe "autocmd! {_SWAP_GROUP}" | exe "augroup! {_SWAP_GROUP}"'
+
+# The completion relocks' `:e!` disk sync (see the lock protocol at the top),
+# carrying the same scoped (E)dit-anyway answer. `:edit` re-runs the swap
+# search, so on a buffer with swap ON (an adopted Vim's own buffers, the ones
+# show_fresh gives swap back in an adopted Vim, a dedicated buffer a Read
+# opened through `:tab drop`) whose file another Vim holds, the bare
+# `:silent! e!` stalled INVISIBLY at the hidden ATTENTION dialog: its own
+# `setlocal` never ran and the follower's next keys answered the dialog
+# (measured 2026-09-28 at 49 columns, tests/test_integration_swap_reload.py).
+# `silent!` stays on the edit itself: the relock never showed an error before.
+_SYNC_FROM_DISK = (
+    f":{_SWAP_ANSWER_OPEN} | try | silent! edit! | finally | {_SWAP_ANSWER_CLOSE} | endtry"
+)
+_RELOCK_SYNCED = _SYNC_FROM_DISK + " | " + _RELOCK[1:]
+_RELOCK_READONLY_SYNCED = _SYNC_FROM_DISK + " | " + _RELOCK_READONLY[1:]
 # `g:vaf_n` = the number of the buffer named `g:vaf_p`, or -1 (see above).
 _FIND_BUFFER = (
     ":let g:vaf_p = {file}"
@@ -228,11 +241,21 @@ _GOTO_FILE = (
 # left the ATTENTION block at `-- More --`, a scoped SwapExists answer does
 # not fire for an option toggle, and `shortmess+=A` saved and restored in
 # `finally` was silent, created `.swo`, and a second Vim opening the file
-# still got its SwapExists. The nvim backend sends the same line.
+# still got its SwapExists. The nvim backend runs the same toggle over RPC.
+#
+# Prompt-proof when the toggle fails. A swap file Vim cannot create (E303:
+# no writable 'directory') makes Vim set need_wait_return itself, so the line
+# ended at "Press ENTER" at 49 columns and swallowed the `:filetype detect`
+# and the keys after it. Measured 2026-09-28 with a forced E303: `silent!` on
+# the setlocal, or a `catch`, hides the message but NOT the prompt; the
+# trailing `redraw` (an intentional redraw clears need_wait_return) is what
+# removes it, and with a writable 'directory' the swap is still created.
+# The swap then stays unmade, which is the safe side.
 _SWAP_BACK_ON = (
     ":let g:vaf_shortmess = &shortmess | set shortmess+=A"
-    " | try | setlocal swapfile"
+    " | try | silent! setlocal swapfile"
     " | finally | let &shortmess = g:vaf_shortmess | unlet g:vaf_shortmess | endtry"
+    " | redraw"
 )
 
 _RELOAD_IF_CLEAN = (
@@ -452,7 +475,9 @@ class TmuxVimFollower:
         file Claude wrote, then resume following it."""
         self.goto_file(file_path)
         pane = TmuxPane(pane_id=self.pane_id)
-        pane.send_text(":e!")
+        # Not a bare `:e!`: on a buffer with swap on whose file another Vim
+        # holds, it put up the whole ATTENTION dialog (see _SYNC_FROM_DISK).
+        pane.send_text(_RELOAD_DISCARDING)
         pane.send_key("Enter")
         pane.send_text(_LOCK_READONLY)
         pane.send_key("Enter")

@@ -31,6 +31,13 @@ from vim_ai_follower.backends.nvim import _FIND_BUFFER_LUA
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.session import Session
 
+# The tail of the readonly completion relock: the scoped swap answer around a
+# silent re-read, then the lock (tmux_vim._RELOCK_READONLY_SYNCED).
+_READONLY_RELOCK_TAIL = (
+    '| try | silent! edit! | finally | exe "autocmd! vim_ai_follower_swap"'
+    ' | exe "augroup! vim_ai_follower_swap" | endtry | setlocal readonly nomodifiable nopaste'
+)
+
 
 def _goto(path: object) -> str:
     """The exact Ex line the tmux backend's goto_file sends for `path`.
@@ -1138,11 +1145,13 @@ def test_hook_post_des_interrupt_replays_the_remaining_animation(
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = _literal_sends(run)
-    assert ":e!" not in sends  # never the instant full-file reload
+    # never the instant full-file reload (reload_and_relock's `silent edit!`)
+    assert not any("| try | silent edit! |" in send for send in sends)
     # the replay typed the file's lines after the des-interrupt
     assert "a" in sends and "b" in sends
     # and relocked (fresh-retype lock) when the replay completed
-    assert ":silent! e! | setlocal readonly nomodifiable nopaste" in sends
+    # the relock: the scoped swap answer, a silent re-read, the readonly lock
+    assert any(send.endswith(_READONLY_RELOCK_TAIL) for send in sends)
     refreshed = state.FollowerState.read("@1")
     assert refreshed is not None
     assert refreshed.current_file == str(target)  # following resumed in place
@@ -1195,11 +1204,13 @@ def test_hook_post_des_interrupt_rebuilds_partial_content_before_replaying(
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = _literal_sends(run)
-    assert ":e!" not in sends  # never the instant full-file reload
+    # never the instant full-file reload (reload_and_relock's `silent edit!`)
+    assert not any("| try | silent edit! |" in send for send in sends)
     # the rebuild retyped the already-shown lines, then the replay typed
     # the genuine remainder
     assert "a" in sends and "b" in sends and "c" in sends and "d" in sends
-    assert ":silent! e! | setlocal readonly nomodifiable nopaste" in sends
+    # the relock: the scoped swap answer, a silent re-read, the readonly lock
+    assert any(send.endswith(_READONLY_RELOCK_TAIL) for send in sends)
     refreshed = state.FollowerState.read("@1")
     assert refreshed is not None
     assert refreshed.current_file == str(target)
@@ -1234,7 +1245,8 @@ def test_hook_post_des_interrupt_without_a_remainder_falls_back_to_reload(
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = _literal_sends(run)
-    assert ":e!" in sends
+    # the reload of the finished file, under the scoped (E)dit-anyway answer
+    assert any("| try | silent edit! | finally |" in send for send in sends)
     assert ":setlocal readonly nomodifiable" in sends
     assert capsys.readouterr().out == ""
 

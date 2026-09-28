@@ -282,3 +282,38 @@ def test_open_from_disk_turns_swap_back_on_after_loading_only_when_adopted(
         assert calls.index(call.win_set_buf(0, 42)) < calls.index(back_on)
     else:
         assert back_on not in calls
+
+
+def test_a_swap_that_cannot_be_turned_back_on_is_logged_and_left_off(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # E303 (no writable 'directory') or a user OptionSet autocmd that errors
+    # raises out of exec2. Uncaught, show_fresh stopped right after the rename
+    # and left an empty buffer; the retype must go on, swap-off.
+    import pynvim
+
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
+    nvim = MagicMock()
+    nvim.exec_lua.return_value = -1
+    nvim.current.buffer.handle = 7
+
+    def exec2(command: str, opts: dict[str, bool]) -> dict[str, str]:
+        if command == _SWAP_BACK_ON:
+            raise pynvim.NvimError("Vim(setlocal):E303: Unable to open swap file")
+        return {"output": ""}
+
+    nvim.api.exec2.side_effect = exec2
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+    ):
+        state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=True)
+        result = follower.show_fresh("/tmp/f.py", "a\nb\n")
+
+    assert result == AnimationResult("completed", 2)
+    calls = nvim.api.mock_calls
+    failed = calls.index(call.exec2(_SWAP_BACK_ON, {"output": True}))
+    assert call.buf_set_option(nvim.api.get_current_buf(), "swapfile", False) in calls[failed:]
+    assert any(c[0] == "buf_set_text" for c in calls[failed:]), "the retype never ran"
+    assert "could not turn swap back on" in caplog.text
