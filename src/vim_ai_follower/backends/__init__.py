@@ -76,6 +76,13 @@ class Follower(Protocol):
 
     def hand_over(self) -> None: ...
 
+    # Whether file_path's buffer, as handed over to the user at an interrupt,
+    # is readonly by the USER's own setting (an adopted editor only; a
+    # dedicated follower's readonly is never the user's). The hand-off cue
+    # then asks for `:w!`, because a plain `:w` fails with E45. A backend
+    # that cannot tell answers False (the plain cue).
+    def user_readonly(self, file_path: str) -> bool: ...
+
 
 def buffer_forms(content: str) -> list[list[str]]:
     """The line lists an editor buffer holding the file `content` can show.

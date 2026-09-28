@@ -154,3 +154,12 @@ def test_an_adopted_nvim_never_reloads_the_users_unsaved_typing(
 
     assert _buffer(nvim, target) == typed
     assert nvim.api.get_mode()["blocking"] is False
+
+
+def test_an_adopted_nvim_reports_the_users_readonly_for_the_hand_off_cue(
+    swap_aware_nvim: Callable[[], str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    follower, nvim, target = _adopted_on(swap_aware_nvim, tmp_path, monkeypatch)
+    assert follower.user_readonly(str(target)) is False
+    nvim.command(f"view {target}")
+    assert follower.user_readonly(str(target)) is True

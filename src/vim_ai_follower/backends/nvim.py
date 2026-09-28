@@ -1048,6 +1048,21 @@ class NvimFollower:
             if bufnr != -1:
                 nvim.command(f"silent! bwipeout! {bufnr}")
 
+    def user_readonly(self, file_path: str) -> bool:
+        """See Follower.user_readonly. This backend never sets 'readonly'
+        itself, so in an adopted nvim a readonly buffer is the user's. A
+        dedicated follower's never is (and it never asks), and a lookup that
+        fails is False, the plain cue."""
+        if not self._is_adopted():
+            return False
+        try:
+            nvim = self._connect()
+            bufnr = _buffer_number(nvim, file_path)
+            return bufnr != -1 and bool(nvim.api.buf_get_option(bufnr, "readonly"))
+        except (OSError, pynvim.NvimError):
+            logger.warning("adopted nvim: could not read %s's readonly", file_path)
+            return False
+
     def goto_line(self, offset: int) -> None:
         """Move the cursor to line `offset`, CLAMPED to the buffer's last
         line. An out-of-range Read offset is normal — Claude can read a file

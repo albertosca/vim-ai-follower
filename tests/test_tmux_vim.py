@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from helpers import register_fake_follower as _register_fake_follower
 
-from vim_ai_follower import config, control, state
+from vim_ai_follower import cache, config, control, state
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends import get_follower
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
@@ -67,20 +67,30 @@ _SYNC_FROM_DISK = (
     ' | exe "augroup! vim_ai_follower_swap" | endtry'
 )
 _RELOCK_SYNCED = _SYNC_FROM_DISK + " | setlocal nomodifiable nopaste"
-_RELOCK_READONLY_SYNCED = (
-    _SYNC_FROM_DISK
-    + " | setlocal readonly nomodifiable nopaste | let b:vaf_ro_tick = b:changedtick"
-)
-# The animation unlock, which records whose readonly it clears, spelled out
-# for the same reason as _goto.
-_UNLOCK_FOR_ANIMATION = (
-    ":if !exists('b:vaf_user_ro')"
-    " | let b:vaf_user_ro = &readonly && get(b:, 'vaf_ro_tick', -1) != b:changedtick"
-    " | endif | setlocal noreadonly modifiable paste"
-)
-# The readonly restore every animation exit sends (see
-# tmux_vim._UNLOCK_FOR_ANIMATION), spelled out for the same reason as _goto.
-_RESTORE_READONLY = ":if get(b:, 'vaf_user_ro') | setlocal readonly | endif | unlet! b:vaf_user_ro"
+_RELOCK_READONLY_SYNCED = _SYNC_FROM_DISK + " | setlocal readonly nomodifiable nopaste"
+# The animation unlock, spelled out for the same reason as _goto.
+_UNLOCK_FOR_ANIMATION = ":setlocal noreadonly modifiable paste"
+# An ADOPTED Vim's readonly bookkeeping (tmux_vim._NOTE_USER_READONLY), spelled
+# out for the same reason as _goto: the note of the user's readonly, the
+# follower's claim on the option, and the restore every animation exit sends.
+_NOTE = "if !get(b:, 'vaf_ro_ours') | let b:vaf_user_ro = &readonly | endif"
+_ADOPTED_UNLOCK = f":{_NOTE} | setlocal noreadonly modifiable paste | let b:vaf_ro_ours = 2"
+_ADOPTED_LOCK_READONLY = ":setlocal readonly nomodifiable | let b:vaf_ro_ours = 1"
+
+
+def _restore() -> str:
+    """The restore line, with the answer file user_readonly reads (under the
+    test's isolated cache dir, for pane %2)."""
+    answer = str(cache.CACHE_DIR / "readonly-2.txt").replace("'", "''")
+    return (
+        ":if get(b:, 'vaf_user_ro') | setlocal readonly | let b:vaf_ro_ours = 0"
+        " | elseif get(b:, 'vaf_ro_ours') == 2 | let b:vaf_ro_ours = 0 | endif"
+        " | unlet! b:vaf_user_ro"
+        " | try | let g:vaf_r = writefile([&readonly && !get(b:, 'vaf_ro_ours') ? '1' : '0'],"
+        f" '{answer}') | catch | finally | unlet! g:vaf_r | endtry"
+    )
+
+
 _RELOAD_DISCARDING = (
     ':exe "augroup vim_ai_follower_swap"'
     " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
@@ -144,12 +154,7 @@ def test_apply_edit_unlocks_the_buffer_only_for_the_animation(tmp_path: Path) ->
     assert commands[5] == ("Enter", False)
     assert commands[6] == (_UNLOCK_FOR_ANIMATION, True)
     assert commands[7] == ("Enter", False)
-    assert commands[-4:] == [
-        (_RELOCK_SYNCED, True),
-        ("Enter", False),
-        (_RESTORE_READONLY, True),
-        ("Enter", False),
-    ]
+    assert commands[-2:] == [(_RELOCK_SYNCED, True), ("Enter", False)]
     assert result == AnimationResult("completed", 1)
 
 
@@ -176,8 +181,8 @@ def test_apply_edit_skips_relock_when_interrupted(tmp_path: Path) -> None:
     commands = _sent_commands(run)
     assert result.outcome == "interrupted"
     assert (_RELOCK_SYNCED, True) not in commands
-    # ...but the user's own readonly still comes back at the hand-off.
-    assert commands[-2:] == [(_RESTORE_READONLY, True), ("Enter", False)]
+    # A dedicated follower's readonly is never the user's: no bookkeeping.
+    assert not any("b:vaf_" in text for text, _ in commands)
 
 
 def test_apply_edit_relocks_after_pause_and_resume(tmp_path: Path) -> None:
@@ -196,7 +201,7 @@ def test_apply_edit_relocks_after_pause_and_resume(tmp_path: Path) -> None:
         result = follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
     commands = _sent_commands(run)
     assert result.outcome == "completed"
-    assert commands[-4] == (_RELOCK_SYNCED, True)
+    assert commands[-2] == (_RELOCK_SYNCED, True)
 
 
 def test_apply_edit_renavigates_to_its_own_tab_on_resume(tmp_path: Path) -> None:
@@ -240,12 +245,7 @@ def test_apply_edit_relocks_with_a_silent_disk_sync(tmp_path: Path) -> None:
     ):
         follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
     commands = _sent_commands(run)
-    assert commands[-4:] == [
-        (_RELOCK_SYNCED, True),
-        ("Enter", False),
-        (_RESTORE_READONLY, True),
-        ("Enter", False),
-    ]
+    assert commands[-2:] == [(_RELOCK_SYNCED, True), ("Enter", False)]
 
 
 def test_show_fresh_relocks_with_a_silent_disk_sync(tmp_path: Path) -> None:
@@ -257,12 +257,7 @@ def test_show_fresh_relocks_with_a_silent_disk_sync(tmp_path: Path) -> None:
     ):
         follower.show_fresh("/tmp/f.txt", "a\nb\n")
     commands = _sent_commands(run)
-    assert commands[-4:] == [
-        (_RELOCK_READONLY_SYNCED, True),
-        ("Enter", False),
-        (_RESTORE_READONLY, True),
-        ("Enter", False),
-    ]
+    assert commands[-2:] == [(_RELOCK_READONLY_SYNCED, True), ("Enter", False)]
 
 
 def test_interrupted_animation_never_sends_a_disk_sync_reload(tmp_path: Path) -> None:
@@ -294,7 +289,7 @@ def test_get_follower_forwards_window_id_for_tmux_backend() -> None:
     assert follower.window_id == "@7"
 
 
-def test_show_fresh_renames_current_buffer_without_ever_loading_the_real_file(
+def test_show_fresh_renames_in_place_and_reads_the_file_only_on_the_rename_line(
     tmp_path: Path,
 ) -> None:
     # No separate `:e` on purpose: loading the real file would flash its
@@ -340,12 +335,7 @@ def test_show_fresh_renames_current_buffer_without_ever_loading_the_real_file(
     assert commands[14] == (":%d", True)
     assert commands[15] == ("Enter", False)
     assert commands[16] == ("i", True)
-    assert commands[-4:] == [
-        (_RELOCK_READONLY_SYNCED, True),
-        ("Enter", False),
-        (_RESTORE_READONLY, True),
-        ("Enter", False),
-    ]
+    assert commands[-2:] == [(_RELOCK_READONLY_SYNCED, True), ("Enter", False)]
     typed = [text for text, literal in commands if literal]
     assert "a" in typed
     assert "b" in typed
@@ -381,8 +371,6 @@ def test_show_fresh_with_empty_content_still_wipes_and_relocks(tmp_path: Path) -
         ("Enter", False),
         (_RELOCK_READONLY_SYNCED, True),
         ("Enter", False),
-        (_RESTORE_READONLY, True),
-        ("Enter", False),
     ]
     assert result == AnimationResult("completed", 0)
 
@@ -409,10 +397,7 @@ def test_show_fresh_skips_relock_when_interrupted(tmp_path: Path) -> None:
         result = follower.show_fresh("/tmp/f.txt", "a\nb\n")
     commands = _sent_commands(run)
     assert result.outcome == "interrupted"
-    assert not any(
-        text == ":setlocal readonly nomodifiable nopaste | let b:vaf_ro_tick = b:changedtick"
-        for text, _ in commands
-    )
+    assert not any(text == ":setlocal readonly nomodifiable nopaste" for text, _ in commands)
 
 
 def test_live_pace_reads_current_state_speed() -> None:
@@ -469,12 +454,7 @@ def test_resume_apply_edit_replays_remaining_ops_and_relocks(tmp_path: Path) -> 
     assert commands[1] == ("Enter", False)
     assert commands[2] == (_UNLOCK_FOR_ANIMATION, True)
     assert commands[3] == ("Enter", False)
-    assert commands[-4:] == [
-        (_RELOCK_SYNCED, True),
-        ("Enter", False),
-        (_RESTORE_READONLY, True),
-        ("Enter", False),
-    ]
+    assert commands[-2:] == [(_RELOCK_SYNCED, True), ("Enter", False)]
     assert result == AnimationResult("completed", 1)
 
 
@@ -492,12 +472,7 @@ def test_resume_show_fresh_replays_remaining_lines_and_relocks_with_readonly(
     commands = _sent_commands(run)
     assert commands[0] == (":silent! CocDisable", True)
     assert commands[2] == (_UNLOCK_FOR_ANIMATION, True)
-    assert commands[-4:] == [
-        (_RELOCK_READONLY_SYNCED, True),
-        ("Enter", False),
-        (_RESTORE_READONLY, True),
-        ("Enter", False),
-    ]
+    assert commands[-2:] == [(_RELOCK_READONLY_SYNCED, True), ("Enter", False)]
     assert result == AnimationResult("completed", 2)
 
 
@@ -513,7 +488,7 @@ def test_resume_show_fresh_replays_remaining_lines_and_relocks_with_readonly(
         ),
         (
             control.PendingShowFresh(lines=("b", "c"), pace_seconds=0.0),
-            ":setlocal readonly nomodifiable nopaste | let b:vaf_ro_tick = b:changedtick",
+            ":setlocal readonly nomodifiable nopaste",
         ),
     ],
     ids=["apply_edit", "show_fresh"],
@@ -531,12 +506,7 @@ def test_resume_without_reload_relocks_without_reading_disk(
     ):
         result = follower.resume(pending, reload=False)
     commands = _sent_commands(run)
-    assert commands[-4:] == [
-        (relock, True),
-        ("Enter", False),
-        (_RESTORE_READONLY, True),
-        ("Enter", False),
-    ]
+    assert commands[-2:] == [(relock, True), ("Enter", False)]
     assert not any("e!" in text for text, _ in commands)
     assert result.outcome == "completed"
 
@@ -601,8 +571,6 @@ def test_hand_over_unlocks_the_buffer() -> None:
         ("Enter", False),
         (":setlocal modifiable nopaste", True),
         ("Enter", False),
-        (_RESTORE_READONLY, True),
-        ("Enter", False),
     ]
 
 
@@ -630,7 +598,7 @@ def test_ensure_showing_navigates_by_tab_drop_and_locks() -> None:
         ("Enter", False),
         (_RELOAD_IF_CLEAN, True),
         ("Enter", False),
-        (":setlocal readonly nomodifiable | let b:vaf_ro_tick = b:changedtick", True),
+        (":setlocal readonly nomodifiable", True),
         ("Enter", False),
     ]
     assert (":e /tmp/a.py", True) not in commands
@@ -648,7 +616,7 @@ def test_reload_and_relock_navigates_then_reloads_and_relocks() -> None:
         ("Enter", False),
         (_RELOAD_DISCARDING, True),
         ("Enter", False),
-        (":setlocal readonly nomodifiable | let b:vaf_ro_tick = b:changedtick", True),
+        (":setlocal readonly nomodifiable", True),
         ("Enter", False),
     ]
 
@@ -676,7 +644,7 @@ def test_reload_from_disk_discards_under_the_swap_answer_and_locks() -> None:
             True,
         ),
         ("Enter", False),
-        (":setlocal readonly nomodifiable | let b:vaf_ro_tick = b:changedtick", True),
+        (":setlocal readonly nomodifiable", True),
         ("Enter", False),
     ]
 
@@ -699,15 +667,19 @@ def _wipe(quoted_path: str) -> str:
     )
 
 
-def _rename(path: str) -> str:
+def _rename(path: str, *, adopted: bool = False) -> str:
     """show_fresh's `:file {path}` rename-in-place line, escaped: `#`, `%`
     and a space are live on Vim's command line, so the raw path is wrong —
     it goes through a Vim string literal and fnameescape(), same as _goto.
-    Spelled out for the same reason as _goto/_wipe above."""
+    Spelled out for the same reason as _goto/_wipe above. An adopted Vim's
+    also claims the readonly option for the follower."""
+    claim = " | let b:vaf_user_ro = 0 | let b:vaf_ro_ours = 2" if adopted else ""
     return (
         ":exe 'file ' . fnameescape('"
         + path.replace("'", "''")
-        + "') | let b:vaf_user_ro = 0 | setlocal buftype="
+        + "')"
+        + claim
+        + " | setlocal buftype= modifiable noreadonly"
         + " | noautocmd silent! edit! | silent! %d _"
     )
 
@@ -834,7 +806,7 @@ def test_show_fresh_turns_swap_back_on_after_the_rename_only_when_adopted(
     ):
         follower.show_fresh("/tmp/f.txt", "a\n")
     commands = _sent_commands(run)
-    rename = commands.index((_rename("/tmp/f.txt"), True))
+    rename = commands.index((_rename("/tmp/f.txt", adopted=adopted), True))
     if adopted:
         assert commands[rename + 1 : rename + 4] == [
             ("Enter", False),
@@ -843,3 +815,110 @@ def test_show_fresh_turns_swap_back_on_after_the_rename_only_when_adopted(
         ]
     else:
         assert (_SWAP_BACK_ON, True) not in commands
+
+
+# ---- adopted Vim: the user's readonly (see tmux_vim._NOTE_USER_READONLY)
+
+
+def _adopted_follower() -> TmuxVimFollower:
+    _register_fake_follower("@1", "%2")
+    state.FollowerState.update("@1", adopted=True)
+    return TmuxVimFollower(pane_id="%2", window_id="@1")
+
+
+@pytest.mark.parametrize("outcome", ["completed", "interrupted"])
+def test_an_adopted_animation_notes_claims_and_restores_the_readonly(outcome: str) -> None:
+    follower = _adopted_follower()
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+        patch(
+            "vim_ai_follower.backends.tmux_vim.run_ops",
+            return_value=AnimationResult(outcome, 0),  # type: ignore[arg-type]
+        ),
+    ):
+        follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
+    commands = _sent_commands(run)
+    assert (_ADOPTED_UNLOCK, True) in commands
+    tail = [(_restore(), True), ("Enter", False)]
+    if outcome == "completed":
+        assert commands[-4:] == [(_RELOCK_SYNCED, True), ("Enter", False), *tail]
+    else:
+        assert (_RELOCK_SYNCED, True) not in commands
+        assert commands[-2:] == tail
+
+
+def test_an_adopted_show_fresh_relock_claims_its_own_readonly() -> None:
+    follower = _adopted_follower()
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+    ):
+        follower.show_fresh("/tmp/f.txt", "a\n")
+    commands = _sent_commands(run)
+    assert commands[-4:] == [
+        (_RELOCK_READONLY_SYNCED + " | let b:vaf_ro_ours = 1", True),
+        ("Enter", False),
+        (_restore(), True),
+        ("Enter", False),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("entry", "reload"),
+    [("ensure_showing", _RELOAD_IF_CLEAN), ("reload_and_relock", _RELOAD_DISCARDING)],
+)
+def test_an_adopted_reload_notes_the_users_readonly_before_it_and_claims_the_lock(
+    entry: str, reload: str
+) -> None:
+    follower = _adopted_follower()
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        getattr(follower, entry)("/tmp/f.txt")
+    assert _sent_commands(run)[-4:] == [
+        (f":{_NOTE} | {reload[1:]}", True),
+        ("Enter", False),
+        (_ADOPTED_LOCK_READONLY, True),
+        ("Enter", False),
+    ]
+
+
+def test_an_adopted_hand_over_restores_the_readonly() -> None:
+    follower = _adopted_follower()
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        follower.hand_over()
+    assert _sent_commands(run)[-2:] == [(_restore(), True), ("Enter", False)]
+
+
+def test_a_dedicated_follower_never_asks_whose_readonly_it_is() -> None:
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        assert follower.user_readonly("/tmp/f.txt") is False
+    run.assert_not_called()
+
+
+@pytest.mark.parametrize(("answer", "expected"), [("1\n", True), ("0\n", False)])
+def test_an_adopted_vim_answers_from_the_restore_it_just_ran(answer: str, expected: bool) -> None:
+    follower = _adopted_follower()
+    (cache.CACHE_DIR / "readonly-2.txt").write_text(answer)
+    assert follower.user_readonly("/tmp/f.txt") is expected
+
+
+def test_no_answer_from_the_restore_is_the_plain_cue(caplog: pytest.LogCaptureFixture) -> None:
+    follower = _adopted_follower()
+    with (
+        patch("vim_ai_follower.backends.tmux_vim._PROBE_TIMEOUT_SECONDS", 0.05),
+        patch("vim_ai_follower.backends.tmux_vim.time.sleep"),
+    ):
+        assert follower.user_readonly("/tmp/f.txt") is False
+    assert "no readonly answer" in caplog.text
+
+
+def test_the_restore_clears_the_last_answer_before_it_is_sent() -> None:
+    """A stale answer from an earlier hand-off must never be read as this one's."""
+    follower = _adopted_follower()
+    answer = cache.CACHE_DIR / "readonly-2.txt"
+    answer.parent.mkdir(parents=True, exist_ok=True)
+    answer.write_text("1\n")
+    with patch("vim_ai_follower.tmux.subprocess.run"):
+        follower.hand_over()
+    assert not answer.exists()

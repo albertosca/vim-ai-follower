@@ -516,7 +516,10 @@ def _print_unchanged_save_notification(file_path: str) -> None:
 
 _HANDOFF_POLL_SECONDS = 0.2
 _HANDOFF_REMINDER_POLLS = 150  # ~30s at the poll cadence above
-_HANDOFF_CUE = "Claude waiting \u2014 :w releases \u00b7 S discards"
+HANDOFF_CUE = "Claude waiting \u2014 :w releases \u00b7 S discards"
+# The same cue when the handed-over buffer is readonly by the USER's own
+# setting (an adopted editor): a plain `:w` fails there with E45.
+HANDOFF_CUE_READONLY = "Claude waiting \u2014 :w! releases \u00b7 S discards"
 
 # Shown when an adopted editor's buffer is not the base of Claude's edit (see
 # _leave_adopted_buffer_alone). 40 characters: measured in a real 49-column
@@ -530,6 +533,19 @@ BASE_DIFFERS_CUE = "buffer differs \u2014 :e! shows Claude's edit"
 PROBE_UNKNOWN_CUE = "can't check buffer \u2014 edit not shown"
 
 
+def _handoff_cue(follower: Follower, file_path: str) -> str:
+    """The hand-off cue for file_path's buffer as the user now holds it: a
+    plain `:w` fails with E45 on a readonly the USER set (Alberto's decision,
+    2026-09-28), so that buffer's cue asks for `:w!`. Asked once per hand-off
+    cycle; a failure to ask is the plain cue, never a failed hook."""
+    try:
+        readonly = follower.user_readonly(file_path)
+    except Exception:
+        logger.exception("could not ask whether %s is readonly", file_path)
+        readonly = False
+    return HANDOFF_CUE_READONLY if readonly else HANDOFF_CUE
+
+
 def _poll_until_interrupt(
     current: FollowerState,
     session: Session,
@@ -537,6 +553,7 @@ def _poll_until_interrupt(
     after: str,
     partial_content: str,
     initial_mtime: int | None,
+    cue: str = HANDOFF_CUE,
 ) -> bool:
     """One hand-off wait. True when the user pressed S again (des-interrupt);
     False when they released the turn by saving, with the matching
@@ -545,7 +562,7 @@ def _poll_until_interrupt(
     while True:
         polls += 1
         if polls % _HANDOFF_REMINDER_POLLS == 0 and session.in_tmux:
-            show_popup(current.target, _HANDOFF_CUE)
+            show_popup(current.target, cue)
         if control.check_signal(session.window_id) == "interrupt":
             return True
         try:
@@ -693,15 +710,17 @@ def _await_user_handoff(
     # demo, 2026-09-23). The tmux surface saves only on its FIRST set_state.
     if surface is None:
         surface = status_surface_for(current)
+    follower = get_follower(current.backend, current.target, window_id=window_id)
     try:
         while True:
             # Re-marked every cycle: the replay's own animation envelope
             # clears the marker when it ends, so a later cycle would wait
             # unmarked and let a parallel hook claim this window's pane.
             control.mark_animating(window_id, state="handoff")
-            surface.set_state(_HANDOFF_CUE)
+            cue = _handoff_cue(follower, file_path)
+            surface.set_state(cue)
             if not _poll_until_interrupt(
-                current, session, file_path, after, partial_content, initial_mtime
+                current, session, file_path, after, partial_content, initial_mtime, cue
             ):
                 return
             # switch the cue from "waiting" to the replay before it runs

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 import threading
 import time
@@ -39,6 +40,26 @@ def _screen(pane: str) -> str:
 
 
 CONTENT = "".join(f"line_{n} = {n}\n" for n in range(1, 13))
+
+
+def _prove_private() -> None:
+    """Every tmux call below must reach the fixture's throwaway server."""
+    assert "TMUX" not in os.environ
+    socket = subprocess.run(
+        ["tmux", "display-message", "-p", "#{socket_path}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert socket.startswith(os.path.realpath(os.environ["TMUX_TMPDIR"])), socket
+
+
+def _lines(path: Path) -> list[str] | None:
+    """The file's lines, or None while Vim's `:w` has it mid-replace."""
+    try:
+        return path.read_text().splitlines()
+    except OSError:
+        return None
 
 
 def _keys(pane: str, *commands: str) -> None:
@@ -99,6 +120,7 @@ def test_plain_w_saves_the_handed_over_buffer_and_releases_claude(
     tmp_path: Path,
     wait_until: Callable[..., bool],
 ) -> None:
+    _prove_private()
     log, pane, window_id = _observed_follower(
         tmux_session, monkeypatch, tmp_path, wait_until, "--speed", "lento"
     )
@@ -106,9 +128,7 @@ def test_plain_w_saves_the_handed_over_buffer_and_releases_claude(
     thread, partial = _interrupted_write(monkeypatch, log, window_id, target, wait_until)
     try:
         _keys(pane, ":w")
-        assert wait_until(lambda: target.read_text().splitlines() == partial, timeout=10.0), (
-            _screen(pane)
-        )
+        assert wait_until(lambda: _lines(target) == partial, timeout=10.0), _screen(pane)
         thread.join(timeout=15.0)
         assert not thread.is_alive(), "the save did not release Claude"
     finally:
@@ -124,6 +144,7 @@ def test_plain_w_still_warns_when_the_file_changed_outside_since(
     tmp_path: Path,
     wait_until: Callable[..., bool],
 ) -> None:
+    _prove_private()
     log, pane, window_id = _observed_follower(
         tmux_session, monkeypatch, tmp_path, wait_until, "--speed", "lento"
     )
@@ -142,3 +163,38 @@ def test_plain_w_still_warns_when_the_file_changed_outside_since(
     subprocess.run(["tmux", "send-keys", "-t", pane, "n"], check=True)
     time.sleep(0.5)
     assert target.read_text() == "changed outside\n"
+
+
+def test_a_write_over_a_locked_start_screen_never_shows_the_finished_file(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    """The first Write renames the CURRENT buffer in place, and that can be a
+    start-screen plugin's (startify, alpha, dashboard): `buftype=nofile`, and
+    `nomodifiable`. The read-then-clear's `%d` then failed (E21, silenced), so
+    the file it had just read stayed on screen through `:filetype detect` and
+    the unlock, until the run's own `:%d`."""
+    _prove_private()
+    log, pane, _ = _observed_follower(tmux_session, monkeypatch, tmp_path, wait_until)
+    _keys(
+        pane,
+        ":call setline(1, ['START SCREEN']) | setlocal buftype=nofile bufhidden=wipe nomodifiable",
+    )
+    assert wait_until(lambda: _last_state(log, "") == ["START SCREEN"], timeout=5.0)
+    target = tmp_path / "t.py"
+    with log.open("a") as handle:
+        handle.write(_MARK + "\n")
+    body = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(target)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(body))
+    assert cli.main(["hook", "pre"]) == 0
+    target.write_text(CONTENT)
+    monkeypatch.setattr("sys.stdin", io.StringIO(body))
+    assert cli.main(["hook", "post"]) == 0
+
+    full = CONTENT.splitlines()
+    assert wait_until(lambda: _last_state(log, target.name) == full, timeout=15.0)
+    states = _states(log, target.name)
+    assert len(states) > 2, "the retype was never observed"
+    assert full not in states[:-1], "the finished file was on screen before it was typed"
