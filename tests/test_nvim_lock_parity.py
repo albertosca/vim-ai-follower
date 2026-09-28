@@ -18,14 +18,21 @@ from unittest.mock import MagicMock, call, patch
 
 from vim_ai_follower import state
 from vim_ai_follower.animate import AnimationResult
-from vim_ai_follower.backends.nvim import NvimFollower
+from vim_ai_follower.backends.nvim import _IS_CLEAN_LUA, NvimFollower
 from vim_ai_follower.diff import EditOp
+
+
+def _buffer_9_not_clean(code: str, *args: object) -> object:
+    """exec_lua for an existing buffer 9 that is NOT clean, so ensure_showing
+    switches to it without a re-read: these tests are about the lock only
+    (the re-read has its own in tests/test_nvim_read_reload.py)."""
+    return False if code == _IS_CLEAN_LUA else 9
 
 
 def test_ensure_showing_locks_an_existing_buffer_after_switching_to_it() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
-    nvim.exec_lua.return_value = 9
+    nvim.exec_lua.side_effect = _buffer_9_not_clean
     nvim.api.get_current_buf.return_value.handle = 9
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -43,7 +50,7 @@ def test_ensure_showing_locks_unconditionally_without_checking_prior_state() -> 
     # rather than first querying the current lock state.
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
-    nvim.exec_lua.return_value = 9
+    nvim.exec_lua.side_effect = _buffer_9_not_clean
     nvim.api.get_current_buf.return_value.handle = 9
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -64,7 +71,7 @@ def test_ensure_showing_leaves_an_adopted_followers_existing_buffer_modifiable(
     # locked by this backend.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
-    nvim.exec_lua.return_value = 9
+    nvim.exec_lua.side_effect = _buffer_9_not_clean
     nvim.api.get_current_buf.return_value.handle = 9
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),

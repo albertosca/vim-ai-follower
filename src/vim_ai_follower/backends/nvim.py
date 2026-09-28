@@ -231,6 +231,23 @@ _SWAP_BACK_ON = (
 )
 
 
+# "Clean", for ensure_showing's re-read of an open buffer: it holds nothing the
+# user typed that is not on disk. nvim's 'modified' alone cannot say it, because
+# this backend never writes its buffers: every buffer the follower typed is
+# 'modified' although it matches the file Claude wrote. So a completed
+# animation stamps the buffer's changedtick (_drive, `b:vaf_synced_tick`), and
+# a buffer is clean when it is unmodified OR its tick still equals that stamp.
+# Any user edit moves the tick, even one undone again, so the answer errs
+# toward "not clean", the side that never discards typing. An interrupt does
+# not stamp: the handed-over buffer is the user's.
+_SYNCED_TICK = "vaf_synced_tick"
+_IS_CLEAN_LUA = f"""
+local buf = ...
+if not vim.bo[buf].modified then return true end
+return vim.b[buf].{_SYNCED_TICK} == vim.api.nvim_buf_get_changedtick(buf)
+"""
+
+
 # show_fresh's read-then-clear of the buffer it just named; see the tmux
 # backend's _READ_THEN_CLEAR for why (E13 on a plain `:w`) and for each piece.
 # One nvim_command: nvim redraws only between requests, so the file's content
@@ -369,8 +386,11 @@ class NvimFollower:
             result = run()
         finally:
             control.clear_animating(self.window_id)
-        if result.outcome != "interrupted" and not self._is_adopted():
-            nvim.api.buf_set_option(buf, "modifiable", False)
+        if result.outcome != "interrupted":
+            # The buffer now holds exactly what Claude wrote: see _IS_CLEAN_LUA.
+            nvim.api.buf_set_var(buf, _SYNCED_TICK, nvim.api.buf_get_changedtick(buf))
+            if not self._is_adopted():
+                nvim.api.buf_set_option(buf, "modifiable", False)
         return result
 
     def show_fresh(self, file_path: str, content: str, in_new_tab: bool = False) -> AnimationResult:
@@ -960,14 +980,12 @@ class NvimFollower:
         This is THE disk-reading entry point of this backend; goto_file is
         the one that NEVER reads disk, because show_fresh's callers rely on
         the finished file not being flashed before it is typed. An existing
-        buffer is therefore switched to and never reloaded: it may hold
-        typed-but-unsaved content, which in this backend is the norm.
-
-        This is NOT parity with the tmux backend. Its ensure_showing re-reads
-        a CLEAN open buffer on a Read (`_RELOAD_IF_CLEAN`), so a file
-        rewritten outside Claude's Edits (a formatter, `sed -i`, a checkout)
-        shows its new content there. Here the same file stays stale until the
-        next animation. That asymmetry is a known backlog item.
+        buffer is switched to and re-read only when it is CLEAN (see
+        _reload_if_clean), in a dedicated and an adopted nvim alike, so a
+        file rewritten outside Claude's Edits (a formatter, `sed -i`, a
+        checkout) is shown as it is on disk: parity with the tmux backend's
+        `_RELOAD_IF_CLEAN`. A buffer holding the user's unsaved typing is
+        never re-read.
 
         Both branches lock the buffer (nomodifiable) before returning, via
         the same `buf_set_option` call `_drive`'s completion relock uses —
@@ -988,10 +1006,32 @@ class NvimFollower:
             if _buffer_number(nvim, file_path) != -1:
                 self.goto_file(file_path)
                 buf = nvim.api.get_current_buf().handle
+                self._reload_if_clean(nvim, buf)
                 if not self._is_adopted():
                     nvim.api.buf_set_option(buf, "modifiable", False)
                 return
             self._open_from_disk(nvim, file_path)
+
+    def _reload_if_clean(self, nvim: pynvim.Nvim, buf: int) -> None:
+        """Re-read the CURRENT buffer `buf` from disk when it is clean
+        (_IS_CLEAN_LUA); leave it alone otherwise. Never writes.
+
+        Prompt-free: `silent` keeps the "file" line and any autocommand's
+        message from raising a hit-enter prompt in an adopted nvim, whose
+        prompts nothing answers; a dedicated one also captures and logs the
+        output (_exec).
+
+        Swap-safe as it stands, measured 2026-09-28: unlike Vim (see the tmux
+        backend's _RELOAD_IF_CLEAN), nvim's `:edit!` of a buffer that already
+        has a swap keeps that swap and runs no new swap search, so with
+        another nvim holding the file's `.swp` a UI nvim re-read with no
+        ATTENTION and kept its `.swo` (tests/test_e2e_adopted_swap.py), and
+        headless nvim raised nothing. A dedicated follower's buffers have
+        swap off. Turning swap off around the re-read, the way show_fresh and
+        _open_from_disk opt out before a FIRST load, was tried: no test could
+        tell it apart, and it deletes and recreates the user's swap file."""
+        if nvim.exec_lua(_IS_CLEAN_LUA, buf):
+            self._exec(nvim, "silent edit!")
 
     def close_tab(self, file_path: str) -> None:
         # Wipe by the number _buffer_number resolves, never by name: bwipeout

@@ -160,6 +160,35 @@ def test_an_adopted_nvim_keeps_swap_on_the_buffers_the_follower_makes(
         assert _second_nvim_swap_exists(world, target) == 1
 
 
+def test_an_adopted_nvim_re_reads_a_clean_swapped_buffer_with_no_prompt(
+    world: E2EFollower,
+) -> None:
+    """A Read re-reads a clean open buffer (parity with tmux). `:edit!` runs
+    the swap check again, and here another nvim holds the file's swap while
+    the follower's buffer has its own: the re-read must not stop at
+    ATTENTION, and the buffer keeps its swap afterwards."""
+    target = world.workdir / "adopted_reread.py"
+    target.write_text("x = 1\n")
+    world.start("nvim", "instant")
+    sock = world.follower_target()
+    _adopt(world)
+    pane = _nvim_follower_pane(world)
+    _open_owner_nvim(world, target)
+    assert world.cli("hook", "post", stdin=payload("Read", target)).stderr == ""
+    nvim = world._nvim(sock)
+    assert nvim.funcs.swapname(_nvim_buffer(world, sock, target)) != ""
+
+    target.write_text("x = 2\n")  # a formatter, `sed -i`, a checkout
+    assert world.cli("hook", "post", stdin=payload("Read", target)).stderr == ""
+
+    assert nvim.api.get_mode()["blocking"] is False
+    buf = _nvim_buffer(world, sock, target)
+    assert nvim.api.buf_get_lines(buf, 0, -1, True) == ["x = 2"]
+    assert nvim.funcs.swapname(buf) != ""
+    _screen_is_clean(world, pane)
+    _clean_log(world)
+
+
 def test_a_dedicated_nvim_still_takes_no_swap(world: E2EFollower) -> None:
     target = world.workdir / "dedicated.py"
     world.start("nvim", "instant")

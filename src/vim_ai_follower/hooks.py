@@ -431,11 +431,13 @@ def _ensure_buffer(window_id: str, follower: Follower, file_path: str) -> None:
     """Switches the follower to file_path's tab (a by-number buffer switch,
     or `:tab drop` for a file no buffer holds yet, on tmux; an RPC-based tab
     lookup on nvim). Used for Read navigation and binary files, where
-    showing the real on-disk content is exactly what's wanted. The backends
-    differ on an already-open buffer: tmux re-reads it when it is CLEAN (the
-    swap-guarded `_RELOAD_IF_CLEAN`, so a file rewritten outside Claude's
-    Edits is not shown stale) and leaves a modified one alone; nvim switches
-    to it and never re-reads it (a known backlog item). A fresh text edit
+    showing the real on-disk content is exactly what's wanted. Both backends
+    re-read an already-open buffer when it is CLEAN, so a file rewritten
+    outside Claude's Edits is not shown stale, and leave one holding unsaved
+    user typing alone: tmux through the swap-guarded `_RELOAD_IF_CLEAN`,
+    nvim through `_reload_if_clean`, where "clean" also covers a buffer
+    holding only follower text (it is never written, so always 'modified').
+    A fresh text edit
     never comes here, and neither does an Edit whose buffer does not hold
     the diff's base (listed but unloaded, or changed on disk outside
     Claude — see _probe_base): both go through show_fresh (or, in an

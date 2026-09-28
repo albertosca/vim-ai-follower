@@ -90,12 +90,15 @@ def test_ensure_showing_an_existing_unlocked_buffer_switches_to_it_and_locks_it(
     # ensure_showing's own lock rather than finding it already locked.
     follower.hand_over()
     assert _modifiable(nvim, buf) is True
+    # ...and the user types into it, unsaved: a Read re-reads only a CLEAN
+    # buffer, and follower text alone would count as clean.
+    nvim.api.buf_set_lines(buf, 2, 2, True, ["user line"])
 
     follower.show_fresh(str(tmp_path / "other.py"), "other\n", in_new_tab=True)
     follower.ensure_showing(str(target))
 
     assert nvim.current.buffer.name.endswith("/live.py")
-    assert nvim.current.buffer[:] == ["typed line 1", "typed line 2"]  # content untouched
+    assert nvim.current.buffer[:] == ["typed line 1", "typed line 2", "user line"]  # untouched
     assert _modifiable(nvim, buf) is False
 
 
@@ -117,12 +120,14 @@ def test_ensure_showing_an_adopted_followers_existing_buffer_stays_modifiable(
     # show_fresh's own completion never locked it (adopted), so this test
     # actually exercises ensure_showing's own (non-)lock.
     assert _modifiable(nvim, buf) is True
+    # The user types into it, unsaved (a clean buffer would be re-read).
+    nvim.api.buf_set_lines(buf, 2, 2, True, ["user line"])
 
     follower.show_fresh(str(tmp_path / "other.py"), "other\n", in_new_tab=True)
     follower.ensure_showing(str(target))
 
     assert nvim.current.buffer.name.endswith("/live.py")
-    assert nvim.current.buffer[:] == ["typed line 1", "typed line 2"]  # content untouched
+    assert nvim.current.buffer[:] == ["typed line 1", "typed line 2", "user line"]  # untouched
     assert _modifiable(nvim, buf) is True
 
 
