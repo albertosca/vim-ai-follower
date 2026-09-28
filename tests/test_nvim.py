@@ -293,7 +293,10 @@ def test_show_fresh_relocks_buffer_when_completed(tmp_path: Path) -> None:
     ):
         follower.show_fresh("/tmp/f.py", "a\n")
     # unlocked around the animation, then relocked (nomodifiable) after.
-    assert nvim.api.buf_set_option.call_args_list[0] == call(7, "modifiable", True)
+    # (The first option call opts the new buffer out of swap before naming it;
+    # the lock protocol starts after it.)
+    locks = [c for c in nvim.api.buf_set_option.call_args_list if c.args[1] != "swapfile"]
+    assert locks[0] == call(7, "modifiable", True)
     assert nvim.api.buf_set_option.call_args_list[-1] == call(7, "modifiable", False)
 
 
@@ -455,7 +458,10 @@ def test_drive_skips_relock_for_an_adopted_follower(tmp_path: Path) -> None:
         follower.show_fresh("/tmp/f.py", "a\n")
     # Unlocked for the animation, but an adopted (user-owned) nvim is never
     # relocked afterwards.
-    assert nvim.api.buf_set_option.call_args_list[0] == call(7, "modifiable", True)
+    # (The first option call opts the new buffer out of swap before naming it;
+    # the lock protocol starts after it.)
+    locks = [c for c in nvim.api.buf_set_option.call_args_list if c.args[1] != "swapfile"]
+    assert locks[0] == call(7, "modifiable", True)
     assert call(7, "modifiable", False) not in nvim.api.buf_set_option.call_args_list
 
 

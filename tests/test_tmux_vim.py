@@ -265,21 +265,26 @@ def test_show_fresh_renames_current_buffer_without_ever_loading_the_real_file(
     assert commands[1] == ("Escape", False)
     assert commands[2] == (_wipe("'/tmp/f.txt'"), True)
     assert commands[3] == ("Enter", False)
-    assert commands[4] == (_rename("/tmp/f.txt"), True)
+    # swap opted out BEFORE the rename: renaming a swap-enabled buffer runs
+    # the swap check, and a live Vim holding the file's swap made `:file`
+    # raise E325 (see tests/test_e2e_battery_tranche2.py)
+    assert commands[4] == (":setlocal noswapfile", True)
     assert commands[5] == ("Enter", False)
-    assert commands[6] == (":filetype detect", True)
+    assert commands[6] == (_rename("/tmp/f.txt"), True)
     assert commands[7] == ("Enter", False)
+    assert commands[8] == (":filetype detect", True)
+    assert commands[9] == ("Enter", False)
     # the renamed-over buffer may be a plugin scratch screen with
     # buftype=nofile — inherited, it makes the user's :w fail with E382
-    assert commands[8] == (":setlocal buftype=", True)
-    assert commands[9] == ("Enter", False)
-    assert commands[10] == (":silent! CocDisable", True)
+    assert commands[10] == (":setlocal buftype=", True)
     assert commands[11] == ("Enter", False)
-    assert commands[12] == (":setlocal noreadonly modifiable paste", True)
+    assert commands[12] == (":silent! CocDisable", True)
     assert commands[13] == ("Enter", False)
-    assert commands[14] == (":%d", True)
+    assert commands[14] == (":setlocal noreadonly modifiable paste", True)
     assert commands[15] == ("Enter", False)
-    assert commands[16] == ("i", True)
+    assert commands[16] == (":%d", True)
+    assert commands[17] == ("Enter", False)
+    assert commands[18] == ("i", True)
     assert commands[-2] == (":silent! e! | setlocal readonly nomodifiable nopaste", True)
     assert commands[-1] == ("Enter", False)
     typed = [text for text, literal in commands if literal]
@@ -302,6 +307,8 @@ def test_show_fresh_with_empty_content_still_wipes_and_relocks(tmp_path: Path) -
         ("Escape", False),
         ("Escape", False),
         (_wipe("'/tmp/f.txt'"), True),
+        ("Enter", False),
+        (":setlocal noswapfile", True),
         ("Enter", False),
         (_rename("/tmp/f.txt"), True),
         ("Enter", False),

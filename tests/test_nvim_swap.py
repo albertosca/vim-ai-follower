@@ -129,13 +129,41 @@ def test_switching_to_an_existing_buffer_never_touches_its_swapfile() -> None:
     assert "swapfile" not in [c.args[1] for c in nvim.api.buf_set_option.call_args_list]
 
 
-def test_goto_file_never_touches_swapfile() -> None:
-    # goto_file creates an EMPTY buffer and never reads disk, so no swap
-    # check is in play and nothing should be opted out.
+def test_goto_file_opts_the_buffer_it_creates_out_of_swap_before_naming_it() -> None:
+    # goto_file creates an EMPTY buffer and never reads disk, but NAMING it
+    # runs the swap check: with a live editor holding the file's swap,
+    # buf_set_name raised E325 (measured 2026-09-28,
+    # tests/test_nvim_integration_swap.py). An earlier version of this test
+    # pinned "never touches swapfile" on the premise that no check was in play.
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
     nvim.exec_lua.return_value = -1
     nvim.api.list_tabpages.return_value = []
+    buf = nvim.api.create_buf.return_value
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.goto_file("/tmp/f.py")
-    nvim.api.buf_set_option.assert_not_called()
+    assert nvim.api.buf_set_option.call_args_list == [call(buf, "swapfile", False)]
+    assert nvim.api.buf_set_name.call_args_list == [call(buf, "/tmp/f.py")]
+    assert nvim.api.mock_calls.index(call.buf_set_option(buf, "swapfile", False)) < (
+        nvim.api.mock_calls.index(call.buf_set_name(buf, "/tmp/f.py"))
+    )
+
+
+def test_show_fresh_opts_its_new_buffer_out_of_swap_before_naming_it(tmp_path: Path) -> None:
+    # The retype names a fresh buffer after the file; with a live editor
+    # holding the file's swap, naming a swap-enabled buffer raised E325 and
+    # left the UI at a blocking hit-enter prompt (measured 2026-09-28).
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
+    nvim = MagicMock()
+    nvim.exec_lua.return_value = -1
+    buf = nvim.current.buffer
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+    ):
+        follower.show_fresh("/tmp/f.py", "a\n")
+    calls = nvim.api.mock_calls
+    assert calls.index(call.buf_set_option(buf, "swapfile", False)) < calls.index(
+        call.buf_set_name(buf, "/tmp/f.py")
+    )

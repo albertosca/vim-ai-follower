@@ -223,6 +223,45 @@ def test_a_stale_swap_is_edited_anyway_and_left_on_disk(world: E2EFollower) -> N
     assert swap.exists(), "the follower deleted the stale swap"
 
 
+def test_a_swap_held_file_whose_vim_buffer_vanished_is_retyped_without_a_prompt(
+    world: E2EFollower,
+) -> None:
+    """The tmux twin of check 18's vanished-buffer case, after the B2 guard:
+    the probe answers "absent" and the Edit is retyped through show_fresh,
+    which renames a fresh buffer with `:file` instead of going through
+    `:tab drop` and its scoped (E)dit-anyway answer. That rename must not
+    raise ATTENTION either, at 49 columns, with a live Vim holding the swap."""
+    target = world.workdir / "swap_vanished.py"
+    world.start("tmux", "instant")
+    pane = _narrow_follower(world)
+    _write_through_hooks(world, target, "before = 1\n")
+    world.tmux("send-keys", "-t", pane, "Escape", "Escape")
+    world.tmux("send-keys", "-t", pane, "-l", "--", f":exe 'bwipeout!' bufnr('{target.resolve()}')")
+    world.tmux("send-keys", "-t", pane, "Enter")
+    owner = _open_owner_vim(world, target)
+
+    world.cli("hook", "pre", stdin=payload("Edit", target))
+    target.write_text("before = 1\nafter = 2\n")
+    result = world.cli("hook", "post", stdin=payload("Edit", target))
+    assert result.stderr == ""
+
+    row, height = world.cursor_row(pane)
+    assert row != height - 1, "cursor parked on the bottom row: a prompt is blocking"
+    messages = world.vim_messages(pane)
+    for needle in ("E325", "ATTENTION", "already exists"):
+        assert needle not in messages, f"{needle} reached the follower:\n{messages}"
+    assert world.vim_buffer_bytes(pane) == target.read_bytes()
+    # The owner Vim is still usable: it runs a command.
+    probe = world.workdir / "owner_alive.txt"
+    world.tmux(
+        "send-keys", "-t", owner, "Escape", f":call writefile(['alive'], '{probe}')", "Enter"
+    )
+    try:
+        world.wait_until(probe.exists, "the owner Vim to run a command", timeout=10.0)
+    except AssertionError:
+        raise AssertionError(world.capture_pane(owner)) from None
+
+
 # --------------------------------------------------------------- Check 18
 
 

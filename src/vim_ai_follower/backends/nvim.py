@@ -206,6 +206,23 @@ def _animate_lines(
     return AnimationResult("completed", len(lines))
 
 
+def _name_without_swap(nvim: pynvim.Nvim, buf: pynvim.api.Buffer, file_path: str) -> None:
+    """Name a new, empty buffer after file_path, opted out of swap first.
+
+    Naming a swap-enabled buffer runs nvim's swap check for the new name, so
+    when a LIVE second editor holds file_path's swap, `buf_set_name` raises
+    E325 out of the RPC call. In a follower with a UI it also leaves the
+    ATTENTION text on screen at a hit-enter prompt that blocks every later
+    RPC call (measured 2026-09-28: a swap-held file whose buffer had vanished
+    was retyped through show_fresh, the hook crashed on the E325 and the next
+    RPC call hung). Same override, and for the same reasons, as
+    _open_from_disk's before bufload: the buffer is display-only and never
+    written, and `swapfile` is buffer-local, so the check still runs for
+    every file the follower does not name."""
+    nvim.api.buf_set_option(buf, "swapfile", False)
+    nvim.api.buf_set_name(buf, file_path)
+
+
 @dataclass(frozen=True)
 class NvimFollower:
     """Follower backend that animates edits in a real Neovim over the RPC API.
@@ -326,7 +343,7 @@ class NvimFollower:
                 nvim.command("tabnew")
             else:
                 nvim.command("enew")
-            nvim.api.buf_set_name(nvim.current.buffer, file_path)
+            _name_without_swap(nvim, nvim.current.buffer, file_path)
             self._exec(nvim, "filetype detect")
             nvim.command("setlocal buftype=")
             buf = nvim.current.buffer.handle
@@ -749,7 +766,7 @@ class NvimFollower:
             # No such buffer at all — create one fresh, in a new tab.
             nvim.command("tabnew")
             buf = nvim.api.create_buf(True, False)
-            nvim.api.buf_set_name(buf, file_path)
+            _name_without_swap(nvim, buf, file_path)
             nvim.api.win_set_buf(0, buf)
 
     def _open_from_disk(self, nvim: pynvim.Nvim, file_path: str) -> None:

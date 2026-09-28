@@ -608,6 +608,18 @@ class TmuxVimFollower:
         if in_new_tab:
             pane.send_text(":tabnew")
             pane.send_key("Enter")
+        # Opt the buffer out of swap BEFORE naming it: renaming a swap-enabled
+        # buffer runs the swap check for the new name, and when a live Vim
+        # holds the file's swap `:file` raises E325 — at 49 columns a
+        # hit-enter prompt that the next keystrokes have to dismiss (measured
+        # 2026-09-28: an Edit whose buffer had vanished, retyped here since
+        # the base probe; a fresh Write of a swap-held file hit it too). The
+        # buffer is display-only, so there is nothing for a swap to protect,
+        # and 'swapfile' is buffer-local: every other buffer keeps its check.
+        # Unlike _GOTO_FILE's SwapExists answer, this path reads no file, so
+        # there is no ATTENTION dialog to answer, only the check to skip.
+        pane.send_text(":setlocal noswapfile")
+        pane.send_key("Enter")
         # file_path goes through _vim_string + fnameescape(), same as
         # _GOTO_FILE: raw on the command line, `#`, `%` and a space rename
         # the buffer onto the wrong name (measured 2026-09-24: a space alone

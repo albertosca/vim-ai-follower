@@ -137,6 +137,56 @@ def test_apply_edits_vanished_buffer_branch_opens_a_swap_held_file(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("in_new_tab", [False, True], ids=["enew", "tabnew"])
+def test_show_fresh_retypes_a_file_a_live_nvim_holds_the_swap_for(
+    in_new_tab: bool, swap_aware_nvim: Callable[[], str], tmp_path: Path
+) -> None:
+    """The base-mismatch guard sends an Edit whose buffer is gone ("absent")
+    to show_fresh, where apply_edit's vanished-buffer branch used to open it
+    from disk. show_fresh names a new buffer after the file, and naming a
+    swap-enabled buffer runs the swap check: `buf_set_name` raised E325 out
+    of the RPC call, and a follower with a UI was left showing the ATTENTION
+    text at a hit-enter prompt that blocked every later RPC call (the hang).
+    Its buffer must opt out of swap before it is named, as _open_from_disk's
+    does before bufload."""
+    target = tmp_path / "held_retype.py"
+    target.write_text("before = 1\nafter = 2\n")
+    _owner_holding(swap_aware_nvim(), target)
+
+    follower_sock = swap_aware_nvim()
+    follower = NvimFollower(socket_path=follower_sock, window_id="@1", pace_seconds=0.0)
+    result = follower.show_fresh(str(target), "before = 1\nafter = 2\n", in_new_tab=in_new_tab)
+
+    assert result == AnimationResult("completed", 2)
+    nvim = pynvim.attach("socket", path=follower_sock)
+    bufnr = nvim.funcs.bufnr(str(target))
+    assert nvim.api.buf_get_lines(bufnr, 0, -1, True) == ["before = 1", "after = 2"]
+    assert nvim.funcs.swapname(bufnr) == ""
+    # Buffer-local: the follower's nvim still checks swaps for anything else.
+    assert nvim.api.get_option_value("swapfile", {"scope": "global"}) is True
+
+
+@pytest.mark.integration
+def test_goto_file_creates_the_buffer_of_a_file_a_live_nvim_holds_the_swap_for(
+    swap_aware_nvim: Callable[[], str], tmp_path: Path
+) -> None:
+    """goto_file's missing-buffer branch names a new buffer the same way."""
+    target = tmp_path / "held_goto.py"
+    target.write_text("x = 1\n")
+    _owner_holding(swap_aware_nvim(), target)
+
+    follower_sock = swap_aware_nvim()
+    follower = NvimFollower(socket_path=follower_sock, window_id="@1", pace_seconds=0.0)
+    follower.goto_file(str(target))
+
+    nvim = pynvim.attach("socket", path=follower_sock)
+    bufnr = nvim.funcs.bufnr(str(target))
+    assert bufnr != -1
+    assert nvim.api.get_current_buf().number == bufnr
+    assert nvim.funcs.swapname(bufnr) == ""
+
+
+@pytest.mark.integration
 def test_the_other_editor_still_writes_the_file_afterwards(
     swap_aware_nvim: Callable[[], str], tmp_path: Path
 ) -> None:

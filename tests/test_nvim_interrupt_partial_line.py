@@ -95,7 +95,10 @@ def test_show_fresh_interrupted_mid_line_buffer_call_holds_only_the_typed_prefix
         call(7, 1, 0, 1, 0, ["w"]),
     ]
     # left modifiable and unlocked — the user owns the buffer after an interrupt
-    assert nvim.api.buf_set_option.call_args_list[0] == call(7, "modifiable", True)
+    # (The first option call opts the new buffer out of swap before naming it;
+    # the lock protocol starts after it.)
+    locks = [c for c in nvim.api.buf_set_option.call_args_list if c.args[1] != "swapfile"]
+    assert locks[0] == call(7, "modifiable", True)
     assert call(7, "modifiable", False) not in nvim.api.buf_set_option.call_args_list
 
 
