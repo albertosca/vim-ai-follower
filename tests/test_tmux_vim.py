@@ -742,6 +742,22 @@ _SWAP_BACK_ON = (
 )
 
 
+def test_show_fresh_without_a_window_never_turns_swap_back_on() -> None:
+    # No window id means no FollowerState to read, so the follower cannot
+    # prove it is driving the user's own editor: it keeps the dedicated
+    # behaviour (swap stays off), even when some state for the pane says
+    # adopted.
+    _register_fake_follower("@1", "%2")
+    state.FollowerState.update("@1", adopted=True)
+    follower = TmuxVimFollower(pane_id="%2")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+    ):
+        follower.show_fresh("/tmp/f.txt", "a\n")
+    assert (_SWAP_BACK_ON, True) not in _sent_commands(run)
+
+
 @pytest.mark.parametrize("adopted", [True, False], ids=["adopted", "dedicated"])
 def test_show_fresh_turns_swap_back_on_after_the_rename_only_when_adopted(
     adopted: bool,
