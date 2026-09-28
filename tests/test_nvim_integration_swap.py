@@ -187,6 +187,61 @@ def test_goto_file_creates_the_buffer_of_a_file_a_live_nvim_holds_the_swap_for(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("entry", ["goto_file", "ensure_showing"])
+def test_a_listed_unloaded_buffer_of_a_swap_held_file_is_shown_without_e325(
+    entry: str, swap_aware_nvim: Callable[[], str], tmp_path: Path
+) -> None:
+    """`nvim a.py b.py` leaves b.py listed but UNLOADED. goto_file's "buffer
+    exists, no window" branch shows it with win_set_buf, which LOADS it, and
+    the load runs the swap check: with another editor holding b.py's swap it
+    raised E325 out of goto_file and ensure_showing (a Read) alike, found by
+    the B2 regression re-review. The buffer must opt out of swap before it is
+    loaded, as _open_from_disk's does."""
+    target = tmp_path / "listed.py"
+    target.write_text("listed = 1\n")
+    owner = _owner_holding(swap_aware_nvim(), target)
+    owner.api.buf_set_lines(owner.funcs.bufnr(str(target)), 0, -1, True, ["unsaved = 2"])
+
+    follower_sock = swap_aware_nvim()
+    nvim = pynvim.attach("socket", path=follower_sock)
+    bufnr = nvim.funcs.bufadd(str(target))
+    nvim.api.buf_set_option(bufnr, "buflisted", True)
+    assert nvim.api.buf_is_loaded(bufnr) is False
+    assert nvim.api.buf_get_option(bufnr, "swapfile") is True
+
+    follower = NvimFollower(socket_path=follower_sock, window_id="@1", pace_seconds=0.0)
+    getattr(follower, entry)(str(target))
+
+    assert nvim.api.get_current_buf().number == bufnr
+    assert nvim.api.buf_get_lines(bufnr, 0, -1, True) == ["listed = 1"]
+    assert nvim.funcs.swapname(bufnr) == ""
+    assert nvim.api.get_mode() == {"mode": "n", "blocking": False}
+
+
+@pytest.mark.integration
+def test_a_loaded_buffer_without_a_window_keeps_its_swap(
+    swap_aware_nvim: Callable[[], str], tmp_path: Path
+) -> None:
+    """Only a buffer about to be LOADED is opted out: a loaded one (hidden,
+    no window) passed its swap check when it was loaded, and keeps its swap."""
+    target = tmp_path / "hidden.py"
+    target.write_text("hidden = 1\n")
+    follower_sock = swap_aware_nvim()
+    nvim = pynvim.attach("socket", path=follower_sock)
+    nvim.command(f"edit {target}")
+    bufnr = nvim.funcs.bufnr(str(target))
+    nvim.command("set hidden | enew")
+    assert nvim.api.buf_is_loaded(bufnr) is True
+    swap = nvim.funcs.swapname(bufnr)
+    assert swap
+
+    NvimFollower(socket_path=follower_sock, window_id="@1", pace_seconds=0.0).goto_file(str(target))
+
+    assert nvim.api.get_current_buf().number == bufnr
+    assert nvim.funcs.swapname(bufnr) == swap
+
+
+@pytest.mark.integration
 def test_the_other_editor_still_writes_the_file_afterwards(
     swap_aware_nvim: Callable[[], str], tmp_path: Path
 ) -> None:

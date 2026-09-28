@@ -760,6 +760,16 @@ class NvimFollower:
                 # tab, or after eviction touches a stale reference) — show it in
                 # a new tab via API rather than risk any Ex command's
                 # unsaved-changes guard.
+                #
+                # An UNLOADED buffer (`nvim a.py b.py` leaves b.py listed but
+                # unloaded) is loaded from disk by win_set_buf, and the load
+                # runs the swap check: with another editor holding the file's
+                # swap it raised E325 out of this call (and so out of a Read's
+                # ensure_showing), measured 2026-09-28. Opt it out first, as
+                # _open_from_disk does before bufload. A loaded buffer passed
+                # its check when it was loaded and keeps its swap.
+                if not nvim.api.buf_is_loaded(bufnr):
+                    nvim.api.buf_set_option(bufnr, "swapfile", False)
                 nvim.command("tabnew")
                 nvim.api.win_set_buf(0, bufnr)
                 return

@@ -167,3 +167,31 @@ def test_show_fresh_opts_its_new_buffer_out_of_swap_before_naming_it(tmp_path: P
     assert calls.index(call.buf_set_option(buf, "swapfile", False)) < calls.index(
         call.buf_set_name(buf, "/tmp/f.py")
     )
+
+
+def _goto_hidden_buffer(loaded: bool) -> MagicMock:
+    """goto_file on a buffer that exists (number 5) but has no window."""
+    follower = NvimFollower(socket_path="/tmp/x.sock")
+    nvim = MagicMock()
+    nvim.exec_lua.return_value = 5
+    nvim.api.list_tabpages.return_value = []
+    nvim.api.buf_is_loaded.return_value = loaded
+    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+        follower.goto_file("/tmp/f.py")
+    return nvim
+
+
+def test_goto_file_opts_an_unloaded_buffer_out_of_swap_before_loading_it() -> None:
+    # win_set_buf LOADS an unloaded buffer, and the load runs the swap check:
+    # E325 with a live editor holding the swap (measured 2026-09-28).
+    nvim = _goto_hidden_buffer(loaded=False)
+    calls = nvim.api.mock_calls
+    assert calls.index(call.buf_set_option(5, "swapfile", False)) < calls.index(
+        call.win_set_buf(0, 5)
+    )
+
+
+def test_goto_file_leaves_a_loaded_buffers_swap_alone() -> None:
+    nvim = _goto_hidden_buffer(loaded=True)
+    assert "swapfile" not in [c.args[1] for c in nvim.api.buf_set_option.call_args_list]
+    assert call.win_set_buf(0, 5) in nvim.api.mock_calls
