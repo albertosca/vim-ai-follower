@@ -5,7 +5,9 @@ test_nvim_integration_hit_enter.py; here each rule is pinned on its own."""
 
 from __future__ import annotations
 
+import errno
 import logging
+import os
 import threading
 import time
 from typing import Any
@@ -151,18 +153,64 @@ def test_a_guard_that_gets_the_lock_after_the_answer_sends_nothing() -> None:
     nvim.api.input.assert_not_called()
 
 
-def test_an_unusable_lock_file_means_no_key_and_one_log_line(
+def test_an_unusable_lock_file_still_answers_and_logs_once(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    nvim = _nvim(_PROMPT, _PROMPT, _PROMPT, _PROMPT)
+    # EACCES on the lock file (a 0400 file left by `sudo`, a read-only
+    # answer-locks/). Not answering would bring the freeze right back: the
+    # hook hangs on the prompt forever. So it answers, and says so once.
+    # seen + re-read, answered (idle), then the same for a second prompt
+    nvim = _nvim(_PROMPT, _PROMPT, _IDLE, _PROMPT, _PROMPT)
+    denied = OSError(errno.EACCES, "Permission denied")
     with (
         caplog.at_level(logging.WARNING, logger="vim_ai_follower"),
-        patch("vim_ai_follower.backends.nvim_prompt.os.open", side_effect=OSError("read-only")),
+        patch("vim_ai_follower.backends.nvim_prompt.os.open", side_effect=denied),
     ):
-        assert dismiss_prompt(nvim, "/ro") is None
-        assert dismiss_prompt(nvim, "/ro") is None
-    nvim.api.input.assert_not_called()
+        assert dismiss_prompt(nvim, "/ro") == _PROMPT
+        assert dismiss_prompt(nvim, "/ro") == _PROMPT
+    assert nvim.api.input.call_args_list == [call("<CR>"), call("<CR>")]
     assert caplog.text.count("answer lock unusable") == 1
+
+
+def test_a_filesystem_without_flock_still_answers_and_closes_the_file() -> None:
+    # ENOLCK: the file opened, flock itself is not supported there.
+    nvim = _nvim(_PROMPT, _PROMPT)
+    closed: list[int] = []
+    real_close = os.close
+
+    def recording_close(fd: int) -> None:
+        closed.append(fd)
+        real_close(fd)
+
+    with (
+        patch(
+            "vim_ai_follower.backends.nvim_prompt.fcntl.flock",
+            side_effect=OSError(errno.ENOLCK, "No locks available"),
+        ),
+        patch(
+            "vim_ai_follower.backends.nvim_prompt.os.close",
+            side_effect=recording_close,
+        ),
+    ):
+        assert dismiss_prompt(nvim, "/nolck") == _PROMPT
+    nvim.api.input.assert_called_once_with("<CR>")
+    assert len(closed) == 1
+
+
+def test_an_unusable_lock_still_lets_only_one_guard_in_the_process_answer() -> None:
+    # Without the file lock, an in-process lock keyed by socket keeps two
+    # guards of ONE process (the sweep and a watchdog) from both answering.
+    nvim = _nvim(_PROMPT, _PROMPT)
+    with patch(
+        "vim_ai_follower.backends.nvim_prompt.os.open",
+        side_effect=OSError(errno.EACCES, "Permission denied"),
+    ):
+        with nvim_prompt._answer_lock("/ro-busy") as first:
+            assert first is True
+            assert dismiss_prompt(nvim, "/ro-busy") is None
+        nvim.api.input.assert_not_called()
+        # Released on exit: the next guard can answer.
+        assert dismiss_prompt(_nvim(_PROMPT, _PROMPT), "/ro-busy") == _PROMPT
 
 
 def test_the_answer_lock_is_released_after_answering_and_after_a_raise() -> None:

@@ -49,6 +49,9 @@ guard that cannot take it does not answer — it looks again on its next poll.
 Under the lock the prompt is read a second time, so a guard that got the lock
 only after another guard's answer landed finds it gone and sends nothing. The
 lock is held only for that sequence, never across the entry point's own RPC.
+A lock file that cannot be used at all (no permission, no space, no flock) is
+not "busy": the guard then answers under an in-process lock only, since an
+unanswered prompt is a certain hang (`_answer_lock`).
 
 Residual, not solvable here: the USER pressing a key at the very instant a
 guard answers. Their key then lands spare in normal mode, through their own
@@ -103,6 +106,17 @@ _active = threading.local()
 # logged once per process, so a read-only cache cannot flood hook.log.
 _lock_errors_logged: set[str] = set()
 
+# The fallback when the file lock is unusable: one threading.Lock per socket,
+# so the guards of ONE process (a sweep and a watchdog) still answer a prompt
+# at most once between them.
+_process_locks: dict[str, threading.Lock] = {}
+_process_locks_guard = threading.Lock()
+
+
+def _process_lock(socket_path: str) -> threading.Lock:
+    with _process_locks_guard:
+        return _process_locks.setdefault(socket_path, threading.Lock())
+
 
 def _answer_lock_path(socket_path: str) -> Path:
     """The answer lock for one nvim socket. In the cache directory, keyed by a
@@ -119,11 +133,25 @@ def _answer_lock(socket_path: str) -> Iterator[bool]:
     """Try to take this socket's answer lock without waiting; yield whether it
     is held. flock locks belong to the open file description, so two guards
     in ONE process (two os.open calls) exclude each other exactly like two
-    processes do. Released and closed on every path. Any OSError other than
-    "busy" is logged once per socket and yields False: not answering is
-    always safe, the next poll tries again."""
+    processes do. Released and closed on every path.
+
+    BUSY (EWOULDBLOCK/EAGAIN) yields False: another guard is answering, and
+    this one looks again on its next poll.
+
+    UNUSABLE — any other OSError: EACCES on a read-only `answer-locks/`, a
+    0400 or root-owned lock file (a `sudo` run), a read-only cache dir;
+    ENOSPC; ENOLCK where the filesystem has no flock — must NOT mean "never
+    answer": that leaves the prompt up forever and hangs the hook, the exact
+    freeze this module exists for. So it falls back to an in-process
+    threading.Lock per socket, which keeps the one-answer rule WITHIN this
+    process, and it is logged once per socket per process. What is lost: two
+    hook PROCESSES may then both answer one prompt, and the spare answer goes
+    through the user's normal-mode mappings — harmful only with a config that
+    remaps <CR> or <Esc> (module docstring). The hang, by contrast, is
+    certain."""
     fd = -1
     held = False
+    fallback: threading.Lock | None = None
     try:
         path = _answer_lock_path(socket_path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -131,21 +159,26 @@ def _answer_lock(socket_path: str) -> Iterator[bool]:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         held = True
     except OSError as exc:
-        if exc.errno not in (errno.EWOULDBLOCK, errno.EAGAIN) and socket_path not in (
-            _lock_errors_logged
-        ):
-            _lock_errors_logged.add(socket_path)
-            logger.warning(
-                "nvim follower: answer lock unusable for %s, prompts left unanswered: %s",
-                socket_path,
-                exc,
-            )
+        busy = isinstance(exc, BlockingIOError) or exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN)
+        if not busy:
+            if socket_path not in _lock_errors_logged:
+                _lock_errors_logged.add(socket_path)
+                logger.warning(
+                    "nvim follower: answer lock unusable for %s, "
+                    "answering under a per-process lock only: %s",
+                    socket_path,
+                    exc,
+                )
+            fallback = _process_lock(socket_path)
+            held = fallback.acquire(blocking=False)
     try:
         yield held
     finally:
+        if fallback is not None and held:
+            fallback.release()
         if fd != -1:
             with contextlib.suppress(OSError):
-                if held:
+                if held and fallback is None:
                     fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
 
