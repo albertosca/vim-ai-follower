@@ -44,3 +44,16 @@
   --md-typeset-color: var(--vaf-light-ink);
   --md-typeset-a-color: var(--vaf-light-ink);
 }
+
+/* Same reason as the default-scheme rule above: without it the slate header keeps
+   Zensical's generic rgba(11,12,15,.54). gruvbox bg0, like the page, with a bg1 rule
+   underneath so the header still reads as a bar (Alberto, 2026-09-25). */
+[data-md-color-scheme="slate"] .md-header,
+[data-md-color-scheme="slate"] .md-tabs {
+  background-color: var(--vaf-dark-ground);
+  color: var(--vaf-light-ink);
+}
+
+[data-md-color-scheme="slate"] .md-tabs {
+  border-bottom: 1px solid var(--vaf-dark-ink);
+}

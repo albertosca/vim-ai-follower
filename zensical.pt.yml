@@ -10,7 +10,14 @@ theme:
   font:
     text: Atkinson Hyperlegible
     code: JetBrains Mono
+  # Three states: "automatic" follows the OS until the reader picks a scheme, and
+  # the toggle cycles back to it — with two states a stored choice outlived any
+  # later OS change (Alberto, 2026-09-25).
   palette:
+    - media: "(prefers-color-scheme)"
+      toggle:
+        icon: material/brightness-auto
+        name: Mudar para o modo claro
     - media: "(prefers-color-scheme: light)"
       scheme: default
       toggle:
@@ -20,7 +27,7 @@ theme:
       scheme: slate
       toggle:
         icon: material/weather-sunny
-        name: Mudar para o modo claro
+        name: Seguir o sistema
   custom_dir: overrides
   features:
     - navigation.tabs
