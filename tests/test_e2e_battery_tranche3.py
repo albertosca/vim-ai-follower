@@ -467,6 +467,125 @@ def test_nvim_des_interrupt_discards_the_users_unsaved_typing(world: E2EFollower
     assert path.read_text() == CONTROLS, "the unsaved typing reached the disk"
 
 
+# ------------------------------------------------------ Checks 3, 7, 8
+
+# A key-free observer, loaded from the isolated HOME's .vimrc into the
+# follower's own Vim: a 15 ms timer appends every DISTINCT (buffer name,
+# lines) state to a JSON-lines log. It sends no key into the pane, so the
+# animation under test is untouched. The relock's closing `:e!` reloads the
+# right file from disk, so an end-state dump is blind to what went wrong
+# mid-animation; this sees the middle. A missed sample can hide a bad state,
+# never invent one (tests/test_integration_edit_no_reload.py has the proof).
+_OBSERVER_VIMRC = r"""
+let g:vaf_obs_log = '{log}'
+let g:vaf_obs_last = ''
+function! VafObsTick(timer) abort
+  let l:state = json_encode({{'name': expand('%:t'), 'lines': getline(1, '$')}})
+  if l:state !=# g:vaf_obs_last
+    let g:vaf_obs_last = l:state
+    call writefile([l:state], g:vaf_obs_log, 'a')
+  endif
+endfunction
+call timer_start(15, 'VafObsTick', {{'repeat': -1}})
+"""
+
+
+def _observed_states(log: Path) -> list[dict[str, Any]]:
+    if not log.exists():
+        return []
+    return [json.loads(raw) for raw in log.read_text().splitlines() if raw]
+
+
+def _vim_eval_dump(world: E2EFollower, pane: str, expression: str) -> str:
+    """One Vim expression's value, written by Vim itself behind a sentinel."""
+    out = world.workdir / f"eval-{time.monotonic_ns()}.txt"
+    world.tmux("send-keys", "-t", pane, "Escape", "Escape")
+    world.tmux(
+        "send-keys", "-t", pane, "-l", "--", f":call writefile(['EVAL', {expression}], '{out}')"
+    )
+    world.tmux("send-keys", "-t", pane, "Enter")
+    world.wait_until(
+        lambda: out.exists() and out.read_text().startswith("EVAL\n"),
+        f"Vim's answer for {expression}",
+        timeout=10.0,
+    )
+    [value] = out.read_text().splitlines()[1:]
+    out.unlink()
+    return value
+
+
+def _stray_lines(states: list[dict[str, Any]], contents: dict[str, list[str]]) -> list[str]:
+    """Every observed line that is neither empty nor a prefix of a line of
+    the file its buffer is named after — garble, a leaked `o`/`O` opener, a
+    literal `:Nd`, another file's token."""
+    stray: list[str] = []
+    for state in states:
+        wanted = contents.get(state["name"])
+        if wanted is None:
+            continue
+        for line in state["lines"]:
+            if line and not any(target.startswith(line) for target in wanted):
+                stray.append(f"{state['name']}: {line!r}")
+    return stray
+
+
+PARALLEL_TAGS = ("alpha", "bravo", "charlie", "delta", "echo", "foxtrot")
+
+
+def test_six_parallel_hooks_animate_exactly_one_file_cleanly(world: E2EFollower) -> None:
+    """Battery check 7 — guards e51071e (the O_EXCL animation-slot claim).
+    Six `hook post` processes fired back to back, as six Write tool calls in
+    one turn fire them. Exactly one animates; the other five skip without
+    touching the pane. Before the claim was atomic all six passed a
+    check-then-act guard and interleaved their keystrokes: lines mixing two
+    files' tokens, literal `o`/`O` openers typed as text.
+
+    Non-vacuity: every loser must exit while the winner's marker still reads
+    "running" — otherwise they merely ran after it, and there was no race."""
+    log = world.workdir / "observer.log"
+    world.set_vimrc(_OBSERVER_VIMRC.format(log=log))
+    world.start("tmux", "lento")
+    follower = world.follower_target()
+    world.wait_until(log.exists, "the observer timer to start", timeout=15.0)
+
+    contents = {
+        f"{tag}.py": [f"{tag}_{i} = '{tag.upper()}_{i}'" for i in range(8)] for tag in PARALLEL_TAGS
+    }
+    paths = {name: world.workdir / name for name in contents}
+    for name, path in paths.items():
+        world.cli("hook", "pre", stdin=payload("Write", path))
+        path.write_text(_text(*contents[name]))
+    procs = [
+        world.cli_background("hook", "post", stdin=payload("Write", path))
+        for path in paths.values()
+    ]
+
+    marker_at_exit: dict[int, str | None] = {}
+    deadline = time.monotonic() + 120.0
+    while len(marker_at_exit) < len(procs) and time.monotonic() < deadline:
+        for proc in procs:
+            if proc.pid not in marker_at_exit and proc.poll() is not None:
+                marker_at_exit[proc.pid] = world.animating_state()
+        time.sleep(0.01)
+    for proc in procs:
+        world.wait_for_hook_exit(proc)
+    racing = [pid for pid, state in marker_at_exit.items() if state == "running"]
+    assert len(racing) == 5, (
+        f"only {len(racing)} hooks exited while another was animating: {marker_at_exit}"
+    )
+
+    states = _observed_states(log)
+    animated = {s["name"] for s in states if s["name"] in contents and any(s["lines"])}
+    assert len(animated) == 1, f"more than one file reached the follower: {animated}"
+    [winner] = animated
+    assert _stray_lines(states, contents) == []
+    assert len([s for s in states if s["name"] == winner]) >= 3, "the animation was not observed"
+    assert _vim_eval_dump(world, follower, "tabpagenr('$')") == "1"
+    assert world.vim_buffer_bytes(follower) == _text(*contents[winner]).encode()
+    state = json.loads((world.cache_dir / f"{world.window_id}.pane").read_text())
+    assert [Path(p).name for p in state["open_files"]] == [winner]
+
+
 # --------------------------------------------------------------- Check 9
 
 _NVIM_QT_SHIM = """#!/bin/sh
