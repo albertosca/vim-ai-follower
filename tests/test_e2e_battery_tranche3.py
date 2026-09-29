@@ -345,6 +345,120 @@ def test_nvim_types_char_by_char_with_the_cursor_and_shows_the_writer_float(
     assert nvim.api.get_hl(0, {"name": "VafWriterCue"}).get("fg") == 0x5FD787
 
 
+# --------------------------------------------------------------- Check 6
+
+
+def _text(*lines: str) -> str:
+    """Terminated, never joined: a join round-trip loses trailing blanks."""
+    return "".join(line + "\n" for line in lines)
+
+
+# PEP 8 double blanks between defs: the rows a replay has to get right.
+CONTROLS = _text(
+    "import os",
+    "",
+    "",
+    "def alpha(root):",
+    "    first = 'ALPHA_MARK'",
+    "    return os.path.join(root, first)",
+    "",
+    "",
+    "def bravo(root):",
+    "    second = 'BRAVO_MARK'",
+    "    return second",
+)
+
+
+def _nvim_animation(world: E2EFollower, path: Path) -> tuple[str, subprocess.Popen[bytes]]:
+    """A launched nvim follower at `normal`, animating CONTROLS into `path`
+    in a background hook, far enough in that ALPHA_MARK is on screen."""
+    world.start("nvim", "normal")
+    sock = world.follower_target()
+    world.cli("hook", "pre", stdin=payload("Write", path))
+    path.write_text(CONTROLS)
+    proc = world.cli_background("hook", "post", stdin=payload("Write", path))
+    world.wait_for_animating("running")
+    world.wait_until(
+        lambda: "ALPHA_MARK" in "".join(world.nvim_buffer_lines(sock, path)),
+        "ALPHA_MARK to be typed",
+        timeout=60.0,
+    )
+    return sock, proc
+
+
+def _interrupt_and_take_over(world: E2EFollower, sock: str, path: Path) -> Any:
+    """`claude-follow interrupt` (prefix S), then prove the user really owns
+    the buffer: it is the current one, and modifiable."""
+    world.cli("interrupt")
+    world.wait_for_animating("handoff")
+    nvim = world._nvim(sock)
+    current = Path(nvim.api.buf_get_name(nvim.api.get_current_buf())).resolve()
+    assert current == path.resolve(), f"the current buffer is {current}, not the file"
+    assert nvim.eval("&modifiable") == 1, "the interrupted buffer is still locked"
+    return nvim
+
+
+def test_nvim_pause_then_resume_through_the_cli_ends_on_the_exact_bytes(
+    world: E2EFollower,
+) -> None:
+    """Battery check 6, pause/resume — `claude-follow pause` twice (prefix P
+    twice). The pause really halts (two reads 0.6 s apart agree, and the
+    buffer is short of the content: without that, a pause that never landed
+    would pass), and the resume runs on to exactly the file Claude wrote.
+    On nvim a pause can land mid-line — it is checked per character."""
+    path = world.workdir / "paused.py"
+    sock, proc = _nvim_animation(world, path)
+
+    world.cli("pause")
+    world.wait_for_animating("paused")
+    held = world.nvim_buffer_bytes(sock, path)
+    time.sleep(0.6)
+    assert world.nvim_buffer_bytes(sock, path) == held, "typing continued while paused"
+    assert held is not None and held != CONTROLS.encode(), "the pause landed after the end"
+
+    world.cli("pause")
+    world.wait_for_hook_exit(proc)
+    assert world.nvim_buffer_bytes(sock, path) == CONTROLS.encode()
+
+
+def test_nvim_interrupt_then_save_releases_the_hook_with_its_notification(
+    world: E2EFollower,
+) -> None:
+    """Battery check 6, interrupt — prefix S hands the buffer over, and the
+    user's own `:w` releases Claude's turn: the hook exits 0, its output is
+    the notification telling Claude the user saved their version, the file
+    on disk is the user's, and no crash-fallback remainder is left."""
+    path = world.workdir / "handed.py"
+    sock, proc = _nvim_animation(world, path)
+    nvim = _interrupt_and_take_over(world, sock, path)
+
+    nvim.api.buf_set_lines(0, -1, -1, True, ["USER_LINE = 1"])
+    nvim.command("w")
+    world.wait_for_hook_exit(proc)
+
+    assert "USER_LINE = 1" in path.read_text()
+    output = world.background_log(proc)
+    assert "SAVED their own version" in output, f"no release notification: {output!r}"
+    assert not world.pending_path.exists(), "the released hand-off left a remainder behind"
+
+
+def test_nvim_des_interrupt_discards_the_users_unsaved_typing(world: E2EFollower) -> None:
+    """Battery check 6, des-interrupt — after an interrupt the user types but
+    does NOT save; a second prefix S throws that typing away and replays the
+    rest of the animation onto exactly the content, double blanks and all."""
+    path = world.workdir / "discarded.py"
+    sock, proc = _nvim_animation(world, path)
+    nvim = _interrupt_and_take_over(world, sock, path)
+
+    nvim.api.buf_set_lines(0, -1, -1, True, ["JUNK_TYPED = 1"])
+    assert "JUNK_TYPED = 1" in world.nvim_buffer_lines(sock, path)
+    world.cli("interrupt")  # the des-interrupt
+    world.wait_for_hook_exit(proc)
+
+    assert world.nvim_buffer_bytes(sock, path) == CONTROLS.encode()
+    assert path.read_text() == CONTROLS, "the unsaved typing reached the disk"
+
+
 # --------------------------------------------------------------- Check 10
 
 
