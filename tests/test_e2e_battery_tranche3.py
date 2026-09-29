@@ -869,8 +869,9 @@ def test_tmux_backend_outside_tmux_fails_loudly_and_opens_nothing(world: E2EFoll
     """Battery check 10 — guards fe87f5b. `start` with `backend: tmux` from a
     terminal outside tmux: the exact actionable message on STDERR (an error,
     like its sibling "could not open a standalone nvim window"), nothing on
-    stdout (so no traceback anywhere), exit 1, and nothing opened — no pane,
-    no follower state, no nvim socket.
+    stdout, exit 1, and nothing opened — no pane, no follower state, no nvim
+    socket. A traceback would go to stderr, so it is the EXACT stderr
+    equality, not the empty stdout, that proves there was none.
 
     Driven through the CONFIG FILE, as the battery does, not a --backend flag.
     Outside tmux means no TMUX_PANE; TMUX_TMPDIR stays private, because the

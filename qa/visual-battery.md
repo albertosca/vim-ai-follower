@@ -139,7 +139,7 @@ It fires two edits with distinct identities (content from `qa/fixtures/cue-write
 
 **Purpose:** `claude-follow stop` clears the writer cue BEFORE killing the follower pane, so the window's `pane-border-status` is not left stuck on `top` (fix `c1e1490`). The tint lives on the **follower** pane — the one the cue colours — and `pane-border-status` is a window option, which is why the clear has to run while the pane still exists.
 
-**Machine-verified, no manual step** by the tail of Check 1's test (`tests/test_e2e_battery_tranche3.py::test_second_writer_tints_and_titles_the_follower_border_and_stop_restores_it`): `stop` through the wrapper leaves exactly one pane, with the window's `pane-border-status` and the origin pane's border styles unset, after asserting the status read `top` before the stop. Nothing to run by hand.
+**Machine-verified, no manual step** by the tail of Check 1's test (`tests/test_e2e_battery_tranche3.py::test_second_writer_tints_and_titles_the_follower_border_and_stop_restores_it`): `stop` through the wrapper leaves exactly one pane (the origin) and the window's `pane-border-status` unset, after asserting it read `top` before the stop — that window option is the discriminating assertion. The test also reads the origin pane's border styles as unset, but the cue only ever tints the follower pane, so those reads would pass without the fix; they only show that `stop` did not tint the origin. Nothing to run by hand.
 
 ---
 
@@ -275,7 +275,7 @@ It animates `qa/fixtures/standalone-demo.py` into the new surface.
 
 **Purpose:** starting the **tmux** backend outside any tmux session fails loudly and actionably instead of silently no-opping or crashing.
 
-**Machine-verified, no manual step** by `tests/test_e2e_battery_tranche3.py::test_tmux_backend_outside_tmux_fails_loudly_and_opens_nothing` (`backend: tmux` in the config file, the real wrapper run without `TMUX_PANE`: exit 1, stderr exactly `commands.VIM_NEEDS_TMUX` — `claude-follow: the vim backend requires tmux — run inside a tmux session, or set backend to nvim` — an empty stdout, so no traceback anywhere, and no pane, follower state or nvim socket left behind). Since 2026-09-29 the message goes to **stderr**, like its sibling "could not open a standalone nvim window". Nothing to run by hand.
+**Machine-verified, no manual step** by `tests/test_e2e_battery_tranche3.py::test_tmux_backend_outside_tmux_fails_loudly_and_opens_nothing` (`backend: tmux` in the config file, the real wrapper run without `TMUX_PANE`: exit 1, stderr exactly `commands.VIM_NEEDS_TMUX` — `claude-follow: the vim backend requires tmux — run inside a tmux session, or set backend to nvim` — compared for exact equality, which is what rules out a traceback, since one would land on stderr beside the message; an empty stdout; and no pane, follower state or nvim socket left behind). Since 2026-09-29 the message goes to **stderr**, like its sibling "could not open a standalone nvim window". Nothing to run by hand.
 
 ---
 
