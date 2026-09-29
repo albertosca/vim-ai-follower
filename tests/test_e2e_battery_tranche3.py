@@ -586,6 +586,77 @@ def test_six_parallel_hooks_animate_exactly_one_file_cleanly(world: E2EFollower)
     assert [Path(p).name for p in state["open_files"]] == [winner]
 
 
+# Two stand-ins for what a real config brings (vim-ai-autocomplete's
+# EscHandler, vim-tmux-navigator): an insert-mode <Esc> map that swallows the
+# FIRST Escape of every insert session, and a Normal-mode <C-\> made
+# observable. Plus an InsertLeave counter. `{{`/`}}` are str.format escapes.
+_REMAPPED_ESC_VIMRC = r"""
+let g:vaf_esc_swallowed = 0
+function! VafEscHandler() abort
+  if get(b:, 'vaf_swallowed_once', 0)
+    let b:vaf_swallowed_once = 0
+    return "\<Esc>"
+  endif
+  let b:vaf_swallowed_once = 1
+  let g:vaf_esc_swallowed += 1
+  return ''
+endfunction
+inoremap <expr> <Esc> VafEscHandler()
+nnoremap <C-\> :call writefile(['CTRL-BSLASH'], '{bslash_log}', 'a')<CR>
+autocmd InsertLeave * call writefile(['LEAVE'], '{leave_log}', 'a')
+"""
+
+
+def test_insert_exit_stays_clean_under_a_remapped_esc_and_a_ctrl_backslash_map(
+    world: E2EFollower,
+) -> None:
+    r"""Battery check 8 — guards a5f6660 (superseding b8f43e8). Every animated
+    line leaves Insert once, and the exit never sends <C-\><C-n>: paced as
+    separate keys, that pair ran <C-N> as keyword completion, and after the
+    Escapes its <C-\> fired the user's Normal-mode mapping (vim-tmux-
+    navigator's) with the <C-N> drifting the cursor a line down.
+
+    The <C-\> map is proved LIVE before the animation — without that an
+    empty log would say nothing. The <Esc> stand-in is kept for fidelity to
+    the real config, but measured inert here: the animation runs under
+    'paste', which disables every insert-mode mapping (asserted below via
+    its swallow counter). Whether the user's own plugin stack stays clean
+    stays a manual pass: scripts/repro-exit-insert-matrix.sh."""
+    obs_log = world.workdir / "observer.log"
+    bslash_log = world.workdir / "ctrl-bslash.log"
+    leave_log = world.workdir / "insert-leave.log"
+    world.set_vimrc(
+        _OBSERVER_VIMRC.format(log=obs_log)
+        + _REMAPPED_ESC_VIMRC.format(bslash_log=bslash_log, leave_log=leave_log)
+    )
+    world.start("tmux", "lento")
+    follower = world.follower_target()
+    world.wait_until(obs_log.exists, "the observer timer to start", timeout=15.0)
+    world.tmux("send-keys", "-t", follower, "C-\\")
+    world.wait_until(bslash_log.exists, "the <C-\\> map to fire on a probe", timeout=10.0)
+    bslash_log.unlink()
+    leave_log.unlink(missing_ok=True)
+
+    content = (FIXTURES / "pause-trigger.py").read_text()
+    source = content.splitlines()
+    path = world.workdir / "esc_exit.py"
+    world.cli("hook", "pre", stdin=payload("Write", path))
+    path.write_text(content)
+    proc = world.cli_background("hook", "post", stdin=payload("Write", path))
+    world.wait_for_hook_exit(proc)
+
+    assert not bslash_log.exists(), f"the animation fired <C-\\>: {bslash_log.read_text()}"
+    leaves = leave_log.read_text().splitlines() if leave_log.exists() else []
+    assert len(leaves) == len(source), f"left Insert {len(leaves)} times for {len(source)} lines"
+    states = _observed_states(obs_log)
+    assert len([s for s in states if s["name"] == path.name]) >= 3, "the animation went unseen"
+    assert _stray_lines(states, {path.name: source}) == []
+    assert _vim_eval_dump(world, follower, "g:vaf_esc_swallowed") == "0", (
+        "the <Esc> stand-in fired during the animation: 'paste' no longer shields it"
+    )
+    assert world.vim_buffer_bytes(follower) == content.encode()
+
+
 # --------------------------------------------------------------- Check 9
 
 _NVIM_QT_SHIM = """#!/bin/sh
