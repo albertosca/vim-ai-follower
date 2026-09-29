@@ -360,15 +360,17 @@ def test_start_standalone_nvim_launcher_failure_reports_and_exits(
     config_path.write_text('{"backend": "nvim", "nvim_window": "auto"}')
     monkeypatch.setattr(config, "CONFIG_PATH", config_path)
     standalone_session = session.Session(window_id="term-x", origin=None, in_tmux=False)
+    failure = subprocess.CalledProcessError(1, ["osascript"])
     with (
         patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session),
-        patch(
-            "vim_ai_follower.commands.launch_standalone_nvim",
-            side_effect=subprocess.CalledProcessError(1, ["osascript"]),
-        ),
+        patch("vim_ai_follower.commands.launch_standalone_nvim", side_effect=failure),
     ):
         assert commands.cmd_start({}) == 1
-    assert "could not open a standalone nvim window" in capsys.readouterr().err
+    out, err = capsys.readouterr()
+    assert (out, err) == (
+        "",
+        f"claude-follow: could not open a standalone nvim window ({failure})\n",
+    )
     assert state.FollowerState.read("term-x") is None
 
 
@@ -389,7 +391,12 @@ def test_start_in_tmux_nvim_window_always_launcher_failure_reports_and_exits(
         ),
     ):
         assert commands.cmd_start({}) == 1
-    assert "could not open a standalone nvim window" in capsys.readouterr().err
+    # stdout may carry the keybinding note printed before the launch; the
+    # error itself goes to stderr, and only there.
+    out, err = capsys.readouterr()
+    failure = subprocess.CalledProcessError(1, ["nvim-qt"])
+    assert err == f"claude-follow: could not open a standalone nvim window ({failure})\n"
+    assert "could not open" not in out
 
 
 def test_start_vim_backend_without_tmux_errors(capsys: pytest.CaptureFixture[str]) -> None:
@@ -413,7 +420,14 @@ def test_start_nvim_window_never_without_tmux_errors(
     with patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session):
         rc = commands.cmd_start({}, backend="nvim")
     assert rc == 1
-    assert "nvim_window" in capsys.readouterr().out
+    # An error, so stderr — like VIM_NEEDS_TMUX (battery check 10) — and
+    # nothing on stdout.
+    out, err = capsys.readouterr()
+    assert (out, err) == (
+        "",
+        "claude-follow: nvim_window is 'never' but there is no tmux session — "
+        "set nvim_window to auto/always, or start inside tmux\n",
+    )
 
 
 def test_start_nvim_window_always_uses_standalone_launcher_in_tmux(

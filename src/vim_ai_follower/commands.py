@@ -111,7 +111,7 @@ def cmd_start(
         # tmux prefix-key bindings), so registration is skipped here — only
         # the in-tmux paths below register them.
         if defaults.nvim_window == "never":
-            print(_NVIM_WINDOW_NEVER_WITHOUT_TMUX)
+            print(_NVIM_WINDOW_NEVER_WITHOUT_TMUX, file=sys.stderr)
             return 1
         sock = _launch_standalone_or_report(session.window_id)
         if sock is None:
