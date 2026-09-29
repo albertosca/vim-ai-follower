@@ -257,23 +257,41 @@ return vim.b[buf].{_SYNCED_TICK} == vim.api.nvim_buf_get_changedtick(buf)
 _READ_THEN_CLEAR = "noautocmd silent! edit! | silent! %d _"
 
 
+# One RPC: nvim's cwd-relative form of the path, kept only when it
+# round-trips (see _display_name).
+_DISPLAY_NAME_LUA = """
+local full = ...
+local short = vim.fn.fnamemodify(full, ':.')
+if vim.fn.fnamemodify(short, ':p') == vim.fn.fnamemodify(full, ':p') then return short end
+return full
+"""
+
+
 def _display_name(nvim: pynvim.Nvim, file_path: str) -> str:
     """file_path as nvim names a file opened by RELATIVE path: relative to the
     current window's working directory when it is under it, full otherwise.
     The name every buffer the follower names or adds is given, so the
     tabline, the statusline and the `:w` message read `sub/a.py` instead of
     the full path the hook passes (measured 2026-09-29: nvim, like Vim, keeps
-    a name given in full as it is and only shortens it on a `:cd`). The
-    buffer's FULL name is unchanged, so _buffer_number still finds it.
+    a name given in full as it is and only shortens it on a `:cd`).
 
     `:.` compares against getcwd(), which is the physical directory even when
     nvim was started from, or `:cd` to, a symlinked spelling of it (measured,
-    macOS /tmp -> /private/tmp), and the hook passes a realpath. A relative
-    name starting with `~` stays full, for parity with the tmux backend,
-    whose `:p` lookup reads `~x/a.py` as user x's home (see its
-    _vim_display_name)."""
-    short: str = nvim.funcs.fnamemodify(file_path, ":.")
-    return file_path if short.startswith("~") else short
+    macOS /tmp -> /private/tmp), and the hook passes a realpath.
+
+    The short name is kept only when its `:p` is exactly the full path's
+    `:p` — the same round-trip guard as the tmux backend's
+    _vim_display_name, where it is load-bearing (its lookups compare `:p`
+    with `==#`). Here _buffer_number canonicalizes with fs_realpath, so it
+    would find either name; the guard is `:p`, not realpath, for parity:
+    both backends then shorten exactly the same paths, and it needs no disk
+    access. What it turns away (measured 2026-09-29, nvim 0.12.5): a
+    wrong-CASE path on macOS (`:.` shortens case-insensitively, so the short
+    form's `:p` comes back in the cwd's case) and `~x/a.py` (its `:p` stays
+    the relative `~x/a.py`). Both keep the full name, which nvim stores and
+    finds as it did before relative names."""
+    name: str = nvim.exec_lua(_DISPLAY_NAME_LUA, file_path)
+    return name
 
 
 def _name_without_swap(nvim: pynvim.Nvim, buf: pynvim.api.Buffer, file_path: str) -> None:

@@ -200,3 +200,78 @@ def test_a_relative_name_that_would_start_with_a_tilde_stays_full(
     assert full == str(target)
     follower.goto_file(str(target))
     assert _names(sock)[0] == tabs
+
+
+@pytest.fixture(params=["real-cwd", "symlinked-cwd"])
+def mixed_case(
+    request: pytest.FixtureRequest,
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> Iterator[tuple[str, str, Path]]:
+    """(pane, socket, the project dir spelled `…/proj`) for a UI nvim started
+    in `…/Proj` — the same directory on a case-insensitive filesystem."""
+    real = Path(os.path.realpath(tmp_path)) / "case" / "Proj"
+    (real / "sub").mkdir(parents=True)
+    wrong_case = real.parent / "proj"
+    if not wrong_case.exists():
+        pytest.skip("needs a case-insensitive filesystem")
+    (tmp_path / "caselink").symlink_to(real.parent)
+    cwd = real if request.param == "real-cwd" else tmp_path / "caselink" / "Proj"
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    assert "TMUX" not in os.environ
+    socket = _tmux("display-message", "-p", "#{socket_path}")
+    assert socket.startswith(os.path.realpath(os.environ["TMUX_TMPDIR"]) + "/"), socket
+    home = tmp_path / "home"
+    home.mkdir()
+    sock = str(Path(os.environ["TMUX_TMPDIR"]) / "nvim.sock")
+    pane = _tmux(
+        "split-window",
+        "-h",
+        "-t",
+        tmux_session,
+        "-c",
+        str(cwd),
+        "-P",
+        "-F",
+        "#{pane_id}",
+        f"env HOME={home} XDG_STATE_HOME={home} nvim -u NONE -i NONE -n --listen {sock}",
+    )
+    assert _tmux("display-message", "-p", "-t", pane, "#{pane_width}") == "49"
+    deadline = time.monotonic() + 10.0
+    while not Path(sock).exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert Path(sock).exists(), _tmux("capture-pane", "-p", "-t", pane)
+    yield pane, sock, wrong_case
+
+
+@pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
+def test_a_wrong_case_path_keeps_its_full_name_and_is_found_again(
+    mixed_case: tuple[str, str, Path], adopted: bool
+) -> None:
+    """Parity with the tmux backend's round-trip guard: nvim's `:.` shortens
+    `…/proj/sub/a.py` against cwd `…/Proj` case-insensitively, and the short
+    form's `:p` comes back as `…/Proj/sub/a.py`, so the full path is kept.
+    (_buffer_number's realpath compare would find either name; the tmux
+    lookups, comparing `:p` with `==#`, would not.)"""
+    pane, sock, wrong_case = mixed_case
+    target = wrong_case / "sub" / "a.py"
+    target.write_text(CONTENT)
+    other = wrong_case / "other.py"
+    other.write_text(CONTENT)
+    follower = _follower(pane, sock, adopted)
+
+    follower.ensure_showing(str(other))
+    follower.show_fresh(str(target), CONTENT, in_new_tab=True)
+    assert follower.probe_buffer(str(target), CONTENT) == "holds"
+    tabs, _, name, full = _names(sock)
+    assert name == str(target)
+    # nvim itself stores the FULL name in the directory's on-disk case
+    # (measured: `…/Proj/sub/a.py`), whatever case it was given.
+    assert full.lower() == str(target).lower()
+
+    follower.show_fresh(str(target), CONTENT, in_new_tab=True)
+    assert _names(sock)[0] == tabs
+    follower.close_tab(str(target))
+    assert _names(sock)[0] == tabs - 1
+    assert follower.probe_buffer(str(target), CONTENT) == "absent"

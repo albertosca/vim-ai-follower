@@ -66,3 +66,19 @@ def register_fake_follower(
             writers=writers,
             writer_labels=writer_labels,
         )
+
+
+def route_exec_lua(nvim: MagicMock, *, buffer: int, display_name: str) -> None:
+    """Make a mock nvim's exec_lua answer per Lua chunk: the buffer lookup
+    (_FIND_BUFFER_LUA) gets `buffer`, the naming (_DISPLAY_NAME_LUA) gets
+    `display_name`. One return_value for both would hand the buffer number
+    to buf_set_name/bufadd as the name, and a test asserting the name would
+    then pin whatever the mock happened to return."""
+    from vim_ai_follower.backends.nvim import _DISPLAY_NAME_LUA, _FIND_BUFFER_LUA
+
+    answers: dict[str, object] = {_FIND_BUFFER_LUA: buffer, _DISPLAY_NAME_LUA: display_name}
+
+    def answer(code: str, *args: object) -> object:
+        return answers[code]
+
+    nvim.exec_lua.side_effect = answer

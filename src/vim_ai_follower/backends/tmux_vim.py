@@ -273,12 +273,23 @@ def _vim_display_name(path_expr: str) -> str:
     macOS /tmp -> /private/tmp); the hook hands the backend a realpath
     (hooks._file_path), so the two line up without resolving anything here.
 
-    One exception keeps the full name: a relative name starting with `~`
-    (a directory literally called `~x` under the cwd). `:p` reads it back as
-    user x's home (measured: its `:p` is not the file), so the lookups
-    would miss the buffer and a later Edit would open a duplicate tab."""
+    The short name is kept only when it ROUND-TRIPS: its `:p` must be
+    exactly the `:p` of the full path, which is the equation _FIND_BUFFER,
+    _WIPE_BUFFER and _PROBE_BUFFER test (`==#`). Otherwise the full path is
+    the name, as before relative names, and the lookups match it verbatim.
+    Two measured ways the short form fails to come back (Vim 9.2, macOS):
+    - A wrong-CASE path. `:.` shortens case-INSENSITIVELY on macOS: with cwd
+      `…/Proj`, `…/proj/sub/a.py` shortens to `sub/a.py`, whose `:p` is
+      `…/Proj/sub/a.py` — not the hook's `…/proj/sub/a.py` (the hook's
+      realpath keeps the case it was given). Every lookup missed: the probe
+      said "absent", show_fresh's pre-wipe missed so `:file` hit E95 and
+      stacked unnamed tabs, max_tabs eviction never fired, `:w` gave E32.
+    - A relative name starting with `~` (a directory literally called `~x`
+      under the cwd): `:p` reads it as user x's home, not the file."""
     short = f"fnamemodify({path_expr}, ':.')"
-    return f"({short}[0] ==# '~' ? {path_expr} : {short})"
+    return (
+        f"(fnamemodify({short}, ':p') ==# fnamemodify({path_expr}, ':p') ? {short} : {path_expr})"
+    )
 
 
 # `g:vaf_n` = the number of the buffer named `g:vaf_p`, or -1 (see the

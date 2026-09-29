@@ -16,6 +16,7 @@ from typing import Any
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+from helpers import route_exec_lua
 
 from vim_ai_follower import state
 from vim_ai_follower.animate import AnimationResult
@@ -27,7 +28,7 @@ def _disk_loading_nvim() -> MagicMock:
     """A mock nvim where the file has no buffer yet, so both callers of
     _open_from_disk take the disk-reading branch and bufadd hands out 42."""
     nvim = MagicMock()
-    nvim.exec_lua.return_value = -1
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     nvim.funcs.bufadd.return_value = 42
     return nvim
 
@@ -139,7 +140,7 @@ def test_goto_file_opts_the_buffer_it_creates_out_of_swap_before_naming_it() -> 
     # pinned "never touches swapfile" on the premise that no check was in play.
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
-    nvim.exec_lua.return_value = -1
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     nvim.api.list_tabpages.return_value = []
     buf = nvim.api.create_buf.return_value
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
@@ -157,7 +158,7 @@ def test_show_fresh_opts_its_new_buffer_out_of_swap_before_naming_it(tmp_path: P
     # left the UI at a blocking hit-enter prompt (measured 2026-09-28).
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
-    nvim.exec_lua.return_value = -1
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     buf = nvim.current.buffer
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -213,7 +214,7 @@ def test_show_fresh_turns_swap_back_on_after_naming_only_when_adopted(
 ) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
-    nvim.exec_lua.return_value = -1
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     buf = nvim.current.buffer
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),

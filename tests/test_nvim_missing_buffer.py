@@ -7,6 +7,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
+from helpers import route_exec_lua
+
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends.nvim import NvimFollower
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
@@ -31,7 +33,7 @@ def test_ensure_showing_switches_to_an_existing_buffer_without_touching_disk() -
 def test_ensure_showing_loads_the_real_disk_content_when_no_buffer_exists() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
-    nvim.exec_lua.return_value = -1
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     nvim.funcs.bufadd.return_value = 42
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),

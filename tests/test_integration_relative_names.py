@@ -212,3 +212,82 @@ def test_a_relative_name_that_would_start_with_a_tilde_stays_full(
     assert full == str(target)
     follower.goto_file(str(target))
     assert _names(vim_pane, tmp_path / "names.txt", wait_until)[0] == tabs
+
+
+@pytest.fixture(params=["real-cwd", "symlinked-cwd"])
+def mixed_case(
+    request: pytest.FixtureRequest,
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> tuple[str, Path]:
+    """(a Vim pane started in `…/Proj`, the project dir spelled `…/proj`).
+
+    macOS filesystems are case-insensitive, so both spellings are the same
+    directory; the hook hands over whatever case Claude used (its realpath
+    keeps the case it was given), and Vim's `:.` shortens case-INSENSITIVELY
+    against its cwd — so the short name's `:p` comes back in the cwd's case."""
+    real = Path(os.path.realpath(tmp_path)) / "case" / "Proj"
+    (real / "sub").mkdir(parents=True)
+    wrong_case = real.parent / "proj"
+    if not wrong_case.exists():
+        pytest.skip("needs a case-insensitive filesystem")
+    (tmp_path / "caselink").symlink_to(real.parent)
+    cwd = real if request.param == "real-cwd" else tmp_path / "caselink" / "Proj"
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    assert "TMUX" not in os.environ
+    socket = _tmux("display-message", "-p", "#{socket_path}")
+    assert socket.startswith(os.path.realpath(os.environ["TMUX_TMPDIR"]) + "/"), socket
+    home = tmp_path / "home"
+    home.mkdir()
+    pane = _tmux(
+        "split-window",
+        "-h",
+        "-t",
+        tmux_session,
+        "-c",
+        str(cwd),
+        "-P",
+        "-F",
+        "#{pane_id}",
+        f"env HOME={home} vim",
+    )
+    assert _tmux("display-message", "-p", "-t", pane, "#{pane_width}") == "49"
+    return pane, wrong_case
+
+
+@pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
+def test_a_wrong_case_path_keeps_its_full_name_and_is_found_again(
+    mixed_case: tuple[str, Path],
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+    adopted: bool,
+) -> None:
+    """Measured before the round-trip guard: `sub/a.py` named the buffer, its
+    `:p` came back as `…/Proj/sub/a.py`, and every `==#` lookup of the hook's
+    `…/proj/sub/a.py` missed — probe "absent", a repeated show_fresh stacked
+    an unnamed tab (its pre-wipe missed, so `:file` hit E95), and close_tab
+    evicted nothing."""
+    pane, wrong_case = mixed_case
+    target = wrong_case / "sub" / "a.py"
+    target.write_text(CONTENT)
+    other = wrong_case / "other.py"
+    other.write_text(CONTENT)
+    follower = _follower(pane, adopted)
+    out = tmp_path / "names.txt"
+
+    follower.ensure_showing(str(other))
+    follower.show_fresh(str(target), CONTENT, in_new_tab=True)
+    assert follower.probe_buffer(str(target), CONTENT) == "holds"
+    tabs = _names(pane, out, wait_until)[0]
+
+    follower.show_fresh(str(target), CONTENT, in_new_tab=True)
+    again, _, name, _ = _names(pane, out, wait_until)
+    assert again == tabs
+    assert name == str(target)
+
+    follower.close_tab(str(target))
+    after, _, name, _ = _names(pane, out, wait_until)
+    assert after == tabs - 1
+    assert name != str(target)
+    assert follower.probe_buffer(str(target), CONTENT) == "absent"

@@ -33,8 +33,8 @@ def _goto(path: str) -> str:
         " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
         ' | exe "augroup END"'
         " | try"
-        " | if g:vaf_n < 0 | exe 'tab drop ' . fnameescape((fnamemodify(g:vaf_p, ':.')[0] ==# '~'"
-        " ? g:vaf_p : fnamemodify(g:vaf_p, ':.')))"
+        " | if g:vaf_n < 0 | exe 'tab drop ' . fnameescape((fnamemodify(fnamemodify(g:vaf_p, ':.'),"
+        " ':p') ==# fnamemodify(g:vaf_p, ':p') ? fnamemodify(g:vaf_p, ':.') : g:vaf_p))"
         " | elseif g:vaf_n != bufnr('%')"
         " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'tab sbuffer ' . g:vaf_n"
         " | endif"
@@ -679,7 +679,8 @@ def _rename(path: str, *, adopted: bool = False) -> str:
     literal = "'" + path.replace("'", "''") + "'"
     short = f"fnamemodify({literal}, ':.')"
     return (
-        f":exe 'file ' . fnameescape(({short}[0] ==# '~' ? {literal} : {short}))"
+        f":exe 'file ' . fnameescape((fnamemodify({short}, ':p') ==# fnamemodify({literal}, ':p')"
+        f" ? {short} : {literal}))"
         + claim
         + " | setlocal buftype= modifiable noreadonly"
         + " | noautocmd silent! edit! | silent! %d _"

@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+from helpers import route_exec_lua
 
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends import get_follower
@@ -243,6 +244,7 @@ def test_show_fresh_opens_a_new_tab_when_requested(tmp_path: Path) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
     nvim.current.buffer.handle = 7
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/b.py")
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
@@ -735,7 +737,7 @@ def test_goto_file_opens_a_new_tab_when_the_buffer_exists_but_isnt_shown() -> No
 def test_goto_file_creates_a_new_buffer_in_a_new_tab_when_none_exists() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
-    nvim.exec_lua.return_value = -1
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     nvim.api.create_buf.return_value = 42
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.goto_file("/tmp/f.py")

@@ -69,8 +69,8 @@ def _goto(path: str) -> str:
         " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
         ' | exe "augroup END"'
         " | try"
-        " | if g:vaf_n < 0 | exe 'tab drop ' . fnameescape((fnamemodify(g:vaf_p, ':.')[0] ==# '~'"
-        " ? g:vaf_p : fnamemodify(g:vaf_p, ':.')))"
+        " | if g:vaf_n < 0 | exe 'tab drop ' . fnameescape((fnamemodify(fnamemodify(g:vaf_p, ':.'),"
+        " ':p') ==# fnamemodify(g:vaf_p, ':p') ? fnamemodify(g:vaf_p, ':.') : g:vaf_p))"
         " | elseif g:vaf_n != bufnr('%')"
         " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'tab sbuffer ' . g:vaf_n"
         " | endif"
@@ -146,8 +146,8 @@ def test_the_guard_catches_e37_only_and_hands_the_path_to_fnameescape() -> None:
     line = _goto("/tmp/a b#c%d'e.py")
     assert line.startswith(":let g:vaf_p = '/tmp/a b#c%d''e.py' | ")
     assert (
-        " | exe 'tab drop ' . fnameescape((fnamemodify(g:vaf_p, ':.')[0] ==# '~'"
-        " ? g:vaf_p : fnamemodify(g:vaf_p, ':.'))) | "
+        " | exe 'tab drop ' . fnameescape((fnamemodify(fnamemodify(g:vaf_p, ':.'), ':p')"
+        " ==# fnamemodify(g:vaf_p, ':p') ? fnamemodify(g:vaf_p, ':.') : g:vaf_p)) | "
     ) in line
     assert line.endswith(" | unlet! g:vaf_p g:vaf_n | endtry")
     assert r"^Vim\%((\a\+)\)\=:E37:" in line
