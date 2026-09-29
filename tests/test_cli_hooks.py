@@ -64,7 +64,8 @@ def _goto(path: object) -> str:
         " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
         ' | exe "augroup END"'
         " | try"
-        " | if g:vaf_n < 0 | exe 'tab drop ' . fnameescape(g:vaf_p)"
+        " | if g:vaf_n < 0 | exe 'tab drop ' . fnameescape((fnamemodify(g:vaf_p, ':.')[0] ==# '~'"
+        " ? g:vaf_p : fnamemodify(g:vaf_p, ':.')))"
         " | elseif g:vaf_n != bufnr('%')"
         " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'tab sbuffer ' . g:vaf_n"
         " | endif"
@@ -78,14 +79,17 @@ def _goto(path: object) -> str:
 def _rename(path: object) -> str:
     """show_fresh's `:file {path}` rename-in-place line, escaped: `#`, `%`
     and a space are live on Vim's command line, so the path goes through a
-    Vim string literal and fnameescape(), same as _goto above. Spelled out
+    Vim string literal and fnameescape(), same as _goto above, and names
+    the buffer relative to Vim's cwd (`:.`, full if that starts with `~`,
+    see tmux_vim._vim_display_name). Spelled out
     for the same reason: importing tmux_vim's f-string would agree with any
     change to it."""
+    literal = "'" + str(path).replace("'", "''") + "'"
+    short = f"fnamemodify({literal}, ':.')"
     return (
-        ":exe 'file ' . fnameescape('"
-        + str(path).replace("'", "''")
-        + "') | setlocal buftype= modifiable noreadonly"
-        + " | noautocmd silent! edit! | silent! %d _"
+        f":exe 'file ' . fnameescape(({short}[0] ==# '~' ? {literal} : {short}))"
+        " | setlocal buftype= modifiable noreadonly"
+        " | noautocmd silent! edit! | silent! %d _"
     )
 
 

@@ -168,7 +168,7 @@ def test_the_swap_hook_never_carries_the_path() -> None:
     assert quoted, "expected the exe-quoted segments the hook is built from"
     assert not any("a b#c" in segment for segment in quoted)
     assert line.startswith(f":let g:vaf_p = {literal} | ")
-    assert "fnameescape(g:vaf_p)" in line
+    assert "fnameescape((fnamemodify(g:vaf_p, ':.')[0] ==# '~' ? g:vaf_p :" in line
 
 
 def test_every_navigation_carries_the_swap_hook() -> None:

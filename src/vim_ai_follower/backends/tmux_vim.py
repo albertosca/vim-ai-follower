@@ -249,7 +249,40 @@ _RELOCK_READONLY_SYNCED = _SYNC_FROM_DISK + " | " + _RELOCK_READONLY[1:]
 # also mark the follower's claim on it (see _NOTE_USER_READONLY).
 _READONLY_RELOCKS = (_RELOCK_READONLY, _RELOCK_READONLY_SYNCED)
 _OUR_READONLY_CLAIM = " | let b:vaf_ro_ours = 1"
-# `g:vaf_n` = the number of the buffer named `g:vaf_p`, or -1 (see above).
+
+
+def _vim_display_name(path_expr: str) -> str:
+    """A Vim expression naming the file `path_expr` (a Vim expression for its
+    full path) the way Vim names a file opened by RELATIVE path: relative to
+    the working directory when it is under it, full otherwise. It is the
+    argument show_fresh's `:file` and _GOTO_FILE's `:tab drop` hand to
+    fnameescape().
+
+    Why: Vim keeps a name it was given in full as typed, and shortens it only
+    when a `:cd` happens. Measured 2026-09-29 on Vim 9.2 at 49 columns, cwd
+    /private/tmp/vafn: `:file /private/tmp/vafn/sub/a.py` showed the tabline
+    as `/p/t/v/s/a.py`, the full path in the statusline and
+    `<te/tmp/vafn/sub/a.py" 1L, 6B written` for `:w`; `:file sub/a.py`
+    shows `s/a.py`, `sub/a.py` and `"sub/a.py" 1L, 6B written`, exactly as
+    `:e sub/a.py` does. The buffer's FULL name is the same either way, so the
+    `:p` lookups (_FIND_BUFFER, _WIPE_BUFFER) still find it, and Vim re-bases
+    the short name itself on any later `:cd`.
+
+    `:.` compares against getcwd(), which is the PHYSICAL directory even when
+    Vim was started from, or `:cd` to, a symlinked spelling of it (measured,
+    macOS /tmp -> /private/tmp); the hook hands the backend a realpath
+    (hooks._file_path), so the two line up without resolving anything here.
+
+    One exception keeps the full name: a relative name starting with `~`
+    (a directory literally called `~x` under the cwd). `:p` reads it back as
+    user x's home (measured: its `:p` is not the file), so the lookups
+    would miss the buffer and a later Edit would open a duplicate tab."""
+    short = f"fnamemodify({path_expr}, ':.')"
+    return f"({short}[0] ==# '~' ? {path_expr} : {short})"
+
+
+# `g:vaf_n` = the number of the buffer named `g:vaf_p`, or -1 (see the
+# comment above _SWAP_GROUP).
 _FIND_BUFFER = (
     ":let g:vaf_p = {file}"
     " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
@@ -258,7 +291,7 @@ _FIND_BUFFER = (
 _GOTO_FILE = (
     _FIND_BUFFER + f" | {_SWAP_ANSWER_OPEN}"
     " | try"
-    " | if g:vaf_n < 0 | exe 'tab drop ' . fnameescape(g:vaf_p)"
+    f" | if g:vaf_n < 0 | exe 'tab drop ' . fnameescape({_vim_display_name('g:vaf_p')})"
     " | elseif g:vaf_n != bufnr('%')"
     " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'tab sbuffer ' . g:vaf_n"
     " | endif"
@@ -802,6 +835,8 @@ class TmuxVimFollower:
         # the buffer onto the wrong name (measured 2026-09-24: a space alone
         # left the buffer unnamed), and the by-number lookup that a later
         # Edit's goto_file does then misses it and opens a duplicate tab.
+        # The name is the cwd-relative one Vim would give the file itself
+        # (_vim_display_name), not the full path the hook passes.
         # Then it READS the file into the buffer and clears it again, on the
         # same command line (see _READ_THEN_CLEAR): the rename left the buffer
         # "not edited", and a plain `:w` over the existing file then failed
@@ -822,7 +857,7 @@ class TmuxVimFollower:
         # carried belonged to the file it held before, never to this one.
         claim = " | let b:vaf_user_ro = 0 | let b:vaf_ro_ours = 2" if self._is_adopted() else ""
         pane.send_text(
-            f":exe 'file ' . fnameescape({_vim_string(file_path)}){claim}"
+            f":exe 'file ' . fnameescape({_vim_display_name(_vim_string(file_path))}){claim}"
             " | setlocal buftype= modifiable noreadonly | " + _READ_THEN_CLEAR
         )
         pane.send_key("Enter")

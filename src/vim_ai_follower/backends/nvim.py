@@ -257,6 +257,25 @@ return vim.b[buf].{_SYNCED_TICK} == vim.api.nvim_buf_get_changedtick(buf)
 _READ_THEN_CLEAR = "noautocmd silent! edit! | silent! %d _"
 
 
+def _display_name(nvim: pynvim.Nvim, file_path: str) -> str:
+    """file_path as nvim names a file opened by RELATIVE path: relative to the
+    current window's working directory when it is under it, full otherwise.
+    The name every buffer the follower names or adds is given, so the
+    tabline, the statusline and the `:w` message read `sub/a.py` instead of
+    the full path the hook passes (measured 2026-09-29: nvim, like Vim, keeps
+    a name given in full as it is and only shortens it on a `:cd`). The
+    buffer's FULL name is unchanged, so _buffer_number still finds it.
+
+    `:.` compares against getcwd(), which is the physical directory even when
+    nvim was started from, or `:cd` to, a symlinked spelling of it (measured,
+    macOS /tmp -> /private/tmp), and the hook passes a realpath. A relative
+    name starting with `~` stays full, for parity with the tmux backend,
+    whose `:p` lookup reads `~x/a.py` as user x's home (see its
+    _vim_display_name)."""
+    short: str = nvim.funcs.fnamemodify(file_path, ":.")
+    return file_path if short.startswith("~") else short
+
+
 def _name_without_swap(nvim: pynvim.Nvim, buf: pynvim.api.Buffer, file_path: str) -> None:
     """Name a new, empty buffer after file_path, opted out of swap first.
 
@@ -272,7 +291,7 @@ def _name_without_swap(nvim: pynvim.Nvim, buf: pynvim.api.Buffer, file_path: str
     every file the follower does not name. In an adopted nvim the caller
     turns swap back on once the buffer is current (_restore_swap_if_adopted)."""
     nvim.api.buf_set_option(buf, "swapfile", False)
-    nvim.api.buf_set_name(buf, file_path)
+    nvim.api.buf_set_name(buf, _display_name(nvim, file_path))
 
 
 @dataclass(frozen=True)
@@ -941,7 +960,7 @@ class NvimFollower:
         touched, is unchanged. Must run BEFORE bufload: the swap check runs
         during the load, so setting it afterwards is a no-op that still
         raises."""
-        bufnr = nvim.funcs.bufadd(file_path)
+        bufnr = nvim.funcs.bufadd(_display_name(nvim, file_path))
         nvim.api.buf_set_option(bufnr, "swapfile", False)
         # bufload fires BufRead/FileType, so the user's plugins run inside it:
         # through _exec, a message they print lands in hook.log instead of a
