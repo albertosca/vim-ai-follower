@@ -46,7 +46,7 @@ echo
 echo "LOOK AT: the terminal output and the exit code above; whether any"
 echo "pane/window opened anywhere. Expect the exact message"
 echo "  claude-follow: the vim backend requires tmux — run inside a tmux session, or set backend to nvim"
-echo "printed to stdout, exit code non-zero (observed: 1), and no follower"
+echo "printed to stderr, exit code non-zero (observed: 1), and no follower"
 echo "pane/window opening anywhere."
 echo
 echo "Cleanup when done:"

@@ -397,7 +397,10 @@ def test_start_vim_backend_without_tmux_errors(capsys: pytest.CaptureFixture[str
     with patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session):
         rc = commands.cmd_start({}, backend="tmux")
     assert rc == 1
-    assert "requires tmux" in capsys.readouterr().out
+    # An error, so stderr — like its sibling "could not open a standalone
+    # nvim window" — and nothing on stdout.
+    out, err = capsys.readouterr()
+    assert (out, err) == ("", commands.VIM_NEEDS_TMUX + "\n")
 
 
 def test_start_nvim_window_never_without_tmux_errors(

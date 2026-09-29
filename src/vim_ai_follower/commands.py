@@ -103,7 +103,7 @@ def cmd_start(
     if not session.in_tmux and resolved_backend == "tmux":
         # The tmux backend drives a tmux split — nothing to attach to
         # standalone, and no tmux session to fail gracefully into.
-        print(VIM_NEEDS_TMUX)
+        print(VIM_NEEDS_TMUX, file=sys.stderr)
         return 1
 
     if not session.in_tmux:
