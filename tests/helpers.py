@@ -88,9 +88,12 @@ def route_exec_lua(nvim: MagicMock, *, buffer: int, display_name: str) -> None:
 
 
 # The expression the tmux backend types in place of a path: a read of the
-# one-shot handle file that holds it (tmux_vim._typed_path). Spelled out
-# rather than imported, like the command literals the tests pin.
-_TYPED_PATH = re.compile(r"""join\(readfile\('((?:[^']|'')*)', 'b'\), "\\n"\)""")
+# one-shot handle file that holds it (tmux_vim._typed_path), named either by
+# its absolute path or HOME-relative through expand(). Spelled out rather than
+# imported, like the command literals the tests pin.
+_TYPED_PATH = re.compile(
+    r"""join\(readfile\((?:'((?:[^']|'')*)'|expand\('~/([^']*)',1\)),'b'\),"\\n"\)"""
+)
 
 
 def typed_path(path: object) -> str:
@@ -106,7 +109,11 @@ def resolve_typed_paths(text: str) -> str:
     how the test knows which file the line names."""
 
     def resolve(match: re.Match[str]) -> str:
-        handle = Path(match.group(1).replace("''", "'"))
+        absolute, home_relative = match.groups()
+        if absolute is not None:
+            handle = Path(absolute.replace("''", "'"))
+        else:
+            handle = Path.home() / home_relative
         return typed_path(os.fsdecode(handle.read_bytes()))
 
     return _TYPED_PATH.sub(resolve, text)

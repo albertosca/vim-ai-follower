@@ -16,8 +16,9 @@ import pytest
 from vim_ai_follower import cache
 from vim_ai_follower.backends import tmux_vim
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
+from vim_ai_follower.tmux import TmuxPane
 
-_HANDLE = re.compile(r"""^join\(readfile\('([^']*)', 'b'\), "\\n"\)$""")
+_HANDLE = re.compile(r"""^join\(readfile\('([^']*)','b'\),"\\n"\)$""")
 
 # Every byte a Vim string literal or a line-oriented read could mangle: a
 # quote, a backslash, a newline, a CR, a trailing newline, a byte that is not
@@ -44,7 +45,7 @@ def test_the_handle_holds_the_exact_bytes_and_the_line_does_not_spell_them(path:
     expression = tmux_vim._typed_path("%3", path)
     handle = _handle(expression)
     assert handle.parent == cache.CACHE_DIR
-    assert handle.name.startswith("path-3-")
+    assert re.fullmatch(r"p3-[0-9a-f]{6}", handle.name)
     assert handle.read_bytes() == os.fsencode(path)
     name = path.rsplit("/", 1)[1]
     assert name
@@ -64,11 +65,11 @@ def test_every_call_gets_its_own_handle() -> None:
 
 def test_old_handles_of_the_same_pane_are_swept_and_nothing_else() -> None:
     cache.CACHE_DIR.mkdir(parents=True)
-    old = cache.CACHE_DIR / "path-3-deadbeef"
+    old = cache.CACHE_DIR / "p3-dead00"
     old.write_bytes(b"/tmp/old.py")
-    recent = cache.CACHE_DIR / "path-3-cafebabe"
+    recent = cache.CACHE_DIR / "p3-cafe00"
     recent.write_bytes(b"/tmp/recent.py")
-    other_pane = cache.CACHE_DIR / "path-33-deadbeef"
+    other_pane = cache.CACHE_DIR / "p33-dead00"
     other_pane.write_bytes(b"/tmp/other.py")
     unrelated = cache.CACHE_DIR / "probe-3.txt"
     unrelated.write_bytes(b"x\n")
@@ -87,10 +88,165 @@ def test_old_handles_of_the_same_pane_are_swept_and_nothing_else() -> None:
 
 def test_a_handle_another_hook_swept_first_is_not_an_error() -> None:
     cache.CACHE_DIR.mkdir(parents=True)
-    ghost = cache.CACHE_DIR / "path-3-deadbeef"
+    ghost = cache.CACHE_DIR / "p3-dead00"
     with patch.object(Path, "glob", return_value=iter([ghost])):
         expression = tmux_vim._typed_path("%3", "/tmp/f.py")
     assert _handle(expression).read_bytes() == b"/tmp/f.py"
+
+
+def test_a_taken_handle_name_is_never_reused() -> None:
+    cache.CACHE_DIR.mkdir(parents=True)
+    taken = cache.CACHE_DIR / "p3-aaaaaa"
+    taken.write_bytes(b"/tmp/someone-else.py")
+    with patch(
+        "vim_ai_follower.backends.tmux_vim.secrets.token_hex", side_effect=["aaaaaa", "bbbbbb"]
+    ):
+        handle = _handle(tmux_vim._typed_path("%3", "/tmp/f.py"))
+    assert handle.name == "p3-bbbbbb"
+    assert taken.read_bytes() == b"/tmp/someone-else.py"
+
+
+# --- HOME-relative cache paths (tmux_vim._cache_file / _vim_shares_home) ---
+
+_HOME_HANDLE = re.compile(r"""^join\(readfile\(expand\('~/([^']*)',1\),'b'\),"\\n"\)$""")
+
+
+@pytest.fixture
+def home_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """HOME a symlinked spelling of a temp dir (like the demo's), with the
+    cache directory under it as in real use."""
+    real = tmp_path / "real-home"
+    real.mkdir()
+    home = tmp_path / "home"
+    home.symlink_to(real)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cache, "CACHE_DIR", home / ".cache" / "claude-vim-follower")
+    return home
+
+
+def _vim(creates_marker: bool, sent: list[str]) -> object:
+    """A send_text double: Vim answering the HOME question (creating the
+    marker through `~`, which in the same-HOME case is the hook's cache)."""
+
+    def send_text(self: object, text: str) -> None:
+        sent.append(text)
+        match = re.search(r"expand\('~/([^']*)', 1\)\)", text)
+        if creates_marker and match and "writefile([]" in text:
+            (Path.home() / match.group(1)).write_text("")
+
+    return send_text
+
+
+def _typed(pane_pid: int | None, creates_marker: bool, sent: list[str], path: str) -> str:
+    with (
+        patch.object(TmuxPane, "pane_pid", return_value=pane_pid),
+        patch.object(TmuxPane, "send_text", _vim(creates_marker, sent)),
+        patch.object(TmuxPane, "send_key"),
+        patch.object(tmux_vim, "_PROBE_TIMEOUT_SECONDS", 0.05),
+    ):
+        return tmux_vim._typed_path("%3", path)
+
+
+def test_a_vim_on_the_hooks_home_gets_the_handle_home_relative(home_cache: Path) -> None:
+    sent: list[str] = []
+    expression = _typed(4242, True, sent, "/tmp/f.py")
+    match = _HOME_HANDLE.match(expression)
+    assert match, expression
+    assert match.group(1).startswith(".cache/claude-vim-follower/p3-")
+    assert (home_cache / match.group(1)).read_bytes() == b"/tmp/f.py"
+    # The question was asked once, HOME-relative too.
+    assert len(sent) == 1
+    assert sent[0].startswith(":try | let g:vaf_r = writefile([], expand('~/.cache/")
+    assert str(home_cache) not in sent[0]
+    assert os.path.realpath(home_cache) not in sent[0]
+    # and is remembered for this Vim: no second question.
+    assert _HOME_HANDLE.match(_typed(4242, True, sent, "/tmp/g.py"))
+    assert len(sent) == 1
+
+
+def test_a_vim_on_another_home_gets_the_absolute_handle(home_cache: Path) -> None:
+    sent: list[str] = []
+    expression = _typed(4242, False, sent, "/tmp/f.py")
+    handle = _handle(expression)
+    assert handle.parent == cache.CACHE_DIR
+    assert handle.read_bytes() == b"/tmp/f.py"
+    assert len(sent) == 1
+    # Not asked again for the same Vim: the answer is the marker's absence.
+    _handle(_typed(4242, False, sent, "/tmp/g.py"))
+    assert len(sent) == 1
+
+
+def test_an_answer_that_lands_after_the_wait_is_picked_up_later(home_cache: Path) -> None:
+    sent: list[str] = []
+    _handle(_typed(4242, False, sent, "/tmp/f.py"))
+    marker = re.search(r"expand\('~/([^']*)'", sent[0])
+    assert marker
+    (Path.home() / marker.group(1)).write_text("")  # Vim got there late
+    assert _HOME_HANDLE.match(_typed(4242, False, sent, "/tmp/g.py"))
+    assert len(sent) == 1
+
+
+def test_a_new_vim_in_the_pane_is_asked_again(home_cache: Path) -> None:
+    sent: list[str] = []
+    assert _HOME_HANDLE.match(_typed(4242, True, sent, "/tmp/f.py"))
+    first_marker = re.search(r"expand\('~/([^']*)'", sent[0])
+    assert first_marker
+    # Another process in the pane, on another HOME.
+    _handle(_typed(5151, False, sent, "/tmp/g.py"))
+    assert len(sent) == 2
+    assert not (Path.home() / first_marker.group(1)).exists()
+
+
+def test_asking_again_clears_every_marker_of_the_pane_and_no_other(home_cache: Path) -> None:
+    """Two hooks asking at once each leave a marker, and only the last one is
+    recorded; the next question sweeps them all."""
+    cache.CACHE_DIR.mkdir(parents=True)
+    unrecorded = cache.CACHE_DIR / "h3-0a0a0a"
+    unrecorded.write_text("")
+    other_pane = cache.CACHE_DIR / "h33-0a0a0a"
+    other_pane.write_text("")
+    (cache.CACHE_DIR / "home-3").write_text("4242 h3-0b0b0b\n")
+    (cache.CACHE_DIR / "h3-0b0b0b").write_text("")
+    sent: list[str] = []
+    assert _HOME_HANDLE.match(_typed(5151, True, sent, "/tmp/f.py"))
+    assert len(sent) == 1
+    asked = re.search(r"(h3-[0-9a-f]{6})", sent[0])
+    assert asked
+    assert {path.name for path in cache.CACHE_DIR.glob("h3*-*")} == {"h33-0a0a0a", asked.group(1)}
+
+
+def test_a_cache_dir_outside_home_gets_the_absolute_handle(
+    home_cache: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "elsewhere" / "cache")
+    sent: list[str] = []
+    handle = _handle(_typed(4242, True, sent, "/tmp/f.py"))
+    assert handle.parent == tmp_path / "elsewhere" / "cache"
+    assert sent == []
+
+
+def test_a_pane_tmux_cannot_place_gets_the_absolute_handle(home_cache: Path) -> None:
+    sent: list[str] = []
+    _handle(_typed(None, True, sent, "/tmp/f.py"))
+    assert sent == []
+
+
+def test_a_cache_dir_expand_would_misread_gets_the_absolute_handle(
+    home_cache: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """expand() also expands wildcards and `$NAME`, so only a plain cache path
+    is typed through it."""
+    monkeypatch.setattr(cache, "CACHE_DIR", home_cache / "a $b*" / "cache")
+    sent: list[str] = []
+    _handle(_typed(4242, True, sent, "/tmp/f.py"))
+    assert sent == []
+
+
+def test_a_cache_file_with_an_unsafe_name_is_typed_in_full(home_cache: Path) -> None:
+    with patch.object(TmuxPane, "pane_pid") as pane_pid:
+        expression = tmux_vim._cache_file("%3", cache.CACHE_DIR / "odd name*")
+    assert expression == "'" + str(cache.CACHE_DIR / "odd name*") + "'"
+    pane_pid.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -142,3 +298,44 @@ def test_a_real_vim_reads_the_handle_back_to_the_exact_path(path: str, tmp_path:
         timeout=30,
     )
     assert out.read_bytes() == os.fsencode(path)
+
+
+@pytest.mark.integration
+def test_a_real_vim_with_a_wildignore_over_the_cache_still_answers_and_reads(
+    home_cache: Path, tmp_path: Path
+) -> None:
+    """expand() applies 'wildignore' unless told not to (nosuf): a user's
+    `wildignore=*/.cache/*` would make both the HOME question and the
+    HOME-relative handle expand to ''. The real Vim runs with the hook's HOME
+    and such a wildignore, answers the question, and reads the handle back."""
+    cache.CACHE_DIR.mkdir(parents=True)
+    question = tmux_vim._HOME_CHECK.format(
+        marker=tmux_vim._vim_string("~/.cache/claude-vim-follower/h3-0c0c0c")
+    )
+    with patch.object(tmux_vim, "_vim_shares_home", return_value=True):
+        expression = tmux_vim._typed_path("%3", "/tmp/it's here.py")
+    assert "expand('~/" in expression, expression
+    out = tmp_path / "out.bin"
+    subprocess.run(
+        [
+            "vim",
+            "-Nu",
+            "NONE",
+            "-i",
+            "NONE",
+            "-es",
+            "-c",
+            "set wildignore=*/.cache/*,h3-*,p3-*",
+            "-c",
+            question.removeprefix(":"),
+            "-c",
+            f"call writefile(split({expression}, \"\\n\", 1), '{out}', 'b')",
+            "-c",
+            "qa!",
+        ],
+        check=True,
+        timeout=30,
+        env={**os.environ, "HOME": str(home_cache)},
+    )
+    assert (cache.CACHE_DIR / "h3-0c0c0c").exists()
+    assert out.read_bytes() == b"/tmp/it's here.py"

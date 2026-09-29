@@ -20,12 +20,15 @@ on the same line (a `:file` rename prints the file's name there).
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+from vim_ai_follower import cache
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.diff import compute_edit_script
 from vim_ai_follower.state import FollowerState
@@ -49,17 +52,17 @@ def _tmux(*args: str) -> str:
     ).stdout.strip()
 
 
-def _logged_vim(tmux_session: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str:
-    """A real Vim at the follower's width (49), started in `proj`, that logs
-    every command-line change."""
+def _logged_vim(
+    tmux_session: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, home: Path
+) -> str:
+    """A real Vim at the follower's width (49), started in `proj` with HOME
+    `home`, that logs every command-line change."""
     monkeypatch.delenv("TMUX_PANE", raising=False)
     assert "TMUX" not in os.environ
     socket = _tmux("display-message", "-p", "#{socket_path}")
     assert socket.startswith(os.path.realpath(os.environ["TMUX_TMPDIR"]) + "/"), socket
     init = tmp_path / "init.vim"
     init.write_text(_LOGGER)
-    home = tmp_path / "home"
-    home.mkdir()
     pane = _tmux(
         "split-window",
         "-h",
@@ -83,7 +86,13 @@ def _logged_vim(tmux_session: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 def _dump(pane: str, out: Path, wait_until: Callable[..., bool]) -> tuple[list[str], list[str]]:
     """(every logged command line, `:messages`), straight out of Vim — deleted
     first and waited on a sentinel so a stale or half-written dump cannot
-    pass. Sent here, after the log is read, so the dump itself is not in it."""
+    pass. Typing the dump is logged too (the log is copied when the line
+    runs), so the states that are prefixes of the dump line are dropped."""
+    command = (
+        "call writefile(copy(g:vaf_test_log) + ['END-OF-LOG']"
+        " + split(execute('messages'), \"\\n\") + ['END-OF-DUMP'],"
+        f" '{out}')"
+    )
 
     def answered() -> bool:
         try:
@@ -102,9 +111,7 @@ def _dump(pane: str, out: Path, wait_until: Callable[..., bool]) -> tuple[list[s
                 pane,
                 "-l",
                 "--",
-                ":call writefile(copy(g:vaf_test_log) + ['END-OF-LOG']"
-                " + split(execute('messages'), \"\\n\") + ['END-OF-DUMP'],"
-                f" '{out}')",
+                ":" + command,
             ],
             check=True,
         )
@@ -116,21 +123,43 @@ def _dump(pane: str, out: Path, wait_until: Callable[..., bool]) -> tuple[list[s
         raise AssertionError(f"Vim never answered. Pane:\n{screen}")
     lines = out.read_text().splitlines()
     end = lines.index("END-OF-LOG")
-    return lines[:end], lines[end + 1 : -1]
+    typed = [line for line in lines[:end] if line == "ENTER" or not command.startswith(line)]
+    return typed, lines[end + 1 : -1]
 
 
+@pytest.mark.parametrize("vim_home", ["same-home", "other-home"])
 @pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
-def test_no_absolute_target_path_ever_reaches_the_command_line(
+def test_no_absolute_path_ever_reaches_the_command_line(
     tmux_session: str,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     wait_until: Callable[..., bool],
     adopted: bool,
+    vim_home: str,
+    request: pytest.FixtureRequest,
 ) -> None:
+    """The hook's HOME is spelled through the /tmp symlink, as in the demo
+    (HOME under /tmp -> /private/tmp), and CACHE_DIR is under it. With the Vim
+    on the same HOME, the typed lines name the cache HOME-relative (`~/…`),
+    so no absolute directory at all reaches the command line. With the Vim on
+    ANOTHER HOME, `~` would be a different directory: the follower must
+    notice and type the cache path in full, and everything still works."""
     root = Path(os.path.realpath(tmp_path))
     (root / "proj" / "sub").mkdir(parents=True)
     (root / "outside").mkdir()
-    pane = _logged_vim(tmux_session, monkeypatch, tmp_path)
+    # Short and under /tmp, never tmp_path: /tmp is itself the symlink.
+    home_parent = Path(tempfile.mkdtemp(prefix="vafh-", dir="/tmp"))
+    request.addfinalizer(lambda: shutil.rmtree(home_parent, ignore_errors=True))
+    home = home_parent / "home"
+    home.mkdir()
+    assert os.path.realpath(home) != str(home)  # really a symlinked spelling
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cache, "CACHE_DIR", home / ".cache" / "claude-vim-follower")
+    vim_home_dir = home
+    if vim_home == "other-home":
+        vim_home_dir = root / "other-home"
+        vim_home_dir.mkdir()
+    pane = _logged_vim(tmux_session, monkeypatch, tmp_path, vim_home_dir)
     window_id = _tmux("display-message", "-p", "-t", pane, "#{window_id}")
     FollowerState.set(window_id, backend="tmux", target=pane, adopted=adopted, speed="instant")
     follower = TmuxVimFollower(pane_id=pane, pace_seconds=0.0, window_id=window_id)
@@ -170,11 +199,24 @@ def test_no_absolute_target_path_ever_reaches_the_command_line(
     # would pass the absence checks below).
     assert typed.count("ENTER") >= 20, typed
     assert any("setlocal" in line for line in typed), typed
-    # Any absolute spelling of the targets' directories: the typed lines
-    # may name the follower's own cache files, never a target.
+    # No absolute spelling of the targets' directories, ever.
     for base in {root, tmp_path}:
         for directory in (base / "proj", base / "outside"):
             leaked = [line for line in typed if str(directory) in line]
             assert leaked == [], leaked[:3]
             shown = [line for line in messages if str(directory) in line]
             assert shown == [], shown
+    home_relative = [line for line in typed if "~/.cache/claude-vim-follower/" in line]
+    if vim_home == "same-home":
+        # Nor of the cache or HOME, in either spelling: the targets live
+        # under tmp_path and the cache under HOME.
+        for base in {root, tmp_path, home_parent, Path(os.path.realpath(home_parent))}:
+            leaked = [line for line in typed if str(base) in line]
+            assert leaked == [], leaked[:3]
+            shown = [line for line in messages if str(base) in line]
+            assert shown == [], shown
+        assert home_relative, typed
+    else:
+        # The cache in full: `~` in this Vim is not the hook's HOME.
+        assert any(str(cache.CACHE_DIR) in line for line in typed), typed
+        assert [line for line in home_relative if "readfile(" in line] == []

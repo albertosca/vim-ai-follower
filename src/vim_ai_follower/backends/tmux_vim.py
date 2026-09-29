@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import re
 import secrets
 import time
 from collections.abc import Callable
@@ -499,11 +500,106 @@ def _vim_string(value: str) -> str:
 # (at 49 columns the E484 does leave a hit-enter prompt, as any error there).
 _PATH_HANDLE_MAX_AGE_SECONDS = 600.0
 
+# The characters a HOME-relative cache path may have to be typed as
+# `expand('~/…', 1)`: expand() would also expand a wildcard (`*?[{`), `$NAME`,
+# a backtick command or a second `~` in it. The real one is
+# `.cache/claude-vim-follower`. The `1` (nosuf) matters as much: without it
+# 'wildignore' applies, and measured 2026-09-29 (Vim 9.2) a Vim with
+# `wildignore=*/.cache/*` expands the handle to '' (E484 on the read).
+_EXPAND_SAFE = re.compile(r"[A-Za-z0-9._/-]+")
+
+# The one-time question to a pane's Vim: create {marker} (a `~/…` path under
+# the hook's cache directory) through Vim's own `~`. It lands in the hook's
+# CACHE_DIR only when that Vim's HOME is the hook's HOME. Inside try/catch and
+# via `let`, like _PROBE_BUFFER: no failure may leave a prompt.
+_HOME_CHECK = (
+    ":try | let g:vaf_r = writefile([], expand({marker}, 1))"
+    " | catch | finally | unlet! g:vaf_r | endtry"
+)
+
+
+def _vim_shares_home(pane_id: str, cache_relative: str) -> bool:
+    """Whether `~` in this pane's Vim is the hook's HOME, so a cache file can
+    be typed as `~/{cache_relative}/…`.
+
+    They can differ: a dedicated follower's Vim gets the tmux server's
+    environment and an adopted one the user's shell's, while the hook has
+    Claude Code's (a test, or `HOME=… claude`, sets one and not the other).
+    Measured 2026-09-29 (Vim 9.2): Vim's `~` is its $HOME with symlinks
+    resolved, so a HOME spelled through /tmp still names the same directory.
+
+    Asked once per pane process (tmux's `pane_pid`) and remembered in
+    `home-<pane>`, which holds that pid and the marker file the question
+    asked Vim to create. The answer is "yes" exactly while that marker exists
+    in the hook's CACHE_DIR: a Vim with another HOME creates it somewhere
+    else (or nowhere, when that HOME has no cache directory). An answer that
+    arrives after the wait is still picked up by the next call. Until then,
+    and whenever tmux cannot say which process the pane runs, the absolute
+    path is typed.
+
+    The pane process is the Vim itself for a dedicated follower (a new Vim is
+    a new pane) but the user's shell for an adopted one, so a Vim restarted
+    in that shell inherits the answer: right unless it was started with
+    another HOME (`HOME=… vim`), and then its handle reads fail (E484) until
+    the pane is re-adopted. Asking every Vim would take a round trip per
+    call; tmux names no foreground pid to key on."""
+    pane = TmuxPane(pane_id=pane_id)
+    pane_pid = pane.pane_pid()
+    if pane_pid is None:
+        return False
+    directory = cache.CACHE_DIR
+    record = directory / f"home-{pane_id.lstrip('%')}"
+    try:
+        recorded_pid, marker = record.read_text().split()
+    except (OSError, ValueError):
+        recorded_pid, marker = "", ""
+    if recorded_pid == str(pane_pid):
+        return (directory / marker).exists()
+    # Every marker of this pane goes, not just the recorded one: two hooks
+    # asking at once each create one, and only the last is recorded.
+    prefix = f"h{pane_id.lstrip('%')}-"
+    for old in directory.glob(prefix + "*"):
+        old.unlink(missing_ok=True)
+    marker = f"{prefix}{secrets.token_hex(3)}"
+    record.write_text(f"{pane_pid} {marker}\n")
+    pane.send_text(_HOME_CHECK.format(marker=_vim_string(f"~/{cache_relative}/{marker}")))
+    pane.send_key("Enter")
+    deadline = time.monotonic() + _PROBE_TIMEOUT_SECONDS
+    while not (directory / marker).exists():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_PROBE_POLL_SECONDS)
+    return True
+
+
+def _cache_file(pane_id: str, path: Path) -> str:
+    """A Vim expression naming `path`, a file in the cache directory, as short
+    as is safe: `expand('~/.cache/claude-vim-follower/…', 1)` when this pane's
+    Vim shares the hook's HOME, the absolute literal otherwise. Typed lines
+    are echoed on Vim's command line (see _typed_path), and HOME is often a
+    long absolute directory of its own (in the demo, one under /tmp).
+
+    `~` needs expand(): measured 2026-09-29 (Vim 9.2), readfile() and
+    writefile() take `~/…` literally (E484/E482)."""
+    directory = cache.CACHE_DIR
+    try:
+        cache_relative = Path(os.path.realpath(directory)).relative_to(
+            os.path.realpath(Path.home())
+        )
+    except ValueError:
+        return _vim_string(str(path))
+    if not _EXPAND_SAFE.fullmatch(str(cache_relative)) or not _EXPAND_SAFE.fullmatch(path.name):
+        return _vim_string(str(path))
+    if not _vim_shares_home(pane_id, str(cache_relative)):
+        return _vim_string(str(path))
+    return f"expand('~/{cache_relative}/{path.name}',1)"
+
 
 def _typed_path(pane_id: str, file_path: str) -> str:
     """A Vim expression for `file_path` that does not spell it: the path is
     written to a one-shot handle file in the cache directory and the typed
-    line reads it back (`readfile()`).
+    line reads it back (`readfile()`), naming the handle HOME-relative when
+    it can (_cache_file).
 
     Why: this backend TYPES its Ex commands, and Vim echoes a typed command on
     its command line before running it. With the path spelled in the line,
@@ -516,26 +612,29 @@ def _typed_path(pane_id: str, file_path: str) -> str:
       runs a line some time after the send returns, so a fixed file could be
       rewritten by the next call first — close_tab's eviction followed by
       show_fresh's pre-wipe would then both wipe the NEW file, and the evicted
-      one would stay. A handle is only ever read by the line that names it.
+      one would stay. A handle is only ever read by the line that names it,
+      and is created exclusively (`xb`), so two calls never share one.
     - Byte-exact: the file holds `os.fsencode(file_path)` with no trailing
       newline, and `readfile(…, 'b')` joined on "\n" gives back exactly those
       bytes, a newline in the path included (binary mode keeps a CR and adds
-      no item for a missing final newline). A NUL cannot occur in a path.
-    - The absolute cache path, not `$HOME`/`~`: Vim's HOME is not necessarily
-      the hook's, and a handle Vim cannot find would be a failure; typing the
-      cache path saves nothing worth that (7 characters)."""
+      no item for a missing final newline). A NUL cannot occur in a path."""
     directory = cache.CACHE_DIR
     directory.mkdir(parents=True, exist_ok=True)
-    prefix = f"path-{pane_id.lstrip('%')}-"
+    prefix = f"p{pane_id.lstrip('%')}-"
     now = time.time()
     for old in directory.glob(prefix + "*"):
         # Another hook may sweep the same handle between glob and unlink.
         with contextlib.suppress(FileNotFoundError):
             if now - old.stat().st_mtime > _PATH_HANDLE_MAX_AGE_SECONDS:
                 old.unlink()
-    handle = directory / f"{prefix}{secrets.token_hex(4)}"
-    handle.write_bytes(os.fsencode(file_path))
-    return f"join(readfile({_vim_string(str(handle))}, 'b'), \"\\n\")"
+    while True:
+        handle = directory / f"{prefix}{secrets.token_hex(3)}"
+        try:
+            with handle.open("xb") as stream:
+                stream.write(os.fsencode(file_path))
+        except FileExistsError:
+            continue
+        return f"join(readfile({_cache_file(pane_id, handle)},'b'),\"\\n\")"
 
 
 # Wipe the buffer holding a given file, resolved by NUMBER rather than by
@@ -758,7 +857,7 @@ class TmuxVimFollower:
             _PROBE_BUFFER.format(
                 file=_typed_path(self.pane_id, file_path),
                 nonce=_vim_string(nonce),
-                probe=_vim_string(str(probe)),
+                probe=_cache_file(self.pane_id, probe),
             )
         )
         pane.send_key("Enter")
@@ -802,7 +901,7 @@ class TmuxVimFollower:
         answer = _readonly_answer_path(self.pane_id)
         answer.parent.mkdir(parents=True, exist_ok=True)
         answer.unlink(missing_ok=True)
-        pane.send_text(_RESTORE_READONLY.format(answer=_vim_string(str(answer))))
+        pane.send_text(_RESTORE_READONLY.format(answer=_cache_file(self.pane_id, answer)))
         pane.send_key("Enter")
 
     def _with_unlocked(
