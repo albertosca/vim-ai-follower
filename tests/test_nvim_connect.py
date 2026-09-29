@@ -292,6 +292,23 @@ def test_launch_standalone_nvim_never_removes_a_socket_someone_answers_on() -> N
             server.close()
 
 
+def test_launch_standalone_nvim_reports_a_socket_path_it_cannot_clear() -> None:
+    # A DIRECTORY at the socket path: nobody answers, and unlinking it raises
+    # (EPERM on macOS). That OSError used to escape past every caller.
+    with _short_socket_dir() as directory:
+        sock_path = directory / "nvim-@1.sock"
+        sock_path.mkdir()
+        launcher = MagicMock()
+        with (
+            _patched_launcher(sock_path, launcher),
+            pytest.raises(nvim_connect.SocketPathBlocked) as raised,
+        ):
+            nvim_connect.launch_standalone_nvim("@1")
+        assert str(raised.value).startswith(f"cannot clear {sock_path}: ")
+        assert isinstance(raised.value, nvim_connect.StandaloneLaunchFailed)
+        launcher.assert_not_called()
+
+
 def test_launch_standalone_nvim_attaches_once_the_socket_accepts(tmp_path: Path) -> None:
     sock_path = tmp_path / "nvim-@1.sock"
     with (

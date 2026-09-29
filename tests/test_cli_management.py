@@ -421,6 +421,27 @@ def test_start_retries_at_once_and_waits_the_full_deadline_despite_an_auto_open_
     assert not nvim_connect.launch_backoff_active("term-x")
 
 
+def test_start_reports_a_socket_path_it_cannot_clear(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"backend": "nvim", "nvim_window": "auto"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    standalone_session = session.Session(window_id="term-x", origin=None, in_tmux=False)
+    blocked = nvim_connect.SocketPathBlocked("/c/nvim-term-x.sock", PermissionError(1, "denied"))
+    with (
+        patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session),
+        patch("vim_ai_follower.commands.launch_standalone_nvim", side_effect=blocked),
+    ):
+        assert commands.cmd_start({}) == 1
+    out, err = capsys.readouterr()
+    assert (out, err) == (
+        "",
+        f"claude-follow: could not open a standalone nvim window ({blocked})\n",
+    )
+    assert state.FollowerState.read("term-x") is None
+
+
 def test_start_in_tmux_nvim_window_always_launcher_failure_reports_and_exits(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

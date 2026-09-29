@@ -10,6 +10,7 @@ from vim_ai_follower import cache, config, control, keybindings, snapshot, tmux
 from vim_ai_follower.backends import get_follower
 from vim_ai_follower.backends.nvim_connect import (
     NvimNeverListened,
+    StandaloneLaunchFailed,
     clear_launch_backoff,
     launch_standalone_nvim,
     resolve_nvim_target,
@@ -50,6 +51,9 @@ def _launch_standalone_or_report(window_id: str) -> str | None:
             f"{exc.launcher} can start nvim, then run start again",
             file=sys.stderr,
         )
+        return None
+    except StandaloneLaunchFailed as exc:
+        print(f"claude-follow: could not open a standalone nvim window ({exc})", file=sys.stderr)
         return None
 
 

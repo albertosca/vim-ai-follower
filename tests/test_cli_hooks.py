@@ -2287,6 +2287,17 @@ def test_an_nvim_that_binds_after_the_auto_open_gave_up_is_attached_despite_the_
         shutil.rmtree(directory, ignore_errors=True)
 
 
+def test_an_auto_open_whose_socket_path_is_blocked_logs_and_noops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _standalone_auto_open(tmp_path, monkeypatch)
+    standalone = Session(window_id="term-x", origin=None, in_tmux=False)
+    blocked = nvim_connect.SocketPathBlocked("/c/nvim-term-x.sock", PermissionError(1, "denied"))
+    with patch("vim_ai_follower.hooks.launch_standalone_nvim", side_effect=blocked):
+        assert hooks._maybe_auto_open(standalone, "/tmp/f.txt", cfg) is None
+    assert state.FollowerState.read("term-x") is None
+
+
 def test_maybe_auto_open_in_tmux_always_launcher_failure_logs_and_noops(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

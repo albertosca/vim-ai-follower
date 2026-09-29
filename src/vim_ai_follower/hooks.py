@@ -17,7 +17,7 @@ from vim_ai_follower import binding, cache, config, control, keybindings, snapsh
 from vim_ai_follower import diff as diff_module
 from vim_ai_follower.backends import BufferProbe, Follower, get_follower, nvim_connect
 from vim_ai_follower.backends.nvim_connect import (
-    NvimNeverListened,
+    StandaloneLaunchFailed,
     launch_standalone_nvim,
     resolve_nvim_target,
 )
@@ -333,7 +333,7 @@ def _launch_standalone_or_log(window_id: str) -> str | None:
         return launch_standalone_nvim(
             window_id, wait_seconds=nvim_connect.AUTO_OPEN_SOCKET_WAIT_SECONDS
         )
-    except (subprocess.CalledProcessError, NvimNeverListened) as exc:
+    except (subprocess.CalledProcessError, StandaloneLaunchFailed) as exc:
         # Every hook blocks the tool call it runs in: retrying on each one
         # stalled every Edit/Write/Read for the whole wait. Back off, once.
         nvim_connect.record_launch_failure(window_id)

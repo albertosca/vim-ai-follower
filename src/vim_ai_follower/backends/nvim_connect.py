@@ -37,7 +37,20 @@ LAUNCH_BACKOFF_SECONDS = 300.0
 _SOCKET_POLL_INTERVAL_SECONDS = 0.02
 
 
-class NvimNeverListened(Exception):
+class StandaloneLaunchFailed(Exception):
+    """A standalone nvim could not be brought up: nothing to attach to."""
+
+
+class SocketPathBlocked(StandaloneLaunchFailed):
+    """Something nobody answers on sits at the socket path and cannot be
+    removed (a directory, a file we may not delete): nvim could never bind."""
+
+    def __init__(self, sock: str, cause: OSError) -> None:
+        super().__init__(f"cannot clear {sock}: {cause}")
+        self.sock = sock
+
+
+class NvimNeverListened(StandaloneLaunchFailed):
     """The standalone launcher returned, but no nvim listened on the socket
     before the deadline: nothing to attach to."""
 
@@ -155,7 +168,10 @@ def _remove_dead_socket(sock: str) -> None:
     nvim's and is never removed."""
     path = Path(sock)
     if path.exists() and not _answers(sock):
-        path.unlink(missing_ok=True)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:  # a directory there, or a file we may not delete
+            raise SocketPathBlocked(sock, exc) from exc
 
 
 def launch_backoff_path(window_id: str) -> Path:
