@@ -586,6 +586,69 @@ def test_six_parallel_hooks_animate_exactly_one_file_cleanly(world: E2EFollower)
     assert [Path(p).name for p in state["open_files"]] == [winner]
 
 
+# The observer again, with the global 'paste' option in each logged state.
+_PASTE_OBSERVER_VIMRC = r"""
+let g:vaf_obs_log = '{log}'
+let g:vaf_obs_last = ''
+function! VafObsTick(timer) abort
+  let l:state = json_encode({{'name': expand('%:t'), 'lines': getline(1, '$'), 'paste': &paste}})
+  if l:state !=# g:vaf_obs_last
+    let g:vaf_obs_last = l:state
+    call writefile([l:state], g:vaf_obs_log, 'a')
+  endif
+endfunction
+call timer_start(15, 'VafObsTick', {{'repeat': -1}})
+"""
+
+
+def test_paste_is_on_for_the_whole_animation_and_off_after_the_relock(
+    world: E2EFollower,
+) -> None:
+    """Battery check 3 — guards the stray-`u` fix's precondition. A pause or
+    interrupt that lands mid-line rolls the line back with two Escapes and
+    `u`; a completion popup (CoC/Copilot/vim-ai-autocomplete) with an
+    `inoremap <expr> <Esc> pumvisible() ? ...` map used to eat the first
+    Escape and leave the `u` typed as text (`banu`). The animation runs
+    under 'paste', which disables every insert-mode mapping and
+    abbreviation, so that map cannot fire while the follower types; the two
+    Escapes are the belt to that brace (scripts/repro-stray-u.sh proves the
+    Escape half with a real popup).
+
+    Sampled mid-animation by a key-free timer, not at the end: 'paste' is on
+    at the first typed line and at every later state up to the finished
+    file, and off once the relock has run — a follower that left it on would
+    break the user's own autoindent and mappings after the hand-back."""
+    log = world.workdir / "observer.log"
+    world.set_vimrc(_PASTE_OBSERVER_VIMRC.format(log=log))
+    world.start("tmux", "lento")
+    follower = world.follower_target()
+    world.wait_until(log.exists, "the observer timer to start", timeout=15.0)
+
+    content = (FIXTURES / "pause-trigger.py").read_text()
+    source = content.splitlines()
+    path = world.workdir / "paste_check.py"
+    world.cli("hook", "pre", stdin=payload("Write", path))
+    path.write_text(content)
+    proc = world.cli_background("hook", "post", stdin=payload("Write", path))
+    world.wait_for_hook_exit(proc)
+
+    states = [s for s in _observed_states(log) if s["name"] == path.name]
+    trace = "\n".join(f"paste={s['paste']} rows={len(s['lines'])}" for s in states)
+    finished = next(i for i, s in enumerate(states) if s["lines"] == source)
+    typing = [s for s in states[: finished + 1] if any(s["lines"])]
+    # Non-vacuity: the first line was seen part-way, and so was a state in
+    # the middle of the file — not just the first and last frames.
+    first_row = [s for s in typing if len([line for line in s["lines"] if line]) == 1]
+    middle = [s for s in typing if 2 <= len(s["lines"]) <= len(source) - 2]
+    assert first_row, f"no state caught on the first line:\n{trace}"
+    assert middle, f"no state caught mid-file:\n{trace}"
+    off = [s for s in typing if s["paste"] != 1]
+    assert not off, f"'paste' was off while the follower typed:\n{trace}"
+    assert states[-1]["lines"] == source
+    assert states[-1]["paste"] == 0, f"'paste' left on after the relock:\n{trace}"
+    assert _vim_eval_dump(world, follower, "&paste") == "0"
+
+
 # Two stand-ins for what a real config brings (vim-ai-autocomplete's
 # EscHandler, vim-tmux-navigator): an insert-mode <Esc> map that swallows the
 # FIRST Escape of every insert session, and a Normal-mode <C-\> made

@@ -13,8 +13,7 @@ disagree with it.
 - **Claude drives, Alberto watches.** You run every script and command;
   Alberto only observes the terminal/panes and gives a verdict. Never ask
   him to type commands himself unless a check's own setup explicitly calls
-  for it (e.g. Check 9's real Claude Code prompt, or Check 3's manual
-  fallback).
+  for it (e.g. Check 9's real Claude Code prompt).
 - **One heavy process at a time.** Do not run two checks' scripts
   concurrently, and do not background a check's driving script unless the
   check explicitly says to watch it stream live (e.g. Check 7) — in which
@@ -33,7 +32,7 @@ disagree with it.
   `qa_config_handoff`, exactly like Check 9. Check 8's matrix script
   creates its own private tmux server and never touches Alberto's real one.
 - **Redirect, never pipe, any check that backgrounds a `hook post`.**
-  Checks 3, 9, 12, 13, 14, 15 and 16 do, most of them to leave an animation
+  Checks 9, 12, 13, 14, 15 and 16 do, most of them to leave an animation
   running so the controls can be exercised.
   Running them as `zsh scripts/... | tee log` makes the shell
   wait for the pipe, which closes only when the backgrounded hook exits — so
@@ -63,7 +62,7 @@ disagree with it.
 
 ## For each of the 19 checks, in order
 
-**Machine-verified checks (2026-09-29).** Checks 2, 4, 6, 7 and 10 have no manual step: do not run their scripts. Record each as `e2e` in the ledger, naming its test in `tests/test_e2e_battery_tranche3.py` (the check's section in `qa/visual-battery.md` names it). Checks 1 and 5 are a quick look only. Check 8's manual pass (`scripts/repro-exit-insert-matrix.sh`, against the real config) and Check 9's (the iTerm2 split) run only when the battery section says so — after changing an insert/navigation plugin, and after changing `backends/nvim_connect.py`; otherwise record them as `e2e` too.
+**Machine-verified checks (2026-09-29).** Checks 2, 3, 4, 6, 7 and 10 have no manual step: do not run their scripts. Record each as `e2e` in the ledger, naming its test in `tests/test_e2e_battery_tranche3.py` (the check's section in `qa/visual-battery.md` names it). Checks 1 and 5 are a quick look only. Check 8's manual pass (`scripts/repro-exit-insert-matrix.sh`, against the real config) and Check 9's (the iTerm2 split) run only when the battery section says so — after changing an insert/navigation plugin, and after changing `backends/nvim_connect.py`; otherwise record them as `e2e` too.
 
 Run this five-step loop for each remaining check. The scripts are:
 

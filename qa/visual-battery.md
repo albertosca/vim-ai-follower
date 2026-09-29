@@ -71,7 +71,7 @@ check, by the driving slash command; it is not repeated per check here.
 | 18 | nvim: a swap-held file opens instead of crashing the hook | shipped 2026-09-21 (`d817f08`) |
 | 19 | nvim: Read navigation shows disk content, `goto_line` clamps (+ adopt note) | shipped 2026-09-16 (`98b6201`), adopt rule `779284b` 2026-09-21 |
 
-**Machine-verified (2026-09-29).** Checks 2, 4, 6, 7 and 10 have no manual step left: each is an e2e test in `tests/test_e2e_battery_tranche3.py`, and a battery run records them from that test instead of running anything. Checks 1, 5, 8 and 9 keep only the part a test cannot judge (the colour in your theme, the smoothness, your own plugin stack, a real iTerm2 split). Check 3 is not converted.
+**Machine-verified (2026-09-29).** Checks 2, 3, 4, 6, 7 and 10 have no manual step left: each is an e2e test in `tests/test_e2e_battery_tranche3.py`, and a battery run records them from that test instead of running anything. Checks 1, 5, 8 and 9 keep only the part a test cannot judge (the colour in your theme, the smoothness, your own plugin stack, a real iTerm2 split).
 
 ---
 
@@ -145,59 +145,9 @@ It fires two edits with distinct identities (content from `qa/fixtures/cue-write
 
 ## Check 3 — Escape+undo race fix
 
-**Purpose:** confirm a pause landing mid-animation, while a real completion
-popup (CoC/Copilot/vim-ai-autocomplete) is up, never leaves a stray
-undo-triggered character in the buffer.
+**Purpose:** a pause or interrupt landing mid-line, while a completion popup (CoC/Copilot/vim-ai-autocomplete) is up, never leaves a stray undo-triggered character in the buffer (`banu`). The rollback sends two Escapes then `u`; a popup-close map (`inoremap <expr> <Esc> pumvisible() ? "\<C-e>" : "\<Esc>"`) used to eat the first Escape and let the `u` land as text.
 
-**Setup:** needs a pause landing mid-animation while a popup is visible.
-Restart the follower slow so there's time to react:
-
-```sh
-claude-follow stop 2>/dev/null; claude-follow start --speed lento
-```
-
-Then drive an edit that triggers completions, either via Claude Code:
-
-```
-Cria o arquivo /tmp/vaf-qa-pause.py com a Write tool, com exatamente o
-conteúdo de qa/fixtures/pause-trigger.py deste repositório (import os; uma
-função collect_paths que usa os.listdir, os.path.join, .strip().lower(),
-.append() e sorted(set(...))).
-```
-
-or by hand from the origin pane:
-
-```sh
-cp qa/fixtures/pause-trigger.py /tmp/vaf-qa-pause.py
-P='{"tool_name":"Write","tool_input":{"file_path":"/tmp/vaf-qa-pause.py"},"session_id":"me"}'
-echo "$P" | claude-follow hook pre
-echo "$P" | claude-follow hook post   # animates slowly — press `prefix P` mid-line
-```
-
-Press **`prefix P`** (pause) at any moment while it types, then
-**`prefix P`** again to resume (or let it finish). Do not try to aim
-"mid-line": the tmux/vim backend types **line by line** by design (only the
-nvim backend is char-by-char), so visually a pause always lands at a line
-boundary. The race this check guards lives one level down — each line is
-four key sends (opener, text, Escape, Escape) and the pause can land between
-any two of them, e.g. after the `o` opened a line but before its text — and
-that is exactly the case the rollback must undo cleanly.
-
-**What Alberto looks at:** the final buffer content, line by line, focused
-on the lines that were mid-type when the popup was up.
-
-**PASS:** the final buffer is clean — no stray `u`, no `banu`-style smear;
-content matches `pause-trigger.py` exactly. **FAIL:** a literal `u` (or
-other junk) left in a line.
-
-> Hermetic proof of the same fix (deterministic, no popup luck):
-> `zsh scripts/repro-stray-u.sh` → prints `PASS`.
-
-**Cleanup:**
-
-```sh
-rm -f /tmp/vaf-qa-pause.py
-```
+**Machine-verified, no manual step** by `tests/test_e2e_battery_tranche3.py::test_paste_is_on_for_the_whole_animation_and_off_after_the_relock`: a key-free timer in the follower's own Vim samples `'paste'` mid-animation and finds it on from the first typed line through every later state up to the finished file, then off once the relock has run. `'paste'` disables every insert-mode mapping, so the popup-close map cannot fire while the follower types; a canary that drops `paste` from the unlock turns the test red. The Escape half stays proven with a real built-in completion popup by `zsh scripts/repro-stray-u.sh` (prints `PASS`), kept as the mechanism proof. Nothing to run by hand.
 
 ---
 
