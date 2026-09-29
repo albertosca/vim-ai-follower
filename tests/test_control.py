@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import fcntl
 import os
 import subprocess
+import sys
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -191,11 +194,119 @@ def test_try_acquire_animating_reclaims_a_dead_holders_marker(tmp_path: Path) ->
 
 def test_try_acquire_animating_loses_a_reclaim_race(tmp_path: Path) -> None:
     (tmp_path / "@1.animating").write_text("99999999 running")  # stale, dead pid
-    # os.open always reports the file exists: the stale marker is detected and
-    # unlinked, but the O_EXCL recreate loses to a competitor that got there
+    # The link always reports the name taken: the stale marker is detected and
+    # unlinked, but the claim loses to a competitor that linked the free name
     # first, so acquire gives up instead of clobbering the winner.
-    with patch("vim_ai_follower.control.os.open", side_effect=FileExistsError):
+    with patch("vim_ai_follower.control.os.link", side_effect=FileExistsError):
         assert control.try_acquire_animating("@1", tmp_path) is False
+    assert not list(tmp_path.glob("*.tmp"))  # the unpublished claim is cleaned up
+
+
+def test_try_acquire_animating_skips_while_another_hook_reclaims(tmp_path: Path) -> None:
+    (tmp_path / "@1.animating").write_text("99999999 running")  # stale, dead pid
+    # Another hook holds the reclaim lock: it is mid-reclaim, and waiting for
+    # it would only find it the owner. Skip, leaving the marker to it.
+    with (tmp_path / "@1.animating.lock").open("w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        assert control.try_acquire_animating("@1", tmp_path) is False
+    assert (tmp_path / "@1.animating").read_text() == "99999999 running"
+
+
+_COMPETITOR = """
+import sys
+from pathlib import Path
+from vim_ai_follower import control
+print(control.try_acquire_animating("@1", Path(sys.argv[1])), flush=True)
+sys.stdin.read()  # stay alive, as a hook animating the slot it won does
+"""
+
+
+class _CompetitorAfterStep:
+    """Stands in for control's `os`: right after the acquirer's `step`-th OS
+    call returns (or raises), a competing hook — a real, separate, still-alive
+    process — tries to take the same slot. Walking `step` over every call
+    holds the acquirer between each pair of its steps in turn, whatever
+    those steps are."""
+
+    def __init__(self, step: int, base_dir: Path) -> None:
+        self.step = step
+        self.base_dir = base_dir
+        self.calls = 0
+        self.competitor: subprocess.Popen[str] | None = None
+        self.competitor_won: bool | None = None
+
+    def _compete(self) -> None:
+        self.competitor = subprocess.Popen(
+            [sys.executable, "-c", _COMPETITOR, str(self.base_dir)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        assert self.competitor.stdout is not None
+        self.competitor_won = self.competitor.stdout.readline().strip() == "True"
+
+    def __getattr__(self, name: str) -> Any:
+        real = getattr(os, name)
+        if not callable(real):
+            return real
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return real(*args, **kwargs)
+            finally:
+                self.calls += 1
+                if self.calls == self.step:
+                    self._compete()
+
+        return call
+
+
+@pytest.mark.parametrize("marker_before", ["none", "a crashed hook's"])
+def test_a_competing_hook_at_any_step_of_an_acquire_never_makes_two_owners(
+    tmp_path: Path, marker_before: str
+) -> None:
+    # Six parallel Writes fire six hooks at once. Whichever step one of them
+    # is between when another looks at the marker, exactly one may own the
+    # slot: a loser that read the winner's still-EMPTY marker used to call it
+    # stale, unlink it and reclaim — two hooks typing into one pane.
+    competed = 0
+    for step in range(1, 50):
+        base = tmp_path / str(step)
+        base.mkdir()
+        if marker_before != "none":
+            (base / "@1.animating").write_text("99999999 running")  # dead pid
+        fake_os = _CompetitorAfterStep(step, base)
+        with patch("vim_ai_follower.control.os", fake_os):
+            ours = control.try_acquire_animating("@1", base)
+        if fake_os.competitor is None:
+            break  # the acquire finished in fewer steps: every gap was probed
+        competed += 1
+        try:
+            owners = [os.getpid()] * ours + [fake_os.competitor.pid] * bool(fake_os.competitor_won)
+            assert len(owners) == 1, f"after step {step}: {len(owners)} owners of one slot"
+            marker = control._read_marker("@1", base)
+            assert marker is not None and marker[0] == owners[0], (
+                f"after step {step}: the marker names {marker}, not the owner {owners[0]}"
+            )
+        finally:
+            assert fake_os.competitor.stdin is not None
+            fake_os.competitor.stdin.close()
+            fake_os.competitor.wait()
+    assert competed >= 2, "the competitor never ran: nothing was probed"
+
+
+def test_a_state_change_replaces_the_marker_never_truncates_it(tmp_path: Path) -> None:
+    # A hook going running -> paused -> handoff rewrites its marker while
+    # other hooks read it to decide whether the slot is free. Rewritten in
+    # place, a reader between the truncate and the write sees an EMPTY
+    # marker, calls it stale, and takes the slot from a live owner. Replaced,
+    # a reader holding the old file still reads the old, complete owner.
+    assert control.try_acquire_animating("@1", tmp_path) is True
+    with (tmp_path / "@1.animating").open() as before:
+        control.mark_animating("@1", tmp_path, state="paused")
+        assert before.read() == f"{os.getpid()} running"
+    assert control.animating_state("@1", tmp_path) == "paused"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["@1.animating"]
 
 
 def test_a_signal_with_no_live_animation_to_address_is_not_written(tmp_path: Path) -> None:

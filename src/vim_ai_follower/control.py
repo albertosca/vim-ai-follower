@@ -4,6 +4,7 @@ resumable pending-animation snapshot."""
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 from dataclasses import asdict, dataclass
@@ -109,14 +110,26 @@ def _animating_path(window_id: str, base_dir: Path | None) -> Path:
     return _control_dir(base_dir) / f"{window_id}.animating"
 
 
+def _write_marker_atomically(path: Path, payload: str) -> Path:
+    """The marker's content, written to a private sibling first so the marker
+    itself is only ever published whole (by link or replace). A reader that
+    sees the marker at all sees its owner: an EMPTY marker is indistinguishable
+    from a crashed hook's, and a live one read as stale gets taken."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(payload)
+    return tmp
+
+
 def mark_animating(window_id: str, base_dir: Path | None = None, state: str = "running") -> None:
     """Record that an animation is in flight ("running"), waiting while
     paused ("paused"), or waiting for the user's save after an interrupt
     ("handoff") — tagged with this process's PID so a crashed hook can
-    never leave a convincing stale marker."""
+    never leave a convincing stale marker. Replaced, never rewritten in
+    place: hooks racing for the slot read it the whole time (see
+    _write_marker_atomically)."""
     path = _animating_path(window_id, base_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f"{os.getpid()} {state}")
+    _write_marker_atomically(path, f"{os.getpid()} {state}").replace(path)
 
 
 def try_acquire_animating(
@@ -130,27 +143,56 @@ def try_acquire_animating(
     parallel Write tool calls fire six hooks near-simultaneously, and a plain
     "read the marker, then later write it" lets them all pass the guard and
     animate into the same pane at once — their unlock/wipe/opener keystrokes
-    interleave into garble (scripts/repro-concurrent-hooks.sh). The O_EXCL
-    create is the atomic winner-takes-it so exactly one hook animates and the
-    rest skip. A marker left by a crashed hook (dead PID) is reclaimed."""
+    interleave into garble (scripts/repro-concurrent-hooks.sh).
+
+    The claim is a hard link of an already-written file onto the marker name:
+    it fails if the name exists, and when it succeeds the marker appears with
+    its owner in it. (An O_EXCL create followed by a separate write published
+    an empty marker in between, which a loser read as a crashed hook's and
+    reclaimed — two owners.) A crash before the link leaves only the private
+    temp file, so no half-claim can wedge the slot."""
     path = _animating_path(window_id, base_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = f"{os.getpid()} {state}"
+    tmp = _write_marker_atomically(path, f"{os.getpid()} {state}")
     try:
-        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        return _publish(tmp, path) or _reclaim_if_stale(window_id, base_dir, tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _publish(tmp: Path, path: Path) -> bool:
+    try:
+        os.link(tmp, path)
     except FileExistsError:
-        if animating_state(window_id, base_dir) is not None:
-            return False  # a live process is already animating this window
-        # Stale marker from a crashed hook: reclaim it atomically. If another
-        # hook reclaims first, its O_EXCL wins and ours raises again — skip.
-        try:
-            path.unlink()
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        except (FileExistsError, FileNotFoundError):
-            return False
-    with os.fdopen(fd, "w") as handle:
-        handle.write(payload)
+        return False
     return True
+
+
+def _reclaim_if_stale(window_id: str, base_dir: Path | None, tmp: Path, path: Path) -> bool:
+    """Take the slot from a crashed hook (dead PID), or lose to a live owner.
+
+    Reading "stale" and then unlinking is two steps: two hooks can both read
+    the same dead marker, one reclaims, and the other then unlinks the FRESH
+    marker it never read. So reclaimers serialize on a lock and re-read under
+    it; one already reclaiming means this hook lost the race, and it skips
+    without waiting. The kernel drops the lock with its holder, so a crash
+    here cannot wedge the slot either."""
+    if animating_state(window_id, base_dir) is not None:
+        return False  # a live process is already animating this window
+    lock_path = path.with_name(f"{path.name}.lock")
+    fd = os.open(lock_path, os.O_CREAT | os.O_WRONLY, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False  # another hook is reclaiming this very marker
+        if animating_state(window_id, base_dir) is not None:
+            return False  # reclaimed (or freshly claimed) since the first read
+        path.unlink(missing_ok=True)
+        # A hook that found the name free in between claimed it with a plain
+        # link; the link fails and this reclaim lost to it.
+        return _publish(tmp, path)
+    finally:
+        os.close(fd)
 
 
 def clear_animating(window_id: str, base_dir: Path | None = None) -> None:
