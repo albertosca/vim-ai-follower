@@ -269,6 +269,40 @@ def test_the_failure_hook_clears_even_while_the_follower_is_disabled(tmp_path: P
     assert not snapshot.in_flight("@1", _real(target))
 
 
+def test_the_failure_hook_without_a_window_leaves_every_mark_alone(tmp_path: Path) -> None:
+    """Nothing resolved at all (no pane, no synthetic identity): the hook
+    cannot tell which window's mark is meant, so it touches none — and still
+    never fails."""
+    target = tmp_path / "a.py"
+    target.write_text("one\n")
+    _pre(target)
+    with patch("vim_ai_follower.hooks.resolve_session", return_value=None):
+        assert hooks.cmd_hook_failure(_ENV, _payload("Edit", target)) == 0
+    assert snapshot.in_flight("@1", _real(target))
+
+
+def test_the_failure_hook_without_a_file_path_leaves_every_mark_alone(tmp_path: Path) -> None:
+    target = tmp_path / "a.py"
+    target.write_text("one\n")
+    _pre(target)
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="@1\n"),
+    ):
+        assert hooks.cmd_hook_failure(_ENV, {"tool_name": "Edit", "tool_input": {}}) == 0
+    assert snapshot.in_flight("@1", _real(target))
+
+
+def test_an_unreadable_mark_has_no_writer(tmp_path: Path) -> None:
+    """A mark whose bytes aren't text reads as "no writer", so no Read can
+    claim it as its own — it waits for the post/failure hook or the TTL."""
+    target = tmp_path / "a.py"
+    target.write_text("one\n")
+    _pre(target)
+    snapshot.in_flight_path("@1", _real(target)).write_bytes(b"\xff\xfe")
+    assert snapshot.in_flight_writer("@1", _real(target)) == ""
+
+
 def test_hook_failure_is_a_cli_subcommand_that_never_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
