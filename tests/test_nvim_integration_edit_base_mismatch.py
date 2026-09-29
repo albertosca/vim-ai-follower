@@ -161,3 +161,41 @@ def test_edit_of_a_read_file_whose_tab_was_closed_under_nohidden_is_retyped(
     assert len(states) >= 2, f"observer caught no intermediate state:\n{trace}"
     assert after not in states[:-1], f"finished file shown before the animation ended:\n{trace}"
     assert max(_defs(s) for s in states) <= _defs(after), f"duplicated defs:\n{trace}"
+
+
+@pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
+def test_a_read_landing_between_an_edits_pre_and_post_hooks_never_flashes_the_finished_file(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, adopted: bool
+) -> None:
+    """nvim's twin of the tmux test of the same name (BACKLOG D2): another
+    agent's Read of the file posts after this Edit wrote it and before its
+    post hook. The Read used to re-read the clean buffer (C5's
+    _reload_if_clean), putting the finished file on screen; the Edit's probe
+    then saw a buffer that was not its base — a dedicated follower wiped and
+    retyped it, an adopted one left it alone with the "buffer differs" cue
+    and never animated the edit at all."""
+    log, _ = _observed_nvim(headless_nvim, tmp_path, monkeypatch)
+    if adopted:
+        FollowerState.update(_WINDOW, adopted=True)
+    target = (tmp_path / "a.py").resolve()
+    target.write_text(ONE_DEF)
+    # Opened by a Read: a clean, disk-backed buffer holding the edit's base.
+    assert hooks.cmd_hook_post(_ENV, _payload("Read", target)) == 0
+    assert _wait(lambda: _last_state(log, target.name) == ONE_DEF.splitlines(), timeout=5.0)
+
+    with log.open("a") as handle:
+        handle.write(_MARK + "\n")
+    assert hooks.cmd_hook_pre(_ENV, _payload("Edit", target)) == 0
+    target.write_text(THREE_DEFS)
+    assert hooks.cmd_hook_post(_ENV, _payload("Read", target)) == 0  # the other agent
+    time.sleep(0.2)  # a reload, if any, gets its own observer frame
+    assert hooks.cmd_hook_post(_ENV, _payload("Edit", target)) == 0
+
+    after = THREE_DEFS.splitlines()
+    settled = _wait(lambda: _last_state(log, target.name) == after, timeout=5.0)
+    states = _states(log, target.name)
+    trace = "\n".join(f"defs={_defs(s)} lines={len(s)}" for s in states)
+    assert settled, f"the buffer never reached the edited file:\n{trace}"
+    assert len(states) >= 2, f"observer caught no intermediate state:\n{trace}"
+    assert after not in states[:-1], f"finished file shown before the animation ended:\n{trace}"
+    assert min(len(s) for s in states) >= len(ONE_DEF.splitlines()), f"retyped:\n{trace}"

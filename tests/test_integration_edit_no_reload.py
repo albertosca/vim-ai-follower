@@ -37,8 +37,10 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -428,3 +430,49 @@ def test_read_of_an_open_clean_file_changed_outside_claude_shows_the_new_content
     assert wait_until(lambda: _last_state(log, target.name) == after, timeout=5.0), (
         f"the Read left stale content on screen: {_last_state(log, target.name)!r}"
     )
+
+
+def test_a_read_landing_between_an_edits_pre_and_post_hooks_never_flashes_the_finished_file(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    """Two agents on one window (BACKLOG D2, "Edit-reload fix residuals
+    (a)"): agent A's Edit has run its pre hook and written the file, and
+    agent B's Read of the same file posts BEFORE A's post hook. No animation
+    slot is held pre→post, so the Read used to re-read the clean buffer —
+    the finished file on screen — and A's post then found a buffer that was
+    no longer its base and retyped the whole file over it (flash, then wipe
+    and retype). The Read must leave the in-flight file's buffer alone."""
+    socket_path = subprocess.run(
+        ["tmux", "display-message", "-p", "#{socket_path}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    # The in-process hooks below must talk to the private server, never a real one.
+    assert socket_path.startswith(os.path.realpath(os.environ["TMUX_TMPDIR"])), socket_path
+    log, _, _ = _observed_follower(tmux_session, monkeypatch, tmp_path, wait_until)
+    target = tmp_path / "a.py"
+    _write(monkeypatch, log, wait_until, target, ONE_DEF)
+    after = THREE_DEFS.splitlines()
+
+    with log.open("a") as handle:
+        handle.write(_MARK + "\n")
+    _hook(monkeypatch, "pre", "Edit", target)
+    target.write_text(THREE_DEFS)
+    _hook(monkeypatch, "post", "Read", target)  # the other agent's Read
+    # Give a reload time to reach the screen before the Edit's post runs, so
+    # a Read that does re-read is caught as its own frame.
+    time.sleep(0.5)
+    _hook(monkeypatch, "post", "Edit", target)
+    assert wait_until(lambda: _last_state(log, target.name) == after, timeout=15.0)
+
+    states = _states(log, target.name)
+    trace = "\n".join(f"defs={_defs(s)} lines={len(s)}" for s in states)
+    assert len(states) >= 2, f"observer caught no intermediate state:\n{trace}"
+    assert after not in states[:-1], f"finished file shown before the animation ended:\n{trace}"
+    # Typed as a diff from the pre-edit buffer, not wiped and retyped: a
+    # retype passes through a state shorter than the pre-edit file.
+    assert min(len(s) for s in states) >= len(ONE_DEF.splitlines()), f"retyped:\n{trace}"

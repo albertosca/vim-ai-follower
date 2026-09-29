@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
-from vim_ai_follower import binding, cache, config, control, keybindings, writer_cue
+from vim_ai_follower import binding, cache, config, control, keybindings, snapshot, writer_cue
 from vim_ai_follower import diff as diff_module
 from vim_ai_follower.backends import BufferProbe, Follower, get_follower
 from vim_ai_follower.backends.nvim_connect import launch_standalone_nvim, resolve_nvim_target
@@ -790,6 +790,9 @@ def cmd_hook_pre(env: dict[str, str], payload: dict[str, Any]) -> int:
     except (OSError, UnicodeDecodeError):
         before = ""
     save_snapshot(session.window_id, file_path, before)
+    # Until this edit's post hook runs, a Read of the file must not re-read
+    # it into the follower (_edit_in_flight).
+    snapshot.mark_in_flight(session.window_id, file_path)
     return 0
 
 
@@ -856,7 +859,16 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
     cfg = config.load()
     if not _passes_policy(cfg, file_path):
         return 0
-    if not control.try_acquire_animating(session.window_id):
+    acquired = control.try_acquire_animating(session.window_id)
+    # The edit has posted, so a Read may re-read its file again. Cleared only
+    # AFTER the acquire: from pre to here the mark keeps a Read off this file
+    # (_edit_in_flight), and from here on the slot keeps every Read off the
+    # pane — the gap between them would be the flash this mark exists to stop.
+    # Not held any longer than that: a hook killed later (a hook timeout in
+    # the hand-off wait) never reaches a `finally`, and its mark would then
+    # silence Reads of the file until it expired.
+    snapshot.clear_in_flight(session.window_id, file_path)
+    if not acquired:
         # Another live hook already owns this window's pane. Six parallel
         # Write tool calls fire six hooks at once; the acquire is atomic, so
         # exactly one wins and animates while the rest land here and skip
@@ -1241,6 +1253,43 @@ def _animate_edit(
     return 0
 
 
+def _edit_in_flight(window_id: str, file_path: str) -> bool:
+    """True when a Read of file_path must leave the follower alone: an Edit,
+    MultiEdit or Write of it has run its pre hook and written the file, and
+    its post hook has not run yet (BACKLOG D2 — two agents on one window).
+
+    Holding the animation slot from pre to post would close the same gap, but
+    the pre hook's process exits at once, so nothing could hold it, and a
+    tool call that never posts (denied, failed) would hold it until a timeout
+    — blocking every other agent's edits in the window, not just Reads of one
+    file. The mark blocks nothing: a Read that skips here still returns at
+    once, and the Edit's post hook, moments away, is what brings the file on
+    screen, animated from the buffer the re-read would have overwritten.
+
+    Both backends re-read a CLEAN open buffer on a Read (tmux's
+    `_RELOAD_IF_CLEAN`, nvim's `_reload_if_clean`), and a file no buffer
+    holds is opened from disk; either way the finished file would be on
+    screen before the Edit's post hook typed it, and its base probe would
+    then find a buffer that is not its base: a dedicated follower wiped and
+    retyped it, an adopted one left it alone with the "buffer differs" cue
+    and never showed the edit.
+
+    Only a file that no longer holds the snapshot is held back: before the
+    write (a permission prompt still open) or after an Edit that was denied
+    or failed and so never posts, a re-read shows exactly the edit's base,
+    and the Read goes ahead. That keeps a stale mark nearly free until it
+    expires (snapshot.IN_FLIGHT_TTL_SECONDS)."""
+    if not snapshot.in_flight(window_id, file_path):
+        return False
+    try:
+        on_disk = Path(file_path).read_text()
+    except (OSError, UnicodeDecodeError):
+        # The pre hook snapshots an unreadable file as "", and the Read tool
+        # just read it, so it exists: it is not the snapshot any more.
+        return True
+    return on_disk != load_snapshot(window_id, file_path)
+
+
 def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
     session = _resolve_session_for(env, payload)
     if session is None:
@@ -1257,6 +1306,11 @@ def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
     if control.animating_state(session.window_id) is not None:
         # Another live hook owns this window's pane: navigating now would
         # interleave keystrokes with its animation. Skip; state untouched.
+        return 0
+    if _edit_in_flight(session.window_id, file_path):
+        logger.info(
+            "skipped the Read of %s: an Edit of it is written but not yet animated", file_path
+        )
         return 0
     current = _live_follower_healing_keys(session) or _maybe_auto_open(session, file_path, cfg)
     if current is None:
