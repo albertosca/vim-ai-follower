@@ -28,6 +28,18 @@ def launch_socket_path(window_id: str, base_dir: Path | None = None) -> Path:
     return state.nvim_socket_path(window_id, base_dir)
 
 
+def _socket_path_in_existing_dir(window_id: str) -> Path:
+    """The launch socket path, with its directory created: nvim refuses
+    `--listen` into a missing directory ("Failed to --listen: no such file
+    or directory") and exits, so the follower never comes up. On a fresh
+    install nothing may have created the cache dir yet — outside tmux no
+    keybinding claim writes there before `start` launches nvim (found by the
+    battery check 9 e2e, 2026-09-29)."""
+    path = launch_socket_path(window_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def discover_adopt_socket(pane_id: str) -> str | None:
     pid = TmuxPane(pane_id=pane_id).pane_pid()
     if pid is None:
@@ -43,7 +55,7 @@ def resolve_nvim_target(origin_pane: str, window_id: str, adopt: bool) -> tuple[
         found = discover_adopt_socket(origin_pane)
         if found is not None:
             return found, False
-    sock = str(launch_socket_path(window_id))
+    sock = str(_socket_path_in_existing_dir(window_id))
     subprocess.run(
         ["tmux", "split-window", "-h", "-t", origin_pane, "nvim", "--listen", sock],
         check=True,
@@ -100,7 +112,7 @@ def _vimr_app_present() -> bool:
 
 
 def launch_standalone_nvim(window_id: str) -> str:
-    sock = str(launch_socket_path(window_id))
+    sock = str(_socket_path_in_existing_dir(window_id))
     cmd = standalone_launch_command(
         sock,
         has_nvim_qt=shutil.which("nvim-qt") is not None,

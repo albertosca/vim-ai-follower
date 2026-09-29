@@ -310,3 +310,58 @@ def test_vimr_app_present_reflects_the_applications_bundle() -> None:
         assert nvim_connect._vimr_app_present() is True
     with patch("vim_ai_follower.backends.nvim_connect.Path.exists", return_value=False):
         assert nvim_connect._vimr_app_present() is False
+
+
+class _RecordsSocketDir:
+    """A subprocess.run stand-in that records whether the socket's directory
+    existed at the moment nvim would have been told to `--listen` there."""
+
+    def __init__(self, sock_path: Path) -> None:
+        self.sock_path = sock_path
+        self.seen: list[bool] = []
+
+    def __call__(self, *_args: object, **_kwargs: object) -> None:
+        self.seen.append(self.sock_path.parent.is_dir())
+
+
+def test_launch_standalone_nvim_creates_the_socket_directory_first(tmp_path: Path) -> None:
+    """On a fresh install nothing has created the cache dir yet when a
+    standalone `start` runs (outside tmux no keybinding claim writes there
+    first), and nvim refuses `--listen` into a missing directory — measured
+    through the real CLI, 2026-09-29: "Failed to --listen: no such file or
+    directory"."""
+    sock_path = tmp_path / "fresh-cache" / "nvim-term-x.sock"
+    run = _RecordsSocketDir(sock_path)
+    with (
+        patch(
+            "vim_ai_follower.backends.nvim_connect.state.nvim_socket_path",
+            return_value=sock_path,
+        ),
+        patch("vim_ai_follower.backends.nvim_connect.subprocess.run", side_effect=run),
+        patch("vim_ai_follower.backends.nvim_connect.time.sleep"),
+        patch(
+            "vim_ai_follower.backends.nvim_connect.shutil.which", return_value="/usr/bin/nvim-qt"
+        ),
+        patch("vim_ai_follower.backends.nvim_connect._vimr_app_present", return_value=False),
+        patch("vim_ai_follower.backends.nvim_connect.time.monotonic", side_effect=[0.0, 0.0, 99.0]),
+    ):
+        nvim_connect.launch_standalone_nvim("term-x")
+    assert run.seen == [True]
+
+
+def test_resolve_launched_creates_the_socket_directory_first(tmp_path: Path) -> None:
+    """The tmux launch path's twin of the standalone case above."""
+    sock_path = tmp_path / "fresh-cache" / "nvim-@1.sock"
+    run = _RecordsSocketDir(sock_path)
+    with (
+        patch("vim_ai_follower.backends.nvim_connect.discover_adopt_socket", return_value=None),
+        patch(
+            "vim_ai_follower.backends.nvim_connect.state.nvim_socket_path",
+            return_value=sock_path,
+        ),
+        patch("vim_ai_follower.backends.nvim_connect.subprocess.run", side_effect=run),
+        patch("vim_ai_follower.backends.nvim_connect.time.sleep"),
+        patch("vim_ai_follower.backends.nvim_connect.time.monotonic", side_effect=[0.0, 0.0, 99.0]),
+    ):
+        nvim_connect.resolve_nvim_target("%1", "@1", adopt=False)
+    assert run.seen == [True]
