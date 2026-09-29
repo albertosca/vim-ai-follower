@@ -41,7 +41,6 @@ import json
 import os
 import shutil
 import subprocess
-import tempfile
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -85,12 +84,23 @@ _MAX_SOCKET_PATH = 104
 _TEMP_ROOT = Path("/tmp")
 
 
-def payload(tool_name: str, file_path: str | Path, **extra: Any) -> str:
-    """One hook payload as the JSON line the CLI reads off stdin."""
+def payload(
+    tool_name: str,
+    file_path: str | Path,
+    *,
+    identity: dict[str, str] | None = None,
+    **extra: Any,
+) -> str:
+    """One hook payload as the JSON line the CLI reads off stdin.
+
+    `extra` goes inside `tool_input` (offset, content...); `identity` goes at
+    the TOP level, where Claude Code puts a subagent's `agent_id` /
+    `agent_type` and where it may override the default `session_id`."""
     body: dict[str, Any] = {
         "tool_name": tool_name,
         "tool_input": {"file_path": str(file_path), **extra},
         "session_id": "e2e",
+        **(identity or {}),
     }
     return json.dumps(body)
 
@@ -176,6 +186,7 @@ class E2EFollower:
     _before: _RealHomeFingerprint
     _background: list[subprocess.Popen[bytes]] = field(default_factory=list)
     _logs: list[IO[bytes]] = field(default_factory=list)
+    _log_paths: dict[int, Path] = field(default_factory=dict)
     _nvim_clients: dict[str, pynvim.Nvim] = field(default_factory=dict)
 
     # ---------------------------------------------------------------- paths
@@ -250,51 +261,84 @@ class E2EFollower:
 
     # ------------------------------------------------------------------ CLI
 
-    def cli(self, *args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+    def env_with(self, *, drop: tuple[str, ...] = (), **overrides: str) -> dict[str, str]:
+        """This world's env with keys removed and/or replaced — another
+        window's TMUX_PANE, or none at all. Built from `self.env`, so the
+        isolating keys (HOME, TMUX_TMPDIR, no TMUX) always come along."""
+        env = {key: value for key, value in self.env.items() if key not in drop}
+        env.update(overrides)
+        assert "TMUX" not in env, "TMUX would override the private TMUX_TMPDIR"
+        return env
+
+    def cli(
+        self,
+        *args: str,
+        stdin: str | None = None,
+        expect_rc: int = 0,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[str]:
         """Run the bundled wrapper in the foreground. Every hook exit is 0 by
-        design (hooks must never fail the tool call), so a non-zero one is a
-        finding and is raised here rather than silently ignored."""
+        design (hooks must never fail the tool call), so an exit other than
+        `expect_rc` is a finding and is raised here rather than silently
+        ignored. `env` replaces this world's env for this one call (see
+        env_with)."""
         result = subprocess.run(
             [str(CLI), *args],
             input=stdin,
-            env=self.env,
+            env=self.env if env is None else env,
             capture_output=True,
             text=True,
             check=False,
         )
-        assert result.returncode == 0, (
-            f"claude-follow {' '.join(args)} exited {result.returncode}\n"
+        assert result.returncode == expect_rc, (
+            f"claude-follow {' '.join(args)} exited {result.returncode}, not {expect_rc}\n"
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
         return result
 
-    def cli_background(self, *args: str, stdin: str) -> subprocess.Popen[bytes]:
+    def cli_background(
+        self, *args: str, stdin: str, env: dict[str, str] | None = None
+    ) -> subprocess.Popen[bytes]:
         """Start a hook that will block (animating, or holding a hand-off) and
         return its Popen. Output goes to a FILE, never a pipe: an unread pipe
         that fills blocks the child, and the whole point of these tests is
-        that the child keeps running while we signal it.
+        that the child keeps running while we signal it. `background_log`
+        reads that file back.
 
         bin/claude-follow `exec`s python in place, so the returned pid IS the
         hook process — which is what makes the kill -9 in the crash-fallback
         test land on the right thing."""
-        # SIM115 is suppressed deliberately: a context manager is exactly what
-        # this must NOT be. The file has to outlive this call — it is the
-        # running child's stdout for as long as the test keeps it alive — and
-        # close() in the harness teardown is the matching half.
-        log = tempfile.TemporaryFile()  # noqa: SIM115
+        # Not a context manager, deliberately: the file has to outlive this
+        # call — it is the running child's stdout for as long as the test keeps
+        # it alive — and close() in the harness teardown is the matching half.
+        log_path = self.workdir / f"bg-{uuid.uuid4().hex[:8]}.log"
+        log = log_path.open("wb")
         self._logs.append(log)
         proc = subprocess.Popen(
             [str(CLI), *args],
             stdin=subprocess.PIPE,
             stdout=log,
             stderr=subprocess.STDOUT,
-            env=self.env,
+            env=self.env if env is None else env,
         )
         assert proc.stdin is not None
         proc.stdin.write(stdin.encode())
         proc.stdin.close()
         self._background.append(proc)
+        self._log_paths[proc.pid] = log_path
         return proc
+
+    def background_log(self, proc: subprocess.Popen[bytes]) -> str:
+        """Everything a backgrounded hook printed (stdout and stderr merged)."""
+        return self._log_paths[proc.pid].read_text(errors="replace")
+
+    def set_vimrc(self, text: str) -> Path:
+        """Install a `~/.vimrc` in the isolated HOME. Must run BEFORE `start`:
+        the follower's Vim reads it once, at launch. Its presence also stops
+        Vim from sourcing defaults.vim, exactly as a user's own vimrc does."""
+        vimrc = self.home / ".vimrc"
+        vimrc.write_text(text)
+        return vimrc
 
     def start(self, backend: str, speed: str = "lento") -> None:
         self.cli("start", "--backend", backend, "--speed", speed)
