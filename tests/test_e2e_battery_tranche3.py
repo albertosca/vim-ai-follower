@@ -7,9 +7,10 @@ the part only a human can judge."""
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -248,14 +249,21 @@ return {
 
 
 def _sample_while_running(
-    world: E2EFollower, sock: str, proc: subprocess.Popen[bytes], path: Path
+    world: E2EFollower,
+    sock: str,
+    proc: subprocess.Popen[bytes],
+    path: Path,
+    running: Callable[[], bool] | None = None,
 ) -> list[dict[str, Any]]:
-    """Every snapshot of `path`'s buffer taken while the hook animates it."""
+    """Every snapshot of `path`'s buffer taken while the hook animates it.
+    `running` defaults to this world's window's marker reading "running"."""
     nvim = world._nvim(sock)
     wanted = path.resolve()
+    if running is None:
+        running = lambda: world.animating_state() == "running"  # noqa: E731
     samples: list[dict[str, Any]] = []
     while proc.poll() is None:
-        if world.animating_state() == "running":
+        if running():
             sample = nvim.exec_lua(_NVIM_SAMPLE_LUA, [])
             if sample["name"] and Path(sample["name"]).resolve() == wanted:
                 samples.append(sample)
@@ -457,6 +465,103 @@ def test_nvim_des_interrupt_discards_the_users_unsaved_typing(world: E2EFollower
 
     assert world.nvim_buffer_bytes(sock, path) == CONTROLS.encode()
     assert path.read_text() == CONTROLS, "the unsaved typing reached the disk"
+
+
+# --------------------------------------------------------------- Check 9
+
+_NVIM_QT_SHIM = """#!/bin/sh
+# Stands in for the nvim-qt GUI: argv is `-- --listen <socket>`. Starts a
+# headless nvim on that socket (what the GUI would host) and returns at once,
+# as the GUI launcher does.
+echo "$@" > "{marker}"
+nvim --headless --listen "$3" </dev/null >/dev/null 2>&1 &
+exit 0
+"""
+
+# osascript opens Terminal.app/iTerm2 windows and `open -a` a GUI app. Neither
+# may ever reach the real thing from a test: these fail LOUDLY and leave a
+# marker, so a launcher that falls past the nvim-qt tier is a red test, never
+# a window on the developer's screen.
+_FAIL_LOUD_SHIM = """#!/bin/sh
+echo "$0 $*" > "{marker}"
+echo "e2e: refusing to run $0 — a test must never open a real window" >&2
+exit 1
+"""
+
+
+def _install_shims(world: E2EFollower) -> tuple[Path, dict[str, Path]]:
+    shims = world.workdir / "shims"
+    shims.mkdir()
+    markers = {name: world.workdir / f"{name}.called" for name in ("nvim-qt", "osascript", "open")}
+    for name, marker in markers.items():
+        template = _NVIM_QT_SHIM if name == "nvim-qt" else _FAIL_LOUD_SHIM
+        shim = shims / name
+        shim.write_text(template.format(marker=marker))
+        shim.chmod(0o755)
+    return shims, markers
+
+
+def test_standalone_nvim_starts_animates_stays_open_and_stops_without_tmux(
+    world: E2EFollower,
+) -> None:
+    """Battery check 9 — guards fe87f5b (no-tmux support). From a terminal
+    outside tmux with `backend: nvim`, `nvim_window: auto`: `start` returns
+    promptly having launched the GUI tier (an nvim-qt shim hosting a headless
+    nvim) and keyed the follower by the terminal (term-e2e), a hook animates
+    the file into it character by character, the nvim is still alive after
+    the edit, and `stop` quits it.
+
+    No TMUX_PANE, so session resolution scans `tmux list-panes -a` for an
+    ancestor pane; TMUX_TMPDIR stays private so that scan sees only this
+    world's server. What stays in the battery is the visible surface: an
+    iTerm2 split beside the shell, and its Automation permission prompt."""
+    _write_config(world, {"backend": "nvim", "nvim_window": "auto"})
+    shims, markers = _install_shims(world)
+    outside = world.env_with(
+        drop=("TMUX_PANE",), TERM_SESSION_ID="e2e", PATH=f"{shims}:{world.env['PATH']}"
+    )
+    for name in markers:
+        assert shutil.which(name, path=outside["PATH"]) == str(shims / name), (
+            f"{name} does not resolve to its shim: a real one could open a window"
+        )
+    _assert_private_server(world)
+    sock = str(world.cache_dir / "nvim-term-e2e.sock")
+    try:
+        began = time.monotonic()
+        result = world.cli("start", "--speed", "lento", env=outside)
+        assert time.monotonic() - began < 10.0, "start blocked the origin terminal"
+        assert result.stdout == f"claude-follow: attached to standalone Neovim at {sock}\n"
+        assert markers["nvim-qt"].exists(), "the nvim-qt tier was not the one launched"
+        assert not markers["osascript"].exists() and not markers["open"].exists()
+        state = json.loads((world.cache_dir / "term-e2e.pane").read_text())
+        assert state["target"] == sock
+        assert list(world.cache_dir.glob("@*.pane")) == [], (
+            "a tmux-window identity was resolved: the ancestry scan reached a pane"
+        )
+        assert Path(sock).is_socket(), "the launched nvim is not listening on the socket"
+
+        path = world.workdir / "standalone.py"
+        world.cli("hook", "pre", stdin=payload("Write", path), env=outside)
+        path.write_text(_text(*WRITER1_LINES))
+        proc = world.cli_background("hook", "post", stdin=payload("Write", path), env=outside)
+        samples = _sample_while_running(world, sock, proc, path, running=lambda: True)
+        assert any(_strict_prefix_rows(s, WRITER1_LINES) for s in samples), (
+            f"no sample caught a line part-way typed ({len(samples)} samples)"
+        )
+        assert world.nvim_buffer_bytes(sock, path) == _text(*WRITER1_LINES).encode()
+        assert world._nvim(sock).eval("1") == 1, "the standalone nvim closed after the edit"
+
+        world.cli("stop", env=outside)
+        world.wait_until(
+            lambda: subprocess.run(["pgrep", "-f", sock], capture_output=True).returncode == 1,
+            "the standalone nvim to quit on stop",
+            timeout=10.0,
+        )
+        assert not (world.cache_dir / "term-e2e.pane").exists()
+    finally:
+        # The shim's nvim is not in any tmux pane, so the world's kill-server
+        # teardown cannot reach it.
+        subprocess.run(["pkill", "-f", sock], check=False)
 
 
 # --------------------------------------------------------------- Check 10
