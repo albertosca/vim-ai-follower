@@ -180,10 +180,22 @@ def clear_launch_backoff(window_id: str) -> None:
     launch_backoff_path(window_id).unlink(missing_ok=True)
 
 
+def answering_socket(window_id: str) -> str | None:
+    """This window's standalone socket when an nvim already answers on it —
+    typically one a slow launcher bound after the caller stopped waiting."""
+    sock = str(launch_socket_path(window_id))
+    return sock if _answers(sock) else None
+
+
 def launch_standalone_nvim(
     window_id: str, wait_seconds: float = _STANDALONE_SOCKET_WAIT_SECONDS
 ) -> str:
     sock = str(_socket_path_in_existing_dir(window_id))
+    if _answers(sock):
+        # Already up (a launch that outlived its caller's wait): attach. A
+        # second launch's nvim would die on "address already in use" and
+        # stay on screen as an orphan error window.
+        return sock
     _remove_dead_socket(sock)
     cmd = standalone_launch_command(
         sock,

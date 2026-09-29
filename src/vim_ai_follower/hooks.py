@@ -319,6 +319,14 @@ def _launch_standalone_or_log(window_id: str) -> str | None:
     launcher can exit non-zero (e.g. macOS Automation permission not yet granted
     for Terminal.app), and the hook must degrade to a no-op like the tmux-split
     path does, never raise an uncaught traceback into the tool run."""
+    answering = nvim_connect.answering_socket(window_id)
+    if answering is not None:
+        # Checked BEFORE the backoff: a launcher can bind nvim after the wait
+        # below gave up (a Terminal `do script` behind a slow shell rc), and
+        # backing off from a window that is up would show the user an nvim
+        # that never animates.
+        nvim_connect.clear_launch_backoff(window_id)
+        return answering
     if nvim_connect.launch_backoff_active(window_id):
         return None  # a recent launch failed: already logged, not retried yet
     try:

@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from contextlib import AbstractContextManager, ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -281,9 +281,13 @@ def test_launch_standalone_nvim_never_removes_a_socket_someone_answers_on() -> N
         server.bind(str(sock_path))
         server.listen()
         try:
-            with _patched_launcher(sock_path, lambda *_a, **_k: None):
+            launcher = MagicMock()
+            with _patched_launcher(sock_path, launcher):
                 assert nvim_connect.launch_standalone_nvim("@1") == str(sock_path)
             assert sock_path.is_socket()
+            # Adopted, not relaunched: a second window's nvim would die on
+            # "address already in use" and stay on screen as an orphan.
+            launcher.assert_not_called()
         finally:
             server.close()
 
@@ -294,7 +298,8 @@ def test_launch_standalone_nvim_attaches_once_the_socket_accepts(tmp_path: Path)
         _patched_launcher(sock_path, lambda *_a, **_k: None),
         patch(
             "vim_ai_follower.backends.nvim_connect._answers",
-            side_effect=[False, False, True, True],
+            # not up before the launch, then two polls before it answers
+            side_effect=[False, False, False, True, True],
         ),
         patch("vim_ai_follower.backends.nvim_connect.time.sleep") as fake_sleep,
     ):
@@ -325,7 +330,7 @@ def test_launch_standalone_nvim_detects_iterm_from_term_program(tmp_path: Path) 
             return_value=sock_path,
         ),
         patch("vim_ai_follower.backends.nvim_connect.subprocess.run") as run,
-        patch("vim_ai_follower.backends.nvim_connect._answers", return_value=True),
+        patch("vim_ai_follower.backends.nvim_connect._answers", side_effect=[False, True, True]),
         patch("vim_ai_follower.backends.nvim_connect.shutil.which", return_value=None),
         patch("vim_ai_follower.backends.nvim_connect._vimr_app_present", return_value=False),
         patch.dict("os.environ", {"TERM_PROGRAM": "iTerm.app"}, clear=False),
@@ -343,7 +348,7 @@ def test_launch_standalone_nvim_falls_back_to_terminal_when_not_iterm(tmp_path: 
             return_value=sock_path,
         ),
         patch("vim_ai_follower.backends.nvim_connect.subprocess.run") as run,
-        patch("vim_ai_follower.backends.nvim_connect._answers", return_value=True),
+        patch("vim_ai_follower.backends.nvim_connect._answers", side_effect=[False, True, True]),
         patch("vim_ai_follower.backends.nvim_connect.shutil.which", return_value=None),
         patch("vim_ai_follower.backends.nvim_connect._vimr_app_present", return_value=False),
         patch.dict("os.environ", {"TERM_PROGRAM": "Apple_Terminal"}, clear=False),

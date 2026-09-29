@@ -4,8 +4,11 @@ import io
 import json
 import logging
 import os
+import shutil
+import socket
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -2245,6 +2248,43 @@ def test_the_auto_open_backoff_expires(tmp_path: Path, monkeypatch: pytest.Monke
         os.utime(marker, (stale, stale))
         hooks._maybe_auto_open(standalone, "/tmp/g.txt", cfg)
     assert launch.call_count == 2
+
+
+def test_an_nvim_that_binds_after_the_auto_open_gave_up_is_attached_despite_the_backoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A launcher that returns at once and binds nvim a few seconds later (a
+    # Terminal `do script` behind a slow shell rc): hook 1 gives up and backs
+    # off; the nvim then listens. Hook 2 used to return in 0 s on the backoff
+    # — a window on screen and nothing animating for 5 minutes, then a second
+    # launch whose nvim died on "address already in use" (slow_launch.py).
+    cfg = _standalone_auto_open(tmp_path, monkeypatch)
+    standalone = Session(window_id="term-x", origin=None, in_tmux=False)
+    directory = Path(tempfile.mkdtemp(prefix="vafs", dir="/tmp"))  # short: AF_UNIX
+    sock = directory / "nvim-term-x.sock"
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        with (
+            patch(
+                "vim_ai_follower.backends.nvim_connect.state.nvim_socket_path", return_value=sock
+            ),
+            patch(
+                "vim_ai_follower.hooks.launch_standalone_nvim",
+                side_effect=NvimNeverListened(str(sock), "osascript", 3.0),
+            ) as launch,
+        ):
+            assert hooks._maybe_auto_open(standalone, "/tmp/f.txt", cfg) is None
+            assert nvim_connect.launch_backoff_active("term-x")
+            server.bind(str(sock))  # the slow nvim finally listens
+            server.listen()
+            # The launcher step of hook 2's auto-open (the rest of it would
+            # talk RPC to this stand-in; the e2e drives a real nvim).
+            assert hooks._launch_standalone_or_log("term-x") == str(sock)
+        assert launch.call_count == 1  # attached, not relaunched
+        assert not nvim_connect.launch_backoff_active("term-x")
+    finally:
+        server.close()
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 def test_maybe_auto_open_in_tmux_always_launcher_failure_logs_and_noops(

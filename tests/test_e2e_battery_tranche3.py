@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 from e2e_harness import REPO_ROOT, E2EFollower, e2e_world, payload
 
+from vim_ai_follower.backends import nvim_connect
 from vim_ai_follower.commands import VIM_NEEDS_TMUX
 
 pytestmark = pytest.mark.integration
@@ -923,6 +924,59 @@ def test_a_failed_auto_open_costs_one_short_wait_then_backs_off(world: E2EFollow
 
     world.cli("start", expect_rc=1, env=outside)  # the explicit retry
     assert len(markers["nvim-qt"].read_text().splitlines()) == 2, "start did not retry"
+
+
+# A launcher that returns at once and binds nvim seconds later: a Terminal
+# `do script` behind a slow shell rc.
+_NVIM_QT_SLOW_SHIM = """#!/bin/sh
+echo "$@" >> "{marker}"
+( sleep 4; exec nvim --headless --listen "$3" </dev/null >/dev/null 2>&1 ) &
+exit 0
+"""
+
+
+def test_an_nvim_that_binds_after_the_auto_open_gave_up_is_attached_and_animates(
+    world: E2EFollower,
+) -> None:
+    """slow_launch.py through the real wrapper: hook 1's auto-open gives up
+    after its short wait and backs off; the nvim then listens. Hook 2 used to
+    return at once on the backoff — an nvim on screen and nothing animating
+    for 5 minutes, then a second launch whose nvim died on "address already
+    in use". Now hook 2 attaches to the nvim that is up and animates into it,
+    and neither it nor a later `start` launches again."""
+    _write_config(world, {"backend": "nvim", "nvim_window": "auto", "open_policy": "always"})
+    shims, markers = _install_shims(world, nvim_qt=_NVIM_QT_SLOW_SHIM)
+    outside = world.env_with(
+        drop=("TMUX_PANE",), TERM_SESSION_ID="e2e", PATH=f"{shims}:{world.env['PATH']}"
+    )
+    for name in markers:
+        assert shutil.which(name, path=outside["PATH"]) == str(shims / name), (
+            f"{name} does not resolve to its shim: a real one could open a window"
+        )
+    _assert_private_server(world)
+    sock = world.cache_dir / "nvim-term-e2e.sock"
+    try:
+        first = world.workdir / "first.py"
+        world.cli("hook", "pre", stdin=payload("Write", first), env=outside)
+        first.write_text(_text(*WRITER1_LINES))
+        world.cli("hook", "post", stdin=payload("Write", first), env=outside)
+        assert list(world.cache_dir.glob("*.pane")) == [], "hook 1 attached to nothing"
+        world.wait_until(
+            lambda: nvim_connect._answers(str(sock)), "the slow nvim to listen", timeout=15.0
+        )
+
+        second = world.workdir / "second.py"
+        world.cli("hook", "pre", stdin=payload("Write", second), env=outside)
+        second.write_text(_text(*WRITER1_LINES))
+        world.cli("hook", "post", stdin=payload("Write", second), env=outside)
+        assert world.nvim_buffer_bytes(str(sock), second) == _text(*WRITER1_LINES).encode(), (
+            "hook 2 did not animate into the nvim that came up"
+        )
+        world.cli("start", env=outside)
+        assert len(markers["nvim-qt"].read_text().splitlines()) == 1, "a second window launched"
+        assert not markers["osascript"].exists() and not markers["open"].exists()
+    finally:
+        subprocess.run(["pkill", "-f", str(sock)], check=False)
 
 
 # --------------------------------------------------------------- Check 10
