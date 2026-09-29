@@ -19,7 +19,7 @@
 | `claude-follow interrupt` | Entrega o buffer pra você, ou descarta suas edições de entrega (ligado a `prefix` `S`). |
 | `claude-follow speed-up` / `speed-down` | Muda o ritmo da animação (ligado a `prefix` `+` / `prefix` `_`). |
 | `claude-follow toggle` | Muta/desmuta o follower (ligado a `prefix` `F`). |
-| `claude-follow hook pre` / `hook post` | O handler de hook que o Claude Code chama; lê o payload do hook como JSON no stdin. |
+| `claude-follow hook pre` / `hook post` / `hook failure` | O handler de hook que o Claude Code chama; lê o payload do hook como JSON no stdin. O `hook failure` roda quando uma edição falha ou é negada, pra que um Read desse arquivo não fique mais retido. |
 
 As teclas estão descritas em [Atalhos](keybindings.md).
 

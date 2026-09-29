@@ -55,6 +55,14 @@ Depois conecte os hooks manualmente: adicione isto ao `~/.claude/settings.json` 
         "hooks": [{ "type": "command", "command": "claude-follow hook post" }] },
       { "matcher": "Read",
         "hooks": [{ "type": "command", "command": "claude-follow hook post" }] }
+    ],
+    "PostToolUseFailure": [
+      { "matcher": "Edit|MultiEdit|Write",
+        "hooks": [{ "type": "command", "command": "claude-follow hook failure" }] }
+    ],
+    "PermissionDenied": [
+      { "matcher": "Edit|MultiEdit|Write",
+        "hooks": [{ "type": "command", "command": "claude-follow hook failure" }] }
     ]
   }
 }

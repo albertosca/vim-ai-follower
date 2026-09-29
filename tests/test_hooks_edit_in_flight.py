@@ -18,16 +18,19 @@ tests/test_nvim_integration_edit_base_mismatch.py.
 
 from __future__ import annotations
 
+import io
+import json
 import os
 import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
 from helpers import make_mock_tmux_run as _mock_tmux_run
 from helpers import register_fake_follower as _register_fake_follower
 
-from vim_ai_follower import control, hooks, snapshot, state
+from vim_ai_follower import cli, config, control, hooks, snapshot, state
 
 _ENV = {"TMUX_PANE": "%1"}
 
@@ -36,12 +39,12 @@ def _payload(tool: str, target: Path) -> dict[str, Any]:
     return {"tool_name": tool, "tool_input": {"file_path": str(target)}}
 
 
-def _pre(target: Path) -> None:
+def _pre(target: Path, tool: str = "Edit", **extra: Any) -> None:
     with patch(
         "vim_ai_follower.tmux.subprocess.run",
         return_value=MagicMock(returncode=0, stdout="@1\n"),
     ):
-        assert hooks.cmd_hook_pre(_ENV, _payload("Edit", target)) == 0
+        assert hooks.cmd_hook_pre(_ENV, {**_payload(tool, target), **extra}) == 0
 
 
 def _read(target: Path) -> list[list[str]]:
@@ -63,10 +66,11 @@ def _real(target: Path) -> str:
     return os.path.realpath(str(target))
 
 
-def test_the_pre_hook_marks_the_edit_in_flight(tmp_path: Path) -> None:
+@pytest.mark.parametrize("tool", ["Edit", "MultiEdit", "Write"])
+def test_the_pre_hook_marks_the_edit_in_flight(tmp_path: Path, tool: str) -> None:
     target = tmp_path / "a.py"
     target.write_text("one\n")
-    _pre(target)
+    _pre(target, tool)
     assert snapshot.in_flight("@1", _real(target))
     assert not snapshot.in_flight("@1", _real(tmp_path / "b.py"))
 
@@ -211,3 +215,190 @@ def test_an_edit_post_that_finds_the_slot_busy_clears_the_mark_too(tmp_path: Pat
 def test_clearing_a_mark_that_was_never_set_is_harmless(tmp_path: Path) -> None:
     snapshot.clear_in_flight("@1", str(tmp_path / "never.py"))
     assert not snapshot.in_flight("@1", str(tmp_path / "never.py"))
+
+
+# --------------------------------------------------------------- fix round 1
+#
+# What clears a mark whose Edit never posts, measured against Claude Code
+# 2.1.284 in a scratch directory (D2-report.md, "Fix round 1"):
+#   - a tool that FAILS while executing (EACCES) fires PostToolUseFailure;
+#   - a user answering "No" at the permission prompt, and a headless
+#     auto-deny, fire only PreToolUse — neither PostToolUseFailure nor
+#     PermissionDenied (the docs scope that one to auto mode);
+#   - one agent's tool calls, even two issued in one message (Edit + Read),
+#     run one after the other, post hook included.
+# So `hook failure` (registered for PostToolUseFailure and PermissionDenied)
+# clears the mark, and a Read by the mark's OWN writer clears it too: that
+# writer's Edit tool call is over, however it ended.
+
+
+def _failure(target: Path, tool: str = "Edit") -> None:
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="@1\n"),
+    ):
+        assert hooks.cmd_hook_failure(_ENV, _payload(tool, target)) == 0
+
+
+@pytest.mark.parametrize("tool", ["Edit", "MultiEdit", "Write"])
+def test_the_failure_hook_clears_the_mark(tmp_path: Path, tool: str) -> None:
+    target = tmp_path / "a.py"
+    target.write_text("one\n")
+    _pre(target, tool)
+    _failure(target, tool)
+    assert not snapshot.in_flight("@1", _real(target))
+
+
+def test_the_failure_hook_ignores_other_tools(tmp_path: Path) -> None:
+    target = tmp_path / "a.py"
+    target.write_text("one\n")
+    _pre(target)
+    _failure(target, "Bash")
+    assert snapshot.in_flight("@1", _real(target))
+
+
+def test_the_failure_hook_clears_even_while_the_follower_is_disabled(tmp_path: Path) -> None:
+    """Clearing is always safe, and a toggle between pre and failure must not
+    strand the mark."""
+    target = tmp_path / "a.py"
+    target.write_text("one\n")
+    _register_fake_follower("@1", "%2", shown_any=True)
+    _pre(target)
+    state.FollowerState.update("@1", enabled=False)
+    _failure(target)
+    assert not snapshot.in_flight("@1", _real(target))
+
+
+def test_hook_failure_is_a_cli_subcommand_that_never_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "a.py"
+    target.write_text("one\n")
+    _pre(target)
+    body = (
+        '{"hook_event_name": "PostToolUseFailure", "tool_name": "Edit", '
+        f'"tool_input": {{"file_path": "{target}"}}, "error": "EACCES"}}'
+    )
+    monkeypatch.setattr("sys.stdin", io.StringIO(body))
+    monkeypatch.setenv("TMUX_PANE", "%1")
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="@1\n"),
+    ):
+        assert cli.main(["hook", "failure"]) == 0
+    assert not snapshot.in_flight("@1", _real(target))
+
+    monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
+    assert cli.main(["hook", "failure"]) == 0
+    assert "hook failure crashed" in hooks.LOG_PATH.read_text()
+
+
+def test_the_plugin_registers_the_failure_hook_for_edit_tools() -> None:
+    manifest = json.loads((Path(__file__).parent.parent / "hooks" / "hooks.json").read_text())
+    for event in ("PostToolUseFailure", "PermissionDenied"):
+        entries = manifest["hooks"][event]
+        assert [e["matcher"] for e in entries] == ["Edit|MultiEdit|Write"], event
+        (command,) = [h["command"] for h in entries[0]["hooks"]]
+        assert command.endswith("python3 -m vim_ai_follower.cli hook failure"), command
+
+
+def test_a_read_by_the_marks_own_writer_clears_it_and_navigates(tmp_path: Path) -> None:
+    """The reviewer's case: a denied Edit (no post, no failure hook), the same
+    agent's `sed -i` through Bash, then its Read to check — C5's resync must
+    show the file."""
+    target = tmp_path / "a.py"
+    target.write_text("one\n")
+    _register_fake_follower("@1", "%2", shown_any=True)
+    _pre(target, session_id="sess-a")
+    target.write_text("one\nsed\n")
+
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert hooks.cmd_hook_post(_ENV, {**_payload("Read", target), "session_id": "sess-a"}) == 0
+    assert [
+        c for c in (call.args[0] for call in run.call_args_list) if c[:2] == ["tmux", "send-keys"]
+    ]
+    assert _open_files() == (_real(target),)
+    assert not snapshot.in_flight("@1", _real(target))
+
+
+def test_a_read_by_another_writer_is_still_held_back(tmp_path: Path) -> None:
+    target = tmp_path / "a.py"
+    target.write_text("one\n")
+    _register_fake_follower("@1", "%2", shown_any=True)
+    _pre(target, session_id="sess-a", agent_id="agent-1")
+    target.write_text("one\ntwo\n")
+
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        # same session, different subagent: a concurrent writer
+        payload = {**_payload("Read", target), "session_id": "sess-a", "agent_id": "agent-2"}
+        assert hooks.cmd_hook_post(_ENV, payload) == 0
+    assert not [
+        c for c in (call.args[0] for call in run.call_args_list) if c[:2] == ["tmux", "send-keys"]
+    ]
+    assert snapshot.in_flight("@1", _real(target))
+    log = hooks.LOG_PATH.read_text()
+    assert "an Edit/Write of it is in flight or failed" in log
+    assert "written but not yet animated" not in log
+
+
+def test_a_mark_without_a_writer_is_never_cleared_by_a_read(tmp_path: Path) -> None:
+    """No identity on either side is no evidence the Read came from the
+    writer: an empty identity must not match an empty identity."""
+    target = tmp_path / "a.py"
+    target.write_text("one\n")
+    _register_fake_follower("@1", "%2", shown_any=True)
+    _pre(target)  # no session_id / agent_id in the payload
+    target.write_text("one\ntwo\n")
+    assert _read(target) == []
+    assert snapshot.in_flight("@1", _real(target))
+
+
+def test_the_post_hook_clears_the_mark_when_the_follower_is_disabled(tmp_path: Path) -> None:
+    target = tmp_path / "a.py"
+    target.write_text("one\n")
+    _register_fake_follower("@1", "%2", shown_any=True)
+    _pre(target)
+    state.FollowerState.update("@1", enabled=False)
+    target.write_text("one\ntwo\n")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        assert hooks.cmd_hook_post(_ENV, _payload("Edit", target)) == 0
+    assert not snapshot.in_flight("@1", _real(target))
+
+
+def test_the_post_hook_clears_the_mark_when_the_policy_skips_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A config change between pre and post (open_policy=code, a non-code
+    file) must not strand the mark."""
+    target = tmp_path / "notes.txt"
+    target.write_text("one\n")
+    _register_fake_follower("@1", "%2", shown_any=True)
+    _pre(target)
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"open_policy": "code"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    target.write_text("one\ntwo\n")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        assert hooks.cmd_hook_post(_ENV, _payload("Edit", target)) == 0
+    assert not snapshot.in_flight("@1", _real(target))
+
+
+def test_the_post_hook_clears_the_mark_when_the_slot_acquire_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "a.py"
+    target.write_text("one\n")
+    _register_fake_follower("@1", "%2", shown_any=True)
+    _pre(target)
+    target.write_text("one\ntwo\n")
+
+    def _boom(*args: Any, **kwargs: Any) -> bool:
+        raise PermissionError("cache dir went read-only")
+
+    monkeypatch.setattr(control, "try_acquire_animating", _boom)
+    body = json.dumps(_payload("Edit", target))
+    monkeypatch.setattr("sys.stdin", io.StringIO(body))
+    monkeypatch.setenv("TMUX_PANE", "%1")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        assert cli.main(["hook", "post"]) == 0
+    assert not snapshot.in_flight("@1", _real(target))

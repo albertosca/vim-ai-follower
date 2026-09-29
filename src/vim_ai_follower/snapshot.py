@@ -44,10 +44,22 @@ def in_flight_path(window_id: str, file_path: str, base_dir: Path | None = None)
     return _snapshot_path(window_id, file_path, base_dir).with_suffix(".inflight")
 
 
-def mark_in_flight(window_id: str, file_path: str, base_dir: Path | None = None) -> None:
+def mark_in_flight(
+    window_id: str, file_path: str, writer: str = "", base_dir: Path | None = None
+) -> None:
+    """Record the edit as started now, by `writer` (the hook payload's writer
+    identity, "" when it carries none). Rewriting restarts the clock."""
     path = in_flight_path(window_id, file_path, base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch()  # a repeated pre hook for the same file restarts the clock
+    path.write_text(writer)
+
+
+def in_flight_writer(window_id: str, file_path: str, base_dir: Path | None = None) -> str:
+    """The identity that set the mark, or "" when unknown or unreadable."""
+    try:
+        return in_flight_path(window_id, file_path, base_dir).read_text().strip()
+    except (OSError, UnicodeDecodeError):
+        return ""
 
 
 def clear_in_flight(window_id: str, file_path: str, base_dir: Path | None = None) -> None:

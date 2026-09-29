@@ -739,7 +739,7 @@ class _Readable(Protocol):
 
 
 def run_hook(hook_command: str, env: dict[str, str], stdin: _Readable) -> int:
-    """Entry point for the `hook pre|post` CLI subcommands, and ONLY those:
+    """Entry point for the `hook pre|post|failure` CLI subcommands, and ONLY those:
     the design intent ("Hooks never fail a tool call", guide/en/faq.md) does
     not cover start/stop/status/etc, which must keep raising normally.
 
@@ -763,6 +763,8 @@ def run_hook(hook_command: str, env: dict[str, str], stdin: _Readable) -> int:
         payload: dict[str, Any] = json.loads(stdin.read())
         if hook_command == "pre":
             return cmd_hook_pre(env, payload)
+        if hook_command == "failure":
+            return cmd_hook_failure(env, payload)
         return cmd_hook_post(env, payload)
     except Exception:
         with contextlib.suppress(Exception):
@@ -791,8 +793,32 @@ def cmd_hook_pre(env: dict[str, str], payload: dict[str, Any]) -> int:
         before = ""
     save_snapshot(session.window_id, file_path, before)
     # Until this edit's post hook runs, a Read of the file must not re-read
-    # it into the follower (_edit_in_flight).
-    snapshot.mark_in_flight(session.window_id, file_path)
+    # it into the follower (_edit_in_flight). The writer is recorded so that
+    # writer's own later Read can tell the mark is stale.
+    snapshot.mark_in_flight(session.window_id, file_path, writer_cue.writer_identity(payload) or "")
+    return 0
+
+
+def cmd_hook_failure(env: dict[str, str], payload: dict[str, Any]) -> int:
+    """PostToolUseFailure (the tool was allowed and failed while executing)
+    and PermissionDenied (auto mode denied it): the Edit will never post, so
+    its in-flight mark is dropped. Clearing is always safe, so neither the
+    enabled flag nor the open policy is consulted — a toggle or a config
+    change between pre and here must not strand the mark.
+
+    Measured on Claude Code 2.1.284: a user answering "No" at a permission
+    prompt fires neither event; that mark is dropped by the same writer's
+    next Read (_edit_in_flight) or expires."""
+    _configure_logging()
+    if payload.get("tool_name") not in _EDIT_TOOLS:
+        return 0
+    session = _resolve_session_for(env, payload)
+    if session is None:
+        return 0
+    file_path = _file_path(payload)
+    if file_path is None:
+        return 0
+    snapshot.clear_in_flight(session.window_id, file_path)
     return 0
 
 
@@ -850,24 +876,31 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
     session = _resolve_session_for(env, payload)
     if session is None:
         return 0
-    raw = FollowerState.read(session.window_id)
-    if raw is not None and not raw.enabled:
-        return 0
     file_path = _file_path(payload)
     if file_path is None:
         return 0
+    raw = FollowerState.read(session.window_id)
+    if raw is not None and not raw.enabled:
+        # The edit has posted and nothing will animate it: drop its mark, or
+        # it would silence Reads of the file until it expired.
+        snapshot.clear_in_flight(session.window_id, file_path)
+        return 0
     cfg = config.load()
     if not _passes_policy(cfg, file_path):
+        snapshot.clear_in_flight(session.window_id, file_path)
         return 0
-    acquired = control.try_acquire_animating(session.window_id)
-    # The edit has posted, so a Read may re-read its file again. Cleared only
-    # AFTER the acquire: from pre to here the mark keeps a Read off this file
-    # (_edit_in_flight), and from here on the slot keeps every Read off the
-    # pane — the gap between them would be the flash this mark exists to stop.
-    # Not held any longer than that: a hook killed later (a hook timeout in
-    # the hand-off wait) never reaches a `finally`, and its mark would then
-    # silence Reads of the file until it expired.
-    snapshot.clear_in_flight(session.window_id, file_path)
+    try:
+        acquired = control.try_acquire_animating(session.window_id)
+    finally:
+        # The edit has posted, so a Read may re-read its file again. Cleared
+        # only AFTER the acquire: from pre to here the mark keeps a Read off
+        # this file (_edit_in_flight), and from here on the slot keeps every
+        # Read off the pane — the gap between them would be the flash this
+        # mark exists to stop. A raising acquire clears it too (the edit
+        # will not be animated). Not held any longer than this: a hook killed
+        # later (a hook timeout in the hand-off wait) never reaches a
+        # `finally`, and its mark would then silence Reads until it expired.
+        snapshot.clear_in_flight(session.window_id, file_path)
     if not acquired:
         # Another live hook already owns this window's pane. Six parallel
         # Write tool calls fire six hooks at once; the acquire is atomic, so
@@ -1253,7 +1286,7 @@ def _animate_edit(
     return 0
 
 
-def _edit_in_flight(window_id: str, file_path: str) -> bool:
+def _edit_in_flight(window_id: str, file_path: str, reader: str | None) -> bool:
     """True when a Read of file_path must leave the follower alone: an Edit,
     MultiEdit or Write of it has run its pre hook and written the file, and
     its post hook has not run yet (BACKLOG D2 — two agents on one window).
@@ -1278,8 +1311,27 @@ def _edit_in_flight(window_id: str, file_path: str) -> bool:
     write (a permission prompt still open) or after an Edit that was denied
     or failed and so never posts, a re-read shows exactly the edit's base,
     and the Read goes ahead. That keeps a stale mark nearly free until it
-    expires (snapshot.IN_FLIGHT_TTL_SECONDS)."""
+    expires (snapshot.IN_FLIGHT_TTL_SECONDS).
+
+    A Read by the mark's OWN writer (`reader`, the payload's writer
+    identity) proves the mark stale: one agent's tool calls run one after
+    another, post hook included (measured on Claude Code 2.1.284 with an Edit
+    and a Read issued in one message), so that writer's Edit tool call is
+    over — it posted (which would have cleared the mark), failed, or was
+    denied. A user's "No" at the permission prompt fires no hook at all, so
+    this is what lets the usual fallback (`sed -i` through Bash, then a Read
+    to check) resync the follower instead of being silenced until expiry.
+    The mark is dropped and the Read goes ahead."""
     if not snapshot.in_flight(window_id, file_path):
+        return False
+    writer = snapshot.in_flight_writer(window_id, file_path)
+    if reader and writer == reader:
+        snapshot.clear_in_flight(window_id, file_path)
+        logger.info(
+            "dropped the in-flight mark on %s: its own writer read the file, so that "
+            "edit's tool call is over (denied or failed)",
+            file_path,
+        )
         return False
     try:
         on_disk = Path(file_path).read_text()
@@ -1307,9 +1359,15 @@ def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
         # Another live hook owns this window's pane: navigating now would
         # interleave keystrokes with its animation. Skip; state untouched.
         return 0
-    if _edit_in_flight(session.window_id, file_path):
+    if _edit_in_flight(session.window_id, file_path, writer_cue.writer_identity(payload)):
+        # What is known: another writer's Edit/MultiEdit/Write of this file
+        # ran its pre hook less than IN_FLIGHT_TTL_SECONDS ago and has not
+        # posted, and the file no longer holds that edit's snapshot. Whether
+        # it is about to post or was denied is not known here.
         logger.info(
-            "skipped the Read of %s: an Edit of it is written but not yet animated", file_path
+            "skipped the Read of %s: an Edit/Write of it is in flight or failed "
+            "(another writer's pre hook ran, no post hook yet, and the file changed since)",
+            file_path,
         )
         return 0
     current = _live_follower_healing_keys(session) or _maybe_auto_open(session, file_path, cfg)

@@ -19,7 +19,7 @@
 | `claude-follow interrupt` | Hand the buffer over to you, or discard your hand-off edits (bound to `prefix` `S`). |
 | `claude-follow speed-up` / `speed-down` | Step the animation pace (bound to `prefix` `+` / `prefix` `_`). |
 | `claude-follow toggle` | Mute/unmute the follower (bound to `prefix` `F`). |
-| `claude-follow hook pre` / `hook post` | The hook handler Claude Code calls; reads the hook payload as JSON on stdin. |
+| `claude-follow hook pre` / `hook post` / `hook failure` | The hook handler Claude Code calls; reads the hook payload as JSON on stdin. `hook failure` runs when an edit fails or is denied, so a Read of that file is no longer held back. |
 
 The keys are described in [Keybindings](keybindings.md).
 

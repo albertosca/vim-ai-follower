@@ -29,6 +29,7 @@ def _build_parser() -> argparse.ArgumentParser:
     hook_subparsers = hook_parser.add_subparsers(dest="hook_command", required=True)
     hook_subparsers.add_parser("pre")
     hook_subparsers.add_parser("post")
+    hook_subparsers.add_parser("failure")
     subparsers.add_parser("pause")
     subparsers.add_parser("interrupt")
     subparsers.add_parser("speed-up")

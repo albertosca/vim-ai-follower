@@ -55,6 +55,14 @@ Then wire the hooks by hand: add these to `~/.claude/settings.json` (use the abs
         "hooks": [{ "type": "command", "command": "claude-follow hook post" }] },
       { "matcher": "Read",
         "hooks": [{ "type": "command", "command": "claude-follow hook post" }] }
+    ],
+    "PostToolUseFailure": [
+      { "matcher": "Edit|MultiEdit|Write",
+        "hooks": [{ "type": "command", "command": "claude-follow hook failure" }] }
+    ],
+    "PermissionDenied": [
+      { "matcher": "Edit|MultiEdit|Write",
+        "hooks": [{ "type": "command", "command": "claude-follow hook failure" }] }
     ]
   }
 }
