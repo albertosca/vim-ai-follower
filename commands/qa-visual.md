@@ -23,18 +23,17 @@ disagree with it.
   for any step, confirm it exited (or kill it) before moving to the next
   check.
 - **Never touch Alberto's real tmux sessions or config**, except where a
-  specific check's script explicitly says it will — Checks 9 and 10 write to
-  `~/.config/claude-vim-follower/config.json`, and their own scripts
-  (`scripts/qa-check-9-nvim-standalone.sh`, `scripts/qa-check-10-vim-without-tmux.sh`)
-  already handle backup/restore of that file (auto-restoring on any crash).
+  specific check's script explicitly says it will — Check 9 writes to
+  `~/.config/claude-vim-follower/config.json`, and its own script
+  (`scripts/qa-check-9-nvim-standalone.sh`) already handles backup/restore
+  of that file (auto-restoring on any crash).
   **Checks 11–19 never write the config** — each takes its backend from a
   `--backend` flag on `start` instead. Any future check that does need to
   write it uses `qa_protect_config` + `qa_write_test_config` +
-  `qa_config_handoff`, exactly like Check 9. Checks 4 and 7 create their own
-  isolated `vaf-smoke` / private tmux sessions and never touch Alberto's
-  real server.
+  `qa_config_handoff`, exactly like Check 9. Check 8's matrix script
+  creates its own private tmux server and never touches Alberto's real one.
 - **Redirect, never pipe, any check that backgrounds a `hook post`.**
-  Checks 3, 6, 12, 13, 14, 15 and 16 do, most of them to leave an animation
+  Checks 3, 9, 12, 13, 14, 15 and 16 do, most of them to leave an animation
   running so the controls can be exercised.
   Running them as `zsh scripts/... | tee log` makes the shell
   wait for the pipe, which closes only when the backgrounded hook exits — so
@@ -46,18 +45,7 @@ disagree with it.
   shows the rendered pane. Every check whose verdict is about content prints
   a ready-to-paste `qa_dump_nvim_buffer <socket> <file>` or
   `qa_dump_vim_buffer <pane>` diff line — use it.
-- **Checks 9 and 10 must run OUTSIDE tmux — their scripts refuse to run
-  inside one.** Your own Bash tool almost certainly runs inside the same
-  tmux session Alberto's `claude` is running in (his normal Vim+tmux setup),
-  so you likely CANNOT run these two yourself. Before reaching Check 9,
-  check with `echo "$TMUX"` (or just try the script — it self-detects and
-  exits 1 with a clear error if it can't run). If you're inside tmux, tell
-  Alberto Checks 9 and 10 need to be run by him from a plain terminal window
-  (not a tmux pane), give him the two commands
-  (`zsh scripts/qa-check-9-nvim-standalone.sh`, `zsh scripts/qa-check-10-vim-without-tmux.sh`)
-  and the LOOK AT text from `qa/visual-battery.md`, and record his reported
-  verdict + notes the same way as any other check. This is the one
-  documented exception to "Claude drives, Alberto watches."
+- **Check 9 must run OUTSIDE tmux — its script refuses to run inside one** (Check 10 is machine-verified and no longer run by hand). Your own Bash tool almost certainly runs inside the same tmux session Alberto's `claude` is running in (his normal Vim+tmux setup), so you likely CANNOT run it yourself. Before reaching Check 9, check with `echo "$TMUX"` (or just try the script — it self-detects and exits 1 with a clear error if it can't run). If you're inside tmux, tell Alberto Check 9 needs to be run by him from a plain iTerm2 window (not a tmux pane), give him the command (`zsh scripts/qa-check-9-nvim-standalone.sh`) and the LOOK AT text from `qa/visual-battery.md`, and record his reported verdict + notes the same way as any other check. This is the one documented exception to "Claude drives, Alberto watches."
 
 ## Setup — before Check 1
 
@@ -69,13 +57,15 @@ disagree with it.
    TOP of the file (per the template's own instructions and the design spec).
 3. Fill in the ledger's header line (`# Visual Battery Run — <DATE> — commit
    <SHA>`) with today's date and the commit SHA from step 1.
-4. Run the Prep step from `qa/visual-battery.md` ("Prep (once, checks
-   1-8)"): `claude-follow start` from the pane where `claude` runs, and
+4. Run the Prep step from `qa/visual-battery.md` ("Prep (once, before
+   Check 1)"): `claude-follow start` from the pane where `claude` runs, and
    confirm a follower pane opened before proceeding.
 
 ## For each of the 19 checks, in order
 
-Run this five-step loop for each check. The scripts are:
+**Machine-verified checks (2026-09-29).** Checks 2, 4, 6, 7 and 10 have no manual step: do not run their scripts. Record each as `e2e` in the ledger, naming its test in `tests/test_e2e_battery_tranche3.py` (the check's section in `qa/visual-battery.md` names it). Checks 1 and 5 are a quick look only. Check 8's manual pass (`scripts/repro-exit-insert-matrix.sh`, against the real config) and Check 9's (the iTerm2 split) run only when the battery section says so — after changing an insert/navigation plugin, and after changing `backends/nvim_connect.py`; otherwise record them as `e2e` too.
+
+Run this five-step loop for each remaining check. The scripts are:
 
 | # | Script | Name |
 | --- | --- | --- |
@@ -113,7 +103,7 @@ first half's animation finish before starting the second.
    extra `claude-follow start ...` invocation or a manual/Claude-Code-driven
    edit before or alongside the script — follow that check's own section in
    `qa/visual-battery.md` for any such extra step. For any check that
-   backgrounds a hook (3, 6, 12, 13, 14, 15, 16), redirect instead of piping:
+   backgrounds a hook (3, 9, 12, 13, 14, 15, 16), redirect instead of piping:
    `zsh scripts/... > /tmp/vaf-qa-run.log 2>&1`, then read the file (see the
    ground rule above).
 3. **Relay** the script's `LOOK AT: ...` output to Alberto (paraphrase is
@@ -127,17 +117,13 @@ first half's animation finish before starting the second.
    `qa/results/<date>.md` (the file created in Setup step 2).
 6. **Clean up** per that check's own script output / the runbook's
    "Cleanup" section:
-   - Checks 1, 2, 3, 4, 5, 6, 9, 10 print or document cleanup steps for you
-     to run yourself (e.g. `rm -f /tmp/vaf-qa-*.py`, `tmux kill-session -t
-     vaf-smoke`, closing a leftover nvim pane with `:q`, restoring a backed-up
-     config file). Run exactly what that check's script prints under
-     "Cleanup when done:" (or, for Checks 1/2 which chain into each other,
+   - Checks 1, 3, 5 and 9 print or document cleanup steps for you to run
+     yourself (e.g. `rm -f /tmp/vaf-qa-*.py`, `claude-follow stop`, closing
+     a leftover nvim pane with `:q`, restoring a backed-up config file). Run
+     exactly what that check's script prints under "Cleanup when done:" (or
      what the runbook's Cleanup section says).
-   - Checks 7 and 8's hermetic half self-clean (their own `trap cleanup
-     EXIT` tears down their isolated `$HOME`/tmux socket) — no action needed
-     from you for those halves. Check 8 also has a real-world variant that
-     leaves `/tmp/vaf-qa-esc.py` for you to remove, same as the other manual
-     checks.
+   - Check 8's matrix script self-cleans (its own `trap ... EXIT` tears down
+     its private tmux server) — no action needed from you.
    - Checks 11–19 all print a "Cleanup when done:" block; run it verbatim.
      Three of them leave more than a `/tmp` file behind and are easy to skip:
      Check 16 and Check 17 print a `tmux resize-pane` that restores the

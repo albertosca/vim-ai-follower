@@ -27,7 +27,7 @@ check, by the driving slash command; it is not repeated per check here.
 > <file>` (nvim, over RPC) or `qa_dump_vim_buffer <pane>` (tmux, via a `:w!`
 > to a scratch path), both of which each check prints ready to paste.
 
-> **Never pipe a check script that backgrounds `hook post`.** Checks 3, 6,
+> **Never pipe a check script that backgrounds `hook post`.** Checks 3, 9,
 > 12, 13, 14, 15 and 16 do, most of them to leave an animation running so the
 > controls can be exercised. If you run them as `zsh scripts/... | tee log`,
 > the shell waits
@@ -52,7 +52,7 @@ check, by the driving slash command; it is not repeated per check here.
 | # | Feature | Status |
 | --- | --- | --- |
 | 1 | Per-writer color cue | shipped 2026-07-17 |
-| 2 | Stop restores the border | shipped 2026-07-17 (fix `c1760c8`) |
+| 2 | Stop restores the border | shipped 2026-07-17 (fix `c1e1490`) |
 | 3 | Escape+undo race fix | shipped 2026-07-17 |
 | 4 | Window-scoped identity (isolation) | shipped 2026-07-17 |
 | 5 | nvim backend: char-by-char animation + floating writer cue | shipped 2026-07-19 |
@@ -71,9 +71,11 @@ check, by the driving slash command; it is not repeated per check here.
 | 18 | nvim: a swap-held file opens instead of crashing the hook | shipped 2026-09-21 (`d817f08`) |
 | 19 | nvim: Read navigation shows disk content, `goto_line` clamps (+ adopt note) | shipped 2026-09-16 (`98b6201`), adopt rule `779284b` 2026-09-21 |
 
+**Machine-verified (2026-09-29).** Checks 2, 4, 6, 7 and 10 have no manual step left: each is an e2e test in `tests/test_e2e_battery_tranche3.py`, and a battery run records them from that test instead of running anything. Checks 1, 5, 8 and 9 keep only the part a test cannot judge (the colour in your theme, the smoothness, your own plugin stack, a real iTerm2 split). Check 3 is not converted.
+
 ---
 
-## Prep (once, checks 1–8)
+## Prep (once, before Check 1)
 
 Open a tmux window and, from the pane where `claude` normally runs:
 
@@ -107,15 +109,15 @@ the wrong geometry and two need a second editor on screen.
 
 None of checks 11–19 writes `~/.config/claude-vim-follower/config.json`;
 every one of them takes the backend from a `--backend` flag on `start`
-instead. Only Checks 9 and 10 touch the real config file.
+instead. Only Check 9 touches the real config file (Check 10 is machine-verified).
 
 ---
 
 ## Check 1 — Per-writer color cue
 
-**Purpose:** confirm the follower border stays neutral for an unattributed
-writer and tints + labels for an attributed one (e.g. a subagent), in real
-tmux, as Alberto's eye actually sees it (not just the underlying color math).
+**Purpose:** confirm the per-writer tint is VISIBLE in your own terminal theme — the one part of this cue no test can judge.
+
+**Machine-verified** by `tests/test_e2e_battery_tranche3.py::test_second_writer_tints_and_titles_the_follower_border_and_stop_restores_it` (through the real wrapper: a lone writer never tints the follower border, sampled while it animates; a second writer, a subagent, sets `fg=colour78` on both border styles of the follower pane, turns the window's `pane-border-status` to `top` and titles the pane `code-reviewer`). `show-options` proves the value, not the pixels — so the manual pass is a quick look.
 
 **Setup:** from the same origin pane where you ran `start`:
 
@@ -123,50 +125,21 @@ tmux, as Alberto's eye actually sees it (not just the underlying color math).
 zsh scripts/smoke-color-cue.sh
 ```
 
-It fires two edits with distinct identities (content from
-`qa/fixtures/cue-writer1.py` then `cue-writer2.py`) and pauses between them
-so Alberto can look.
+It fires two edits with distinct identities (content from `qa/fixtures/cue-writer1.py` then `cue-writer2.py`) and pauses between them.
 
-**What Alberto looks at:** the follower pane's border color and title bar,
-at two moments — right after writer 1's edit, and right after writer 2's.
+**What Alberto looks at:** the follower pane's border right after writer 2's edit.
 
-**PASS:**
+**PASS:** in your theme, the tinted border and its `code-reviewer` title are clearly distinguishable from the neutral border. **FAIL:** the tint is hard to tell from neutral, or the title bar does not render.
 
-| Moment | PASS | FAIL |
-| --- | --- | --- |
-| After writer 1 (no `agent_id`) | Border **neutral** (default); the file animates | Border already colored |
-| After writer 2 (`agent_type=code-reviewer`) | Border **tints** to a color **and** the title reads `code-reviewer` | Border stays neutral, or no title |
-
-**Cleanup:** none beyond the follower state left running for Check 2, which
-consumes it directly.
+**Cleanup:** `claude-follow stop` (Check 2 no longer consumes this state).
 
 ---
 
 ## Check 2 — Stop restores the border
 
-**Purpose:** confirm `claude-follow stop` restores the origin pane's border
-to default before killing the follower pane — not after, and not partially.
+**Purpose:** `claude-follow stop` clears the writer cue BEFORE killing the follower pane, so the window's `pane-border-status` is not left stuck on `top` (fix `c1e1490`). The tint lives on the **follower** pane — the one the cue colours — and `pane-border-status` is a window option, which is why the clear has to run while the pane still exists.
 
-**Setup:** immediately after Check 1, in the same pane:
-
-```sh
-claude-follow stop
-```
-
-**What Alberto looks at:** the follower pane closing, and the origin pane's
-border/title bar right after.
-
-**PASS:** the follower pane closes **and** the border returns to default —
-no lingering color, no leftover border-title bar on the origin pane. Verify
-programmatically at any time:
-
-```sh
-tmux show-options -wv pane-border-status    # expect: empty after stop
-```
-
-**FAIL:** the origin pane keeps a border-status bar / tinted border.
-
-**Cleanup:** none — `stop` already returned the pane to its pre-check state.
+**Machine-verified, no manual step** by the tail of Check 1's test (`tests/test_e2e_battery_tranche3.py::test_second_writer_tints_and_titles_the_follower_border_and_stop_restores_it`): `stop` through the wrapper leaves exactly one pane, with the window's `pane-border-status` and the origin pane's border styles unset, after asserting the status read `top` before the stop. Nothing to run by hand.
 
 ---
 
@@ -230,188 +203,59 @@ rm -f /tmp/vaf-qa-pause.py
 
 ## Check 4 — Window-scoped identity (isolation)
 
-**Purpose:** confirm two tmux windows, each with their own follower, never
-bleed content into each other (the 2026-07-16 incident).
+**Purpose:** two tmux windows, each with its own follower, never bleed content into each other (the 2026-07-16 incident).
 
-**Setup:** a dedicated session, driven end to end by one script:
-
-```sh
-zsh scripts/smoke-window-scoping.sh
-```
-
-⚠️ It creates the `vaf-smoke` tmux session (and **only** touches that
-session — never your real server), starts a follower in **two** windows with
-your real config (may prompt the macOS keychain once per follower — click
-"Always Allow"), and animates a distinct file into each. It prints a
-programmatic isolation check (different `window_id`s, different follower
-target panes, one state file each).
-
-Then eyeball it:
-
-```sh
-tmux attach -t vaf-smoke
-```
-
-- `prefix 0` → window 0's follower shows **only** `WINDOW ZERO` (alpha).
-- `prefix 1` → window 1's follower shows **only** `WINDOW ONE` (beta).
-
-**What Alberto looks at:** switching between windows 0 and 1 inside the
-`vaf-smoke` session, checking each follower's content in turn.
-
-**PASS:** no bleed — neither window's edits appear in the other's follower.
-**FAIL:** one window's content shows up in the other's follower.
-
-**Cleanup:**
-
-```sh
-tmux kill-session -t vaf-smoke
-```
+**Machine-verified, no manual step** by `tests/test_e2e_battery_tranche3.py::test_two_windows_never_bleed_content_into_each_others_follower` (a follower in each of two windows of one tmux server, a distinct file written through each window's own hooks; each follower's Vim lists exactly its own file and holds exactly its bytes, read from the buffers rather than the screen). `scripts/smoke-window-scoping.sh` stays available for a live look with your real config, but is no longer part of a battery run.
 
 ---
 
 ## Check 5 — nvim backend: char-by-char animation + floating writer cue
 
-**Purpose:** confirm the nvim backend (real Neovim over RPC, no
-`tmux send-keys`) types char-by-char with a highlighted current line and
-cursor-follow, and shows a floating writer-label window for an attributed
-writer (the nvim-native equivalent of Check 1's border tint — there's no
-tmux border to read here).
+**Purpose:** a 10-second look at what a test cannot judge on the nvim backend: that the typing READS as smooth and the writer tint is visible in your colourscheme.
 
-**Setup:** `--backend nvim` overrides config for this invocation; with
-`adopt_existing` at its default (`false`) this **launches a dedicated
-nvim** in a split — it does **not** touch your
-`~/.config/claude-vim-follower/config.json`. From the origin pane where
-`claude` runs:
+**Machine-verified** by `tests/test_e2e_battery_tranche3.py::test_nvim_types_char_by_char_with_the_cursor_and_shows_the_writer_float` (atomic RPC snapshots at `lento`: a line is caught part-way typed — the same run at `instant` fails that — the cursor sits on the `VafTypingLine` row, a lone writer's float carries no writer label or tint, and a subagent's float shows `code-reviewer` in its title with `FloatBorder:VafWriterCue`, whose gui colour is colour78's `#5fd787`).
+
+**Setup:** from the origin pane where `claude` runs (`--backend nvim` overrides the config for this invocation and launches a dedicated nvim):
 
 ```sh
 claude-follow start --backend nvim
-```
-
-**PASS (pane open):** a dedicated **nvim** pane opens beside you. **FAIL:**
-an error, or a Vim (not nvim) pane. Then, from that same origin pane:
-
-```sh
 zsh scripts/smoke-nvim.sh
 ```
 
 It fires two edits with distinct identities and pauses between them.
 
-**What Alberto looks at:** the nvim pane while each edit types, at two
-moments — during writer 1's edit, and during writer 2's.
+**What Alberto looks at:** the nvim pane for about ten seconds of each edit.
 
 **PASS:**
 
 | Moment | PASS | FAIL |
 | --- | --- | --- |
-| Writer 1 (no `agent_id`) | Content **types in char-by-char** — current line highlighted, cursor following. No floating window yet. | Content flashes in whole, or no highlight/cursor motion |
-| Writer 2 (`agent_type=code-reviewer`) | A small **floating window** appears with the label **`code-reviewer`** in a color | No floating window, or no label/color |
+| Writer 1 (no `agent_id`) | The typing reads as smooth character-by-character motion. The float shows the default title with a `Writing...` body — no writer label, no tint | Jerky or whole-line jumps |
+| Writer 2 (`agent_type=code-reviewer`) | The float's `code-reviewer` title and its border tint are visible against your colourscheme | The tint is invisible or unreadable |
 
-**Cleanup:** `claude-follow stop` — a **launched** nvim pane is owned by the
-follower and stop kills it (verified live, 2026-08-25). Only an **adopted**
-nvim (`adopt_existing`) is never killed; close that one yourself with `:q`.
+**Cleanup:** `claude-follow stop` — a **launched** nvim pane is owned by the follower and stop kills it. Only an **adopted** nvim (`adopt_existing`) is never killed; close that one yourself with `:q`.
 
 ---
 
 ## Check 6 — nvim backend: pause / interrupt / des-interrupt
 
-**Purpose:** confirm the nvim backend's control parity with the tmux
-backend — pause/resume, interrupt (hand buffer to the human), and
-des-interrupt (discard human edits, replay the remaining animation) — all
-driven over RPC, no `send-keys`.
+**Purpose:** control parity with the tmux backend on nvim — pause/resume, interrupt (hand the buffer to the human), and des-interrupt (discard their unsaved typing, replay the rest) — all over RPC, no `send-keys`.
 
-**Setup:** restart the nvim follower slow so you can catch it mid-animation:
+**Machine-verified, no manual step** by three tests in `tests/test_e2e_battery_tranche3.py`, all through the CLI on a launched nvim:
 
-```sh
-claude-follow stop 2>/dev/null; claude-follow start --backend nvim --speed lento
-```
+- `::test_nvim_pause_then_resume_through_the_cli_ends_on_the_exact_bytes` — the pause halts (two reads 0.6 s apart agree, short of the content) and the resume ends on the exact bytes. On nvim a pause is checked per character, so it can land mid-line;
+- `::test_nvim_interrupt_then_save_releases_the_hook_with_its_notification` — after an interrupt the current buffer is the file and modifiable, and the user's `:w` releases the hook with the "saved their own version" notification, leaving no remainder;
+- `::test_nvim_des_interrupt_discards_the_users_unsaved_typing` — a second interrupt throws unsaved typing away and replays onto the exact content, consecutive blank lines included (`27aa0e4`).
 
-> `stop` kills a **launched** nvim pane (the follower owns it), so this also
-> cleans up Check 5's leftover. Only an **adopted** nvim (your own editor,
-> `adopt_existing`) is spared — that one you close with `:q` yourself.
-
-Drive a slow edit from the origin pane:
-
-```sh
-cp qa/fixtures/pause-trigger.py /tmp/vaf-qa-nvim-pause.py
-P='{"tool_name":"Write","tool_input":{"file_path":"/tmp/vaf-qa-nvim-pause.py"},"session_id":"me"}'
-echo "$P" | claude-follow hook pre
-echo "$P" | claude-follow hook post   # animates slowly
-```
-
-While it types, exercise the controls (same prefix keys as the tmux
-backend):
-
-**What Alberto looks at:** the nvim buffer's state and modifiability at
-each of the three control points below.
-
-**PASS:**
-
-| Action | Key | PASS | FAIL |
-| --- | --- | --- | --- |
-| **Pause / resume** | `prefix P`, then `prefix P` again | Typing halts at a clean line boundary, then resumes to the exact full content | Mid-char stop, garbled resume, or lost lines |
-| **Interrupt (hand-over)** | `prefix S` mid-animation | Typing stops and the buffer becomes **modifiable** — you can edit it. Edit + `:w` → your version releases Claude's turn (a notification is printed) | Buffer stays locked, or the turn never releases |
-| **Des-interrupt** | after an interrupt, `prefix S` again | Your unsaved typing is discarded and the **remaining** animation replays to the exact final content — no dropped lines, even across consecutive blank lines | A dropped line, a stray blank, or a flash of the finished file |
-
-> The consecutive-blank-line des-interrupt fidelity is the fix in `27aa0e4`.
-> Automated proof (real nvim, no manual timing luck) is in
-> `tests/test_nvim_integration.py` (`*des_interrupt*` / `*pace0_consume*`
-> tests) — this manual check confirms it under your real nvim config.
-
-**Note — adopt path (optional).** Checks 5/6 use the **launch** path
-(turnkey, deterministic). The **adopt** path (drive an nvim you already have
-open) needs `adopt_existing: true` in config and an nvim running in the
-origin pane; its socket discovery + adopted-stop cleanup (fix `6c565f9`) are
-covered by the automated suite. Stage it manually only if you want to
-eyeball adoption.
-
-**Cleanup:**
-
-```sh
-rm -f /tmp/vaf-qa-nvim-pause.py
-```
-
-Close the leftover nvim pane/split yourself with `:q` (not killed by `stop`).
+Your real nvim config (plugins, mappings) is not exercised here; that belongs to the pre-release smoke. The adopt path's socket discovery and adopted-stop cleanup (`6c565f9`) are covered by the automated suite.
 
 ---
 
 ## Check 7 — Parallel-hook serialization
 
-**Purpose:** confirm six PostToolUse hooks firing near-simultaneously
-(e.g. six Write tool calls in one turn) no longer interleave keystrokes into
-one follower pane — before the fix (commit range starting `e51071e`,
-"Serialize parallel hooks with an atomic animation-slot claim"), a
-check-then-act guard on the `.animating` marker let all six hooks pass the
-check and animate concurrently, producing garbled lines mixing tokens from
-multiple files and literal `o`/`O` openers leaking as text.
+**Purpose:** six PostToolUse hooks firing near-simultaneously (six Write tool calls in one turn) animate exactly one file, instead of interleaving keystrokes into one follower pane (fixed by the atomic animation-slot claim, `e51071e`).
 
-**Setup:** reuse the existing hermetic repro script, but watch it live
-instead of only reading its final verdict — it drives a real follower over a
-real (isolated) tmux session and captures the pane while firing:
-
-```sh
-zsh scripts/repro-concurrent-hooks.sh
-```
-
-It builds an isolated `HOME`/tmux socket, starts the follower, then fires
-six `hook post` OS processes at once against six distinct files
-(`alpha.txt` … `foxtrot.txt`), snapshotting the follower pane every 0.3s
-while they race, then asserts on the snapshots.
-
-**What Alberto looks at:** the real-time animation in the terminal output
-the script streams — one clean tab typing one file's content — then the
-script's printed result block.
-
-**PASS:** the follower pane ends up with exactly **one clean tab** (one
-file fully typed), zero interleaved/garbled lines, zero literal `o`/`O`
-openers. The script itself already asserts this and prints
-`PASS: exactly one hook animated; no concurrent-animation garble` — so this
-check is largely "watch the live animation, then confirm the script printed
-PASS" (also visible as `TABS: 1`, `interleave: 0`, `literal_open: 0` in its
-result block). **FAIL:** script prints `FAIL: concurrent-animation garble
-present` and dumps a busy snapshot.
-
-**Cleanup:** none — the script's own `trap cleanup EXIT` removes its
-isolated `$HOME`/`$TMUX_TMPDIR` and kills its private tmux server.
+**Machine-verified, no manual step** by `tests/test_e2e_battery_tranche3.py::test_six_parallel_hooks_animate_exactly_one_file_cleanly` (six `hook post` processes fired back to back into a Vim carrying a key-free observer timer: every loser exits while the winner's marker reads `running` — proof they raced a live holder — one file reaches the follower, no observed line is garble, a leaked opener or another file's token, one tab, and `open_files` names only the winner). `scripts/repro-concurrent-hooks.sh` stays as a live demo, but is no longer part of a battery run.
 
 ---
 
@@ -433,193 +277,55 @@ as LITERAL text and garbles the buffer.
 > The exit is now two Escapes and nothing else. Do NOT "fix" a future
 > remapped-`<Esc>` garble by re-adding `<C-\><C-n>`.
 
-**Setup — hermetic (the hazard, not the product):**
+**Machine-verified** by `tests/test_e2e_battery_tranche3.py::test_insert_exit_stays_clean_under_a_remapped_esc_and_a_ctrl_backslash_map` (a hermetic vimrc stands in for the real config: an EscHandler-style insert `<Esc>` map that swallows the first Escape, a Normal-mode `<C-\>` map proved live before the animation, an InsertLeave counter and a key-free observer. The animation leaves Insert once per line, never fires `<C-\>` — re-adding `<C-\><C-n>` to the exit fires it on every line — and no observed line is stray. The `<Esc>` stand-in is asserted inert: the animation runs under `'paste'`, which disables insert-mode mappings).
 
-```sh
-zsh scripts/repro-remapped-esc.sh
-```
-
-It proves an ACTIVE insert-mode `<Esc>` mapping really can swallow both
-Escapes. It deliberately does NOT claim that reaches the product.
-
-**Setup — the regression guard (this is the one that judges the product):**
+**When to run by hand:** after changing an insert-mode or navigation plugin in your real config — only your own plugin stack can say whether it stays clean, and the hermetic test cannot see it:
 
 ```sh
 zsh scripts/repro-exit-insert-matrix.sh
 ```
 
-Runs a full animation against your REAL config and dumps the buffer **before**
-the relock — necessary because the relock's `:silent! e!` reloads the correct
-file from disk and would hide any corruption. Compares the shipped two-Escape
-exit against the old four-key one.
+It runs a full animation against your REAL config and dumps the buffer **before** the relock (the relock's `:silent! e!` reloads the correct file from disk and would hide any corruption), comparing the shipped two-Escape exit against the old four-key one.
 
-**Setup — real-world eyeball (optional, alongside Check 3):**
+**What Alberto looks at:** the script's verdict line.
 
-```sh
-claude-follow stop 2>/dev/null; claude-follow start --speed lento
-cp qa/fixtures/pause-trigger.py /tmp/vaf-qa-esc.py
-P='{"tool_name":"Write","tool_input":{"file_path":"/tmp/vaf-qa-esc.py"},"session_id":"me"}'
-echo "$P" | claude-follow hook pre
-echo "$P" | claude-follow hook post
-```
+**PASS:** `PASS: the two-Escape exit is clean; re-adding <C-\><C-n> corrupts the buffer`. **FAIL:** `FAIL` (the shipped exit dirtied the buffer). `INCONCLUSIVE` means your config lacks a Normal-mode `<C-\>` mapping, so the old variant cannot fail there — check with `:verbose map <C-Bslash>`.
 
-**What Alberto looks at:** the two scripts' verdict lines; for the eyeball
-variant, every line boundary, looking for a leaked `o`/`i` opener or a `:Nd`
-fragment landing as text.
-
-**PASS:**
-
-| | PASS | FAIL |
-| --- | --- | --- |
-| `repro-remapped-esc.sh` | `PASS: an active insert-<Esc> mapping swallowed both Escapes, ':2d' landed as text` | `INCONCLUSIVE` (Vim behavior changed — re-check by hand) |
-| `repro-exit-insert-matrix.sh` | `PASS: the two-Escape exit is clean; re-adding <C-\><C-n> corrupts the buffer` | `FAIL` (the shipped exit dirtied the buffer) or `INCONCLUSIVE` (your config lacks a Normal-mode `<C-\>` mapping, so the old variant cannot fail here — check with `:verbose map <C-Bslash>`) |
-| Eyeball variant | Clean insert on every line; content matches the fixture exactly | Leaked opener/command text in the buffer |
-
-**Cleanup:**
-
-```sh
-rm -f /tmp/vaf-qa-esc.py
-```
+**Cleanup:** none — the script tears down its own isolated tmux server.
 
 ---
 
 ## Check 9 — nvim standalone (no tmux)
 
-**Purpose:** confirm the no-tmux path (merge `fe87f5b`, "no-tmux support:
-standalone nvim follower", extended 2026-09-04 with the iTerm2 split-pane
-fallback) opens a real, visible nvim surface from a plain terminal — a GUI
-window, a split pane beside your shell (iTerm2, the default fallback when
-no GUI app is installed), or a fresh Terminal.app window (last resort for
-anyone not on iTerm2) — and that it survives independently of the edit
-that triggered it.
+**Purpose:** confirm the no-tmux path (`fe87f5b`, extended 2026-09-04 with the iTerm2 split-pane fallback) opens a VISIBLE nvim surface beside your shell — the part only a real GUI session can show. Run it after changing `backends/nvim_connect.py`.
 
-**Setup:** from **iTerm2**, outside any tmux session, to exercise the new
-default fallback tier (running from Terminal.app instead only exercises
-the older last-resort branch — the script below warns if `$TERM_PROGRAM`
-isn't iTerm2). Set config to the nvim backend with the default
-`nvim_window: auto`:
+**Machine-verified** by `tests/test_e2e_battery_tranche3.py::test_standalone_nvim_starts_animates_stays_open_and_stops_without_tmux` (outside tmux with `backend: nvim`, `nvim_window: auto`, through the wrapper: an `nvim-qt` shim first on `PATH` hosts a headless nvim, while `osascript`/`open` shims fail loudly so no real window can open; `start` returns promptly on the GUI tier and keys the follower by the terminal (`term-e2e`), the hook types char by char, the nvim outlives the edit, and `stop` quits it). What stays here is the iTerm2 tier, which only a real iTerm2 can show.
+
+**Setup:** from **iTerm2**, outside any tmux session (from Terminal.app the script warns that it exercises the older Terminal.app branch instead):
 
 ```sh
-mkdir -p ~/.config/claude-vim-follower
-cat > ~/.config/claude-vim-follower/config.json <<'EOF'
-{"backend": "nvim", "nvim_window": "auto"}
-EOF
+zsh scripts/qa-check-9-nvim-standalone.sh
 ```
 
-> ⚠️ This touches your **real** config file — back up
-> `~/.config/claude-vim-follower/config.json` first if you have one, and
-> restore it in Cleanup below.
+> ⚠️ It writes your **real** `~/.config/claude-vim-follower/config.json` (`{"backend": "nvim", "nvim_window": "auto"}`), backing it up first and restoring it automatically on any crash; its printed cleanup restores it once you are done watching.
 
-> ⚠️ On the first run from iTerm2, macOS may show an Automation permission
-> prompt asking to let iTerm2 (or vim-ai-follower) control iTerm2 — approve
-> it, or the split silently fails and nothing opens.
+> ⚠️ On the first run from iTerm2, macOS may show an Automation permission prompt asking to let iTerm2 (or vim-ai-follower) control iTerm2 — approve it, or the split silently fails and nothing opens.
 
-Then, still outside tmux:
+It animates `qa/fixtures/standalone-demo.py` into the new surface.
 
-```sh
-claude-follow start
-```
+**What Alberto looks at:** where the nvim surface opens, and the origin pane while it animates.
 
-Trigger an edit either via a real Claude Code hook (paste in your Claude Code
-session, outside tmux):
+**PASS:** a **split pane inside your current iTerm tab** opens beside your shell (not a disconnected window), the origin pane stays usable while it animates, and `claude-follow stop` from the origin quits it. **FAIL:** nothing opens, a separate window opens instead of a split, or the origin pane is blocked.
 
-```
-Cria o arquivo /tmp/vaf-qa-standalone.py com a Write tool com um algoritmo
-simples reconhecível (ex: uma função de busca ou ordenação).
-```
-
-or manually, from the same terminal:
-
-```sh
-printf 'def bubble_sort(items):\n    for i in range(len(items)):\n        for j in range(len(items) - i - 1):\n            if items[j] > items[j + 1]:\n                items[j], items[j + 1] = items[j + 1], items[j]\n    return items\n' > /tmp/vaf-qa-standalone.py
-P='{"tool_name":"Write","tool_input":{"file_path":"/tmp/vaf-qa-standalone.py"},"session_id":"me"}'
-echo "$P" | claude-follow hook pre
-echo "$P" | claude-follow hook post
-```
-
-**What Alberto looks at:** whether a new nvim surface opens beside your
-current work — a GUI window (nvim-qt or VimR, if installed), a **split
-pane inside your current iTerm tab** (the default when running iTerm2 with
-neither GUI app installed — nvim opens right next to your shell instead of
-a disconnected window), or a fresh Terminal.app window (last-resort
-fallback, only when neither a GUI app nor iTerm2 is available); whether
-the origin terminal/pane keeps working while it animates; whether the
-surface is still there once the edit finishes.
-
-**PASS:** a visible nvim surface opens (GUI window, iTerm split pane, or
-Terminal.app window, depending on what's installed/detected), animates the
-content char-by-char, and stays open after the edit completes (does not
-auto-close); the origin terminal/pane remains fully usable throughout;
-running `claude-follow stop` from the origin terminal quits the standalone
-nvim cleanly.
-
-```sh
-claude-follow stop
-```
-
-**FAIL:** nothing opens, a traceback appears, it closes itself when the
-edit finishes, or the origin terminal is blocked/frozen while it's open.
-
-**Cleanup:**
-
-```sh
-rm -f /tmp/vaf-qa-standalone.py
-```
-
-Restore your real config file if you backed one up before Setup (or remove
-`~/.config/claude-vim-follower/config.json` if it did not exist before this
-check).
-
-> Fixture note: a dedicated `qa/fixtures/standalone-demo.py` (a short,
-> visually recognizable graph/sort algorithm) is planned in a later task of
-> this plan (Task 4) to replace the inline `printf` above. Until it lands,
-> use the inline content or the Claude Code prompt shown here.
+**Cleanup:** run the "Cleanup when done:" lines the script prints (they remove the demo file and restore or remove your config).
 
 ---
 
 ## Check 10 — vim-without-tmux error
 
-**Purpose:** confirm that starting the **tmux** backend outside any tmux
-session fails loudly and actionably instead of silently no-opping or
-crashing with a traceback.
+**Purpose:** starting the **tmux** backend outside any tmux session fails loudly and actionably instead of silently no-opping or crashing.
 
-**Setup:** outside tmux, set config to the tmux backend:
-
-```sh
-mkdir -p ~/.config/claude-vim-follower
-cat > ~/.config/claude-vim-follower/config.json <<'EOF'
-{"backend": "tmux"}
-EOF
-```
-
-> ⚠️ Same config-file caveat as Check 9 — back up/restore
-> `~/.config/claude-vim-follower/config.json` around this check.
-
-```sh
-claude-follow start
-echo "exit code: $?"
-```
-
-**What Alberto looks at:** the terminal output and the exit code; whether
-any pane/window opened anywhere.
-
-**PASS:** the exact message
-
-```
-claude-follow: the vim backend requires tmux — run inside a tmux session, or set backend to nvim
-```
-
-is printed (verified against `commands.VIM_NEEDS_TMUX` — as observed while
-writing this check, it is printed to **stdout**, not stderr), the process
-exits non-zero (observed: `1`), and no follower pane/window opens anywhere.
-**FAIL:** a silent no-op (exit 0, nothing printed), a Python traceback, or
-any pane/window opening.
-
-**Cleanup:**
-
-Restore your real config file if you backed one up before Setup (or remove
-`~/.config/claude-vim-follower/config.json` if it did not exist before this
-check).
+**Machine-verified, no manual step** by `tests/test_e2e_battery_tranche3.py::test_tmux_backend_outside_tmux_fails_loudly_and_opens_nothing` (`backend: tmux` in the config file, the real wrapper run without `TMUX_PANE`: exit 1, stderr exactly `commands.VIM_NEEDS_TMUX` — `claude-follow: the vim backend requires tmux — run inside a tmux session, or set backend to nvim` — an empty stdout, so no traceback anywhere, and no pane, follower state or nvim socket left behind). Since 2026-09-29 the message goes to **stderr**, like its sibling "could not open a standalone nvim window". Nothing to run by hand.
 
 ---
 
