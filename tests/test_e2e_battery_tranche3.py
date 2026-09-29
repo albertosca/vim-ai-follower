@@ -147,6 +147,66 @@ def test_second_writer_tints_and_titles_the_follower_border_and_stop_restores_it
     assert _pane_option(world, world.origin_pane, "pane-active-border-style") == ""
 
 
+# --------------------------------------------------------------- Check 4
+
+
+def _vim_listed_buffers(world: E2EFollower, pane: str) -> list[Path]:
+    """Every LISTED buffer's name in the Vim in `pane`, resolved. Written by
+    Vim itself behind a sentinel first line, so a stale or half-written dump
+    cannot pass for an answer; `:w!`-style keys, like vim_buffer_bytes."""
+    out = world.workdir / f"bufs-{pane.lstrip('%')}-{time.monotonic_ns()}.txt"
+    command = (
+        f":call writefile(['BUFS'] + map(getbufinfo({{'buflisted': 1}}), "
+        f"'fnamemodify(v:val.name, \":p\")'), '{out}')"
+    )
+    world.tmux("send-keys", "-t", pane, "Escape", "Escape")
+    world.tmux("send-keys", "-t", pane, "-l", "--", command)
+    world.tmux("send-keys", "-t", pane, "Enter")
+    world.wait_until(
+        lambda: out.exists() and out.read_text().startswith("BUFS\n"),
+        f"the buffer list dump at {out}",
+        timeout=10.0,
+    )
+    names = out.read_text().splitlines()[1:]
+    out.unlink()
+    return [Path(name).resolve() for name in names if name]
+
+
+def test_two_windows_never_bleed_content_into_each_others_follower(
+    world: E2EFollower,
+) -> None:
+    """Battery check 4 — window-scoped identity (the 2026-07-16 incident:
+    one window's edits animated into another window's follower). Two windows
+    of one tmux server, a follower in each, a distinct file written through
+    each window's own hooks (TMUX_PANE is what scopes them). Each follower's
+    Vim must list exactly its own file and hold exactly its bytes — a content
+    claim, read from the buffers, not from the screen."""
+    world.start("tmux", "instant")
+    follower0 = world.follower_target()
+    pane1 = world.tmux(
+        "new-window", "-d", "-t", world.session, "-P", "-F", "#{pane_id}", "sh"
+    ).stdout.strip()
+    window1 = world.tmux("display-message", "-p", "-t", pane1, "#{window_id}").stdout.strip()
+    assert window1 != world.window_id
+    env1 = world.env_with(TMUX_PANE=pane1)
+    world.cli("start", "--backend", "tmux", "--speed", "instant", env=env1)
+    state1 = json.loads((world.cache_dir / f"{window1}.pane").read_text())
+    follower1 = state1["target"]
+    assert follower1 not in (follower0, pane1, world.origin_pane)
+
+    alpha = world.workdir / "window_alpha.py"
+    beta = world.workdir / "window_beta.py"
+    alpha_text = (FIXTURES / "window-alpha.py").read_text()
+    beta_text = (FIXTURES / "window-beta.py").read_text()
+    _write_through_hooks(world, alpha, alpha_text)
+    _write_through_hooks(world, beta, beta_text, env=env1)
+
+    assert _vim_listed_buffers(world, follower0) == [alpha.resolve()]
+    assert _vim_listed_buffers(world, follower1) == [beta.resolve()]
+    assert world.vim_buffer_bytes(follower0) == alpha_text.encode()
+    assert world.vim_buffer_bytes(follower1) == beta_text.encode()
+
+
 # --------------------------------------------------------------- Check 10
 
 
