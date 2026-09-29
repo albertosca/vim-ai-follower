@@ -7,9 +7,11 @@ the part only a human can judge."""
 from __future__ import annotations
 
 import json
+import subprocess
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
 from e2e_harness import REPO_ROOT, E2EFollower, e2e_world, payload
@@ -205,6 +207,142 @@ def test_two_windows_never_bleed_content_into_each_others_follower(
     assert _vim_listed_buffers(world, follower1) == [beta.resolve()]
     assert world.vim_buffer_bytes(follower0) == alpha_text.encode()
     assert world.vim_buffer_bytes(follower1) == beta_text.encode()
+
+
+# --------------------------------------------------------------- Check 5
+
+# One atomic snapshot of the follower nvim: nvim runs a request to completion
+# before the next, so the lines, cursor, typing-line extmarks and floats come
+# from the SAME instant — separate RPC reads could straddle a keystroke of the
+# animation and pair a cursor with the wrong line.
+_NVIM_SAMPLE_LUA = """
+local buf = vim.api.nvim_get_current_buf()
+local ns = vim.api.nvim_create_namespace('vaf')
+local rows = {}
+for _, m in ipairs(vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, {details = true})) do
+  if m[4].line_hl_group == 'VafTypingLine' then table.insert(rows, m[2]) end
+end
+local floats = {}
+for _, win in ipairs(vim.api.nvim_list_wins()) do
+  local cfg = vim.api.nvim_win_get_config(win)
+  if cfg.relative ~= '' then
+    local title = cfg.title
+    if type(title) == 'table' then
+      local parts = {}
+      for _, chunk in ipairs(title) do
+        table.insert(parts, chunk[1] .. '@' .. (chunk[2] or ''))
+      end
+      title = table.concat(parts, '|')
+    end
+    table.insert(floats, {title = title or '', winhighlight = vim.wo[win].winhighlight})
+  end
+end
+return {
+  name = vim.api.nvim_buf_get_name(buf),
+  lines = vim.api.nvim_buf_get_lines(buf, 0, -1, true),
+  cursor_row = vim.api.nvim_win_get_cursor(0)[1] - 1,
+  typing_rows = rows,
+  floats = floats,
+}
+"""
+
+
+def _sample_while_running(
+    world: E2EFollower, sock: str, proc: subprocess.Popen[bytes], path: Path
+) -> list[dict[str, Any]]:
+    """Every snapshot of `path`'s buffer taken while the hook animates it."""
+    nvim = world._nvim(sock)
+    wanted = path.resolve()
+    samples: list[dict[str, Any]] = []
+    while proc.poll() is None:
+        if world.animating_state() == "running":
+            sample = nvim.exec_lua(_NVIM_SAMPLE_LUA, [])
+            if sample["name"] and Path(sample["name"]).resolve() == wanted:
+                samples.append(sample)
+        time.sleep(0.03)
+    world.wait_for_hook_exit(proc)
+    return samples
+
+
+def _strict_prefix_rows(sample: dict[str, Any], final: list[str]) -> list[int]:
+    """Rows holding a non-empty STRICT prefix of their final text: a line
+    caught part-way through being typed."""
+    return [
+        row
+        for row, text in enumerate(sample["lines"])
+        if row < len(final) and text and text != final[row] and final[row].startswith(text)
+    ]
+
+
+# No line is a prefix of another, so a strict prefix can only be a line
+# caught mid-typing, never a whole different line.
+WRITER1_LINES = [
+    "def area(width, height):",
+    "    product = width * height",
+    "    return product",
+]
+WRITER2_LINES = ["REVIEWED = True"]
+
+
+def test_nvim_types_char_by_char_with_the_cursor_and_shows_the_writer_float(
+    world: E2EFollower,
+) -> None:
+    """Battery check 5 — the nvim backend types character by character with
+    the typed line highlighted and the cursor on it, and an attributed second
+    writer gets the floating cue: its agent_type in the title, the border
+    tinted VafWriterCue, whose gui colour is colour78's #5fd787.
+
+    Sampled over RPC at `lento`. The char-granularity claim is what the
+    `instant` speed (whole-line inserts) must fail, which is how the
+    instrument is shown to tell per-char from per-line. Whether the typing
+    LOOKS smooth and the tint is visible in a real colourscheme stays in the
+    battery."""
+    world.start("nvim", "lento")
+    sock = world.follower_target()
+    first = world.workdir / "typed.py"
+    world.cli("hook", "pre", stdin=payload("Write", first))
+    first.write_text("".join(line + "\n" for line in WRITER1_LINES))
+    proc = world.cli_background("hook", "post", stdin=payload("Write", first))
+    samples = _sample_while_running(world, sock, proc, first)
+
+    caught = [s for s in samples if _strict_prefix_rows(s, WRITER1_LINES)]
+    assert caught, (
+        f"no sample caught a line part-way typed ({len(samples)} samples): "
+        "the lines landed whole, not character by character"
+    )
+    # The cursor follows the line being typed. Only rows with 2+ characters
+    # typed: the first character's buf_set_text lands just before its
+    # win_set_cursor, and an atomic sample can fall between the two.
+    typing = [
+        s
+        for s in samples
+        if len(s["typing_rows"]) == 1 and len(s["lines"][s["typing_rows"][0]]) >= 2
+    ]
+    assert len(typing) >= 5, f"only {len(typing)} samples of a line being typed"
+    for s in typing:
+        assert s["cursor_row"] == s["typing_rows"][0], f"cursor off the typed line: {s}"
+        assert _strict_prefix_rows(s, WRITER1_LINES) in ([], s["typing_rows"]), s
+    # Writer 1 is alone: its float (the "Writing..." cue) has the default
+    # title and no writer tint.
+    for s in samples:
+        for float_ in s["floats"]:
+            assert "code-reviewer" not in float_["title"], float_
+            assert "VafWriterCue" not in float_["winhighlight"], float_
+    assert world.nvim_buffer_lines(sock, first) == WRITER1_LINES
+
+    second = world.workdir / "reviewed.py"
+    world.cli("hook", "pre", stdin=payload("Write", second, identity=REVIEWER))
+    second.write_text("".join(line + "\n" for line in WRITER2_LINES))
+    proc = world.cli_background("hook", "post", stdin=payload("Write", second, identity=REVIEWER))
+    samples = _sample_while_running(world, sock, proc, second)
+    during = [f for s in samples for f in s["floats"] if "code-reviewer" in f["title"]]
+    assert during, "writer 2's float never showed its label while it animated"
+
+    nvim = world._nvim(sock)
+    [after] = nvim.exec_lua(_NVIM_SAMPLE_LUA, [])["floats"]
+    assert "code-reviewer" in after["title"] and "@VafWriterCue" in after["title"], after
+    assert "FloatBorder:VafWriterCue" in after["winhighlight"], after
+    assert nvim.api.get_hl(0, {"name": "VafWriterCue"}).get("fg") == 0x5FD787
 
 
 # --------------------------------------------------------------- Check 10
