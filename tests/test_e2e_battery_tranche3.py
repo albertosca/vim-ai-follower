@@ -745,7 +745,7 @@ exit 1
 # An nvim-qt that returns success and starts nothing — the shape of a GUI that
 # could not find nvim, or whose nvim died on a config error.
 _NVIM_QT_STARTS_NOTHING_SHIM = """#!/bin/sh
-echo "$@" > "{marker}"
+echo "$@" >> "{marker}"
 exit 0
 """
 
@@ -884,6 +884,45 @@ def test_standalone_start_fails_loudly_when_no_nvim_ever_listens(
     assert _follower_leftovers(world) == [], "start left follower state behind"
     status = world.cli("status", env=outside)
     assert "no follower" in status.stdout, status.stdout
+
+
+def test_a_failed_auto_open_costs_one_short_wait_then_backs_off(world: E2EFollower) -> None:
+    """The hook side of the same failure, through the real wrapper: with
+    `open_policy: always` outside tmux, each Write's hook auto-opens a
+    standalone nvim. With a launcher that starts nothing, every hook used to
+    wait out the whole socket deadline and relaunch — every tool call
+    stalled 10 s. Now the first hook waits the short auto-open deadline and
+    records a backoff; the next ones return at once without launching, and
+    an explicit `start` still retries."""
+    _write_config(world, {"backend": "nvim", "nvim_window": "auto", "open_policy": "always"})
+    shims, markers = _install_shims(world, nvim_qt=_NVIM_QT_STARTS_NOTHING_SHIM)
+    outside = world.env_with(
+        drop=("TMUX_PANE",), TERM_SESSION_ID="e2e", PATH=f"{shims}:{world.env['PATH']}"
+    )
+    for name in markers:
+        assert shutil.which(name, path=outside["PATH"]) == str(shims / name), (
+            f"{name} does not resolve to its shim: a real one could open a window"
+        )
+    _assert_private_server(world)
+
+    costs: list[float] = []
+    for index in range(3):
+        path = world.workdir / f"auto{index}.py"
+        world.cli("hook", "pre", stdin=payload("Write", path), env=outside)
+        path.write_text(_text(*WRITER1_LINES))
+        began = time.monotonic()
+        world.cli("hook", "post", stdin=payload("Write", path), env=outside)
+        costs.append(time.monotonic() - began)
+    print(f"hook post cost per call: {[round(c, 2) for c in costs]} s")
+
+    assert len(markers["nvim-qt"].read_text().splitlines()) == 1, "a hook relaunched"
+    assert 3.0 <= costs[0] < 6.0, f"the first hook's wait was {costs[0]:.2f} s"
+    assert max(costs[1:]) < 1.5, f"a backed-off hook still stalled: {costs}"
+    assert not markers["osascript"].exists() and not markers["open"].exists()
+    assert list(world.cache_dir.glob("*.pane")) == [], "a follower was persisted"
+
+    world.cli("start", expect_rc=1, env=outside)  # the explicit retry
+    assert len(markers["nvim-qt"].read_text().splitlines()) == 2, "start did not retry"
 
 
 # --------------------------------------------------------------- Check 10

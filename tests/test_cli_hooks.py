@@ -6,9 +6,11 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+from unittest.mock import call as mock_call
 
 import pytest
 from helpers import make_mock_tmux_run as _mock_tmux_run
@@ -27,6 +29,7 @@ from vim_ai_follower import (
     writer_cue,
 )
 from vim_ai_follower.animate import AnimationResult
+from vim_ai_follower.backends import nvim_connect
 from vim_ai_follower.backends.nvim import _FIND_BUFFER_LUA
 from vim_ai_follower.backends.nvim_connect import NvimNeverListened
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
@@ -2080,7 +2083,9 @@ def test_maybe_auto_open_standalone_nvim_auto_launches_and_persists(
     ):
         result = hooks._maybe_auto_open(standalone, "/tmp/f.txt", cfg)
 
-    launch.assert_called_once_with("term-x")
+    launch.assert_called_once_with(
+        "term-x", wait_seconds=nvim_connect.AUTO_OPEN_SOCKET_WAIT_SECONDS
+    )
     assert result is not None
     assert result.backend == "nvim"
     assert result.target == "/s.sock"
@@ -2108,7 +2113,7 @@ def test_maybe_auto_open_in_tmux_nvim_window_always_uses_standalone_launcher(
     ):
         result = hooks._maybe_auto_open(in_tmux, "/tmp/f.txt", cfg)
 
-    launch.assert_called_once_with("@1")
+    launch.assert_called_once_with("@1", wait_seconds=nvim_connect.AUTO_OPEN_SOCKET_WAIT_SECONDS)
     resolve.assert_not_called()  # always overrides the tmux split
     assert result is not None
     assert result.backend == "nvim" and result.target == "/s.sock" and result.adopted is False
@@ -2193,6 +2198,53 @@ def test_maybe_auto_open_standalone_nvim_that_never_listens_logs_and_noops(
     assert result is None
     assert state.FollowerState.read("term-x") is None
     assert f"standalone nvim launch failed for term-x: {never}" in caplog.text
+
+
+def _standalone_auto_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> config.Config:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"backend": "nvim", "nvim_window": "auto", "open_policy": "always"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    return config.load()
+
+
+def test_a_failed_auto_open_backs_off_instead_of_stalling_every_tool_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A launcher that starts nothing made EVERY Edit/Write/Read hook wait out
+    # the full socket deadline and relaunch. The auto-open waits briefly,
+    # and after a failure it stays off for this window for a while (logged
+    # once); `claude-follow start` is the explicit retry.
+    cfg = _standalone_auto_open(tmp_path, monkeypatch)
+    standalone = Session(window_id="term-x", origin=None, in_tmux=False)
+    never = NvimNeverListened("/c/nvim-term-x.sock", "nvim-qt", 3.0)
+
+    with (
+        patch("vim_ai_follower.hooks.launch_standalone_nvim", side_effect=never) as launch,
+        caplog.at_level(logging.INFO, logger="vim_ai_follower"),
+    ):
+        assert hooks._maybe_auto_open(standalone, "/tmp/f.txt", cfg) is None
+        assert hooks._maybe_auto_open(standalone, "/tmp/g.txt", cfg) is None
+        assert hooks._maybe_auto_open(standalone, "/tmp/h.txt", cfg) is None
+
+    assert launch.call_args_list == [
+        mock_call("term-x", wait_seconds=nvim_connect.AUTO_OPEN_SOCKET_WAIT_SECONDS)
+    ]
+    assert nvim_connect.AUTO_OPEN_SOCKET_WAIT_SECONDS <= 3.0
+    assert caplog.text.count("standalone nvim launch failed for term-x") == 1
+    assert "not auto-opening term-x again for 5 minutes" in caplog.text
+
+
+def test_the_auto_open_backoff_expires(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _standalone_auto_open(tmp_path, monkeypatch)
+    standalone = Session(window_id="term-x", origin=None, in_tmux=False)
+    never = NvimNeverListened("/c/nvim-term-x.sock", "nvim-qt", 3.0)
+    with patch("vim_ai_follower.hooks.launch_standalone_nvim", side_effect=never) as launch:
+        hooks._maybe_auto_open(standalone, "/tmp/f.txt", cfg)
+        marker = nvim_connect.launch_backoff_path("term-x")
+        stale = time.time() - nvim_connect.LAUNCH_BACKOFF_SECONDS - 1
+        os.utime(marker, (stale, stale))
+        hooks._maybe_auto_open(standalone, "/tmp/g.txt", cfg)
+    assert launch.call_count == 2
 
 
 def test_maybe_auto_open_in_tmux_always_launcher_failure_logs_and_noops(

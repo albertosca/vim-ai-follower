@@ -10,6 +10,7 @@ from vim_ai_follower import cache, config, control, keybindings, snapshot, tmux
 from vim_ai_follower.backends import get_follower
 from vim_ai_follower.backends.nvim_connect import (
     NvimNeverListened,
+    clear_launch_backoff,
     launch_standalone_nvim,
     resolve_nvim_target,
 )
@@ -36,6 +37,8 @@ def _launch_standalone_or_report(window_id: str) -> str | None:
     exit non-zero — most commonly when macOS Automation permission for
     Terminal.app has not been granted yet — which must surface as the message
     the spec promises, not a raw CalledProcessError traceback."""
+    # An explicit start is the retry a failed auto-open's backoff waits for.
+    clear_launch_backoff(window_id)
     try:
         return launch_standalone_nvim(window_id)
     except subprocess.CalledProcessError as exc:

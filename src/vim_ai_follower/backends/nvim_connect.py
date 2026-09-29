@@ -12,7 +12,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from vim_ai_follower import state
+from vim_ai_follower import cache, state
 from vim_ai_follower.tmux import TmuxPane
 
 # Bounded wait for the launched nvim to bind its RPC socket before we return
@@ -27,6 +27,13 @@ _SOCKET_WAIT_SECONDS = 3.0
 # is reported as failed (NvimNeverListened) instead of attached. The number is
 # a generous ceiling, not a measurement.
 _STANDALONE_SOCKET_WAIT_SECONDS = 10.0
+# The hook auto-open path cannot afford that: a hook blocks the tool call it
+# runs in, so every Edit/Write/Read would stall the full wait on a launcher
+# that starts nothing. It waits briefly, and after a failure the window backs
+# off auto-opening for LAUNCH_BACKOFF_SECONDS (`claude-follow start` is the
+# explicit, patient retry and clears the backoff).
+AUTO_OPEN_SOCKET_WAIT_SECONDS = 3.0
+LAUNCH_BACKOFF_SECONDS = 300.0
 _SOCKET_POLL_INTERVAL_SECONDS = 0.02
 
 
@@ -151,7 +158,31 @@ def _remove_dead_socket(sock: str) -> None:
         path.unlink(missing_ok=True)
 
 
-def launch_standalone_nvim(window_id: str) -> str:
+def launch_backoff_path(window_id: str) -> Path:
+    return cache.CACHE_DIR / f"{window_id}.launch-failed"
+
+
+def record_launch_failure(window_id: str) -> None:
+    path = launch_backoff_path(window_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()  # the mtime is the failure's time
+
+
+def launch_backoff_active(window_id: str) -> bool:
+    try:
+        failed_at = launch_backoff_path(window_id).stat().st_mtime
+    except FileNotFoundError:
+        return False
+    return time.time() - failed_at < LAUNCH_BACKOFF_SECONDS
+
+
+def clear_launch_backoff(window_id: str) -> None:
+    launch_backoff_path(window_id).unlink(missing_ok=True)
+
+
+def launch_standalone_nvim(
+    window_id: str, wait_seconds: float = _STANDALONE_SOCKET_WAIT_SECONDS
+) -> str:
     sock = str(_socket_path_in_existing_dir(window_id))
     _remove_dead_socket(sock)
     cmd = standalone_launch_command(
@@ -161,12 +192,12 @@ def launch_standalone_nvim(window_id: str) -> str:
         is_iterm=os.environ.get("TERM_PROGRAM") == "iTerm.app",
     )
     subprocess.run(cmd, check=True)
-    deadline = time.monotonic() + _STANDALONE_SOCKET_WAIT_SECONDS
+    deadline = time.monotonic() + wait_seconds
     while not _answers(sock) and time.monotonic() < deadline:
         time.sleep(_SOCKET_POLL_INTERVAL_SECONDS)
     if not _answers(sock):
         # The launcher exited 0 (nvim-qt that found no nvim, a terminal whose
         # nvim died on a config error): there is nothing to attach to, and a
         # follower persisted here would point at a socket no one listens on.
-        raise NvimNeverListened(sock, cmd[0], _STANDALONE_SOCKET_WAIT_SECONDS)
+        raise NvimNeverListened(sock, cmd[0], wait_seconds)
     return sock

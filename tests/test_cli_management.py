@@ -12,6 +12,7 @@ from helpers import make_mock_tmux_run
 from helpers import register_fake_follower as _register_fake_follower
 
 from vim_ai_follower import cache, commands, config, control, keybindings, session, snapshot, state
+from vim_ai_follower.backends import nvim_connect
 from vim_ai_follower.backends.nvim import _FIND_BUFFER_LUA
 from vim_ai_follower.backends.nvim_connect import NvimNeverListened
 
@@ -398,6 +399,26 @@ def test_start_standalone_nvim_that_never_listens_reports_and_persists_nothing(
         "start nvim, then run start again\n",
     )
     assert state.FollowerState.read("term-x") is None
+
+
+def test_start_retries_at_once_and_waits_the_full_deadline_despite_an_auto_open_backoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A failed auto-open keeps hooks from relaunching for a while; the user
+    # typing `start` is the explicit retry, with the patient deadline.
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"backend": "nvim", "nvim_window": "auto"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    nvim_connect.record_launch_failure("term-x")
+    assert nvim_connect.launch_backoff_active("term-x")
+    standalone_session = session.Session(window_id="term-x", origin=None, in_tmux=False)
+    with (
+        patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session),
+        patch("vim_ai_follower.commands.launch_standalone_nvim", return_value="/s.sock") as launch,
+    ):
+        assert commands.cmd_start({}) == 0
+    launch.assert_called_once_with("term-x")  # the default, patient deadline
+    assert not nvim_connect.launch_backoff_active("term-x")
 
 
 def test_start_in_tmux_nvim_window_always_launcher_failure_reports_and_exits(

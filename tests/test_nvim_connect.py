@@ -302,6 +302,21 @@ def test_launch_standalone_nvim_attaches_once_the_socket_accepts(tmp_path: Path)
     assert fake_sleep.call_count == 2
 
 
+def test_launch_standalone_nvim_honors_a_shorter_wait(tmp_path: Path) -> None:
+    sock_path = tmp_path / "nvim-@1.sock"  # never answers
+    with (
+        _patched_launcher(sock_path, lambda *_a, **_k: None),
+        patch("vim_ai_follower.backends.nvim_connect.time.sleep"),
+        patch(
+            "vim_ai_follower.backends.nvim_connect.time.monotonic",
+            side_effect=[0.0, 3.1],
+        ),
+        pytest.raises(nvim_connect.NvimNeverListened) as raised,
+    ):
+        nvim_connect.launch_standalone_nvim("@1", wait_seconds=3.0)
+    assert str(raised.value).endswith("within 3 s")
+
+
 def test_launch_standalone_nvim_detects_iterm_from_term_program(tmp_path: Path) -> None:
     sock_path = tmp_path / "nvim-@1.sock"
     with (

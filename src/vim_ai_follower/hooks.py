@@ -15,7 +15,7 @@ from typing import Any, Protocol
 
 from vim_ai_follower import binding, cache, config, control, keybindings, snapshot, writer_cue
 from vim_ai_follower import diff as diff_module
-from vim_ai_follower.backends import BufferProbe, Follower, get_follower
+from vim_ai_follower.backends import BufferProbe, Follower, get_follower, nvim_connect
 from vim_ai_follower.backends.nvim_connect import (
     NvimNeverListened,
     launch_standalone_nvim,
@@ -319,10 +319,24 @@ def _launch_standalone_or_log(window_id: str) -> str | None:
     launcher can exit non-zero (e.g. macOS Automation permission not yet granted
     for Terminal.app), and the hook must degrade to a no-op like the tmux-split
     path does, never raise an uncaught traceback into the tool run."""
+    if nvim_connect.launch_backoff_active(window_id):
+        return None  # a recent launch failed: already logged, not retried yet
     try:
-        return launch_standalone_nvim(window_id)
+        return launch_standalone_nvim(
+            window_id, wait_seconds=nvim_connect.AUTO_OPEN_SOCKET_WAIT_SECONDS
+        )
     except (subprocess.CalledProcessError, NvimNeverListened) as exc:
-        logger.warning("standalone nvim launch failed for %s: %s", window_id, exc)
+        # Every hook blocks the tool call it runs in: retrying on each one
+        # stalled every Edit/Write/Read for the whole wait. Back off, once.
+        nvim_connect.record_launch_failure(window_id)
+        logger.warning(
+            "standalone nvim launch failed for %s: %s — not auto-opening %s again for "
+            "%d minutes (`claude-follow start` retries at once)",
+            window_id,
+            exc,
+            window_id,
+            nvim_connect.LAUNCH_BACKOFF_SECONDS // 60,
+        )
         return None
 
 
