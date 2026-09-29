@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-label="vim-ai-follower: Watch Claude Code type into your own Vim. 700+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim">
-  <title>vim-ai-follower: Watch Claude Code type into your own Vim. 700+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-label="vim-ai-follower: Watch Claude Code type into your own Vim. 1000+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim">
+  <title>vim-ai-follower: Watch Claude Code type into your own Vim. 1000+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim</title>
   <!-- The proof line below is an image, so scripts/check_readme_facts.py cannot read it.
        Keep the same NUMBERS as the facts blocks (the wording is shorter on purpose)
        and update it in the same commit whenever those numbers change. -->
@@ -22,7 +22,7 @@
       <text x="403" y="460" font-weight="700" fill="#282828" text-anchor="middle">S</text>
       <text x="437" y="460">take the keyboard</text>
     </g>
-    <text x="96" y="566" font-size="30" fill="#B8BB26">700+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim</text>
+    <text x="96" y="566" font-size="30" fill="#B8BB26">1000+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim</text>
   </g>
   <!-- the motif: your own Vim, mid-keystroke -->
   <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="24">
