@@ -4,6 +4,7 @@ import fcntl
 import os
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -221,44 +222,81 @@ sys.stdin.read()  # stay alive, as a hook animating the slot it won does
 """
 
 
-class _CompetitorAfterStep:
-    """Stands in for control's `os`: right after the acquirer's `step`-th OS
-    call returns (or raises), a competing hook — a real, separate, still-alive
-    process — tries to take the same slot. Walking `step` over every call
-    holds the acquirer between each pair of its steps in turn, whatever
-    those steps are."""
+class _Competitor:
+    """A competing hook: a real, separate process that tries to take the slot
+    and then stays alive, as a hook that won would."""
 
-    def __init__(self, step: int, base_dir: Path) -> None:
-        self.step = step
-        self.base_dir = base_dir
-        self.calls = 0
-        self.competitor: subprocess.Popen[str] | None = None
-        self.competitor_won: bool | None = None
-
-    def _compete(self) -> None:
-        self.competitor = subprocess.Popen(
-            [sys.executable, "-c", _COMPETITOR, str(self.base_dir)],
+    def __init__(self, base_dir: Path) -> None:
+        self.proc = subprocess.Popen(
+            [sys.executable, "-c", _COMPETITOR, str(base_dir)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             text=True,
         )
-        assert self.competitor.stdout is not None
-        self.competitor_won = self.competitor.stdout.readline().strip() == "True"
+        assert self.proc.stdout is not None
+        self.won = self.proc.stdout.readline().strip() == "True"
 
-    def __getattr__(self, name: str) -> Any:
-        real = getattr(os, name)
-        if not callable(real):
-            return real
+    def close(self) -> None:
+        assert self.proc.stdin is not None
+        self.proc.stdin.close()
+        self.proc.wait()
 
+
+class _Steps:
+    """Stands in for control's `os` and `animating_state`: right after the
+    acquirer's n-th step (an OS call or a marker read) returns or raises, the
+    event registered for n runs. Walking n over every step holds the acquirer
+    between each pair of its steps in turn, whatever those steps are."""
+
+    def __init__(self, events: dict[int, Callable[[], None]]) -> None:
+        self.events = events
+        self.calls = 0
+        self.fired: set[int] = set()
+        self._animating_state = control.animating_state
+
+    def _step(self) -> None:
+        self.calls += 1
+        event = self.events.get(self.calls)
+        if event is not None:
+            self.fired.add(self.calls)
+            event()
+
+    def _wrap(self, real: Callable[..., Any]) -> Callable[..., Any]:
         def call(*args: Any, **kwargs: Any) -> Any:
             try:
                 return real(*args, **kwargs)
             finally:
-                self.calls += 1
-                if self.calls == self.step:
-                    self._compete()
+                self._step()
 
         return call
+
+    def __getattr__(self, name: str) -> Any:
+        real = getattr(os, name)
+        return self._wrap(real) if callable(real) else real
+
+    def acquire(self, base_dir: Path) -> bool:
+        with (
+            patch("vim_ai_follower.control.os", self),
+            patch("vim_ai_follower.control.animating_state", self._wrap(self._animating_state)),
+        ):
+            return control.try_acquire_animating("@1", base_dir)
+
+
+def _compete_into(base_dir: Path, found: list[_Competitor]) -> Callable[[], None]:
+    def compete() -> None:
+        found.append(_Competitor(base_dir))
+
+    return compete
+
+
+def _assert_one_owner_at_most(base: Path, ours: bool, competitor: _Competitor, where: str) -> None:
+    owners = [os.getpid()] * ours + [competitor.proc.pid] * competitor.won
+    assert len(owners) <= 1, f"{where}: {len(owners)} owners of one slot"
+    if owners:
+        marker = control._read_marker("@1", base)
+        assert marker is not None and marker[0] == owners[0], (
+            f"{where}: the marker names {marker}, not the owner {owners[0]}"
+        )
 
 
 @pytest.mark.parametrize("marker_before", ["none", "a crashed hook's"])
@@ -270,29 +308,122 @@ def test_a_competing_hook_at_any_step_of_an_acquire_never_makes_two_owners(
     # slot: a loser that read the winner's still-EMPTY marker used to call it
     # stale, unlink it and reclaim — two hooks typing into one pane.
     competed = 0
-    for step in range(1, 50):
+    for step in range(1, 60):
         base = tmp_path / str(step)
         base.mkdir()
         if marker_before != "none":
             (base / "@1.animating").write_text("99999999 running")  # dead pid
-        fake_os = _CompetitorAfterStep(step, base)
-        with patch("vim_ai_follower.control.os", fake_os):
-            ours = control.try_acquire_animating("@1", base)
-        if fake_os.competitor is None:
+        competitors: list[_Competitor] = []
+        steps = _Steps({step: _compete_into(base, competitors)})
+        ours = steps.acquire(base)
+        if not competitors:
             break  # the acquire finished in fewer steps: every gap was probed
         competed += 1
         try:
-            owners = [os.getpid()] * ours + [fake_os.competitor.pid] * bool(fake_os.competitor_won)
-            assert len(owners) == 1, f"after step {step}: {len(owners)} owners of one slot"
-            marker = control._read_marker("@1", base)
-            assert marker is not None and marker[0] == owners[0], (
-                f"after step {step}: the marker names {marker}, not the owner {owners[0]}"
-            )
+            _assert_one_owner_at_most(base, ours, competitors[0], f"after step {step}")
+            assert ours or competitors[0].won, f"after step {step}: nobody owns a free slot"
         finally:
-            assert fake_os.competitor.stdin is not None
-            fake_os.competitor.stdin.close()
-            fake_os.competitor.wait()
+            competitors[0].close()
     assert competed >= 2, "the competitor never ran: nothing was probed"
+
+
+def test_an_owner_releasing_mid_acquire_never_makes_two_owners(tmp_path: Path) -> None:
+    # The acquirer's claim fails against a LIVE owner, which then finishes and
+    # releases the slot while the acquirer is still deciding; a third hook
+    # claims the free slot at some later step. The acquirer used to read the
+    # now-absent marker as "stale", unlink the third hook's fresh one and
+    # link its own — both returned True (review of b84a392, race_absent.py).
+    owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+    probed = 0
+    try:
+        for release_at in range(1, 60):
+            released = False
+            for compete_at in range(release_at + 1, 60):
+                base = tmp_path / f"{release_at}-{compete_at}"
+                base.mkdir()
+                marker = base / "@1.animating"
+                marker.write_text(f"{owner.pid} running")
+                competitors: list[_Competitor] = []
+                steps = _Steps(
+                    {
+                        release_at: marker.unlink,
+                        compete_at: _compete_into(base, competitors),
+                    }
+                )
+                ours = steps.acquire(base)
+                released = release_at in steps.fired
+                if not released or not competitors:
+                    break
+                probed += 1
+                try:
+                    _assert_one_owner_at_most(
+                        base,
+                        ours,
+                        competitors[0],
+                        f"release after step {release_at}, competitor after {compete_at}",
+                    )
+                finally:
+                    competitors[0].close()
+            if not released:
+                break
+    finally:
+        owner.kill()
+        owner.wait()
+    assert probed >= 3, f"only {probed} interleavings probed"
+
+
+def _swap_before_stat(marker: Path, swap: Callable[[], None]) -> Callable[..., Any]:
+    """os.stat for control that first lets another process act on the marker:
+    the moment between reading the dead marker and removing it."""
+    real = os.stat
+
+    def stat(path: Any, *args: Any, **kwargs: Any) -> Any:
+        if Path(path) == marker:
+            swap()
+        return real(path, *args, **kwargs)
+
+    return stat
+
+
+def test_a_reclaim_never_removes_a_marker_other_than_the_dead_one_it_read(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "@1.animating"
+    marker.write_text("99999999 running")  # dead pid
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+
+        def replaced_by_a_live_owner() -> None:
+            fresh = tmp_path / "fresh"
+            fresh.write_text(f"{other.pid} running")
+            fresh.replace(marker)  # a new file (inode) at the same name
+
+        with patch(
+            "vim_ai_follower.control.os.stat", _swap_before_stat(marker, replaced_by_a_live_owner)
+        ):
+            assert control.try_acquire_animating("@1", tmp_path) is False
+        assert marker.read_text() == f"{other.pid} running"
+    finally:
+        other.kill()
+        other.wait()
+
+
+def test_a_reclaim_whose_dead_marker_vanished_claims_the_free_name(tmp_path: Path) -> None:
+    marker = tmp_path / "@1.animating"
+    marker.write_text("99999999 running")  # dead pid
+    with patch("vim_ai_follower.control.os.stat", _swap_before_stat(marker, marker.unlink)):
+        assert control.try_acquire_animating("@1", tmp_path) is True
+    assert control.animating_state("@1", tmp_path) == "running"
+
+
+def test_an_acquire_sweeps_temp_files_a_dead_writer_left(tmp_path: Path) -> None:
+    dead = tmp_path / "@1.animating.99999999.tmp"
+    live = tmp_path / f"@1.animating.{os.getppid()}.tmp"  # a live writer's
+    dead.write_text("99999999 running")
+    live.write_text(f"{os.getppid()} running")
+    assert control.try_acquire_animating("@1", tmp_path) is True
+    assert not dead.exists()
+    assert live.exists()
 
 
 def test_a_state_change_replaces_the_marker_never_truncates_it(tmp_path: Path) -> None:

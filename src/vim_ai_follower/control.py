@@ -150,13 +150,29 @@ def try_acquire_animating(
     its owner in it. (An O_EXCL create followed by a separate write published
     an empty marker in between, which a loser read as a crashed hook's and
     reclaimed — two owners.) A crash before the link leaves only the private
-    temp file, so no half-claim can wedge the slot."""
+    temp file, so no half-claim can wedge the slot; the next acquire sweeps
+    such leftovers."""
     path = _animating_path(window_id, base_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _sweep_dead_temp_files(path)
     tmp = _write_marker_atomically(path, f"{os.getpid()} {state}")
     try:
-        return _publish(tmp, path) or _reclaim_if_stale(window_id, base_dir, tmp, path)
+        if _publish(tmp, path):
+            return True
+        if animating_state(window_id, base_dir) is not None:
+            return False  # a live process is already animating this window
+        return _reclaim(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def _sweep_dead_temp_files(path: Path) -> None:
+    """Remove `<marker>.<pid>.tmp` files whose writer died between writing
+    and cleaning them up. A live writer's is never touched."""
+    for leftover in path.parent.glob(f"{path.name}.*.tmp"):
+        pid = leftover.name[len(path.name) + 1 : -len(".tmp")]
+        if pid.isdigit() and not _alive(int(pid)):
+            leftover.unlink(missing_ok=True)
 
 
 def _publish(tmp: Path, path: Path) -> bool:
@@ -167,29 +183,67 @@ def _publish(tmp: Path, path: Path) -> bool:
     return True
 
 
-def _reclaim_if_stale(window_id: str, base_dir: Path | None, tmp: Path, path: Path) -> bool:
-    """Take the slot from a crashed hook (dead PID), or lose to a live owner.
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # pragma: no cover - not ours, but it exists
+        pass
+    return True
 
-    Reading "stale" and then unlinking is two steps: two hooks can both read
-    the same dead marker, one reclaims, and the other then unlinks the FRESH
-    marker it never read. So reclaimers serialize on a lock and re-read under
-    it; one already reclaiming means this hook lost the race, and it skips
-    without waiting. The kernel drops the lock with its holder, so a crash
-    here cannot wedge the slot either."""
-    if animating_state(window_id, base_dir) is not None:
-        return False  # a live process is already animating this window
-    lock_path = path.with_name(f"{path.name}.lock")
-    fd = os.open(lock_path, os.O_CREAT | os.O_WRONLY, 0o644)
+
+def _marker_seen(path: Path) -> tuple[tuple[int, int], int | None] | None:
+    """The marker file's identity (device, inode) and owner PID as read from
+    that very file — None for the PID when the content names no one — or
+    None when there is no marker at all."""
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except FileNotFoundError:
+        return None
+    try:
+        stat = os.fstat(fd)
+        words = os.read(fd, 256).decode(errors="replace").split()
+    finally:
+        os.close(fd)
+    pid = int(words[0]) if words and words[0].isdigit() else None
+    return (stat.st_dev, stat.st_ino), pid
+
+
+def _reclaim(tmp: Path, path: Path) -> bool:
+    """Take the slot from a crashed hook (dead PID), or lose.
+
+    Reading "stale" and then unlinking is two steps, so reclaimers serialize
+    on a lock and decide from what they read under it; one already reclaiming
+    means this hook lost the race, and it skips without waiting. Under the
+    lock, "no marker" and "a dead marker" are different answers: no marker
+    means the name is free, so this hook only tries the same link any other
+    hook would (and loses to one that got there first); a dead marker is
+    removed ONLY if the file at the name is still the one that was read —
+    unlinking by name would take whatever fresh marker replaced it. The
+    kernel drops the lock with its holder, so a crash here cannot wedge the
+    slot."""
+    fd = os.open(path.with_name(f"{path.name}.lock"), os.O_CREAT | os.O_WRONLY, 0o644)
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return False  # another hook is reclaiming this very marker
-        if animating_state(window_id, base_dir) is not None:
+        seen = _marker_seen(path)
+        if seen is None:
+            return _publish(tmp, path)  # released since the first read: free
+        identity, pid = seen
+        if pid is not None and _alive(pid):
             return False  # reclaimed (or freshly claimed) since the first read
-        path.unlink(missing_ok=True)
-        # A hook that found the name free in between claimed it with a plain
-        # link; the link fails and this reclaim lost to it.
+        # os.stat/os.unlink, not Path's: the same `os` every other step of the
+        # claim goes through, so a test can stand between any two of them.
+        try:
+            current = os.stat(path)  # noqa: PTH116
+        except FileNotFoundError:
+            return _publish(tmp, path)
+        if (current.st_dev, current.st_ino) != identity:
+            return False  # replaced since it was read: not the dead marker
+        os.unlink(path)  # noqa: PTH108
         return _publish(tmp, path)
     finally:
         os.close(fd)
@@ -206,12 +260,8 @@ def _read_marker(window_id: str, base_dir: Path | None) -> tuple[int, str] | Non
         pid = int(content[0])
     except (FileNotFoundError, ValueError, IndexError):
         return None
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+    if not _alive(pid):
         return None  # stale marker from a crashed animation
-    except PermissionError:  # pragma: no cover - not ours, but it exists
-        pass
     return pid, content[1] if len(content) > 1 else "running"
 
 
