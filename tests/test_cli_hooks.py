@@ -28,6 +28,7 @@ from vim_ai_follower import (
 )
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends.nvim import _FIND_BUFFER_LUA
+from vim_ai_follower.backends.nvim_connect import NvimNeverListened
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.session import Session
 
@@ -2169,6 +2170,29 @@ def test_maybe_auto_open_standalone_launcher_failure_logs_and_noops(
 
     assert result is None
     assert state.FollowerState.read("term-x") is None
+
+
+def test_maybe_auto_open_standalone_nvim_that_never_listens_logs_and_noops(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The auto-open twin of `start`: a launcher that exits 0 but starts no nvim
+    # must not persist a follower pointing at a socket nothing listens on.
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"backend": "nvim", "nvim_window": "auto", "open_policy": "always"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    cfg = config.load()
+    standalone = Session(window_id="term-x", origin=None, in_tmux=False)
+    never = NvimNeverListened("/c/nvim-term-x.sock", "nvim-qt", 10.0)
+
+    with (
+        patch("vim_ai_follower.hooks.launch_standalone_nvim", side_effect=never),
+        caplog.at_level(logging.WARNING, logger="vim_ai_follower"),
+    ):
+        result = hooks._maybe_auto_open(standalone, "/tmp/f.txt", cfg)
+
+    assert result is None
+    assert state.FollowerState.read("term-x") is None
+    assert f"standalone nvim launch failed for term-x: {never}" in caplog.text
 
 
 def test_maybe_auto_open_in_tmux_always_launcher_failure_logs_and_noops(

@@ -13,6 +13,7 @@ from helpers import register_fake_follower as _register_fake_follower
 
 from vim_ai_follower import cache, commands, config, control, keybindings, session, snapshot, state
 from vim_ai_follower.backends.nvim import _FIND_BUFFER_LUA
+from vim_ai_follower.backends.nvim_connect import NvimNeverListened
 
 _mock_tmux_run = functools.partial(make_mock_tmux_run, pane_id="%9", other_panes=("%1", "%2"))
 
@@ -370,6 +371,31 @@ def test_start_standalone_nvim_launcher_failure_reports_and_exits(
     assert (out, err) == (
         "",
         f"claude-follow: could not open a standalone nvim window ({failure})\n",
+    )
+    assert state.FollowerState.read("term-x") is None
+
+
+def test_start_standalone_nvim_that_never_listens_reports_and_persists_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The launcher exited 0 but no nvim ever listened: `start` used to print
+    # "attached", exit 0 and persist a follower that `status` then denied.
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"backend": "nvim", "nvim_window": "auto"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    standalone_session = session.Session(window_id="term-x", origin=None, in_tmux=False)
+    never = NvimNeverListened("/c/nvim-term-x.sock", "nvim-qt", 10.0)
+    with (
+        patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session),
+        patch("vim_ai_follower.commands.launch_standalone_nvim", side_effect=never),
+    ):
+        assert commands.cmd_start({}) == 1
+    out, err = capsys.readouterr()
+    assert (out, err) == (
+        "",
+        "claude-follow: could not open a standalone nvim window (nvim-qt exited but no "
+        "nvim listened on /c/nvim-term-x.sock within 10 s) — check that nvim-qt can "
+        "start nvim, then run start again\n",
     )
     assert state.FollowerState.read("term-x") is None
 

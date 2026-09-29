@@ -17,11 +17,26 @@ from vim_ai_follower.tmux import TmuxPane
 # Bounded wait for the launched nvim to bind its RPC socket before we return
 # control to the caller. The socket file's mere existence is a sound
 # readiness proxy for a unix-domain listening socket. Heavy configs can take
-# a while to boot, hence the generous ceiling; if it times out we still
-# return (no worse than the old unconditional-return behavior) and the
+# a while to boot, hence the generous ceiling; if the tmux split times out we
+# still return (no worse than the old unconditional-return behavior) and the
 # subsequent pynvim.attach() raises the same clear OSError as before.
 _SOCKET_WAIT_SECONDS = 3.0
+# A standalone window is a GUI app's or a terminal app's cold launch, slower
+# than a tmux split, and here the wait is also the verdict: past it the launch
+# is reported as failed (NvimNeverListened) instead of attached. The number is
+# a generous ceiling, not a measurement.
+_STANDALONE_SOCKET_WAIT_SECONDS = 10.0
 _SOCKET_POLL_INTERVAL_SECONDS = 0.02
+
+
+class NvimNeverListened(Exception):
+    """The standalone launcher returned, but no nvim listened on the socket
+    before the deadline: nothing to attach to."""
+
+    def __init__(self, sock: str, launcher: str, waited: float) -> None:
+        super().__init__(f"{launcher} exited but no nvim listened on {sock} within {waited:g} s")
+        self.sock = sock
+        self.launcher = launcher
 
 
 def launch_socket_path(window_id: str, base_dir: Path | None = None) -> Path:
@@ -120,7 +135,12 @@ def launch_standalone_nvim(window_id: str) -> str:
         is_iterm=os.environ.get("TERM_PROGRAM") == "iTerm.app",
     )
     subprocess.run(cmd, check=True)
-    deadline = time.monotonic() + _SOCKET_WAIT_SECONDS
+    deadline = time.monotonic() + _STANDALONE_SOCKET_WAIT_SECONDS
     while not Path(sock).exists() and time.monotonic() < deadline:
         time.sleep(_SOCKET_POLL_INTERVAL_SECONDS)
+    if not Path(sock).exists():
+        # The launcher exited 0 (nvim-qt that found no nvim, a terminal whose
+        # nvim died on a config error): there is nothing to attach to, and a
+        # follower persisted here would point at a socket no one listens on.
+        raise NvimNeverListened(sock, cmd[0], _STANDALONE_SOCKET_WAIT_SECONDS)
     return sock

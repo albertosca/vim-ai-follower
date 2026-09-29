@@ -16,7 +16,11 @@ from typing import Any, Protocol
 from vim_ai_follower import binding, cache, config, control, keybindings, snapshot, writer_cue
 from vim_ai_follower import diff as diff_module
 from vim_ai_follower.backends import BufferProbe, Follower, get_follower
-from vim_ai_follower.backends.nvim_connect import launch_standalone_nvim, resolve_nvim_target
+from vim_ai_follower.backends.nvim_connect import (
+    NvimNeverListened,
+    launch_standalone_nvim,
+    resolve_nvim_target,
+)
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.session import Session, other_live_followers, resolve_session
 from vim_ai_follower.snapshot import load as load_snapshot
@@ -317,7 +321,7 @@ def _launch_standalone_or_log(window_id: str) -> str | None:
     path does, never raise an uncaught traceback into the tool run."""
     try:
         return launch_standalone_nvim(window_id)
-    except subprocess.CalledProcessError as exc:
+    except (subprocess.CalledProcessError, NvimNeverListened) as exc:
         logger.warning("standalone nvim launch failed for %s: %s", window_id, exc)
         return None
 

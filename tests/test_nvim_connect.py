@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from vim_ai_follower.backends import nvim_connect
 
 
@@ -208,32 +210,36 @@ def test_launch_standalone_nvim_waits_for_socket_to_appear(tmp_path: Path) -> No
     assert args[0] == "osascript"
 
 
-def test_launch_standalone_nvim_gives_up_after_bounded_wait_when_socket_never_appears(
+def test_launch_standalone_nvim_raises_when_no_nvim_ever_listens(
     tmp_path: Path,
 ) -> None:
+    """A launcher that exits 0 and starts nothing (an nvim-qt that cannot find
+    nvim, a Terminal window whose nvim dies on a config error) used to hand
+    back the socket anyway, and `start` said "attached" to nothing. Past the
+    deadline it is an error, naming the launcher and the socket. The deadline
+    is a GUI app's cold launch, longer than a tmux split's."""
     sock_path = tmp_path / "nvim-@1.sock"  # deliberately never created
-
-    fake_now = [0.0]
-
-    def _fake_monotonic() -> float:
-        fake_now[0] += 10.0
-        return fake_now[0]
-
     with (
         patch(
             "vim_ai_follower.backends.nvim_connect.state.nvim_socket_path",
             return_value=sock_path,
         ),
         patch("vim_ai_follower.backends.nvim_connect.subprocess.run"),
-        patch("vim_ai_follower.backends.nvim_connect.time.sleep"),
-        patch("vim_ai_follower.backends.nvim_connect.time.monotonic", side_effect=_fake_monotonic),
+        patch("vim_ai_follower.backends.nvim_connect.time.sleep") as fake_sleep,
+        patch(
+            "vim_ai_follower.backends.nvim_connect.time.monotonic",
+            side_effect=[0.0, 9.9, 10.1],
+        ),
         patch(
             "vim_ai_follower.backends.nvim_connect.shutil.which", return_value="/usr/bin/nvim-qt"
         ),
         patch("vim_ai_follower.backends.nvim_connect._vimr_app_present", return_value=False),
+        pytest.raises(nvim_connect.NvimNeverListened) as raised,
     ):
-        sock = nvim_connect.launch_standalone_nvim("@1")
-    assert sock == str(sock_path)
+        nvim_connect.launch_standalone_nvim("@1")
+    assert str(raised.value) == f"nvim-qt exited but no nvim listened on {sock_path} within 10 s"
+    assert raised.value.launcher == "nvim-qt"
+    assert fake_sleep.call_count == 1  # still waiting at 9.9 s, gave up past 10 s
     assert not sock_path.exists()
 
 
@@ -344,6 +350,7 @@ def test_launch_standalone_nvim_creates_the_socket_directory_first(tmp_path: Pat
         ),
         patch("vim_ai_follower.backends.nvim_connect._vimr_app_present", return_value=False),
         patch("vim_ai_follower.backends.nvim_connect.time.monotonic", side_effect=[0.0, 0.0, 99.0]),
+        pytest.raises(nvim_connect.NvimNeverListened),  # the recorder starts no nvim
     ):
         nvim_connect.launch_standalone_nvim("term-x")
     assert run.seen == [True]

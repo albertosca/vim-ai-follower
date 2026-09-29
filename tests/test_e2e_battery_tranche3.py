@@ -742,12 +742,22 @@ exit 1
 """
 
 
-def _install_shims(world: E2EFollower) -> tuple[Path, dict[str, Path]]:
+# An nvim-qt that returns success and starts nothing — the shape of a GUI that
+# could not find nvim, or whose nvim died on a config error.
+_NVIM_QT_STARTS_NOTHING_SHIM = """#!/bin/sh
+echo "$@" > "{marker}"
+exit 0
+"""
+
+
+def _install_shims(
+    world: E2EFollower, nvim_qt: str = _NVIM_QT_SHIM
+) -> tuple[Path, dict[str, Path]]:
     shims = world.workdir / "shims"
     shims.mkdir()
     markers = {name: world.workdir / f"{name}.called" for name in ("nvim-qt", "osascript", "open")}
     for name, marker in markers.items():
-        template = _NVIM_QT_SHIM if name == "nvim-qt" else _FAIL_LOUD_SHIM
+        template = nvim_qt if name == "nvim-qt" else _FAIL_LOUD_SHIM
         shim = shims / name
         shim.write_text(template.format(marker=marker))
         shim.chmod(0o755)
@@ -815,6 +825,41 @@ def test_standalone_nvim_starts_animates_stays_open_and_stops_without_tmux(
         # The shim's nvim is not in any tmux pane, so the world's kill-server
         # teardown cannot reach it.
         subprocess.run(["pkill", "-f", sock], check=False)
+
+
+def test_standalone_start_fails_loudly_when_no_nvim_ever_listens(world: E2EFollower) -> None:
+    """Check 9's failure half, through the real wrapper: the GUI launcher
+    exits 0 and no nvim ever listens on the socket. `start` used to print
+    "attached to standalone Neovim", exit 0 and persist a follower that
+    `status` then denied. Now: exit 1, the actionable error on STDERR only,
+    no follower state, no socket, and no other launcher tier tried (the
+    osascript/open shims fail loudly, so no real window can open)."""
+    _write_config(world, {"backend": "nvim", "nvim_window": "auto"})
+    shims, markers = _install_shims(world, nvim_qt=_NVIM_QT_STARTS_NOTHING_SHIM)
+    outside = world.env_with(
+        drop=("TMUX_PANE",), TERM_SESSION_ID="e2e", PATH=f"{shims}:{world.env['PATH']}"
+    )
+    assert "TMUX_PANE" not in outside
+    for name in markers:
+        assert shutil.which(name, path=outside["PATH"]) == str(shims / name), (
+            f"{name} does not resolve to its shim: a real one could open a window"
+        )
+    _assert_private_server(world)
+    sock = world.cache_dir / "nvim-term-e2e.sock"
+
+    result = world.cli("start", expect_rc=1, env=outside)
+
+    assert markers["nvim-qt"].read_text() == f"-- --listen {sock}\n", "nvim-qt was not launched"
+    assert not markers["osascript"].exists() and not markers["open"].exists()
+    assert result.stdout == ""
+    assert result.stderr == (
+        "claude-follow: could not open a standalone nvim window (nvim-qt exited but no "
+        f"nvim listened on {sock} within 10 s) — check that nvim-qt can start nvim, "
+        "then run start again\n"
+    )
+    assert _follower_leftovers(world) == [], "start left follower state behind"
+    status = world.cli("status", env=outside)
+    assert "no follower" in status.stdout, status.stdout
 
 
 # --------------------------------------------------------------- Check 10
