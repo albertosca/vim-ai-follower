@@ -7,11 +7,12 @@ the part only a human can judge."""
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from e2e_harness import E2EFollower, e2e_world
+from e2e_harness import REPO_ROOT, E2EFollower, e2e_world, payload
 
 from vim_ai_follower.commands import VIM_NEEDS_TMUX
 
@@ -50,6 +51,100 @@ def _follower_leftovers(world: E2EFollower) -> list[str]:
     if not cache.exists():
         return []
     return sorted(p.name for glob in ("*.pane", "nvim-*.sock") for p in cache.glob(glob))
+
+
+FIXTURES = REPO_ROOT / "qa" / "fixtures"
+
+
+def _write_through_hooks(
+    world: E2EFollower,
+    path: Path,
+    content: str,
+    identity: dict[str, str] | None = None,
+    env: dict[str, str] | None = None,
+) -> None:
+    """One synchronous Write: pre snapshots the current file, the new content
+    lands, post animates the diff — the order a PreToolUse/PostToolUse pair
+    fires in."""
+    world.cli("hook", "pre", stdin=payload("Write", path, identity=identity), env=env)
+    path.write_text(content)
+    world.cli("hook", "post", stdin=payload("Write", path, identity=identity), env=env)
+
+
+def _pane_option(world: E2EFollower, pane: str, name: str) -> str:
+    """A pane-LOCAL option's value, "" when unset on that pane."""
+    return world.tmux("show-options", "-pv", "-t", pane, name, check=False).stdout.strip()
+
+
+def _window_option(world: E2EFollower, pane: str, name: str) -> str:
+    """A WINDOW-local option's value for the window holding `pane`, "" when unset."""
+    return world.tmux("show-options", "-wv", "-t", pane, name, check=False).stdout.strip()
+
+
+# --------------------------------------------------------------- Checks 1-2
+
+REVIEWER = {"agent_id": "rev1", "agent_type": "code-reviewer"}
+
+
+def test_second_writer_tints_and_titles_the_follower_border_and_stop_restores_it(
+    world: E2EFollower,
+) -> None:
+    """Battery checks 1 and 2 — the per-writer colour cue and the border
+    restore on `stop` (commands.cmd_stop clears the surface BEFORE killing the
+    follower pane: pane-border-status is a WINDOW option, and unsetting it
+    through the killed pane's id cannot resolve its target).
+
+    Writer 1 (the session alone) leaves the follower border neutral; writer 2,
+    a subagent, tints the FOLLOWER pane's border — both border styles, to its
+    palette colour by position: writers are [e2e, rev1], so rev1 is
+    PALETTE[1], colour78 — turns the window's border-status bar on and titles
+    the pane with its agent_type. Read with show-options after each hook has
+    exited, since mid-animation the "Writing..." cue owns title and bar.
+    Whether colour78 is distinguishable in the user's own theme stays in the
+    battery: show-options proves the value, not the pixels."""
+    world.start("tmux", "lento")
+    follower = world.follower_target()
+    path = world.workdir / "cue.py"
+
+    # Writer 1 is watched WHILE it animates, not only after: the completed
+    # animation's refresh clears the surface whenever fewer than two writers
+    # exist, so a cue wrongly applied to a lone writer would be gone by the
+    # time its hook exits — while the user watched it tinted the whole time.
+    writer1 = (FIXTURES / "cue-writer1.py").read_text()
+    world.cli("hook", "pre", stdin=payload("Write", path))
+    path.write_text(writer1)
+    proc = world.cli_background("hook", "post", stdin=payload("Write", path))
+    styles_while_running: list[str] = []
+    while proc.poll() is None:
+        if world.animating_state() == "running":
+            styles_while_running.append(_pane_option(world, follower, "pane-border-style"))
+        time.sleep(0.05)
+    world.wait_for_hook_exit(proc)
+    assert len(styles_while_running) >= 10, (
+        f"only {len(styles_while_running)} samples during the animation: nothing was watched"
+    )
+    assert set(styles_while_running) == {""}, (
+        f"a lone writer tinted the border mid-animation: {set(styles_while_running)}"
+    )
+    assert world.vim_buffer_bytes(follower) == writer1.encode(), "writer 1 did not animate"
+    assert _pane_option(world, follower, "pane-border-style") == ""
+    assert _pane_option(world, follower, "pane-active-border-style") == ""
+    assert _window_option(world, follower, "pane-border-status") == ""
+
+    _write_through_hooks(world, path, (FIXTURES / "cue-writer2.py").read_text(), REVIEWER)
+    assert _pane_option(world, follower, "pane-border-style") == "fg=colour78"
+    assert _pane_option(world, follower, "pane-active-border-style") == "fg=colour78"
+    assert _window_option(world, follower, "pane-border-status") == "top"
+    title = world.tmux("display-message", "-p", "-t", follower, "#{pane_title}").stdout.strip()
+    assert title == "code-reviewer"
+
+    # Check 2. The precondition above (status "top") is what makes the
+    # restore below measure something.
+    world.cli("stop")
+    assert _all_panes(world) == [world.origin_pane], "the follower pane survived stop"
+    assert _window_option(world, world.origin_pane, "pane-border-status") == ""
+    assert _pane_option(world, world.origin_pane, "pane-border-style") == ""
+    assert _pane_option(world, world.origin_pane, "pane-active-border-style") == ""
 
 
 # --------------------------------------------------------------- Check 10
