@@ -827,12 +827,34 @@ def test_standalone_nvim_starts_animates_stays_open_and_stops_without_tmux(
         subprocess.run(["pkill", "-f", sock], check=False)
 
 
-def test_standalone_start_fails_loudly_when_no_nvim_ever_listens(world: E2EFollower) -> None:
+def _leave_a_sigkilled_nvims_socket(world: E2EFollower, sock: Path) -> None:
+    """A real nvim listening on the follower's socket, killed with SIGKILL:
+    it cannot clean up, so its socket file stays with nobody behind it."""
+    sock.parent.mkdir(parents=True, exist_ok=True)
+    doomed = subprocess.Popen(
+        ["nvim", "--headless", "--listen", str(sock)],
+        env=world.env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    world.wait_until(sock.is_socket, "the doomed nvim to listen", timeout=10.0)
+    doomed.kill()
+    doomed.wait()
+    assert sock.is_socket(), "SIGKILL took the socket file with it: nothing left to test"
+
+
+@pytest.mark.parametrize("leftover", ["nothing", "a SIGKILLed nvim's socket"])
+def test_standalone_start_fails_loudly_when_no_nvim_ever_listens(
+    world: E2EFollower, leftover: str
+) -> None:
     """Check 9's failure half, through the real wrapper: the GUI launcher
     exits 0 and no nvim ever listens on the socket. `start` used to print
     "attached to standalone Neovim", exit 0 and persist a follower that
-    `status` then denied. Now: exit 1, the actionable error on STDERR only,
-    no follower state, no socket, and no other launcher tier tried (the
+    `status` then denied — and, with a dead nvim's socket file already at
+    the path, it still did after the first fix, because readiness was the
+    file's existence. Now: exit 1, the actionable error on STDERR only, no
+    follower state, no socket, and no other launcher tier tried (the
     osascript/open shims fail loudly, so no real window can open)."""
     _write_config(world, {"backend": "nvim", "nvim_window": "auto"})
     shims, markers = _install_shims(world, nvim_qt=_NVIM_QT_STARTS_NOTHING_SHIM)
@@ -846,6 +868,8 @@ def test_standalone_start_fails_loudly_when_no_nvim_ever_listens(world: E2EFollo
         )
     _assert_private_server(world)
     sock = world.cache_dir / "nvim-term-e2e.sock"
+    if leftover != "nothing":
+        _leave_a_sigkilled_nvims_socket(world, sock)
 
     result = world.cli("start", expect_rc=1, env=outside)
 

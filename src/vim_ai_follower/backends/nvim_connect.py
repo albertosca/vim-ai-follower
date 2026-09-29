@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import socket
 import subprocess
 import time
 from pathlib import Path
@@ -126,8 +127,33 @@ def _vimr_app_present() -> bool:
     return Path("/Applications/VimR.app").exists()
 
 
+def _answers(sock: str) -> bool:
+    """True when something ACCEPTS a connection on the socket. Existence is
+    not readiness: a SIGKILLed nvim leaves its socket file behind, and a
+    launcher that started nothing then looked like an attached follower."""
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(_SOCKET_POLL_INTERVAL_SECONDS * 10)
+    try:
+        probe.connect(sock)
+    except OSError:
+        return False
+    finally:
+        probe.close()
+    return True
+
+
+def _remove_dead_socket(sock: str) -> None:
+    """Clear a socket file nobody answers on, so the new nvim can bind the
+    path and a leftover can never pass for it. One that answers is a live
+    nvim's and is never removed."""
+    path = Path(sock)
+    if path.exists() and not _answers(sock):
+        path.unlink(missing_ok=True)
+
+
 def launch_standalone_nvim(window_id: str) -> str:
     sock = str(_socket_path_in_existing_dir(window_id))
+    _remove_dead_socket(sock)
     cmd = standalone_launch_command(
         sock,
         has_nvim_qt=shutil.which("nvim-qt") is not None,
@@ -136,9 +162,9 @@ def launch_standalone_nvim(window_id: str) -> str:
     )
     subprocess.run(cmd, check=True)
     deadline = time.monotonic() + _STANDALONE_SOCKET_WAIT_SECONDS
-    while not Path(sock).exists() and time.monotonic() < deadline:
+    while not _answers(sock) and time.monotonic() < deadline:
         time.sleep(_SOCKET_POLL_INTERVAL_SECONDS)
-    if not Path(sock).exists():
+    if not _answers(sock):
         # The launcher exited 0 (nvim-qt that found no nvim, a terminal whose
         # nvim died on a config error): there is nothing to attach to, and a
         # follower persisted here would point at a socket no one listens on.

@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import shutil
+import socket
+import tempfile
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -172,44 +178,6 @@ def test_standalone_command_falls_back_to_terminal_app_when_not_iterm() -> None:
     assert any("activate" in part for part in cmd)
 
 
-def test_launch_standalone_nvim_waits_for_socket_to_appear(tmp_path: Path) -> None:
-    sock_path = tmp_path / "nvim-@1.sock"
-    poll_count = 0
-
-    class _FakePath:
-        def __init__(self, raw: str) -> None:
-            self._raw = raw
-
-        def exists(self) -> bool:
-            nonlocal poll_count
-            poll_count += 1
-            if poll_count >= 3:
-                sock_path.write_text("")
-                return True
-            return False
-
-        def __str__(self) -> str:
-            return self._raw
-
-    with (
-        patch(
-            "vim_ai_follower.backends.nvim_connect.state.nvim_socket_path",
-            return_value=sock_path,
-        ),
-        patch("vim_ai_follower.backends.nvim_connect.subprocess.run") as run,
-        patch("vim_ai_follower.backends.nvim_connect.time.sleep") as fake_sleep,
-        patch("vim_ai_follower.backends.nvim_connect.Path", side_effect=_FakePath),
-        patch("vim_ai_follower.backends.nvim_connect.shutil.which", return_value=None),
-        patch("vim_ai_follower.backends.nvim_connect._vimr_app_present", return_value=False),
-    ):
-        sock = nvim_connect.launch_standalone_nvim("@1")
-    assert sock == str(sock_path)
-    assert poll_count >= 3
-    fake_sleep.assert_called()
-    args = run.call_args_list[0].args[0]
-    assert args[0] == "osascript"
-
-
 def test_launch_standalone_nvim_raises_when_no_nvim_ever_listens(
     tmp_path: Path,
 ) -> None:
@@ -243,15 +211,106 @@ def test_launch_standalone_nvim_raises_when_no_nvim_ever_listens(
     assert not sock_path.exists()
 
 
+@contextmanager
+def _short_socket_dir() -> Iterator[Path]:
+    """A unix socket path must fit in ~104 bytes on macOS; pytest's tmp_path
+    does not, so sockets live in a short /tmp directory, removed after."""
+    directory = Path(tempfile.mkdtemp(prefix="vafs", dir="/tmp"))
+    try:
+        yield directory
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def _dead_nvims_socket(path: Path) -> None:
+    """What a SIGKILLed nvim leaves: the socket file, with nobody listening."""
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(path))
+    server.close()  # closed without unlinking
+
+
+def _patched_launcher(sock_path: Path, run: Any) -> AbstractContextManager[Any]:
+    stack = ExitStack()
+    stack.enter_context(
+        patch(
+            "vim_ai_follower.backends.nvim_connect.state.nvim_socket_path",
+            return_value=sock_path,
+        )
+    )
+    stack.enter_context(patch("vim_ai_follower.backends.nvim_connect.subprocess.run", run))
+    stack.enter_context(
+        patch("vim_ai_follower.backends.nvim_connect.shutil.which", return_value="/usr/bin/nvim-qt")
+    )
+    stack.enter_context(
+        patch("vim_ai_follower.backends.nvim_connect._vimr_app_present", return_value=False)
+    )
+    return stack
+
+
+def test_launch_standalone_nvim_is_not_fooled_by_a_dead_nvims_socket_file() -> None:
+    # A SIGKILLed nvim leaves its socket file. Existence as readiness made a
+    # launcher that started nothing look like success: "attached", rc 0, a
+    # follower on a socket nobody answers. The file is cleared before the
+    # launch (so a real nvim can bind it) and readiness means a connection
+    # is accepted.
+    with _short_socket_dir() as directory:
+        sock_path = directory / "nvim-@1.sock"
+        _dead_nvims_socket(sock_path)
+        present_at_launch: list[bool] = []
+
+        def launcher_starting_nothing(*_args: object, **_kwargs: object) -> None:
+            present_at_launch.append(sock_path.exists())
+
+        with (
+            _patched_launcher(sock_path, launcher_starting_nothing),
+            patch("vim_ai_follower.backends.nvim_connect.time.sleep"),
+            patch(
+                "vim_ai_follower.backends.nvim_connect.time.monotonic",
+                side_effect=[0.0, 99.0],
+            ),
+            pytest.raises(nvim_connect.NvimNeverListened),
+        ):
+            nvim_connect.launch_standalone_nvim("@1")
+        assert present_at_launch == [False], "the dead socket file was still there at launch"
+
+
+def test_launch_standalone_nvim_never_removes_a_socket_someone_answers_on() -> None:
+    with _short_socket_dir() as directory:
+        sock_path = directory / "nvim-@1.sock"
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(str(sock_path))
+        server.listen()
+        try:
+            with _patched_launcher(sock_path, lambda *_a, **_k: None):
+                assert nvim_connect.launch_standalone_nvim("@1") == str(sock_path)
+            assert sock_path.is_socket()
+        finally:
+            server.close()
+
+
+def test_launch_standalone_nvim_attaches_once_the_socket_accepts(tmp_path: Path) -> None:
+    sock_path = tmp_path / "nvim-@1.sock"
+    with (
+        _patched_launcher(sock_path, lambda *_a, **_k: None),
+        patch(
+            "vim_ai_follower.backends.nvim_connect._answers",
+            side_effect=[False, False, True, True],
+        ),
+        patch("vim_ai_follower.backends.nvim_connect.time.sleep") as fake_sleep,
+    ):
+        assert nvim_connect.launch_standalone_nvim("@1") == str(sock_path)
+    assert fake_sleep.call_count == 2
+
+
 def test_launch_standalone_nvim_detects_iterm_from_term_program(tmp_path: Path) -> None:
     sock_path = tmp_path / "nvim-@1.sock"
-    sock_path.write_text("")  # pre-created so the readiness poll returns immediately
     with (
         patch(
             "vim_ai_follower.backends.nvim_connect.state.nvim_socket_path",
             return_value=sock_path,
         ),
         patch("vim_ai_follower.backends.nvim_connect.subprocess.run") as run,
+        patch("vim_ai_follower.backends.nvim_connect._answers", return_value=True),
         patch("vim_ai_follower.backends.nvim_connect.shutil.which", return_value=None),
         patch("vim_ai_follower.backends.nvim_connect._vimr_app_present", return_value=False),
         patch.dict("os.environ", {"TERM_PROGRAM": "iTerm.app"}, clear=False),
@@ -263,13 +322,13 @@ def test_launch_standalone_nvim_detects_iterm_from_term_program(tmp_path: Path) 
 
 def test_launch_standalone_nvim_falls_back_to_terminal_when_not_iterm(tmp_path: Path) -> None:
     sock_path = tmp_path / "nvim-@1.sock"
-    sock_path.write_text("")
     with (
         patch(
             "vim_ai_follower.backends.nvim_connect.state.nvim_socket_path",
             return_value=sock_path,
         ),
         patch("vim_ai_follower.backends.nvim_connect.subprocess.run") as run,
+        patch("vim_ai_follower.backends.nvim_connect._answers", return_value=True),
         patch("vim_ai_follower.backends.nvim_connect.shutil.which", return_value=None),
         patch("vim_ai_follower.backends.nvim_connect._vimr_app_present", return_value=False),
         patch.dict("os.environ", {"TERM_PROGRAM": "Apple_Terminal"}, clear=False),
