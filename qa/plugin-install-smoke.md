@@ -40,6 +40,17 @@ claude --plugin-dir the repo root
 | `prefix P` while it animates | the follower shows the paused state (keybinding resolved via `${CLAUDE_PLUGIN_ROOT}/bin/claude-follow`) |
 | `~/.cache/claude-vim-follower/hook.log` | shows `python3 -m vim_ai_follower.cli` invocations, no tracebacks |
 
+### nvim backend with your real config
+
+The automated suite runs nvim with no user config (`qa/visual-battery.md` Check 6 defers this part here): this step is the only one where your own plugins and mappings meet the follower. It needs Neovim ≥ 0.10 and `pynvim` importable by the `python3` on your `PATH` (`python3 -c 'import pynvim'` exits 0). In the same `vaf-plugin` session, first stop the tmux follower from the table above (`/vim-ai-follower:stop`), then:
+
+| Check | PASS |
+| --- | --- |
+| `/vim-ai-follower:start --backend nvim` | prints `claude-follow: attached to Neovim at …` and an nvim pane opens beside Claude, loading your config without errors |
+| Ask Claude to Edit a file of a few dozen lines | the change types into that nvim character by character, with the `Writing...` float |
+| `prefix P` while it types, then `prefix P` again | the first press halts the typing and the float reads `Paused`; the second resumes it (`Writing...` again), and the buffer ends on exactly the file Claude wrote |
+| `/vim-ai-follower:stop` | the launched nvim pane closes and `/vim-ai-follower:status` reports no follower |
+
 **Teardown:**
 
 ```sh

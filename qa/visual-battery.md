@@ -197,7 +197,7 @@ It fires two edits with distinct identities and pauses between them.
 - `::test_nvim_interrupt_then_save_releases_the_hook_with_its_notification` — after an interrupt the current buffer is the file and modifiable, and the user's `:w` releases the hook with the "saved their own version" notification, leaving no remainder;
 - `::test_nvim_des_interrupt_discards_the_users_unsaved_typing` — a second interrupt throws unsaved typing away and replays onto the exact content, consecutive blank lines included (`27aa0e4`).
 
-Your real nvim config (plugins, mappings) is not exercised here; that belongs to the pre-release smoke. The adopt path's socket discovery and adopted-stop cleanup (`6c565f9`) are covered by the automated suite.
+Your real nvim config (plugins, mappings) is not exercised here; that is the nvim step of `qa/plugin-install-smoke.md`. The adopt path's socket discovery and adopted-stop cleanup (`6c565f9`) are covered by the automated suite.
 
 ---
 
