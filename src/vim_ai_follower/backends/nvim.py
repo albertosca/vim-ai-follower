@@ -373,14 +373,18 @@ class NvimFollower:
         buf: int,
         run: Callable[[], AnimationResult],
     ) -> AnimationResult:
-        """Shared envelope for every animation: unlock the buffer, clear stale
-        signals, mark the window animating for its duration, run, then relock
+        """Shared envelope for every animation: unlock the buffer, mark the
+        window animating for its duration, run, then relock
         (nomodifiable) on a completed outcome — but only for a launched,
         dedicated follower. An adopted nvim is the user's own editor and is
         never relocked. An interrupt hands the buffer to the user, so it is
-        deliberately left modifiable regardless."""
+        deliberately left modifiable regardless.
+
+        Signals are NOT cleared here: one pressed since the hook claimed the
+        slot is addressed to this process and must survive to the first check;
+        a stale one is addressed elsewhere and is dropped there (see
+        control._request)."""
         nvim.api.buf_set_option(buf, "modifiable", True)
-        control.clear_signals(self.window_id)
         control.mark_animating(self.window_id)
         try:
             result = run()

@@ -1031,7 +1031,9 @@ def test_two_windows_get_isolated_followers(
     assert second_state is not None
     assert first_state.target != second_state.target
 
-    # A signal for one window is invisible to the other.
+    # A signal for one window is invisible to the other. (This process stands
+    # in for first_window's animating hook: signals address a live owner.)
+    control.mark_animating(first_window)
     control.request_pause(first_window)
     assert control.check_signal(second_window) is None
     assert control.check_signal(first_window) == "pause"

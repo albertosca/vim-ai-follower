@@ -195,7 +195,9 @@ def run_ops(
     provider: Callable[[], float] = (
         pace_seconds if callable(pace_seconds) else (lambda: pace_seconds)
     )
-    control.clear_signals(window_id, base_dir)
+    # No clear_signals here: a P pressed while the hook navigated is already
+    # on disk and addressed to this process; a stale one is not (see
+    # control._request). Clearing at start is what lost the early pause.
     control.mark_animating(window_id, base_dir)
     deadline = time.monotonic() + MAX_ANIMATION_SECONDS
     try:
@@ -337,7 +339,9 @@ def run_lines(
     provider: Callable[[], float] = (
         pace_seconds if callable(pace_seconds) else (lambda: pace_seconds)
     )
-    control.clear_signals(window_id, base_dir)
+    # No clear_signals here: a P pressed while the hook navigated is already
+    # on disk and addressed to this process; a stale one is not (see
+    # control._request). Clearing at start is what lost the early pause.
     control.mark_animating(window_id, base_dir)
     deadline = time.monotonic() + MAX_ANIMATION_SECONDS
     try:

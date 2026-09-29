@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import subprocess
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock, call, patch
@@ -264,13 +267,75 @@ def test_insert_sequences_mid_file_positions_then_opens_below() -> None:
     assert [s.text for s in sequences[:prefix_len]] == [":2", "Enter", "o"]
 
 
-def test_run_ops_clears_stale_signals_before_starting(tmp_path: Path) -> None:
-    control.request_pause("@1", base_dir=tmp_path)
+@contextmanager
+def _signal_left_by_a_finished_animation(
+    base_dir: Path, request: Callable[..., None]
+) -> Iterator[None]:
+    """A signal addressed to an earlier animation that ended without consuming
+    it (the P landed as its last keystroke went out). That owner was another
+    hook process, now gone: stand it in with a real child process, address the
+    signal to it, then let it die and retire its marker."""
+    earlier = subprocess.Popen(["sleep", "30"])
+    try:
+        (base_dir / "@1.animating").write_text(f"{earlier.pid} running")
+        request("@1", base_dir=base_dir)
+    finally:
+        earlier.kill()
+        earlier.wait()
+    (base_dir / "@1.animating").unlink()
+    # Obeying the stale signal would block in the pause wait forever: fail
+    # there instead of hanging the suite.
+    with patch(
+        "vim_ai_follower.animate.time.sleep",
+        side_effect=AssertionError("the new animation obeyed a stale signal"),
+    ):
+        yield
+
+
+def test_run_ops_ignores_a_pause_left_for_an_earlier_animation(tmp_path: Path) -> None:
     pane = cast(TmuxPane, MagicMock())
     ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))]
-    result = run_ops(pane, "@1", ops, pace_seconds=0.0, base_dir=tmp_path)
+    with _signal_left_by_a_finished_animation(tmp_path, control.request_pause):
+        result = run_ops(pane, "@1", ops, pace_seconds=0.0, base_dir=tmp_path)
     # the stale pause from before this call started must not affect it
     assert result == AnimationResult("completed", 1)
+    assert not (tmp_path / "@1.pause").exists()  # and it does not linger
+
+
+def _resume_on_first_poll(base_dir: Path, seen: list[str | None]) -> Callable[[float], None]:
+    """Stands in for the pause wait's poll sleep: records what `claude-follow
+    status` would see, then presses P again (the resume toggle)."""
+
+    def poll(_seconds: float) -> None:
+        seen.append(control.animating_state("@1", base_dir))
+        control.request_pause("@1", base_dir=base_dir)
+
+    return poll
+
+
+def test_run_ops_honors_a_pause_pressed_before_its_first_keystroke(tmp_path: Path) -> None:
+    # The hook claims the slot ("running", which is what P reads) well before
+    # the driver starts: it navigates, unlocks and evicts tabs first. A P
+    # pressed in that window was wiped by the driver's own clear_signals, so
+    # "Paused" flashed and the whole edit typed through (BACKLOG D1: 5 of 5
+    # runs of the m-pause0 measurement).
+    assert control.try_acquire_animating("@1", tmp_path)  # the hook's announce
+    control.request_pause("@1", base_dir=tmp_path)  # P, while it navigates
+    pane = cast(TmuxPane, MagicMock())
+    ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))]
+    seen: list[str | None] = []
+    with patch(
+        "vim_ai_follower.animate.time.sleep", side_effect=_resume_on_first_poll(tmp_path, seen)
+    ):
+        result = run_ops(pane, "@1", ops, pace_seconds=0.0, base_dir=tmp_path)
+    assert seen == ["paused"]
+    assert result == AnimationResult("completed", 1)
+    # paused before anything was typed: the first keys are the pause's Escapes
+    assert pane.method_calls[:3] == [  # type: ignore[attr-defined]
+        call.send_key("Escape"),
+        call.send_key("Escape"),
+        call.send_text("gg"),
+    ]
 
 
 def test_run_ops_all_complete() -> None:
@@ -281,7 +346,6 @@ def test_run_ops_all_complete() -> None:
     ]
     with (
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.control.clear_signals"),
     ):
         result = run_ops(pane, "@1", ops, pace_seconds=0.0)
     assert result == AnimationResult("completed", 2)
@@ -299,7 +363,6 @@ def test_run_ops_all_complete_with_a_pure_delete_op_followed_by_more_ops() -> No
     ]
     with (
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.control.clear_signals"),
     ):
         result = run_ops(pane, "@1", ops, pace_seconds=0.0)
     assert result == AnimationResult("completed", 2)
@@ -310,7 +373,6 @@ def test_run_ops_interrupted_before_first_op_undoes_nothing() -> None:
     ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))]
     with (
         patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
-        patch("vim_ai_follower.control.clear_signals"),
     ):
         result = run_ops(pane, "@1", ops, pace_seconds=0.0)
     assert result == AnimationResult("interrupted", 0)
@@ -456,19 +518,48 @@ def test_run_ops_interrupt_during_pause_wait_discards_pending(tmp_path: Path) ->
     assert control.has_pending_animation("@1", tmp_path) is False  # wait discards on wake
 
 
-def test_run_lines_clears_stale_signals_before_starting(tmp_path: Path) -> None:
+def test_run_lines_ignores_an_interrupt_left_for_an_earlier_animation(tmp_path: Path) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    with _signal_left_by_a_finished_animation(tmp_path, control.request_interrupt):
+        result = run_lines(pane, "@1", ("a",), pace_seconds=0.0, base_dir=tmp_path)
+    # the stale interrupt from before this call started must not affect it
+    assert result == AnimationResult("completed", 1)
+    assert not (tmp_path / "@1.interrupt").exists()
+
+
+def test_run_lines_honors_a_pause_pressed_before_its_first_keystroke(tmp_path: Path) -> None:
+    # The show_fresh twin of the run_ops case above (same D1 race).
+    assert control.try_acquire_animating("@1", tmp_path)
+    control.request_pause("@1", base_dir=tmp_path)
+    pane = cast(TmuxPane, MagicMock())
+    seen: list[str | None] = []
+    with patch(
+        "vim_ai_follower.animate.time.sleep", side_effect=_resume_on_first_poll(tmp_path, seen)
+    ):
+        result = run_lines(pane, "@1", ("a",), pace_seconds=0.0, base_dir=tmp_path)
+    assert seen == ["paused"]
+    assert result == AnimationResult("completed", 1)
+    assert pane.method_calls[:3] == [  # type: ignore[attr-defined]
+        call.send_key("Escape"),
+        call.send_key("Escape"),
+        call.send_text("i"),
+    ]
+
+
+def test_an_interrupt_pressed_before_the_first_keystroke_is_honored_too(tmp_path: Path) -> None:
+    # S reads the same "running" marker, so it raced the same clear.
+    assert control.try_acquire_animating("@1", tmp_path)
     control.request_interrupt("@1", base_dir=tmp_path)
     pane = cast(TmuxPane, MagicMock())
     result = run_lines(pane, "@1", ("a",), pace_seconds=0.0, base_dir=tmp_path)
-    # the stale interrupt from before this call started must not affect it
-    assert result == AnimationResult("completed", 1)
+    assert result == AnimationResult("interrupted", 0)
+    pane.send_text.assert_not_called()  # type: ignore[attr-defined]
 
 
 def test_run_lines_all_complete() -> None:
     pane = cast(TmuxPane, MagicMock())
     with (
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.control.clear_signals"),
     ):
         result = run_lines(pane, "@1", ("a", "b"), pace_seconds=0.0)
     assert result == AnimationResult("completed", 2)
@@ -478,7 +569,6 @@ def test_run_lines_interrupted_before_any_line_sent() -> None:
     pane = cast(TmuxPane, MagicMock())
     with (
         patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
-        patch("vim_ai_follower.control.clear_signals"),
     ):
         result = run_lines(pane, "@1", ("a",), pace_seconds=0.0)
     assert result == AnimationResult("interrupted", 0)
@@ -493,7 +583,6 @@ def test_run_lines_types_each_line_on_its_own_line() -> None:
     pane = cast(TmuxPane, MagicMock())
     with (
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.control.clear_signals"),
     ):
         result = run_lines(pane, "@1", ("a", "b"), pace_seconds=0.0)
     assert result == AnimationResult("completed", 2)
@@ -505,7 +594,6 @@ def test_run_lines_continuation_opens_even_the_first_line_with_o() -> None:
     pane = cast(TmuxPane, MagicMock())
     with (
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.control.clear_signals"),
     ):
         result = run_lines(pane, "@1", ("rest",), pace_seconds=0.0, continuation=True)
     assert result == AnimationResult("completed", 1)
@@ -751,7 +839,6 @@ def test_run_lines_re_reads_pace_from_provider_each_line(tmp_path: Path) -> None
 
     with (
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.control.clear_signals"),
     ):
         result = run_lines(pane, "@1", ("a", "b"), provider, base_dir=tmp_path)
     assert result == AnimationResult("completed", 2)
@@ -774,7 +861,6 @@ def test_run_ops_re_reads_pace_from_provider_once_per_op(tmp_path: Path) -> None
 
     with (
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.control.clear_signals"),
     ):
         result = run_ops(pane, "@1", ops, provider, base_dir=tmp_path)
     assert result == AnimationResult("completed", 2)

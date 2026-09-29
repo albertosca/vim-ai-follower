@@ -1,28 +1,42 @@
 from __future__ import annotations
 
+import os
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from vim_ai_follower import control
 from vim_ai_follower.diff import EditOp
+
+
+@pytest.fixture
+def animating(tmp_path: Path) -> None:
+    """This test process owns @1's animation, as a hook does while it types:
+    signals are addressed to the live owner."""
+    control.mark_animating("@1", base_dir=tmp_path)
 
 
 def test_check_signal_returns_none_when_nothing_set(tmp_path: Path) -> None:
     assert control.check_signal("@1", base_dir=tmp_path) is None
 
 
+@pytest.mark.usefixtures("animating")
 def test_check_signal_returns_and_consumes_pause(tmp_path: Path) -> None:
     control.request_pause("@1", base_dir=tmp_path)
     assert control.check_signal("@1", base_dir=tmp_path) == "pause"
     assert control.check_signal("@1", base_dir=tmp_path) is None
 
 
+@pytest.mark.usefixtures("animating")
 def test_check_signal_returns_and_consumes_interrupt(tmp_path: Path) -> None:
     control.request_interrupt("@1", base_dir=tmp_path)
     assert control.check_signal("@1", base_dir=tmp_path) == "interrupt"
     assert control.check_signal("@1", base_dir=tmp_path) is None
 
 
+@pytest.mark.usefixtures("animating")
 def test_check_signal_interrupt_takes_priority_over_pause(tmp_path: Path) -> None:
     control.request_pause("@1", base_dir=tmp_path)
     control.request_interrupt("@1", base_dir=tmp_path)
@@ -31,6 +45,7 @@ def test_check_signal_interrupt_takes_priority_over_pause(tmp_path: Path) -> Non
     assert control.check_signal("@1", base_dir=tmp_path) == "pause"
 
 
+@pytest.mark.usefixtures("animating")
 def test_clear_signals_removes_both_without_erroring_if_absent(tmp_path: Path) -> None:
     control.clear_signals("@1", base_dir=tmp_path)  # nothing to clear, no error
     control.request_pause("@1", base_dir=tmp_path)
@@ -101,15 +116,16 @@ def test_discard_pending_animation_removes_file_without_erroring_if_absent(
     assert control.has_pending_animation("@1", base_dir=tmp_path) is False
 
 
-def test_check_signal_survives_losing_the_unlink_race(tmp_path: Path) -> None:
+@pytest.mark.usefixtures("animating")
+def test_check_signal_survives_losing_the_claim_race(tmp_path: Path) -> None:
     control.request_interrupt("@1", tmp_path)
-    real_unlink = Path.unlink
+    real_rename = Path.rename
 
-    def racing_unlink(self: Path, missing_ok: bool = False) -> None:
-        real_unlink(self, missing_ok=True)  # another process got there first...
-        real_unlink(self, missing_ok=missing_ok)  # ...then ours runs on a gone file
+    def racing_rename(self: Path, target: Path) -> Path:
+        self.unlink()  # another process got there first...
+        return real_rename(self, target)  # ...then ours runs on a gone file
 
-    with patch.object(Path, "unlink", racing_unlink):
+    with patch.object(Path, "rename", racing_rename):
         # losing the race means the signal was not ours to act on — and the
         # animation process must NOT crash mid-animation over it
         assert control.check_signal("@1", tmp_path) is None
@@ -180,3 +196,33 @@ def test_try_acquire_animating_loses_a_reclaim_race(tmp_path: Path) -> None:
     # first, so acquire gives up instead of clobbering the winner.
     with patch("vim_ai_follower.control.os.open", side_effect=FileExistsError):
         assert control.try_acquire_animating("@1", tmp_path) is False
+
+
+def test_a_signal_with_no_live_animation_to_address_is_not_written(tmp_path: Path) -> None:
+    # P read "running", then the animation ended before the signal was written:
+    # there is no one to pause, and the NEXT animation must not inherit it.
+    control.request_pause("@1", base_dir=tmp_path)
+    control.request_interrupt("@1", base_dir=tmp_path)
+    control.mark_animating("@1", base_dir=tmp_path)  # the next animation starts
+    assert control.check_signal("@1", base_dir=tmp_path) is None
+
+
+def test_a_signal_addressed_to_a_dead_animation_is_dropped_not_obeyed(tmp_path: Path) -> None:
+    earlier = subprocess.Popen(["sleep", "30"])
+    try:
+        (tmp_path / "@1.animating").write_text(f"{earlier.pid} running")
+        control.request_pause("@1", base_dir=tmp_path)
+    finally:
+        earlier.kill()
+        earlier.wait()
+    assert (tmp_path / "@1.pause").read_text() == str(earlier.pid)  # addressed to it
+    control.mark_animating("@1", base_dir=tmp_path)  # a new animation, this process
+    assert control.check_signal("@1", base_dir=tmp_path) is None
+    assert not (tmp_path / "@1.pause").exists()  # consumed as stale, not left behind
+
+
+def test_a_signal_is_addressed_to_the_owner_the_key_press_saw(tmp_path: Path) -> None:
+    control.mark_animating("@1", base_dir=tmp_path)
+    control.request_interrupt("@1", base_dir=tmp_path)
+    assert (tmp_path / "@1.interrupt").read_text() == str(os.getpid())
+    assert not list(tmp_path.glob("*.tmp"))  # written atomically, no half file left

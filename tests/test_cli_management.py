@@ -11,7 +11,7 @@ import pytest
 from helpers import make_mock_tmux_run
 from helpers import register_fake_follower as _register_fake_follower
 
-from vim_ai_follower import commands, config, control, keybindings, session, snapshot, state
+from vim_ai_follower import cache, commands, config, control, keybindings, session, snapshot, state
 from vim_ai_follower.backends.nvim import _FIND_BUFFER_LUA
 
 _mock_tmux_run = functools.partial(make_mock_tmux_run, pane_id="%9", other_panes=("%1", "%2"))
@@ -564,7 +564,9 @@ def test_claude_follow_executable_falls_back_to_which_then_bare_name(
 def test_stop_unregisters_keybindings_and_clears_signals() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         commands.cmd_start({"TMUX_PANE": "%1"})
+        control.mark_animating("@1")  # a signal is only written for a live animation
         control.request_pause("@1")
+        assert (cache.CACHE_DIR / "@1.pause").exists()  # else the check below is vacuous
         control.save_pending_apply_edit("@1", [], 0.0)
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
     unbinds = _unbind_calls(run)
@@ -763,7 +765,9 @@ def test_stop_collects_dead_and_legacy_state() -> None:
     _register_fake_follower("@1", "%2")
     _register_fake_follower("@2", "%9")  # dead: %9 not in list-panes output
     _register_fake_follower("$0", "%2")  # legacy session key: collected even though %2 is alive
+    control.mark_animating("@2")  # a signal is only written for a live animation
     control.request_pause("@2")
+    assert (cache.CACHE_DIR / "@2.pause").exists()  # else the check below is vacuous
     control.save_pending_apply_edit("@2", [], 0.0, file_path="/tmp/a.py")
     snapshot.save("@2", "/tmp/a.py", "before")
     mock_run = make_mock_tmux_run(window_id="@1", pane_id="%2")

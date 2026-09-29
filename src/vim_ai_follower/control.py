@@ -33,14 +33,21 @@ def _pending_path(window_id: str, base_dir: Path | None) -> Path:
 
 
 def _consume(path: Path) -> bool:
-    """Atomically claim a signal file: True only if THIS process removed
-    it. Losing the race to clear_signals (or another consumer) means the
-    signal is not ours to act on — and must never crash the animation."""
+    """Atomically claim a signal file, and True only when it was addressed to
+    THIS process. The claim is a rename, not a read-then-unlink, so the file
+    read is exactly the one claimed — a fresh signal written over a stale one
+    in between can never be deleted unread. Losing the race to another
+    consumer or to clear_signals means the signal is not ours to act on — and
+    must never crash the animation. A signal addressed to anyone else is stale
+    (see _request) and is consumed without being obeyed."""
+    claimed = path.with_name(f"{path.name}.{os.getpid()}.claimed")
     try:
-        path.unlink()
+        path.rename(claimed)
     except FileNotFoundError:
         return False
-    return True
+    addressee = claimed.read_text().strip()
+    claimed.unlink()
+    return addressee == str(os.getpid())
 
 
 def check_signal(
@@ -58,16 +65,37 @@ def clear_signals(window_id: str, base_dir: Path | None = None) -> None:
     _interrupt_path(window_id, base_dir).unlink(missing_ok=True)
 
 
-def request_pause(window_id: str, base_dir: Path | None = None) -> None:
-    path = _pause_path(window_id, base_dir)
+def _request(path: Path, window_id: str, base_dir: Path | None) -> None:
+    """Address a signal to the animation live at this instant: the file holds
+    its owner's PID, and only that process obeys it (_consume).
+
+    Addressing is what tells a fresh signal from a stale one. The drivers used
+    to clear every signal when they started, which wiped a P pressed in the
+    gap between the hook claiming the slot (the "running" that P reads) and
+    the driver's first keystroke — navigation, unlock and tab eviction happen
+    in that gap, so "Paused" flashed and the edit typed through (BACKLOG D1,
+    5 of 5 runs). A signal the previous animation never consumed carries that
+    process's PID, so the next hook — another process — drops it on sight.
+    With no live owner there is nothing to signal, so nothing is written.
+
+    Signals sent to a hook reach every animation that one hook process runs
+    (a catch-up, the edit, a des-interrupt replay): that is one "Writing..."
+    the user saw, so a P aimed at it is still meant for it."""
+    owner = _live_owner(window_id, base_dir)
+    if owner is None:
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch()
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(str(owner))
+    tmp.replace(path)  # atomic: a consumer never claims an empty half-file
+
+
+def request_pause(window_id: str, base_dir: Path | None = None) -> None:
+    _request(_pause_path(window_id, base_dir), window_id, base_dir)
 
 
 def request_interrupt(window_id: str, base_dir: Path | None = None) -> None:
-    path = _interrupt_path(window_id, base_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch()
+    _request(_interrupt_path(window_id, base_dir), window_id, base_dir)
 
 
 def has_pending_animation(window_id: str, base_dir: Path | None = None) -> bool:
@@ -129,8 +157,8 @@ def clear_animating(window_id: str, base_dir: Path | None = None) -> None:
     _animating_path(window_id, base_dir).unlink(missing_ok=True)
 
 
-def animating_state(window_id: str, base_dir: Path | None = None) -> str | None:
-    """The live animation's state, or None when no live process owns one."""
+def _read_marker(window_id: str, base_dir: Path | None) -> tuple[int, str] | None:
+    """The live owner's PID and state, or None when no live process owns one."""
     try:
         content = _animating_path(window_id, base_dir).read_text().split()
         pid = int(content[0])
@@ -142,7 +170,18 @@ def animating_state(window_id: str, base_dir: Path | None = None) -> str | None:
         return None  # stale marker from a crashed animation
     except PermissionError:  # pragma: no cover - not ours, but it exists
         pass
-    return content[1] if len(content) > 1 else "running"
+    return pid, content[1] if len(content) > 1 else "running"
+
+
+def _live_owner(window_id: str, base_dir: Path | None) -> int | None:
+    marker = _read_marker(window_id, base_dir)
+    return None if marker is None else marker[0]
+
+
+def animating_state(window_id: str, base_dir: Path | None = None) -> str | None:
+    """The live animation's state, or None when no live process owns one."""
+    marker = _read_marker(window_id, base_dir)
+    return None if marker is None else marker[1]
 
 
 def is_animating(window_id: str, base_dir: Path | None = None) -> bool:

@@ -69,7 +69,6 @@ def _drive(outcome: str) -> MagicMock:
     with (
         patch("vim_ai_follower.control.mark_animating"),
         patch("vim_ai_follower.control.clear_animating"),
-        patch("vim_ai_follower.control.clear_signals"),
     ):
         follower._drive(nvim, 7, lambda: AnimationResult(outcome, 1))  # type: ignore[arg-type]
     return nvim

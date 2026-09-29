@@ -443,6 +443,27 @@ def test_apply_edit_pause_inside_an_ops_lines_saves_and_resumes(tmp_path: Path) 
     assert nvim.api.buf_set_text.call_count == 2  # both lines eventually typed
 
 
+def test_drive_keeps_a_pause_pressed_after_the_hook_announced() -> None:
+    # BACKLOG D1 on this backend: the hook claims the slot ("running") before
+    # it connects, finds the buffer and unlocks it; a P pressed in between was
+    # wiped by _drive's own clear_signals before the first character.
+    from vim_ai_follower import control
+
+    assert control.try_acquire_animating("@1")  # the hook's announce
+    control.request_pause("@1")
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
+    nvim = MagicMock()
+    nvim.api.buf_get_changedtick.return_value = 1
+    seen: list[str | None] = []
+
+    def run() -> AnimationResult:
+        seen.append(control.check_signal("@1"))  # what the driver's first check sees
+        return AnimationResult("completed", 1)
+
+    follower._drive(nvim, 7, run)
+    assert seen == ["pause"]
+
+
 def test_drive_skips_relock_for_an_adopted_follower(tmp_path: Path) -> None:
     from vim_ai_follower import state
 
