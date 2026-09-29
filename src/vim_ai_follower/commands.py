@@ -408,45 +408,52 @@ def cmd_pause(env: dict[str, str]) -> int:
         print("claude-follow: nothing to pause — the animation is finishing")
         return 0
 
-    pending = control.load_pending_animation(session.window_id)
-    if pending is None:
+    if not control.has_pending_animation(session.window_id):
         # Nothing running and nothing recoverable — a pause press must not
-        # fake feedback: no signal, no popup.
+        # fake feedback: no signal, no popup. A peek, so an idle press never
+        # holds the slot a hook may be about to take.
         print("claude-follow: nothing to pause")
         return 0
 
-    if current is None:
-        _resave_pending(session.window_id, pending)
-        print("claude-follow: no follower registered to resume", file=sys.stderr)
-        return 1
-
-    if current.backend != "tmux":
-        # The keyboard replay below is inherently tmux-only (send-keys). A
-        # crash-orphaned nvim pending has no keyboard resume path yet, so
-        # discard it rather than crash on the tmux-only resume — mirrors the
-        # backend guard cmd_interrupt already applies to this same path.
-        control.discard_pending_animation(session.window_id)
-        print("claude-follow: nothing to resume")
-        return 0
-
-    follower = get_follower(
-        current.backend,
-        current.target,
-        config.pace_seconds_for(current.speed),
-        window_id=session.window_id,
-    )
-    assert isinstance(follower, TmuxVimFollower)  # only tmux ever persists pending state
-    # The replay animates from THIS process, so it owns the window's slot for
-    # its duration like a hook does — or a hook arriving mid-replay would
-    # animate into the same pane.
+    # A crash-orphaned remainder, resumable from here. The replay animates
+    # from THIS process, so it owns the window's slot like a hook — taken
+    # BEFORE the remainder is loaded: loading consumes the file, and a hook
+    # holding the slot consumes the same file as its catch-up.
     if not control.try_acquire_animating(session.window_id):
-        _resave_pending(session.window_id, pending)
         print(
             "claude-follow: another animation owns this window — resume it after that one ends",
             file=sys.stderr,
         )
+        # The keybinding runs through run-shell, which discards stderr.
+        _show_popup(current, "Busy", session.in_tmux)
         return 1
     try:
+        pending = control.load_pending_animation(session.window_id)
+        if pending is None:
+            print("claude-follow: nothing to pause")  # a hook's catch-up took it
+            return 0
+
+        if current is None:
+            _resave_pending(session.window_id, pending)
+            print("claude-follow: no follower registered to resume", file=sys.stderr)
+            return 1
+
+        if current.backend != "tmux":
+            # The keyboard replay below is inherently tmux-only (send-keys). A
+            # crash-orphaned nvim pending has no keyboard resume path yet, so
+            # discard it rather than crash on the tmux-only resume — mirrors
+            # the backend guard cmd_interrupt applies to this same path.
+            control.discard_pending_animation(session.window_id)
+            print("claude-follow: nothing to resume")
+            return 0
+
+        follower = get_follower(
+            current.backend,
+            current.target,
+            config.pace_seconds_for(current.speed),
+            window_id=session.window_id,
+        )
+        assert isinstance(follower, TmuxVimFollower)  # only tmux ever persists pending state
         _show_popup(current, "Resuming", session.in_tmux)
         result = follower.resume(pending)
     finally:

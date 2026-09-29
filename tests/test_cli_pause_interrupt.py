@@ -269,21 +269,59 @@ def test_pause_resume_owns_the_slot_while_it_replays_and_releases_it() -> None:
 def test_pause_resume_skips_when_a_hook_owns_the_slot(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    # The slot is taken BEFORE the remainder is loaded: loading consumes the
+    # file, so a refusal after the load had to put it back, racing the hook
+    # that holds the slot (it consumes the same file as its catch-up).
     _register_fake_follower("@1", "%2")
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
     control.save_pending_apply_edit("@1", [op], 0.0)
+    pending_at_acquire: list[bool] = []
+
+    def held_by_a_hook(window_id: str, *_args: object, **_kwargs: object) -> bool:
+        pending_at_acquire.append(control.has_pending_animation(window_id))
+        return False
+
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
-        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()),
-        # A hook claimed the slot between the state read and the resume.
-        patch("vim_ai_follower.commands.control.try_acquire_animating", return_value=False),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
+        patch("vim_ai_follower.commands.control.try_acquire_animating", side_effect=held_by_a_hook),
     ):
         assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 1
+    assert pending_at_acquire == [True], "the remainder was consumed before the slot was taken"
     assert not [c for c in run.call_args_list if c.args[0][:2] == ["tmux", "send-keys"]]
     assert capsys.readouterr().err == (
         "claude-follow: another animation owns this window — resume it after that one ends\n"
     )
+    # The keybinding runs through tmux run-shell, which discards stderr: the
+    # refusal has to be SEEN.
+    popups = _popup_calls(popen)
+    assert len(popups) == 1 and any("Busy" in arg for arg in popups[0])
     assert control.load_pending_animation("@1") == control.PendingApplyEdit([op], 0.0)
+
+
+def test_pause_resume_that_finds_the_remainder_gone_after_the_acquire_releases_the_slot(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Peeked present, then consumed by a hook's catch-up before our acquire.
+    _register_fake_follower("@1", "%2")
+    control.save_pending_show_fresh("@1", ("a",), 0.0)
+    real_acquire = control.try_acquire_animating
+
+    def acquire_after_a_hook_consumed_it(window_id: str) -> bool:
+        control.discard_pending_animation(window_id)
+        return real_acquire(window_id)
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()),
+        patch(
+            "vim_ai_follower.commands.control.try_acquire_animating",
+            side_effect=acquire_after_a_hook_consumed_it,
+        ),
+    ):
+        assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 0
+    assert capsys.readouterr().out == "claude-follow: nothing to pause\n"
+    assert control.is_animating("@1") is False  # released
 
 
 def test_pause_resume_shows_resuming_popup_before_replay_and_nothing_after_completion() -> None:
