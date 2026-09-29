@@ -216,6 +216,47 @@ def test_pause_resumes_pending_apply_edit(capsys: pytest.CaptureFixture[str]) ->
     assert "resumed (completed)" in capsys.readouterr().out
 
 
+def test_pause_resume_owns_the_slot_while_it_replays_and_releases_it() -> None:
+    # The keyboard resume animates from the CLI process: it must hold the
+    # window's slot like a hook, or a hook arriving mid-replay animates too.
+    _register_fake_follower("@1", "%2")
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
+    control.save_pending_apply_edit("@1", [op], 0.0)
+    seen: list[str | None] = []
+
+    def _check(window_id: str, base_dir: object = None) -> None:
+        seen.append(control.animating_state("@1"))
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()),
+        patch("vim_ai_follower.control.check_signal", side_effect=_check),
+    ):
+        assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 0
+    assert seen and set(seen) == {"running"}
+    assert control.is_animating("@1") is False  # released on the way out
+
+
+def test_pause_resume_skips_when_a_hook_owns_the_slot(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _register_fake_follower("@1", "%2")
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
+    control.save_pending_apply_edit("@1", [op], 0.0)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()),
+        # A hook claimed the slot between the state read and the resume.
+        patch("vim_ai_follower.commands.control.try_acquire_animating", return_value=False),
+    ):
+        assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 1
+    assert not [c for c in run.call_args_list if c.args[0][:2] == ["tmux", "send-keys"]]
+    assert capsys.readouterr().err == (
+        "claude-follow: another animation owns this window — resume it after that one ends\n"
+    )
+    assert control.load_pending_animation("@1") == control.PendingApplyEdit([op], 0.0)
+
+
 def test_pause_resume_shows_resuming_popup_before_replay_and_nothing_after_completion() -> None:
     _register_fake_follower("@1", "%2")
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))

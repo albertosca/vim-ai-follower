@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -704,7 +705,12 @@ def test_run_lines_empty_tuple_completes_immediately(tmp_path: Path) -> None:
     pane.send_text.assert_not_called()  # type: ignore[attr-defined]
 
 
-def test_run_lines_marks_animating_for_the_duration(tmp_path: Path) -> None:
+def test_run_lines_marks_animating_and_leaves_the_slot_to_its_owner(tmp_path: Path) -> None:
+    # The hook that acquired the slot releases it, not the driver: one hook
+    # runs several drivers (a catch-up, then the edit, then a hand-off
+    # replay), and a driver that cleared on exit left the slot empty between
+    # them for a second hook to take (review of b84a392, gap.py).
+    assert control.try_acquire_animating("@1", tmp_path)
     pane = cast(TmuxPane, MagicMock())
     seen: list[bool] = []
 
@@ -716,16 +722,57 @@ def test_run_lines_marks_animating_for_the_duration(tmp_path: Path) -> None:
         result = run_lines(pane, "@1", ("a", "b"), pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("completed", 2)
     assert seen and all(seen)  # marker present at every keystroke check
-    assert control.is_animating("@1", tmp_path) is False  # cleared on the way out
+    assert control.animating_state("@1", tmp_path) == "running"  # still the owner's
 
 
-def test_run_ops_clears_animating_after_interrupt_during_wait(tmp_path: Path) -> None:
+def test_run_ops_leaves_the_slot_to_its_owner_after_interrupt_during_wait(
+    tmp_path: Path,
+) -> None:
+    # Interrupted while paused: the hook still owns the slot (it goes on to
+    # the hand-off wait), so the driver must neither clear it nor leave it
+    # reading "paused".
+    assert control.try_acquire_animating("@1", tmp_path)
     pane = cast(TmuxPane, MagicMock())
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
     with patch("vim_ai_follower.control.check_signal", side_effect=["pause", "interrupt"]):
         result = run_ops(pane, "@1", [op], pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("interrupted", 0)
-    assert control.is_animating("@1", tmp_path) is False
+    assert control.animating_state("@1", tmp_path) == "running"
+
+
+_TRY_ACQUIRE = """
+import sys
+from pathlib import Path
+from vim_ai_follower import control
+print(control.try_acquire_animating("@1", Path(sys.argv[1])), flush=True)
+"""
+
+
+def _another_hook_acquires(base_dir: Path) -> bool:
+    """A second hook process, alive while it tries (its own PID is live)."""
+    result = subprocess.run(
+        [sys.executable, "-c", _TRY_ACQUIRE, str(base_dir)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip() == "True"
+
+
+def test_no_second_hook_gets_the_slot_between_one_hooks_drivers(tmp_path: Path) -> None:
+    # gap.py with the real drivers: a hook acquires, catches up a crash
+    # remainder (run_lines), then animates the edit (run_ops). Between the
+    # two, another hook tried to acquire — and got the slot, because the
+    # catch-up's driver had cleared it on exit: two animations in one pane.
+    assert control.try_acquire_animating("@1", tmp_path)
+    pane = cast(TmuxPane, MagicMock())
+    run_lines(pane, "@1", ("caught up",), pace_seconds=0.0, base_dir=tmp_path)
+    assert _another_hook_acquires(tmp_path) is False, "a second hook took the slot mid-hook"
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("edit",))
+    run_ops(pane, "@1", [op], pace_seconds=0.0, base_dir=tmp_path)
+    assert _another_hook_acquires(tmp_path) is False
+    control.clear_animating("@1", tmp_path)  # the hook's own release
+    assert _another_hook_acquires(tmp_path) is True
 
 
 def test_run_ops_pause_wait_polls_until_the_resume_arrives(tmp_path: Path) -> None:

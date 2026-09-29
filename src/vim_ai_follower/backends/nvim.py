@@ -374,7 +374,8 @@ class NvimFollower:
         run: Callable[[], AnimationResult],
     ) -> AnimationResult:
         """Shared envelope for every animation: unlock the buffer, mark the
-        window animating for its duration, run, then relock
+        window "running" (a state change only: the hook that acquired the
+        slot releases it, not this driver), run, then relock
         (nomodifiable) on a completed outcome — but only for a launched,
         dedicated follower. An adopted nvim is the user's own editor and is
         never relocked. An interrupt hands the buffer to the user, so it is
@@ -386,10 +387,7 @@ class NvimFollower:
         control._request)."""
         nvim.api.buf_set_option(buf, "modifiable", True)
         control.mark_animating(self.window_id)
-        try:
-            result = run()
-        finally:
-            control.clear_animating(self.window_id)
+        result = run()
         if result.outcome != "interrupted":
             # The buffer now holds exactly what Claude wrote: see _IS_CLEAN_LUA.
             nvim.api.buf_set_var(buf, _SYNCED_TICK, nvim.api.buf_get_changedtick(buf))

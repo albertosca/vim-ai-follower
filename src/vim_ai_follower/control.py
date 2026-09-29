@@ -7,6 +7,8 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -121,15 +123,33 @@ def _write_marker_atomically(path: Path, payload: str) -> Path:
     return tmp
 
 
-def mark_animating(window_id: str, base_dir: Path | None = None, state: str = "running") -> None:
-    """Record that an animation is in flight ("running"), waiting while
-    paused ("paused"), or waiting for the user's save after an interrupt
-    ("handoff") — tagged with this process's PID so a crashed hook can
-    never leave a convincing stale marker. Replaced, never rewritten in
-    place: hooks racing for the slot read it the whole time (see
-    _write_marker_atomically)."""
+def mark_animating(window_id: str, base_dir: Path | None = None, state: str = "running") -> bool:
+    """Record this process's animation state: in flight ("running"), waiting
+    while paused ("paused"), or waiting for the user's save after an
+    interrupt ("handoff") — tagged with this process's PID so a crashed hook
+    can never leave a convincing stale marker.
+
+    Only a state change: the slot's LIFETIME belongs to whoever acquired it
+    (the hook, or the CLI's keyboard resume), which releases it on its own way
+    out — one hook runs several drivers (a catch-up, the edit, a hand-off
+    replay), and a driver releasing on exit left the slot empty between them
+    for a second hook to take. So a marker owned by another LIVE process is
+    never overwritten (False); a free or dead slot is claimed as an acquire
+    would. Replaced, never rewritten in place: hooks racing for the slot read
+    it the whole time (see _write_marker_atomically)."""
     path = _animating_path(window_id, base_dir)
-    _write_marker_atomically(path, f"{os.getpid()} {state}").replace(path)
+    tmp = _write_marker_atomically(path, f"{os.getpid()} {state}")
+    try:
+        seen = _marker_seen(path)
+        if seen is not None and seen[1] == os.getpid():
+            # Ours: nobody else replaces or removes a live owner's marker.
+            tmp.replace(path)
+            return True
+        if seen is not None and seen[1] is not None and _alive(seen[1]):
+            return False  # another live process owns this window's slot
+        return _publish(tmp, path) or _reclaim(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def try_acquire_animating(
@@ -210,47 +230,78 @@ def _marker_seen(path: Path) -> tuple[tuple[int, int], int | None] | None:
     return (stat.st_dev, stat.st_ino), pid
 
 
-def _reclaim(tmp: Path, path: Path) -> bool:
-    """Take the slot from a crashed hook (dead PID), or lose.
-
-    Reading "stale" and then unlinking is two steps, so reclaimers serialize
-    on a lock and decide from what they read under it; one already reclaiming
-    means this hook lost the race, and it skips without waiting. Under the
-    lock, "no marker" and "a dead marker" are different answers: no marker
-    means the name is free, so this hook only tries the same link any other
-    hook would (and loses to one that got there first); a dead marker is
-    removed ONLY if the file at the name is still the one that was read —
-    unlinking by name would take whatever fresh marker replaced it. The
-    kernel drops the lock with its holder, so a crash here cannot wedge the
-    slot."""
+@contextmanager
+def _reclaim_lock(path: Path, *, wait: bool) -> Iterator[bool]:
+    """The lock every removal of someone else's (dead) marker happens under.
+    Yields False when not waiting and another process holds it. The kernel
+    drops it with its holder, so a crash under it cannot wedge the slot."""
     fd = os.open(path.with_name(f"{path.name}.lock"), os.O_CREAT | os.O_WRONLY, 0o644)
     try:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            return False  # another hook is reclaiming this very marker
-        seen = _marker_seen(path)
-        if seen is None:
-            return _publish(tmp, path)  # released since the first read: free
-        identity, pid = seen
-        if pid is not None and _alive(pid):
-            return False  # reclaimed (or freshly claimed) since the first read
-        # os.stat/os.unlink, not Path's: the same `os` every other step of the
-        # claim goes through, so a test can stand between any two of them.
-        try:
-            current = os.stat(path)  # noqa: PTH116
-        except FileNotFoundError:
-            return _publish(tmp, path)
-        if (current.st_dev, current.st_ino) != identity:
-            return False  # replaced since it was read: not the dead marker
-        os.unlink(path)  # noqa: PTH108
-        return _publish(tmp, path)
+            yield False
+            return
+        yield True
     finally:
         os.close(fd)
 
 
+def _remove_dead_marker(path: Path) -> bool | None:
+    """Under the reclaim lock: remove the marker if its owner is dead. None
+    when there is no marker, False when it belongs to a live process or was
+    replaced since it was read, True when removed.
+
+    "No marker" and "a dead marker" are different answers: unlinking by name
+    after reading "stale" would take whatever fresh marker replaced it, so a
+    dead one is removed ONLY while the file at the name is still the one read
+    (device and inode). os.stat/os.unlink, not Path's: the same `os` every
+    other step goes through, so a test can stand between any two of them."""
+    seen = _marker_seen(path)
+    if seen is None:
+        return None
+    identity, pid = seen
+    if pid is not None and _alive(pid):
+        return False
+    try:
+        current = os.stat(path)  # noqa: PTH116
+    except FileNotFoundError:
+        return None
+    if (current.st_dev, current.st_ino) != identity:
+        return False
+    os.unlink(path)  # noqa: PTH108
+    return True
+
+
+def _reclaim(tmp: Path, path: Path) -> bool:
+    """Take the slot from a crashed hook (dead PID), or lose. Reclaimers
+    serialize on the lock; one already reclaiming means this hook lost the
+    race, and it skips without waiting. A slot found free under the lock is
+    only tried with the same link any other hook would use."""
+    with _reclaim_lock(path, wait=False) as locked:
+        if not locked:
+            return False  # another hook is reclaiming this very marker
+        if _remove_dead_marker(path) is False:
+            return False  # a live owner's (reclaimed since the first read)
+        return _publish(tmp, path)
+
+
 def clear_animating(window_id: str, base_dir: Path | None = None) -> None:
-    _animating_path(window_id, base_dir).unlink(missing_ok=True)
+    """Release this process's slot. Another live process's marker is never
+    removed — it releases its own; a crashed hook's is removed (under the
+    reclaim lock, identity-checked)."""
+    path = _animating_path(window_id, base_dir)
+    seen = _marker_seen(path)
+    if seen is None:
+        return
+    pid = seen[1]
+    if pid == os.getpid():
+        path.unlink(missing_ok=True)  # ours: nobody else removes a live owner's
+        return
+    if pid is not None and _alive(pid):
+        return
+    with _reclaim_lock(path, wait=True):
+        _remove_dead_marker(path)
 
 
 def _read_marker(window_id: str, base_dir: Path | None) -> tuple[int, str] | None:

@@ -424,8 +424,21 @@ def cmd_pause(env: dict[str, str]) -> int:
         window_id=session.window_id,
     )
     assert isinstance(follower, TmuxVimFollower)  # only tmux ever persists pending state
-    _show_popup(current, "Resuming", session.in_tmux)
-    result = follower.resume(pending)
+    # The replay animates from THIS process, so it owns the window's slot for
+    # its duration like a hook does — or a hook arriving mid-replay would
+    # animate into the same pane.
+    if not control.try_acquire_animating(session.window_id):
+        _resave_pending(session.window_id, pending)
+        print(
+            "claude-follow: another animation owns this window — resume it after that one ends",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        _show_popup(current, "Resuming", session.in_tmux)
+        result = follower.resume(pending)
+    finally:
+        control.clear_animating(session.window_id)
     print(f"claude-follow: resumed ({result.outcome})")
     if result.outcome == "interrupted":
         _show_popup(current, "Interrupted", session.in_tmux)

@@ -717,9 +717,10 @@ def _await_user_handoff(
     follower = get_follower(current.backend, current.target, window_id=window_id)
     try:
         while True:
-            # Re-marked every cycle: the replay's own animation envelope
-            # clears the marker when it ends, so a later cycle would wait
-            # unmarked and let a parallel hook claim this window's pane.
+            # Re-marked every cycle: the replay's driver marks "running".
+            # The slot itself stays this hook's until the hook's own exit
+            # (_handle_hook_post_edit), so a parallel hook never claims the
+            # pane between cycles.
             control.mark_animating(window_id, state="handoff")
             cue = _handoff_cue(follower, file_path)
             surface.set_state(cue)
@@ -735,7 +736,6 @@ def _await_user_handoff(
             partial_content = replayed
     finally:
         surface.clear()
-        control.clear_animating(window_id)
 
 
 class _Readable(Protocol):

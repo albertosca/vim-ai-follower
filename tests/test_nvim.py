@@ -258,7 +258,11 @@ def test_show_fresh_opens_a_new_tab_when_requested(tmp_path: Path) -> None:
     assert tabnew_idx < rename_idx
 
 
-def test_show_fresh_marks_and_clears_animating(tmp_path: Path) -> None:
+def test_show_fresh_marks_animating_and_leaves_the_slot_to_its_owner(tmp_path: Path) -> None:
+    # The hook that acquired the slot releases it; the driver only marks.
+    from vim_ai_follower import control as owner_control
+
+    assert owner_control.try_acquire_animating("@1", tmp_path)
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
     nvim.current.buffer.handle = 7
@@ -279,7 +283,7 @@ def test_show_fresh_marks_and_clears_animating(tmp_path: Path) -> None:
     from vim_ai_follower import control
 
     assert seen and all(seen)
-    assert control.is_animating("@1", tmp_path) is False
+    assert control.animating_state("@1", tmp_path) == "running"
 
 
 def test_show_fresh_relocks_buffer_when_completed(tmp_path: Path) -> None:

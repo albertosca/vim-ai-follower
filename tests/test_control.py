@@ -426,6 +426,36 @@ def test_an_acquire_sweeps_temp_files_a_dead_writer_left(tmp_path: Path) -> None
     assert live.exists()
 
 
+def test_a_state_change_never_takes_a_live_owners_slot(tmp_path: Path) -> None:
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        marker = tmp_path / "@1.animating"
+        marker.write_text(f"{other.pid} running")
+        assert control.mark_animating("@1", tmp_path, state="paused") is False
+        assert marker.read_text() == f"{other.pid} running"
+        control.clear_animating("@1", tmp_path)  # not ours to release either
+        assert marker.read_text() == f"{other.pid} running"
+    finally:
+        other.kill()
+        other.wait()
+
+
+def test_a_state_change_claims_a_free_or_dead_slot(tmp_path: Path) -> None:
+    assert control.mark_animating("@1", tmp_path) is True  # free
+    control.clear_animating("@1", tmp_path)
+    assert control.is_animating("@1", tmp_path) is False
+    (tmp_path / "@1.animating").write_text("99999999 running")  # a crashed hook's
+    assert control.mark_animating("@1", tmp_path, state="handoff") is True
+    assert control.animating_state("@1", tmp_path) == "handoff"
+
+
+def test_clearing_a_crashed_hooks_marker_removes_it(tmp_path: Path) -> None:
+    (tmp_path / "@1.animating").write_text("99999999 running")
+    control.clear_animating("@1", tmp_path)
+    assert not (tmp_path / "@1.animating").exists()
+    control.clear_animating("@1", tmp_path)  # nothing there: a no-op
+
+
 def test_a_state_change_replaces_the_marker_never_truncates_it(tmp_path: Path) -> None:
     # A hook going running -> paused -> handoff rewrites its marker while
     # other hooks read it to decide whether the slot is free. Rewritten in

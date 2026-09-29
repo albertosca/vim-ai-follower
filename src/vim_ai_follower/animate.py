@@ -198,98 +198,93 @@ def run_ops(
     # No clear_signals here: a P pressed while the hook navigated is already
     # on disk and addressed to this process; a stale one is not (see
     # control._request). Clearing at start is what lost the early pause.
+    # Only a state change: the slot is released by whoever acquired it (the
+    # hook), never by a driver — see control.mark_animating.
     control.mark_animating(window_id, base_dir)
     deadline = time.monotonic() + MAX_ANIMATION_SECONDS
-    try:
-        index = 0
-        while index < len(ops):
-            op = ops[index]
-            # One evaluation per op — the line-boundary cadence — shared by
-            # its delete and insert halves, so the two halves can't end up
-            # pacing at different speeds.
-            current_pace = provider()
+    index = 0
+    while index < len(ops):
+        op = ops[index]
+        # One evaluation per op — the line-boundary cadence — shared by
+        # its delete and insert halves, so the two halves can't end up
+        # pacing at different speeds.
+        current_pace = provider()
 
-            def save_pending(index: int = index, current_pace: float = current_pace) -> None:
-                control.save_pending_apply_edit(
-                    window_id,
-                    ops[index:],
-                    current_pace,
-                    base_dir,
-                    file_path=file_path,
-                    # Op-granular, matching the remainder: each op's line
-                    # numbers are relative to the state its predecessors
-                    # produced, so replaying the prefix onto base_content
-                    # reproduces the buffer without reading it. Same
-                    # computation the nvim backend's _run_ops saver does.
-                    partial=(
-                        None if base_content is None else apply_ops(base_content, ops[:index])
-                    ),
-                )
+        def save_pending(index: int = index, current_pace: float = current_pace) -> None:
+            control.save_pending_apply_edit(
+                window_id,
+                ops[index:],
+                current_pace,
+                base_dir,
+                file_path=file_path,
+                # Op-granular, matching the remainder: each op's line
+                # numbers are relative to the state its predecessors
+                # produced, so replaying the prefix onto base_content
+                # reproduces the buffer without reading it. Same
+                # computation the nvim backend's _run_ops saver does.
+                partial=(None if base_content is None else apply_ops(base_content, ops[:index])),
+            )
 
-            delete_seq = _delete_sequences(op)
-            if delete_seq:
-                result = send_paced(
-                    pane,
-                    delete_seq,
-                    current_pace,
-                    window_id,
-                    deadline=deadline,
-                    control_base_dir=base_dir,
-                )
-                if result.outcome != "completed":
-                    _exit_insert_mode(pane)
-                    # Each committed (":Nd", Enter) pair is one undo unit;
-                    # a half-typed pair was cancelled by the Escape above.
-                    for _ in range(result.sent_count // 2):
-                        pane.send_text("u")
-                    if result.outcome == "interrupted":
-                        return AnimationResult("interrupted", index)
-                    paused_at = time.monotonic()
-                    if not _wait_while_paused(window_id, save_pending, base_dir):
-                        return AnimationResult("interrupted", index)
-                    deadline += time.monotonic() - paused_at
-                    if on_resume is not None:
-                        on_resume()
-                    continue  # resumed: retry this op from its clean boundary
+        delete_seq = _delete_sequences(op)
+        if delete_seq:
+            result = send_paced(
+                pane,
+                delete_seq,
+                current_pace,
+                window_id,
+                deadline=deadline,
+                control_base_dir=base_dir,
+            )
+            if result.outcome != "completed":
+                _exit_insert_mode(pane)
+                # Each committed (":Nd", Enter) pair is one undo unit;
+                # a half-typed pair was cancelled by the Escape above.
+                for _ in range(result.sent_count // 2):
+                    pane.send_text("u")
+                if result.outcome == "interrupted":
+                    return AnimationResult("interrupted", index)
+                paused_at = time.monotonic()
+                if not _wait_while_paused(window_id, save_pending, base_dir):
+                    return AnimationResult("interrupted", index)
+                deadline += time.monotonic() - paused_at
+                if on_resume is not None:
+                    on_resume()
+                continue  # resumed: retry this op from its clean boundary
 
-            insert_seq, prefix_len = _insert_sequences(op)
-            if insert_seq:
-                result = send_paced(
-                    pane,
-                    insert_seq,
-                    current_pace,
-                    window_id,
-                    deadline=deadline,
-                    control_base_dir=base_dir,
-                )
-                if result.outcome != "completed":
-                    _exit_insert_mode(pane)
-                    if result.sent_count >= prefix_len:
-                        pane.send_text("u")
-                    # The delete half already ran, one undo unit per line;
-                    # roll all of it back so the buffer sits on a clean op
-                    # boundary — otherwise retrying would re-run the delete
-                    # against lines that have shifted, and the interrupt
-                    # notification would claim less was shown than actually
-                    # happened.
-                    for _ in range(len(delete_seq) // 2):
-                        pane.send_text("u")
-                    if result.outcome == "interrupted":
-                        return AnimationResult("interrupted", index)
-                    paused_at = time.monotonic()
-                    if not _wait_while_paused(window_id, save_pending, base_dir):
-                        return AnimationResult("interrupted", index)
-                    deadline += time.monotonic() - paused_at
-                    if on_resume is not None:
-                        on_resume()
-                    continue
+        insert_seq, prefix_len = _insert_sequences(op)
+        if insert_seq:
+            result = send_paced(
+                pane,
+                insert_seq,
+                current_pace,
+                window_id,
+                deadline=deadline,
+                control_base_dir=base_dir,
+            )
+            if result.outcome != "completed":
+                _exit_insert_mode(pane)
+                if result.sent_count >= prefix_len:
+                    pane.send_text("u")
+                # The delete half already ran, one undo unit per line;
+                # roll all of it back so the buffer sits on a clean op
+                # boundary — otherwise retrying would re-run the delete
+                # against lines that have shifted, and the interrupt
+                # notification would claim less was shown than actually
+                # happened.
+                for _ in range(len(delete_seq) // 2):
+                    pane.send_text("u")
+                if result.outcome == "interrupted":
+                    return AnimationResult("interrupted", index)
+                paused_at = time.monotonic()
+                if not _wait_while_paused(window_id, save_pending, base_dir):
+                    return AnimationResult("interrupted", index)
+                deadline += time.monotonic() - paused_at
+                if on_resume is not None:
+                    on_resume()
+                continue
 
-            index += 1
-        return AnimationResult("completed", len(ops))
-    finally:
-        # interrupted/completed alike: nothing is animating anymore (a
-        # crash-orphaned remainder is owned by the pending file instead)
-        control.clear_animating(window_id, base_dir)
+        index += 1
+    return AnimationResult("completed", len(ops))
 
 
 def _line_sequences(line: str, opener: str) -> tuple[list[KeySequence], int]:
@@ -342,61 +337,60 @@ def run_lines(
     # No clear_signals here: a P pressed while the hook navigated is already
     # on disk and addressed to this process; a stale one is not (see
     # control._request). Clearing at start is what lost the early pause.
+    # Only a state change: the slot is released by whoever acquired it (the
+    # hook), never by a driver — see control.mark_animating.
     control.mark_animating(window_id, base_dir)
     deadline = time.monotonic() + MAX_ANIMATION_SECONDS
-    try:
-        index = 0
-        while index < len(lines):
-            line = lines[index]
-            # One evaluation per line — the line-boundary cadence.
-            current_pace = provider()
-            # The first line types into the wiped buffer's single blank line
-            # via `i`; every later line — and every line of a resumed run,
-            # whose buffer already holds earlier lines — opens its own line
-            # below the cursor via `o`.
-            opener = "o" if continuation or index > 0 else "i"
-            sequences, undo_threshold = _line_sequences(line, opener)
-            result = send_paced(
-                pane,
-                sequences,
-                current_pace,
-                window_id,
-                deadline=deadline,
-                control_base_dir=base_dir,
-            )
-            if result.outcome != "completed":
-                _exit_insert_mode(pane)
-                if result.sent_count >= undo_threshold:
-                    pane.send_text("u")
-                if result.outcome == "interrupted":
-                    return AnimationResult("interrupted", index)
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        # One evaluation per line — the line-boundary cadence.
+        current_pace = provider()
+        # The first line types into the wiped buffer's single blank line
+        # via `i`; every later line — and every line of a resumed run,
+        # whose buffer already holds earlier lines — opens its own line
+        # below the cursor via `o`.
+        opener = "o" if continuation or index > 0 else "i"
+        sequences, undo_threshold = _line_sequences(line, opener)
+        result = send_paced(
+            pane,
+            sequences,
+            current_pace,
+            window_id,
+            deadline=deadline,
+            control_base_dir=base_dir,
+        )
+        if result.outcome != "completed":
+            _exit_insert_mode(pane)
+            if result.sent_count >= undo_threshold:
+                pane.send_text("u")
+            if result.outcome == "interrupted":
+                return AnimationResult("interrupted", index)
 
-                def save_pending(index: int = index, current_pace: float = current_pace) -> None:
-                    control.save_pending_show_fresh(
-                        window_id,
-                        lines[index:],
-                        current_pace,
-                        continuation=continuation or index > 0,
-                        base_dir=base_dir,
-                        file_path=file_path,
-                        partial=(
-                            None
-                            if base_content is None
-                            else _terminated([*base_content.splitlines(), *lines[:index]])
-                        ),
-                    )
+            def save_pending(index: int = index, current_pace: float = current_pace) -> None:
+                control.save_pending_show_fresh(
+                    window_id,
+                    lines[index:],
+                    current_pace,
+                    continuation=continuation or index > 0,
+                    base_dir=base_dir,
+                    file_path=file_path,
+                    partial=(
+                        None
+                        if base_content is None
+                        else _terminated([*base_content.splitlines(), *lines[:index]])
+                    ),
+                )
 
-                paused_at = time.monotonic()
-                if not _wait_while_paused(window_id, save_pending, base_dir):
-                    return AnimationResult("interrupted", index)
-                deadline += time.monotonic() - paused_at
-                if on_resume is not None:
-                    on_resume()
-                continue  # resumed: retry this line (same opener, clean boundary)
-            index += 1
-        return AnimationResult("completed", len(lines))
-    finally:
-        control.clear_animating(window_id, base_dir)
+            paused_at = time.monotonic()
+            if not _wait_while_paused(window_id, save_pending, base_dir):
+                return AnimationResult("interrupted", index)
+            deadline += time.monotonic() - paused_at
+            if on_resume is not None:
+                on_resume()
+            continue  # resumed: retry this line (same opener, clean boundary)
+        index += 1
+    return AnimationResult("completed", len(lines))
 
 
 def send_paced(
