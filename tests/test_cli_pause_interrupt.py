@@ -195,6 +195,35 @@ def test_pause_discards_a_crash_orphaned_nvim_pending_without_crashing(
     assert "nothing to resume" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    ("command", "message"),
+    [
+        (commands.cmd_pause, "claude-follow: nothing to pause — the animation is finishing\n"),
+        (
+            commands.cmd_interrupt,
+            "claude-follow: nothing to interrupt — the animation is finishing\n",
+        ),
+    ],
+)
+def test_a_press_while_the_hook_is_finishing_is_nothing_to_act_on(
+    command: object, message: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The hook's last animation has returned; it still holds the slot for
+    # its bookkeeping. A signal now would be addressed to it and never
+    # consumed, and a "Paused"/"Interrupted" popup would lie.
+    _register_fake_follower("@1", "%2")
+    control.mark_animating("@1", state="finishing")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
+    ):
+        assert command({"TMUX_PANE": "%1"}) == 0  # type: ignore[operator]
+    assert capsys.readouterr().out == message
+    assert _popup_calls(popen) == []
+    assert control.check_signal("@1") is None  # nothing was written
+    assert control.animating_state("@1") == "finishing"
+
+
 def test_pause_resumes_pending_apply_edit(capsys: pytest.CaptureFixture[str]) -> None:
     _register_fake_follower("@1", "%2")
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))

@@ -1114,6 +1114,15 @@ _WHY = {
 }
 
 
+def _mark_finishing(window_id: str) -> None:
+    """The hook's last animation has returned; it keeps the slot for its
+    bookkeeping until its own exit releases it. "finishing" tells a P or S
+    pressed now that there is nothing left to pause or interrupt — as
+    "running" it drew a signal addressed to this hook that nothing would
+    ever consume, and a popup claiming it had worked."""
+    control.mark_animating(window_id, state="finishing")
+
+
 def _animate_edit(
     payload: dict[str, Any],
     session: Session,
@@ -1280,7 +1289,9 @@ def _animate_edit(
                 partial=partial,
             )
             _await_user_handoff(current, session, file_path, after, partial, surface)
+            _mark_finishing(session.window_id)
         else:
+            _mark_finishing(session.window_id)
             # The retype ran to the end, so whatever was stale about this
             # buffer is gone — it now holds the whole file.
             FollowerState.clear_stale(session.window_id, file_path)
@@ -1307,7 +1318,9 @@ def _animate_edit(
             partial=partial,
         )
         _await_user_handoff(current, session, file_path, after, partial, surface)
+        _mark_finishing(session.window_id)
     else:
+        _mark_finishing(session.window_id)
         _refresh_writer_cue(session.window_id, current.target, payload)
     return 0
 

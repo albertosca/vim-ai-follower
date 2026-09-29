@@ -402,6 +402,11 @@ def cmd_pause(env: dict[str, str]) -> int:
     if state == "handoff":
         print("claude-follow: interrupted — save (:w!) to release Claude, or press S again")
         return 0
+    if state == "finishing":
+        # The hook's last animation already returned: no signal (nothing would
+        # consume it), no popup, and its slot is not ours to resume into.
+        print("claude-follow: nothing to pause — the animation is finishing")
+        return 0
 
     pending = control.load_pending_animation(session.window_id)
     if pending is None:
@@ -471,6 +476,9 @@ def cmd_interrupt(env: dict[str, str]) -> int:
         control.request_interrupt(session.window_id)
         print("claude-follow: hand-off cancelled, unsaved changes discarded")
         _show_popup(current, "Discarded", session.in_tmux)
+        return 0
+    if state == "finishing":
+        print("claude-follow: nothing to interrupt — the animation is finishing")
         return 0
 
     pending = control.load_pending_animation(session.window_id)
