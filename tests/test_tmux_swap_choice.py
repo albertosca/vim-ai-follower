@@ -55,6 +55,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+from helpers import resolve_typed_paths, typed_path
+
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 
 _GROUP = "vim_ai_follower_swap"
@@ -157,17 +159,17 @@ def test_the_line_never_touches_shortmess_or_swapfile() -> None:
 
 def test_the_swap_hook_never_carries_the_path() -> None:
     """The hook's `exe "..."` segments are double-quoted Vim strings, where
-    a backslash or `"` in a path would be reinterpreted. The path must stay
-    out of all of them and appear exactly once, as the single-quoted
-    literal handed to fnameescape()."""
+    a backslash or `"` in a path would be reinterpreted. The path is not on
+    the line at all: it is read once from a handle file into `g:vaf_p`
+    (tmux_vim._typed_path), which fnameescape() is handed."""
     path = "/tmp/a b#c%d'e.py"
     line = _goto_line(path)
-    literal = "'/tmp/a b#c%d''e.py'"
-    assert line.count(literal) == 1
+    assert "a b#c" not in line
+    assert line.count("readfile(") == 1
     quoted = line.split('"')[1::2]
     assert quoted, "expected the exe-quoted segments the hook is built from"
-    assert not any("a b#c" in segment for segment in quoted)
-    assert line.startswith(f":let g:vaf_p = {literal} | ")
+    assert not any("readfile" in segment for segment in quoted)
+    assert resolve_typed_paths(line).startswith(f":let g:vaf_p = {typed_path(path)} | ")
     assert "fnameescape((fnamemodify(fnamemodify(g:vaf_p, ':.'), ':p') ==#" in line
 
 

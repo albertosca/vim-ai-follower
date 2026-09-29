@@ -18,6 +18,7 @@ from unittest.mock import call as mock_call
 import pytest
 from helpers import make_mock_tmux_run as _mock_tmux_run
 from helpers import register_fake_follower as _register_fake_follower
+from helpers import resolve_typed_paths, typed_path
 
 from vim_ai_follower import (
     cache,
@@ -57,17 +58,19 @@ def _goto(path: object) -> str:
     around it answers the swap-file ATTENTION dialog with `(E)dit anyway`
     and is torn down in `finally`."""
     return (
-        ":let g:vaf_p = '" + str(path).replace("'", "''") + "'"
-        " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
+        ":let g:vaf_p = "
+        + typed_path(path)
+        + " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
         " && fnamemodify(bufname(v:val), '':p'') ==# fnamemodify(g:vaf_p, '':p'')'), 0, -1)"
         ' | exe "augroup vim_ai_follower_swap"'
         " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
         ' | exe "augroup END"'
         " | try"
-        " | if g:vaf_n < 0 | exe 'tab drop ' . fnameescape((fnamemodify(fnamemodify(g:vaf_p, ':.'),"
-        " ':p') ==# fnamemodify(g:vaf_p, ':p') ? fnamemodify(g:vaf_p, ':.') : g:vaf_p))"
+        " | if g:vaf_n < 0 | exe 'silent tab drop ' . fnameescape("
+        "(fnamemodify(fnamemodify(g:vaf_p, ':.'), ':p') ==# fnamemodify(g:vaf_p, ':p')"
+        " ? fnamemodify(g:vaf_p, ':.') : g:vaf_p))"
         " | elseif g:vaf_n != bufnr('%')"
-        " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'tab sbuffer ' . g:vaf_n"
+        " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'silent tab sbuffer ' . g:vaf_n"
         " | endif"
         r" | catch /^Vim\%((\a\+)\)\=:E37:/"
         ' | finally | exe "autocmd! vim_ai_follower_swap"'
@@ -84,13 +87,13 @@ def _rename(path: object) -> str:
     see tmux_vim._vim_display_name). Spelled out
     for the same reason: importing tmux_vim's f-string would agree with any
     change to it."""
-    literal = "'" + str(path).replace("'", "''") + "'"
-    short = f"fnamemodify({literal}, ':.')"
+    short = "fnamemodify(g:vaf_p, ':.')"
     return (
-        f":exe 'file ' . fnameescape((fnamemodify({short}, ':p') ==# fnamemodify({literal}, ':p')"
-        f" ? {short} : {literal}))"
+        f":let g:vaf_p = {typed_path(path)}"
+        f" | silent exe 'file ' . fnameescape((fnamemodify({short}, ':p')"
+        f" ==# fnamemodify(g:vaf_p, ':p') ? {short} : g:vaf_p))"
         " | setlocal buftype= modifiable noreadonly"
-        " | noautocmd silent! edit! | silent! %d _"
+        " | noautocmd silent! edit! | silent! %d _ | unlet! g:vaf_p"
     )
 
 
@@ -111,7 +114,7 @@ def _literal_sends(run_mock: MagicMock) -> list[str]:
     for call in run_mock.call_args_list:
         cmd = call.args[0]
         if cmd[:4] == ["tmux", "send-keys", "-t", "%2"] and "-l" in cmd:
-            sends.append(cmd[6])
+            sends.append(resolve_typed_paths(cmd[6]))
     return sends
 
 
@@ -458,7 +461,7 @@ def test_edit_of_tracked_file_uses_apply_edit_even_when_not_current(tmp_path: Pa
     # job, not cli.py's — then the diff is applied in place; show_fresh's
     # rename-in-place (":file <path>") never runs.
     assert _goto(a) in sends
-    assert not any(text.startswith(":exe 'file '") for text in sends)
+    assert not any(" | silent exe 'file ' . " in text for text in sends)
     assert "print('a changed')" in sends
 
 
@@ -487,7 +490,9 @@ def test_eviction_closes_oldest_tab_before_animating(
     # that — wiping by name is a silent no-op for any path Vim reads as a
     # buffer-name pattern — and the wipe closes the tab by itself, so there
     # is no :tabclose (see close_tab).
-    close_index = next(i for i, text in enumerate(sends) if f"fnamemodify('{a}', ':p')" in text)
+    close_index = next(
+        i for i, text in enumerate(sends) if f"fnamemodify({typed_path(a)}, ':p')" in text
+    )
     rename_index = sends.index(_rename(c))
     assert close_index < rename_index
     assert not any("tabclose" in text for text in sends)

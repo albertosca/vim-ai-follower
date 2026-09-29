@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from helpers import resolve_typed_paths
 
 from vim_ai_follower import cache, config, hooks, session, snapshot
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
@@ -151,7 +152,7 @@ def follower(sent: list[str], tmp_path: Path) -> Iterator[TmuxVimFollower]:
         if cmd[:4] == ["tmux", "send-keys", "-t", "%2"]:
             if "-l" in cmd:
                 # send_text: ["tmux", "send-keys", "-t", "%2", "-l", "--", text]
-                sent.append(f"text::{cmd[6]}")
+                sent.append(f"text::{resolve_typed_paths(cmd[6])}")
             else:
                 # send_key: ["tmux", "send-keys", "-t", "%2", key_name]
                 sent.append(f"key::{cmd[4]}")

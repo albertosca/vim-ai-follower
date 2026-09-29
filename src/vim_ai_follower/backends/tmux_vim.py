@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 import secrets
 import time
 from collections.abc import Callable
@@ -204,8 +206,9 @@ _COC_ENABLE = ":silent! CocEnable"
 # pre-edit snapshot) on top of it: duplicated lines until the relock's `:e!`
 # snapped them back. The nvim backend's goto_file has the same rule.
 #
-# The number is resolved the way _WIPE_BUFFER does it — the path lives in a
-# Vim string literal and the buffer list is walked comparing `:p` names —
+# The number is resolved the way _WIPE_BUFFER does it — the path is read
+# into a variable (_typed_path) and the buffer list is walked comparing `:p`
+# names —
 # because `bufnr()` and `:buffer {name}` take a PATTERN. A window already
 # showing it is focused (`win_gotoid`, any tab); a loaded buffer with no
 # window gets a new tab via `:tab sbuffer {nr}`, which does not re-read a
@@ -214,6 +217,14 @@ _COC_ENABLE = ":silent! CocEnable"
 # does read the file, and can raise the ATTENTION dialog like the drop.
 # The `g:` variables are unlet in `finally` (inert if a cut-off line leaves
 # them, like _WIPE_BUFFER's).
+#
+# The drop and `:tab sbuffer` are `silent` (never `silent!`, see above: errors
+# and the E37 exception still come through, measured by
+# tests/test_integration_goto_file_e37.py and the swap tests). Both print the
+# file-info message (`"<name>" 3L, 18B`) when they read a file, and for a
+# file outside the cwd that name is the full path — shown on the command line
+# the path handle exists to keep it off (measured 2026-09-29,
+# tests/test_integration_cmdline_paths.py).
 #
 # The line is kept short on purpose (short `g:` names, win_gotoid's own
 # return value picking between focus and `:tab sbuffer`): at 49 columns every
@@ -302,9 +313,9 @@ _FIND_BUFFER = (
 _GOTO_FILE = (
     _FIND_BUFFER + f" | {_SWAP_ANSWER_OPEN}"
     " | try"
-    f" | if g:vaf_n < 0 | exe 'tab drop ' . fnameescape({_vim_display_name('g:vaf_p')})"
+    f" | if g:vaf_n < 0 | exe 'silent tab drop ' . fnameescape({_vim_display_name('g:vaf_p')})"
     " | elseif g:vaf_n != bufnr('%')"
-    " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'tab sbuffer ' . g:vaf_n"
+    " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'silent tab sbuffer ' . g:vaf_n"
     " | endif"
     r" | catch /^Vim\%((\a\+)\)\=:E37:/"
     f" | finally | {_SWAP_ANSWER_CLOSE}"
@@ -479,6 +490,54 @@ def _vim_string(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+# How long a path handle (see _typed_path) is kept before a later call sweeps
+# it. A handle is read the moment Vim runs the line naming it, which is well
+# under a second after the send even at load 15; this only bounds the ones a
+# cut-off line never read. Sweeping one early fails safe, never to another
+# file: measured 2026-09-29 (Vim 9.2), a read of a missing handle raises E484,
+# yields "" and aborts the REST of the typed line, so nothing after it runs
+# (at 49 columns the E484 does leave a hit-enter prompt, as any error there).
+_PATH_HANDLE_MAX_AGE_SECONDS = 600.0
+
+
+def _typed_path(pane_id: str, file_path: str) -> str:
+    """A Vim expression for `file_path` that does not spell it: the path is
+    written to a one-shot handle file in the cache directory and the typed
+    line reads it back (`readfile()`).
+
+    Why: this backend TYPES its Ex commands, and Vim echoes a typed command on
+    its command line before running it. With the path spelled in the line,
+    every edit and navigation flashed the target's absolute path in the
+    follower's footer, up to five screen rows of it at 49 columns (found on a
+    demo recording, 2026-09-29; tests/test_integration_cmdline_paths.py logs
+    every command-line change). The line now shows only the cache handle.
+
+    - One handle PER CALL (a random suffix), never a fixed per-pane file: Vim
+      runs a line some time after the send returns, so a fixed file could be
+      rewritten by the next call first — close_tab's eviction followed by
+      show_fresh's pre-wipe would then both wipe the NEW file, and the evicted
+      one would stay. A handle is only ever read by the line that names it.
+    - Byte-exact: the file holds `os.fsencode(file_path)` with no trailing
+      newline, and `readfile(…, 'b')` joined on "\n" gives back exactly those
+      bytes, a newline in the path included (binary mode keeps a CR and adds
+      no item for a missing final newline). A NUL cannot occur in a path.
+    - The absolute cache path, not `$HOME`/`~`: Vim's HOME is not necessarily
+      the hook's, and a handle Vim cannot find would be a failure; typing the
+      cache path saves nothing worth that (7 characters)."""
+    directory = cache.CACHE_DIR
+    directory.mkdir(parents=True, exist_ok=True)
+    prefix = f"path-{pane_id.lstrip('%')}-"
+    now = time.time()
+    for old in directory.glob(prefix + "*"):
+        # Another hook may sweep the same handle between glob and unlink.
+        with contextlib.suppress(FileNotFoundError):
+            if now - old.stat().st_mtime > _PATH_HANDLE_MAX_AGE_SECONDS:
+                old.unlink()
+    handle = directory / f"{prefix}{secrets.token_hex(4)}"
+    handle.write_bytes(os.fsencode(file_path))
+    return f"join(readfile({_vim_string(str(handle))}, 'b'), \"\\n\")"
+
+
 # Wipe the buffer holding a given file, resolved by NUMBER rather than by
 # name. This is the eviction primitive close_tab uses and the pre-wipe
 # show_fresh does before it renames a buffer onto the same path.
@@ -495,8 +554,8 @@ def _vim_string(value: str) -> str:
 # `app/[slug]/page.tsx` to its sibling `app/s/page.tsx`; see its
 # `_buffer_number`).
 #
-# So the path never reaches a pattern at all. It goes into a Vim string
-# literal (see _vim_string), and the buffer list is walked comparing FULL
+# So the path never reaches a pattern at all. Vim reads it from a handle
+# file into a string (see _typed_path), and the buffer list is walked comparing FULL
 # names; `:p` normalizes both sides, so `/a/./b.py` and `/a/b.py` still
 # match. Only an exact hit is wiped, and a miss wipes nothing — which is
 # load-bearing, not merely tidy: a bare `:bwipeout!` with no number would
@@ -603,15 +662,16 @@ class TmuxVimFollower:
         so both guards cover show_fresh, ensure_showing, apply_edit,
         reload_and_relock, rewrite_buffer, resume and close_tab at once.
 
-        file_path reaches Vim as a string literal (_vim_string, total) run
-        through Vim's own `fnameescape()`, never raw: as a bare `tab drop`
+        file_path reaches Vim as a string read from a handle file
+        (_typed_path: never spelled on the command line, which Vim echoes)
+        run through Vim's own `fnameescape()`, never raw: as a bare `tab drop`
         argument `#`/`%` expanded to the alternate/current file, `$NAME` to
         an environment variable, a space split it into two files and a glob
         opened a matching sibling (all measured 2026-09-22). `:exe` keeps
         the E37 catch intact — the error still reads `Vim(drop):E37:`."""
         pane = TmuxPane(pane_id=self.pane_id)
         self._normal_mode(pane)
-        pane.send_text(_GOTO_FILE.format(file=_vim_string(file_path)))
+        pane.send_text(_GOTO_FILE.format(file=_typed_path(self.pane_id, file_path)))
         pane.send_key("Enter")
 
     def reload_and_relock(self, file_path: str) -> None:
@@ -667,7 +727,7 @@ class TmuxVimFollower:
         while the follower's own bookkeeping stayed pinned at the limit."""
         pane = TmuxPane(pane_id=self.pane_id)
         self._normal_mode(pane)
-        pane.send_text(_WIPE_BUFFER.format(file=_vim_string(file_path)))
+        pane.send_text(_WIPE_BUFFER.format(file=_typed_path(self.pane_id, file_path)))
         pane.send_key("Enter")
 
     def ensure_showing(self, file_path: str) -> None:
@@ -696,7 +756,7 @@ class TmuxVimFollower:
         self._normal_mode(pane)
         pane.send_text(
             _PROBE_BUFFER.format(
-                file=_vim_string(file_path),
+                file=_typed_path(self.pane_id, file_path),
                 nonce=_vim_string(nonce),
                 probe=_vim_string(str(probe)),
             )
@@ -824,7 +884,7 @@ class TmuxVimFollower:
         # Same by-number wipe as close_tab, and for the same reason: a
         # name-pattern miss here leaves the old buffer alive, and the
         # `:file` below then hangs a SECOND buffer off the same path.
-        pane.send_text(_WIPE_BUFFER.format(file=_vim_string(file_path)))
+        pane.send_text(_WIPE_BUFFER.format(file=_typed_path(self.pane_id, file_path)))
         pane.send_key("Enter")
         if in_new_tab:
             pane.send_text(":tabnew")
@@ -841,13 +901,17 @@ class TmuxVimFollower:
         # there is no ATTENTION dialog to answer, only the check to skip.
         pane.send_text(":setlocal noswapfile")
         pane.send_key("Enter")
-        # file_path goes through _vim_string + fnameescape(), same as
-        # _GOTO_FILE: raw on the command line, `#`, `%` and a space rename
+        # file_path is read from a handle (_typed_path) into g:vaf_p and goes
+        # through fnameescape(), same as _GOTO_FILE: raw on the command line,
+        # `#`, `%` and a space rename
         # the buffer onto the wrong name (measured 2026-09-24: a space alone
         # left the buffer unnamed), and the by-number lookup that a later
         # Edit's goto_file does then misses it and opens a duplicate tab.
         # The name is the cwd-relative one Vim would give the file itself
-        # (_vim_display_name), not the full path the hook passes.
+        # (_vim_display_name), not the full path the hook passes. The rename
+        # is `silent`: `:file` prints the name it set (`"<name>" [Not
+        # edited]`), which is the full path for a file outside the cwd
+        # (measured 2026-09-29); errors (E95) still show.
         # Then it READS the file into the buffer and clears it again, on the
         # same command line (see _READ_THEN_CLEAR): the rename left the buffer
         # "not edited", and a plain `:w` over the existing file then failed
@@ -868,8 +932,9 @@ class TmuxVimFollower:
         # carried belonged to the file it held before, never to this one.
         claim = " | let b:vaf_user_ro = 0 | let b:vaf_ro_ours = 2" if self._is_adopted() else ""
         pane.send_text(
-            f":exe 'file ' . fnameescape({_vim_display_name(_vim_string(file_path))}){claim}"
-            " | setlocal buftype= modifiable noreadonly | " + _READ_THEN_CLEAR
+            f":let g:vaf_p = {_typed_path(self.pane_id, file_path)}"
+            f" | silent exe 'file ' . fnameescape({_vim_display_name('g:vaf_p')}){claim}"
+            " | setlocal buftype= modifiable noreadonly | " + _READ_THEN_CLEAR + " | unlet! g:vaf_p"
         )
         pane.send_key("Enter")
         # An ADOPTED Vim is the user's own editor: its buffer gets swap back

@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from helpers import resolve_typed_paths, typed_path
 
 from vim_ai_follower import cache
 from vim_ai_follower.backends import buffer_forms, tmux_vim
@@ -28,8 +29,9 @@ def _probe_line(path: str, probe: Path) -> str:
     unintended change to the constant is caught — same rule as
     test_tmux_vim._goto."""
     return (
-        ":try | let g:vaf_p = '" + path.replace("'", "''") + "'"
-        " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
+        ":try | let g:vaf_p = "
+        + typed_path(path)
+        + " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
         " && fnamemodify(bufname(v:val), '':p'') ==# fnamemodify(g:vaf_p, '':p'')'), 0, -1)"
         f" | let g:vaf_r = writefile(getbufline(g:vaf_n, 1, '$') + ['{NONCE}'], '{probe}')"
         " | catch | finally | unlet! g:vaf_p g:vaf_n g:vaf_r | endtry"
@@ -58,7 +60,7 @@ def _probe(writes: Callable[[Path], None] | None, content: str) -> tuple[str, li
     sent: list[str] = []
 
     def _record(self: object, text: str) -> None:
-        sent.append(text)
+        sent.append(resolve_typed_paths(text))
         _vim(writes)(self, text)
 
     with (

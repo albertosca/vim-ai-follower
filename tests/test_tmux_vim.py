@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from helpers import register_fake_follower as _register_fake_follower
+from helpers import resolve_typed_paths, typed_path
 
 from vim_ai_follower import cache, config, control, state
 from vim_ai_follower.animate import AnimationResult
@@ -26,17 +27,19 @@ def _goto(path: str) -> str:
     comment for why the bang, `:silent!`, 'hidden', 'shortmess' and
     'noswapfile' were all measured and rejected."""
     return (
-        ":let g:vaf_p = '" + path.replace("'", "''") + "'"
-        " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
+        ":let g:vaf_p = "
+        + typed_path(path)
+        + " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
         " && fnamemodify(bufname(v:val), '':p'') ==# fnamemodify(g:vaf_p, '':p'')'), 0, -1)"
         ' | exe "augroup vim_ai_follower_swap"'
         " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
         ' | exe "augroup END"'
         " | try"
-        " | if g:vaf_n < 0 | exe 'tab drop ' . fnameescape((fnamemodify(fnamemodify(g:vaf_p, ':.'),"
-        " ':p') ==# fnamemodify(g:vaf_p, ':p') ? fnamemodify(g:vaf_p, ':.') : g:vaf_p))"
+        " | if g:vaf_n < 0 | exe 'silent tab drop ' . fnameescape("
+        "(fnamemodify(fnamemodify(g:vaf_p, ':.'), ':p') ==# fnamemodify(g:vaf_p, ':p')"
+        " ? fnamemodify(g:vaf_p, ':.') : g:vaf_p))"
         " | elseif g:vaf_n != bufnr('%')"
-        " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'tab sbuffer ' . g:vaf_n"
+        " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'silent tab sbuffer ' . g:vaf_n"
         " | endif"
         r" | catch /^Vim\%((\a\+)\)\=:E37:/"
         ' | finally | exe "autocmd! vim_ai_follower_swap"'
@@ -131,7 +134,7 @@ def _sent_commands(run_mock: MagicMock) -> list[tuple[str, bool]]:
         if cmd[:4] != ["tmux", "send-keys", "-t", "%2"]:
             continue
         if "-l" in cmd:
-            commands.append((cmd[6], True))
+            commands.append((resolve_typed_paths(cmd[6]), True))
         else:
             commands.append((cmd[4], False))
     return commands
@@ -315,7 +318,7 @@ def test_show_fresh_renames_in_place_and_reads_the_file_only_on_the_rename_line(
     # _normal_mode sends two prompt-proof Escapes first
     assert commands[0] == ("Escape", False)
     assert commands[1] == ("Escape", False)
-    assert commands[2] == (_wipe("'/tmp/f.txt'"), True)
+    assert commands[2] == (_wipe("/tmp/f.txt"), True)
     assert commands[3] == ("Enter", False)
     # swap opted out BEFORE the rename: renaming a swap-enabled buffer runs
     # the swap check, and a live Vim holding the file's swap made `:file`
@@ -356,7 +359,7 @@ def test_show_fresh_with_empty_content_still_wipes_and_relocks(tmp_path: Path) -
     assert commands == [
         ("Escape", False),
         ("Escape", False),
-        (_wipe("'/tmp/f.txt'"), True),
+        (_wipe("/tmp/f.txt"), True),
         ("Enter", False),
         (":setlocal noswapfile", True),
         ("Enter", False),
@@ -650,16 +653,15 @@ def test_reload_from_disk_discards_under_the_swap_answer_and_locks() -> None:
     ]
 
 
-def _wipe(quoted_path: str) -> str:
-    """The exact Ex line an eviction sends to wipe `quoted_path`'s buffer.
+def _wipe(path: str) -> str:
+    """The exact Ex line an eviction sends to wipe `path`'s buffer.
 
     Spelled out rather than imported from tmux_vim._WIPE_BUFFER, for the
     same reason as _goto above: importing would make these assertions agree
-    with whatever the constant happens to say. `quoted_path` is already a
-    Vim single-quoted string literal — that is the whole point of the line,
-    so it is what the caller passes."""
+    with whatever the constant happens to say. The path is typed by handle
+    (helpers.typed_path), never spelled on the line."""
     return (
-        f":let g:vaf_wipe_name = fnamemodify({quoted_path}, ':p')"
+        f":let g:vaf_wipe_name = fnamemodify({typed_path(path)}, ':p')"
         " | let g:vaf_wipe_nr = get(filter(range(1, bufnr('$')),"
         ' \'bufexists(v:val) && bufname(v:val) !=# ""'
         ' && fnamemodify(bufname(v:val), ":p") ==# g:vaf_wipe_name\'), 0, -1)'
@@ -669,21 +671,22 @@ def _wipe(quoted_path: str) -> str:
 
 
 def _rename(path: str, *, adopted: bool = False) -> str:
-    """show_fresh's `:file {path}` rename-in-place line, escaped: `#`, `%`
-    and a space are live on Vim's command line, so the raw path is wrong —
-    it goes through a Vim string literal and fnameescape(), same as _goto,
-    and names the buffer relative to Vim's cwd (tmux_vim._vim_display_name).
-    Spelled out for the same reason as _goto/_wipe above. An adopted Vim's
-    also claims the readonly option for the follower."""
+    """show_fresh's `:file {path}` rename-in-place line: the path is typed by
+    handle into `g:vaf_p` and goes through fnameescape() (`#`, `%` and a
+    space are live on Vim's command line), same as _goto, naming the buffer
+    relative to Vim's cwd (tmux_vim._vim_display_name); the rename is
+    `silent`, so its file-info message does not print the name. Spelled out
+    for the same reason as _goto/_wipe above. An adopted Vim's also claims
+    the readonly option for the follower."""
     claim = " | let b:vaf_user_ro = 0 | let b:vaf_ro_ours = 2" if adopted else ""
-    literal = "'" + path.replace("'", "''") + "'"
-    short = f"fnamemodify({literal}, ':.')"
+    short = "fnamemodify(g:vaf_p, ':.')"
     return (
-        f":exe 'file ' . fnameescape((fnamemodify({short}, ':p') ==# fnamemodify({literal}, ':p')"
-        f" ? {short} : {literal}))"
+        f":let g:vaf_p = {typed_path(path)}"
+        f" | silent exe 'file ' . fnameescape((fnamemodify({short}, ':p')"
+        f" ==# fnamemodify(g:vaf_p, ':p') ? {short} : g:vaf_p))"
         + claim
         + " | setlocal buftype= modifiable noreadonly"
-        + " | noautocmd silent! edit! | silent! %d _"
+        + " | noautocmd silent! edit! | silent! %d _ | unlet! g:vaf_p"
     )
 
 
@@ -713,7 +716,7 @@ def test_close_tab_wipes_by_buffer_number_and_never_double_closes() -> None:
     assert commands == [
         ("Escape", False),
         ("Escape", False),
-        (_wipe("'/tmp/old.py'"), True),
+        (_wipe("/tmp/old.py"), True),
         ("Enter", False),
     ]
     assert not any("tab drop" in text for text, _ in commands)
@@ -734,26 +737,29 @@ def test_close_tab_never_sends_the_path_as_a_bwipeout_pattern() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.close_tab(path)
     texts = [text for text, literal in _sent_commands(run) if literal]
-    assert texts == [_wipe(f"'{path}'")]
+    assert texts == [_wipe(path)]
     assert not any(f"bwipeout! {path}" in text for text in texts)
 
 
-def test_close_tab_quotes_an_apostrophe_in_the_path() -> None:
-    """A Vim single-quoted literal escapes `'` by doubling it, and that is
-    the only escape it has. Get this wrong and the literal terminates early,
-    turning the rest of the path into broken Vim script."""
+def test_close_tab_hands_an_apostrophe_in_the_path_over_intact() -> None:
+    """The path reaches Vim through a handle file, never a Vim string literal
+    on the line: an apostrophe (which a literal would have to double, or
+    terminate early) is not on the command line at all, and the handle
+    holds it verbatim."""
     follower = TmuxVimFollower(pane_id="%2")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.close_tab("/tmp/it's/a.py")
     texts = [text for text, literal in _sent_commands(run) if literal]
-    assert texts == [_wipe("'/tmp/it''s/a.py'")]
+    assert texts == [_wipe("/tmp/it's/a.py")]
+    raw = [call.args[0][6] for call in run.call_args_list if "-l" in call.args[0]]
+    assert raw and not any("it's" in text or "it''s" in text for text in raw)
 
 
 def test_show_fresh_in_new_tab_opens_tab_before_renaming(
     sent: list[str], follower: TmuxVimFollower
 ) -> None:
     follower.show_fresh("/tmp/new.py", "line1\n", in_new_tab=True)
-    wipe = sent.index("text::" + _wipe("'/tmp/new.py'"))
+    wipe = sent.index("text::" + _wipe("/tmp/new.py"))
     tabnew = sent.index("text:::tabnew")
     rename = sent.index("text::" + _rename("/tmp/new.py"))
     assert wipe < tabnew < rename

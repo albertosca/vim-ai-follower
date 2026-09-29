@@ -47,6 +47,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from helpers import resolve_typed_paths, typed_path
+
 from vim_ai_follower import control
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.diff import EditOp, compute_edit_script
@@ -62,23 +64,34 @@ def _goto(path: str) -> str:
     the same guard (tests/test_tmux_swap_choice.py); it is part of the
     literal, so it belongs in this spelling too."""
     return (
-        ":let g:vaf_p = '" + path.replace("'", "''") + "'"
-        " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
+        ":let g:vaf_p = "
+        + typed_path(path)
+        + " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
         " && fnamemodify(bufname(v:val), '':p'') ==# fnamemodify(g:vaf_p, '':p'')'), 0, -1)"
         ' | exe "augroup vim_ai_follower_swap"'
         " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
         ' | exe "augroup END"'
         " | try"
-        " | if g:vaf_n < 0 | exe 'tab drop ' . fnameescape((fnamemodify(fnamemodify(g:vaf_p, ':.'),"
-        " ':p') ==# fnamemodify(g:vaf_p, ':p') ? fnamemodify(g:vaf_p, ':.') : g:vaf_p))"
+        " | if g:vaf_n < 0 | exe 'silent tab drop ' . fnameescape("
+        "(fnamemodify(fnamemodify(g:vaf_p, ':.'), ':p') ==# fnamemodify(g:vaf_p, ':p')"
+        " ? fnamemodify(g:vaf_p, ':.') : g:vaf_p))"
         " | elseif g:vaf_n != bufnr('%')"
-        " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'tab sbuffer ' . g:vaf_n"
+        " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'silent tab sbuffer ' . g:vaf_n"
         " | endif"
         r" | catch /^Vim\%((\a\+)\)\=:E37:/"
         ' | finally | exe "autocmd! vim_ai_follower_swap"'
         ' | exe "augroup! vim_ai_follower_swap"'
         " | unlet! g:vaf_p g:vaf_n | endtry"
     )
+
+
+def _raw_commands(run_mock: MagicMock) -> list[tuple[str, bool]]:
+    """(text, literal) pairs as sent, handle reads unresolved."""
+    return [
+        (call.args[0][6], True) if "-l" in call.args[0] else (call.args[0][4], False)
+        for call in run_mock.call_args_list
+        if call.args[0][:4] == ["tmux", "send-keys", "-t", "%2"]
+    ]
 
 
 def _sent_commands(run_mock: MagicMock) -> list[tuple[str, bool]]:
@@ -89,7 +102,7 @@ def _sent_commands(run_mock: MagicMock) -> list[tuple[str, bool]]:
         if cmd[:4] != ["tmux", "send-keys", "-t", "%2"]:
             continue
         if "-l" in cmd:
-            commands.append((cmd[6], True))
+            commands.append((resolve_typed_paths(cmd[6]), True))
         else:
             commands.append((cmd[4], False))
     return commands
@@ -139,24 +152,33 @@ def test_the_guard_catches_e37_only_and_hands_the_path_to_fnameescape() -> None:
     keeps it matching (the error still reads `Vim(drop):E37:`). And the
     path never reaches `tab drop` bare: as a raw argument `#`/`%`/`$` were
     expanded, a space split it in two and a glob opened a sibling
-    (tests/test_integration_goto_file_escaping.py). It goes in as a Vim
-    single-quoted literal — only `'` needs doubling there — and Vim's own
-    fnameescape() does the rest. The literal is bound once to a variable,
+    (tests/test_integration_goto_file_escaping.py). It is not on the line
+    at all: Vim reads it from a handle file (tmux_vim._typed_path, so the
+    command-line echo never shows the absolute path) into a variable, and
+    Vim's own fnameescape() does the rest. The variable is bound once,
     because the same path also feeds the by-number buffer lookup."""
-    line = _goto("/tmp/a b#c%d'e.py")
-    assert line.startswith(":let g:vaf_p = '/tmp/a b#c%d''e.py' | ")
+    path = "/tmp/a b#c%d'e.py"
+    follower = TmuxVimFollower(pane_id="%2")
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        follower.goto_file(path)
+    raw = [text for text, literal in _raw_commands(run) if literal]
+    assert len(raw) == 1
+    line = raw[0]
+    assert "a b#c" not in line
+    assert resolve_typed_paths(line) == _goto(path)
+    assert resolve_typed_paths(line).startswith(f":let g:vaf_p = {typed_path(path)} | ")
     assert (
-        " | exe 'tab drop ' . fnameescape((fnamemodify(fnamemodify(g:vaf_p, ':.'), ':p')"
+        " | exe 'silent tab drop ' . fnameescape((fnamemodify(fnamemodify(g:vaf_p, ':.'), ':p')"
         " ==# fnamemodify(g:vaf_p, ':p') ? fnamemodify(g:vaf_p, ':.') : g:vaf_p)) | "
     ) in line
     assert line.endswith(" | unlet! g:vaf_p g:vaf_n | endtry")
     assert r"^Vim\%((\a\+)\)\=:E37:" in line
-    # Its only occurrence is that single-quoted literal — never inside the
-    # swap hook's double-quoted exe segments, where `\` and `"` would bite.
-    assert line.count("/tmp/a b#c%d''e.py") == 1
+    # The handle is read exactly once, outside the swap hook's double-quoted
+    # exe segments, where `\` and `"` would bite.
+    assert line.count("readfile(") == 1
     quoted_segments = line.split('"')[1::2]
     assert quoted_segments, "expected the swap hook's exe-quoted segments"
-    assert not any("a b#c" in segment for segment in quoted_segments)
+    assert not any("readfile" in segment for segment in quoted_segments)
 
 
 def test_ensure_showing_navigates_through_the_guard() -> None:

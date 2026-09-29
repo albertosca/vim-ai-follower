@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import re
 from collections.abc import Callable
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from vim_ai_follower import state
@@ -82,3 +85,28 @@ def route_exec_lua(nvim: MagicMock, *, buffer: int, display_name: str) -> None:
         return answers[code]
 
     nvim.exec_lua.side_effect = answer
+
+
+# The expression the tmux backend types in place of a path: a read of the
+# one-shot handle file that holds it (tmux_vim._typed_path). Spelled out
+# rather than imported, like the command literals the tests pin.
+_TYPED_PATH = re.compile(r"""join\(readfile\('((?:[^']|'')*)', 'b'\), "\\n"\)""")
+
+
+def typed_path(path: object) -> str:
+    """What resolve_typed_paths leaves in a sent line where the tmux backend
+    typed `path` by handle. Never Vim syntax, so a line that spelled the path
+    itself can never match an expectation built from this."""
+    return f"<typed-path {path}>"
+
+
+def resolve_typed_paths(text: str) -> str:
+    """`text` with every handle read replaced by typed_path(<what the handle
+    holds>). The handle must exist and hold the exact bytes: reading it is
+    how the test knows which file the line names."""
+
+    def resolve(match: re.Match[str]) -> str:
+        handle = Path(match.group(1).replace("''", "'"))
+        return typed_path(os.fsdecode(handle.read_bytes()))
+
+    return _TYPED_PATH.sub(resolve, text)
