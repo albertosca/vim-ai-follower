@@ -622,6 +622,7 @@ def test_live_pause_resume_renavigates_to_the_animating_files_tab(
 def test_registered_keybinding_command_pauses_via_run_shell(
     tmux_session: str,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
     wait_until: Callable[..., bool],
 ) -> None:
     # Executes the EXACT command string cmd_start registered, through
@@ -631,6 +632,18 @@ def test_registered_keybinding_command_pauses_via_run_shell(
     # display-message around the pre-expanded "%N" eats the "%" and
     # resolves the wrong target, so claude-follow exits 1 and no signal
     # file ever appears.
+    #
+    # Everything here targets the fixture's PRIVATE server: prove it before
+    # the in-process start, rather than trusting the env.
+    socket_path = subprocess.run(
+        ["tmux", "display-message", "-p", "#{socket_path}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert Path(socket_path).resolve().is_relative_to(Path(os.environ["TMUX_TMPDIR"]).resolve()), (
+        f"tmux answered from {socket_path}, not the fixture's private server"
+    )
     #
     # Burn a few global pane ids first, so the pane's numeric id has no
     # matching window index — on a pristine server "%0" eaten down to "0"
@@ -647,6 +660,19 @@ def test_registered_keybinding_command_pauses_via_run_shell(
         subprocess.run(["tmux", "kill-window", "-t", window_id], check=True)
     origin_pane = _pane_ids(tmux_session)[0]
     monkeypatch.setenv("TMUX_PANE", origin_pane)
+    # The binding must run THIS checkout's wrapper. Without the plugin root,
+    # keybindings re-anchors a linked worktree's wrapper into the main
+    # checkout, and the test would exercise code other than the one under
+    # test.
+    wrapper = Path(__file__).resolve().parents[1] / "bin" / "claude-follow"
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(wrapper.parents[1]))
+    # The spawned claude-follow is a separate process that the in-process
+    # cache.CACHE_DIR patch cannot reach: it resolves the cache from HOME.
+    # run-shell jobs take the server's GLOBAL environment, so give it a
+    # throwaway HOME there — never the developer's own cache.
+    home = tmp_path / "home"
+    home.mkdir()
+    subprocess.run(["tmux", "set-environment", "-g", "HOME", str(home)], check=True)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
     window_id = _window_id(origin_pane)
@@ -664,28 +690,18 @@ def test_registered_keybinding_command_pauses_via_run_shell(
         if shlex.split(line)[:4] == ["bind-key", "-T", "prefix", "P"]
     )
     bound_command = shlex.split(listing)[-1]
+    assert str(wrapper) in bound_command, f"the binding runs another wrapper: {bound_command}"
 
-    # The spawned claude-follow is a separate process using the REAL home
-    # cache dir (the in-process cache.CACHE_DIR patch can't reach it), so
-    # assert there and clean up in a finally.
-    real_cache = Path.home() / ".cache" / "claude-vim-follower"
-    signal_path = real_cache / f"{window_id}.pause"
-    marker_path = real_cache / f"{window_id}.animating"
-    signal_path.unlink(missing_ok=True)
-    real_cache.mkdir(parents=True, exist_ok=True)
-    marker_path.write_text(str(os.getpid()))  # else pause is an honest no-op
-    try:
-        subprocess.run(
-            ["tmux", "run-shell", "-t", origin_pane, bound_command],
-            check=True,
-        )
-        assert wait_until(signal_path.exists, timeout=5.0), (
-            "the registered binding's command did not produce a pause signal "
-            f"for its own window ({window_id})"
-        )
-    finally:
-        signal_path.unlink(missing_ok=True)
-        marker_path.unlink(missing_ok=True)
+    child_cache = home / ".cache" / "claude-vim-follower"
+    signal_path = child_cache / f"{window_id}.pause"
+    child_cache.mkdir(parents=True)
+    # Else pause is an honest no-op: it signals only a live animation.
+    (child_cache / f"{window_id}.animating").write_text(str(os.getpid()))
+    subprocess.run(["tmux", "run-shell", "-t", origin_pane, bound_command], check=True)
+    assert wait_until(signal_path.exists, timeout=5.0), (
+        "the registered binding's command did not produce a pause signal "
+        f"for its own window ({window_id})"
+    )
 
 
 def test_apply_edit_validates_a_file_with_pre_session_content(
