@@ -18,7 +18,18 @@ from vim_ai_follower.backends import tmux_vim
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.tmux import TmuxPane
 
-_HANDLE = re.compile(r"""^join\(readfile\('([^']*)','b'\),"\\n"\)$""")
+# What _typed_path types for a handle named by its absolute path; `g:x` is
+# the variable these tests read into.
+_READ_TAIL = (
+    r""" \| let g:x = filereadable\(g:vaf_h\) \? join\(readfile\(g:vaf_h,'b'\),"\\n"\) : ''"""
+    r""" \| call delete\(g:vaf_h\)$"""
+)
+_HANDLE = re.compile(r"""^let g:vaf_h = '([^']*)'""" + _READ_TAIL)
+
+
+def _read(pane_id: str, path: str) -> str:
+    return tmux_vim._typed_path(pane_id, path, "g:x")
+
 
 # Every byte a Vim string literal or a line-oriented read could mangle: a
 # quote, a backslash, a newline, a CR, a trailing newline, a byte that is not
@@ -42,7 +53,7 @@ def _handle(expression: str) -> Path:
 
 @pytest.mark.parametrize("path", HOSTILE)
 def test_the_handle_holds_the_exact_bytes_and_the_line_does_not_spell_them(path: str) -> None:
-    expression = tmux_vim._typed_path("%3", path)
+    expression = _read("%3", path)
     handle = _handle(expression)
     assert handle.parent == cache.CACHE_DIR
     assert re.fullmatch(r"p3-[0-9a-f]{6}", handle.name)
@@ -56,14 +67,17 @@ def test_every_call_gets_its_own_handle() -> None:
     """Vim runs a line some time after the send returns, so a shared file
     could be rewritten first: close_tab's eviction then show_fresh's
     pre-wipe would both wipe the NEW file."""
-    first = _handle(tmux_vim._typed_path("%3", "/tmp/evicted.py"))
-    second = _handle(tmux_vim._typed_path("%3", "/tmp/new.py"))
+    first = _handle(_read("%3", "/tmp/evicted.py"))
+    second = _handle(_read("%3", "/tmp/new.py"))
     assert first != second
     assert first.read_bytes() == b"/tmp/evicted.py"
     assert second.read_bytes() == b"/tmp/new.py"
 
 
-def test_old_handles_of_the_same_pane_are_swept_and_nothing_else() -> None:
+def test_old_handles_of_every_pane_are_swept_and_nothing_else() -> None:
+    """Vim deletes a handle as it reads it; the ones no Vim ever read (a
+    pane that died, a Vim on another HOME) are swept by any pane's next
+    call, never anything that is not a handle."""
     cache.CACHE_DIR.mkdir(parents=True)
     old = cache.CACHE_DIR / "p3-dead00"
     old.write_bytes(b"/tmp/old.py")
@@ -71,18 +85,22 @@ def test_old_handles_of_the_same_pane_are_swept_and_nothing_else() -> None:
     recent.write_bytes(b"/tmp/recent.py")
     other_pane = cache.CACHE_DIR / "p33-dead00"
     other_pane.write_bytes(b"/tmp/other.py")
-    unrelated = cache.CACHE_DIR / "probe-3.txt"
-    unrelated.write_bytes(b"x\n")
+    unrelated = [
+        cache.CACHE_DIR / name
+        for name in ("probe-3.txt", "p3-notahandle", "home-3", "h3-dead00", "landed-3.txt")
+    ]
     long_ago = time.time() - tmux_vim._PATH_HANDLE_MAX_AGE_SECONDS - 60
-    for path in (old, other_pane, unrelated):
+    for path in unrelated:
+        path.write_bytes(b"x\n")
+    for path in (old, other_pane, *unrelated):
         os.utime(path, (long_ago, long_ago))
 
-    new = _handle(tmux_vim._typed_path("%3", "/tmp/f.py"))
+    new = _handle(_read("%5", "/tmp/f.py"))
 
     assert not old.exists()
+    assert not other_pane.exists()
     assert recent.exists()
-    assert other_pane.exists()
-    assert unrelated.exists()
+    assert all(path.exists() for path in unrelated)
     assert new.exists()
 
 
@@ -90,7 +108,7 @@ def test_a_handle_another_hook_swept_first_is_not_an_error() -> None:
     cache.CACHE_DIR.mkdir(parents=True)
     ghost = cache.CACHE_DIR / "p3-dead00"
     with patch.object(Path, "glob", return_value=iter([ghost])):
-        expression = tmux_vim._typed_path("%3", "/tmp/f.py")
+        expression = _read("%3", "/tmp/f.py")
     assert _handle(expression).read_bytes() == b"/tmp/f.py"
 
 
@@ -101,14 +119,14 @@ def test_a_taken_handle_name_is_never_reused() -> None:
     with patch(
         "vim_ai_follower.backends.tmux_vim.secrets.token_hex", side_effect=["aaaaaa", "bbbbbb"]
     ):
-        handle = _handle(tmux_vim._typed_path("%3", "/tmp/f.py"))
+        handle = _handle(_read("%3", "/tmp/f.py"))
     assert handle.name == "p3-bbbbbb"
     assert taken.read_bytes() == b"/tmp/someone-else.py"
 
 
 # --- HOME-relative cache paths (tmux_vim._cache_file / _vim_shares_home) ---
 
-_HOME_HANDLE = re.compile(r"""^join\(readfile\(expand\('~/([^']*)',1\),'b'\),"\\n"\)$""")
+_HOME_HANDLE = re.compile(r"""^let g:vaf_h = expand\('~/([^']*)',1\)""" + _READ_TAIL)
 
 
 @pytest.fixture
@@ -144,7 +162,7 @@ def _typed(pane_pid: int | None, creates_marker: bool, sent: list[str], path: st
         patch.object(TmuxPane, "send_key"),
         patch.object(tmux_vim, "_PROBE_TIMEOUT_SECONDS", 0.05),
     ):
-        return tmux_vim._typed_path("%3", path)
+        return _read("%3", path)
 
 
 def test_a_vim_on_the_hooks_home_gets_the_handle_home_relative(home_cache: Path) -> None:
@@ -279,7 +297,7 @@ def test_a_real_vim_reads_the_handle_back_to_the_exact_path(path: str, tmp_path:
     """The expression evaluated by a real Vim gives back the path's exact
     bytes: written out split on newlines, which writefile() joins with
     newlines again, so the dump is byte-for-byte the string."""
-    expression = tmux_vim._typed_path("%3", path)
+    expression = _read("%3", path)
     out = tmp_path / "out.bin"
     subprocess.run(
         [
@@ -290,7 +308,9 @@ def test_a_real_vim_reads_the_handle_back_to_the_exact_path(path: str, tmp_path:
             "NONE",
             "-es",
             "-c",
-            f"call writefile(split({expression}, \"\\n\", 1), '{out}', 'b')",
+            expression,
+            "-c",
+            f"call writefile(split(g:x, \"\\n\", 1), '{out}', 'b')",
             "-c",
             "qa!",
         ],
@@ -313,7 +333,7 @@ def test_a_real_vim_with_a_wildignore_over_the_cache_still_answers_and_reads(
         marker=tmux_vim._vim_string("~/.cache/claude-vim-follower/h3-0c0c0c")
     )
     with patch.object(tmux_vim, "_vim_shares_home", return_value=True):
-        expression = tmux_vim._typed_path("%3", "/tmp/it's here.py")
+        expression = _read("%3", "/tmp/it's here.py")
     assert "expand('~/" in expression, expression
     out = tmp_path / "out.bin"
     subprocess.run(
@@ -329,7 +349,9 @@ def test_a_real_vim_with_a_wildignore_over_the_cache_still_answers_and_reads(
             "-c",
             question.removeprefix(":"),
             "-c",
-            f"call writefile(split({expression}, \"\\n\", 1), '{out}', 'b')",
+            expression,
+            "-c",
+            f"call writefile(split(g:x, \"\\n\", 1), '{out}', 'b')",
             "-c",
             "qa!",
         ],
@@ -339,3 +361,115 @@ def test_a_real_vim_with_a_wildignore_over_the_cache_still_answers_and_reads(
     )
     assert (cache.CACHE_DIR / "h3-0c0c0c").exists()
     assert out.read_bytes() == b"/tmp/it's here.py"
+
+
+@pytest.mark.integration
+def test_a_real_vim_deletes_the_handle_it_read_and_reads_a_missing_one_as_empty(
+    tmp_path: Path,
+) -> None:
+    """The handle goes on the line that reads it. A handle that is not there
+    (swept, or named on a HOME this Vim does not have) reads as '' with no
+    error at all: measured, readfile()'s E484 inside a one-line try aborts
+    the rest of the line, catch included, and prompts at 49 columns."""
+    cache.CACHE_DIR.mkdir(parents=True)
+    read = _read("%3", "/tmp/f.py")
+    (handle,) = cache.CACHE_DIR.iterdir()
+    missing = _read("%3", "/tmp/g.py")
+    (cache.CACHE_DIR / missing.split("'")[1]).unlink()
+    out = tmp_path / "out.txt"
+    subprocess.run(
+        [
+            "vim",
+            "-Nu",
+            "NONE",
+            "-i",
+            "NONE",
+            "-es",
+            "-c",
+            read + " | let g:first = g:x",
+            "-c",
+            missing + " | let g:after = 'ran'",
+            "-c",
+            f"call writefile([g:first, '[' . g:x . ']', g:after]"
+            f" + split(execute('messages'), \"\\n\"), '{out}')",
+            "-c",
+            "qa!",
+        ],
+        check=True,
+        timeout=30,
+        stdin=subprocess.DEVNULL,
+    )
+    lines = out.read_text().splitlines()
+    assert lines[:3] == ["/tmp/f.py", "[]", "ran"]
+    assert not any("E484" in line for line in lines), lines
+    assert not handle.exists()
+
+
+@pytest.mark.integration
+def test_a_real_vim_wipes_nothing_when_the_wipes_handle_is_missing(tmp_path: Path) -> None:
+    """A missing handle reads as '', and `fnamemodify('', ':p')` is the
+    working directory with a trailing slash: exactly the `:p` of a buffer
+    opened on `.`, which the eviction must not take for its target."""
+    missing = tmux_vim._typed_path("%3", "/tmp/evicted.py", "g:vaf_wipe_name")
+    _handle(missing.replace("g:vaf_wipe_name", "g:x")).unlink()
+    out = tmp_path / "out.txt"
+    subprocess.run(
+        [
+            "vim",
+            "-Nu",
+            "NONE",
+            "-i",
+            "NONE",
+            "-es",
+            "-c",
+            "edit .",
+            "-c",
+            "let g:dot = bufnr('%')",
+            "-c",
+            tmux_vim._WIPE_BUFFER.format(read=missing).removeprefix(":"),
+            "-c",
+            f"call writefile([bufexists(g:dot) . '', bufname(g:dot)], '{out}')",
+            "-c",
+            "qa!",
+        ],
+        check=True,
+        timeout=30,
+        stdin=subprocess.DEVNULL,
+        cwd=tmp_path,
+    )
+    assert out.read_text().splitlines() == ["1", "."]
+
+
+@pytest.mark.integration
+def test_a_real_vims_probe_gives_no_answer_when_its_handle_is_missing(tmp_path: Path) -> None:
+    """No answer is "unknown" (retype or leave alone); an answer for the path
+    '' would be the empty list of a missing buffer, "absent"."""
+    missing = tmux_vim._typed_path("%3", "/tmp/f.py", "g:vaf_p")
+    Path(missing.split("'")[1]).unlink()
+    probe = tmp_path / "probe.txt"
+    line = tmux_vim._PROBE_BUFFER.format(
+        read=missing, nonce="'n0nce'", probe=tmux_vim._vim_string(str(probe))
+    )
+    out = tmp_path / "out.txt"
+    subprocess.run(
+        [
+            "vim",
+            "-Nu",
+            "NONE",
+            "-i",
+            "NONE",
+            "-es",
+            "-c",
+            line.removeprefix(":"),
+            "-c",
+            f"call writefile(['ran'] + split(execute('messages'), \"\\n\"), '{out}')",
+            "-c",
+            "qa!",
+        ],
+        check=True,
+        timeout=30,
+        stdin=subprocess.DEVNULL,
+    )
+    assert not probe.exists()
+    assert out.read_text().splitlines()[0] == "ran"
+    assert "E484" not in out.read_text()

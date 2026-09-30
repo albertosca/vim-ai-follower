@@ -16,9 +16,9 @@ from unittest.mock import MagicMock, patch
 from unittest.mock import call as mock_call
 
 import pytest
+from helpers import landed_line, resolve_typed_paths, typed_path
 from helpers import make_mock_tmux_run as _mock_tmux_run
 from helpers import register_fake_follower as _register_fake_follower
-from helpers import resolve_typed_paths, typed_path
 
 from vim_ai_follower import (
     cache,
@@ -58,9 +58,8 @@ def _goto(path: object) -> str:
     around it answers the swap-file ATTENTION dialog with `(E)dit anyway`
     and is torn down in `finally`."""
     return (
-        ":let g:vaf_p = "
-        + typed_path(path)
-        + " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
+        ":let g:vaf_p = " + typed_path(path) + " | if g:vaf_p !=# ''"
+        " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
         " && fnamemodify(bufname(v:val), '':p'') ==# fnamemodify(g:vaf_p, '':p'')'), 0, -1)"
         ' | exe "augroup vim_ai_follower_swap"'
         " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
@@ -74,12 +73,12 @@ def _goto(path: object) -> str:
         " | endif"
         r" | catch /^Vim\%((\a\+)\)\=:E37:/"
         ' | finally | exe "autocmd! vim_ai_follower_swap"'
-        ' | exe "augroup! vim_ai_follower_swap"'
-        " | unlet! g:vaf_p g:vaf_n | endtry"
+        ' | exe "augroup! vim_ai_follower_swap" | endtry'
+        " | endif | unlet! g:vaf_h g:vaf_n"
     )
 
 
-def _rename(path: object) -> str:
+def _rename(path: object, *, in_new_tab: bool = False) -> str:
     """show_fresh's `:file {path}` rename-in-place line, escaped: `#`, `%`
     and a space are live on Vim's command line, so the path goes through a
     Vim string literal and fnameescape(), same as _goto above, and names
@@ -90,10 +89,12 @@ def _rename(path: object) -> str:
     short = "fnamemodify(g:vaf_p, ':.')"
     return (
         f":let g:vaf_p = {typed_path(path)}"
+        " | if g:vaf_p !=# ''" + (" | tabnew" if in_new_tab else "") + " | setlocal noswapfile"
         f" | silent exe 'file ' . fnameescape((fnamemodify({short}, ':p')"
         f" ==# fnamemodify(g:vaf_p, ':p') ? {short} : g:vaf_p))"
         " | setlocal buftype= modifiable noreadonly"
-        " | noautocmd silent! edit! | silent! %d _ | unlet! g:vaf_p"
+        " | noautocmd silent! edit! | silent! %d _"
+        " | endif | unlet! g:vaf_h"
     )
 
 
@@ -284,6 +285,7 @@ def test_hook_post_skips_binary_files_on_first_open(tmp_path: Path) -> None:
 
     assert _literal_sends(run) == [
         _goto(target),
+        landed_line(),
         _RELOAD_IF_CLEAN,
         ":setlocal readonly nomodifiable",
     ]
@@ -306,6 +308,7 @@ def test_hook_post_shows_a_rewritten_binary_on_subsequent_edit(tmp_path: Path) -
 
     assert _literal_sends(run) == [
         _goto(target),
+        landed_line(),
         _RELOAD_IF_CLEAN,
         ":setlocal readonly nomodifiable",
     ]
@@ -325,6 +328,7 @@ def test_hook_post_read_without_offset_does_not_navigate(tmp_path: Path) -> None
 
     assert _literal_sends(run) == [
         _goto(target),
+        landed_line(),
         _RELOAD_IF_CLEAN,
         ":setlocal readonly nomodifiable",
     ]
@@ -365,6 +369,7 @@ def test_hook_post_read_navigates_to_file_and_offset(tmp_path: Path) -> None:
 
     assert _literal_sends(run) == [
         _goto(target),
+        landed_line(),
         _RELOAD_IF_CLEAN,
         ":setlocal readonly nomodifiable",
         ":2",
@@ -388,6 +393,7 @@ def test_hook_post_read_navigates_even_when_file_already_current(tmp_path: Path)
 
     assert _literal_sends(run) == [
         _goto(target),
+        landed_line(),
         _RELOAD_IF_CLEAN,
         ":setlocal readonly nomodifiable",
         ":2",
@@ -425,8 +431,9 @@ def test_edit_of_untracked_file_is_fresh_and_updates_open_files(tmp_path: Path) 
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = _literal_sends(run)
-    assert ":tabnew" in sends  # show_fresh's in_new_tab, since shown_any was already True
-    assert _rename(b) in sends  # renamed in place — the show_fresh path, not apply_edit
+    # show_fresh's in_new_tab (shown_any was already True), on its guarded
+    # rename line — the show_fresh path, not apply_edit
+    assert _rename(b, in_new_tab=True) in sends
 
     refreshed = state.FollowerState.read("@1")
     assert refreshed is not None
@@ -491,9 +498,9 @@ def test_eviction_closes_oldest_tab_before_animating(
     # buffer-name pattern — and the wipe closes the tab by itself, so there
     # is no :tabclose (see close_tab).
     close_index = next(
-        i for i, text in enumerate(sends) if f"fnamemodify({typed_path(a)}, ':p')" in text
+        i for i, text in enumerate(sends) if f"let g:vaf_wipe_name = {typed_path(a)}" in text
     )
-    rename_index = sends.index(_rename(c))
+    rename_index = sends.index(_rename(c, in_new_tab=True))
     assert close_index < rename_index
     assert not any("tabclose" in text for text in sends)
 
@@ -1762,7 +1769,7 @@ def test_stale_file_is_retyped_fresh_and_the_mark_clears_on_completion(tmp_path:
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = _literal_sends(run)
-    assert _rename(file_path) in sends  # show_fresh's rename in place
+    assert _rename(file_path, in_new_tab=True) in sends  # show_fresh's rename
     assert _goto(file_path) not in sends  # ...not apply_edit's navigation
     assert "print('after')" in sends
 

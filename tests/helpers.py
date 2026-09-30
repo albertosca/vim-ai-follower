@@ -87,20 +87,45 @@ def route_exec_lua(nvim: MagicMock, *, buffer: int, display_name: str) -> None:
     nvim.exec_lua.side_effect = answer
 
 
-# The expression the tmux backend types in place of a path: a read of the
-# one-shot handle file that holds it (tmux_vim._typed_path), named either by
-# its absolute path or HOME-relative through expand(). Spelled out rather than
-# imported, like the command literals the tests pin.
+# The statements the tmux backend types in place of a path: a guarded read of
+# the one-shot handle file that holds it, then its deletion
+# (tmux_vim._typed_path), the handle named either by its absolute path or
+# HOME-relative through expand(). Spelled out rather than imported, like the
+# command literals the tests pin.
 _TYPED_PATH = re.compile(
-    r"""join\(readfile\((?:'((?:[^']|'')*)'|expand\('~/([^']*)',1\)),'b'\),"\\n"\)"""
+    r"""let g:vaf_h = (?:'((?:[^']|'')*)'|expand\('~/([^']*)',1\))"""
+    r""" \| let (\S+) = filereadable\(g:vaf_h\) \? join\(readfile\(g:vaf_h,'b'\),"\\n"\) : ''"""
+    r""" \| call delete\(g:vaf_h\)"""
 )
 
 
 def typed_path(path: object) -> str:
     """What resolve_typed_paths leaves in a sent line where the tmux backend
-    typed `path` by handle. Never Vim syntax, so a line that spelled the path
-    itself can never match an expectation built from this."""
+    typed `path` by handle, as the value of the read's variable (the rest of
+    the statement is `let <var> = `). Never Vim syntax, so a line that spelled
+    the path itself can never match an expectation built from this."""
     return f"<typed-path {path}>"
+
+
+# The landing confirmation a navigating line ends with
+# (tmux_vim._ANSWER_IF_LANDED): a fresh nonce written to the pane's
+# `landed-<pane>.txt`, named either way like a handle.
+_LANDED = re.compile(
+    r"""writefile\(\['[0-9a-f]{8}'\], (?:'[^']*/landed-[0-9]+\.txt'"""
+    r"""|expand\('~/[^']*/landed-[0-9]+\.txt',1\))\)"""
+)
+LANDED = "writefile([<nonce>], <landed>)"
+
+
+def landed_line() -> str:
+    """What resolve_typed_paths leaves of the landing check that follows every
+    navigating line (tmux_vim._ANSWER_IF_LANDED)."""
+    return (
+        ":if get(g:, 'vaf_p', '') !=# ''"
+        " && fnamemodify(bufname('%'), ':p') ==# fnamemodify(g:vaf_p, ':p')"
+        f" | try | let g:vaf_r = {LANDED} | catch | endtry | endif"
+        " | unlet! g:vaf_p g:vaf_r"
+    )
 
 
 def resolve_typed_paths(text: str) -> str:
@@ -109,11 +134,11 @@ def resolve_typed_paths(text: str) -> str:
     how the test knows which file the line names."""
 
     def resolve(match: re.Match[str]) -> str:
-        absolute, home_relative = match.groups()
+        absolute, home_relative, variable = match.groups()
         if absolute is not None:
             handle = Path(absolute.replace("''", "'"))
         else:
             handle = Path.home() / home_relative
-        return typed_path(os.fsdecode(handle.read_bytes()))
+        return f"let {variable} = {typed_path(os.fsdecode(handle.read_bytes()))}"
 
-    return _TYPED_PATH.sub(resolve, text)
+    return _LANDED.sub(LANDED, _TYPED_PATH.sub(resolve, text))

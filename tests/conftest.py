@@ -13,6 +13,7 @@ import pytest
 from helpers import resolve_typed_paths
 
 from vim_ai_follower import cache, config, hooks, session, snapshot
+from vim_ai_follower.backends import tmux_vim
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 
 
@@ -31,6 +32,20 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[N
     monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
     yield
     hooks.logger.handlers.clear()
+
+
+@pytest.fixture(autouse=True)
+def vim_confirms_landing(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The tmux backend waits for its Vim to confirm that a navigation landed
+    (tmux_vim._await_landing) and refuses to go on otherwise. A unit test's
+    Vim is a mocked subprocess that never answers, so the confirmation is
+    taken as given here; integration tests, whose Vim is real, and tests
+    marked @pytest.mark.real_landing keep the real wait."""
+    if request.node.get_closest_marker("integration") or request.node.get_closest_marker(
+        "real_landing"
+    ):
+        return
+    monkeypatch.setattr(tmux_vim, "_await_landing", lambda *_args: None)
 
 
 @pytest.fixture(autouse=True)

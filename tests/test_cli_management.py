@@ -761,8 +761,8 @@ def test_stop_on_adopted_pane_closes_tabs_but_not_the_pane() -> None:
     # close_tab resolves a buffer NUMBER and wipes that, because `:bwipeout!`
     # takes a buffer-name PATTERN, not a path: `app/[slug]/page.tsx` is a
     # character class and the wipe silently misses (measured 2026-09-22).
-    assert any(f"fnamemodify({typed_path(a)}, ':p')" in text for text in literal)
-    assert any(f"fnamemodify({typed_path(b)}, ':p')" in text for text in literal)
+    assert any(f"let g:vaf_wipe_name = {typed_path(a)}" in text for text in literal)
+    assert any(f"let g:vaf_wipe_name = {typed_path(b)}" in text for text in literal)
     # bwipeout alone closes each tab; a :tabclose here would eat an
     # innocent neighbor (see close_tab).
     assert not any("tabclose" in text for text in literal)

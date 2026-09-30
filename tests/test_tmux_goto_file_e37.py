@@ -47,7 +47,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from helpers import resolve_typed_paths, typed_path
+from helpers import landed_line, resolve_typed_paths, typed_path
 
 from vim_ai_follower import control
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
@@ -64,9 +64,8 @@ def _goto(path: str) -> str:
     the same guard (tests/test_tmux_swap_choice.py); it is part of the
     literal, so it belongs in this spelling too."""
     return (
-        ":let g:vaf_p = "
-        + typed_path(path)
-        + " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
+        ":let g:vaf_p = " + typed_path(path) + " | if g:vaf_p !=# ''"
+        " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
         " && fnamemodify(bufname(v:val), '':p'') ==# fnamemodify(g:vaf_p, '':p'')'), 0, -1)"
         ' | exe "augroup vim_ai_follower_swap"'
         " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
@@ -80,8 +79,8 @@ def _goto(path: str) -> str:
         " | endif"
         r" | catch /^Vim\%((\a\+)\)\=:E37:/"
         ' | finally | exe "autocmd! vim_ai_follower_swap"'
-        ' | exe "augroup! vim_ai_follower_swap"'
-        " | unlet! g:vaf_p g:vaf_n | endtry"
+        ' | exe "augroup! vim_ai_follower_swap" | endtry'
+        " | endif | unlet! g:vaf_h g:vaf_n"
     )
 
 
@@ -138,7 +137,15 @@ def test_goto_file_sends_the_guarded_line_with_no_python_branching() -> None:
         ("Enter", False),
         ("Escape", False),
         ("Escape", False),
+        (landed_line(), True),
+        ("Enter", False),
+        ("Escape", False),
+        ("Escape", False),
         (_goto("/tmp/clean_and_elsewhere.py"), True),
+        ("Enter", False),
+        ("Escape", False),
+        ("Escape", False),
+        (landed_line(), True),
         ("Enter", False),
     ]
 
@@ -162,7 +169,8 @@ def test_the_guard_catches_e37_only_and_hands_the_path_to_fnameescape() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.goto_file(path)
     raw = [text for text, literal in _raw_commands(run) if literal]
-    assert len(raw) == 1
+    assert len(raw) == 2  # the navigation, then its landing check
+    assert resolve_typed_paths(raw[1]) == landed_line()
     line = raw[0]
     assert "a b#c" not in line
     assert resolve_typed_paths(line) == _goto(path)
@@ -171,7 +179,7 @@ def test_the_guard_catches_e37_only_and_hands_the_path_to_fnameescape() -> None:
         " | exe 'silent tab drop ' . fnameescape((fnamemodify(fnamemodify(g:vaf_p, ':.'), ':p')"
         " ==# fnamemodify(g:vaf_p, ':p') ? fnamemodify(g:vaf_p, ':.') : g:vaf_p)) | "
     ) in line
-    assert line.endswith(" | unlet! g:vaf_p g:vaf_n | endtry")
+    assert line.endswith(" | endif | unlet! g:vaf_h g:vaf_n")
     assert r"^Vim\%((\a\+)\)\=:E37:" in line
     # The handle is read exactly once, outside the swap hook's double-quoted
     # exe segments, where `\` and `"` would bite.

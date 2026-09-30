@@ -74,7 +74,9 @@ def _goto_line(path: str = "/tmp/f.py") -> str:
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.goto_file(path)
     sent = _sent_text(run)
-    assert len(sent) == 1, f"goto_file sent {len(sent)} literal payloads: {sent!r}"
+    # The navigation, then its landing check (tmux_vim._ANSWER_IF_LANDED).
+    assert len(sent) == 2, f"goto_file sent {len(sent)} literal payloads: {sent!r}"
+    assert "landed-2.txt" in sent[1]
     return sent[0]
 
 
@@ -136,7 +138,9 @@ def test_teardown_is_in_finally_so_it_survives_the_e37_path() -> None:
     assert finally_at < line.index(f'exe "autocmd! {_GROUP}"')
     assert finally_at < line.index(f'exe "augroup! {_GROUP}"')
     assert line.index("catch /") < finally_at
-    assert line.endswith("| endtry")
+    # ...and the try closes right after the teardown.
+    teardown_end = line.index(f'exe "augroup! {_GROUP}"') + len(f'exe "augroup! {_GROUP}"')
+    assert line[teardown_end:].startswith(" | endtry")
 
 
 def test_the_hook_is_marked_once() -> None:

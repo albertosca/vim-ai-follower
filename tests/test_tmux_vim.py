@@ -4,8 +4,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from helpers import landed_line, resolve_typed_paths, typed_path
 from helpers import register_fake_follower as _register_fake_follower
-from helpers import resolve_typed_paths, typed_path
 
 from vim_ai_follower import cache, config, control, state
 from vim_ai_follower.animate import AnimationResult
@@ -27,9 +27,8 @@ def _goto(path: str) -> str:
     comment for why the bang, `:silent!`, 'hidden', 'shortmess' and
     'noswapfile' were all measured and rejected."""
     return (
-        ":let g:vaf_p = "
-        + typed_path(path)
-        + " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
+        ":let g:vaf_p = " + typed_path(path) + " | if g:vaf_p !=# ''"
+        " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
         " && fnamemodify(bufname(v:val), '':p'') ==# fnamemodify(g:vaf_p, '':p'')'), 0, -1)"
         ' | exe "augroup vim_ai_follower_swap"'
         " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
@@ -43,8 +42,8 @@ def _goto(path: str) -> str:
         " | endif"
         r" | catch /^Vim\%((\a\+)\)\=:E37:/"
         ' | finally | exe "autocmd! vim_ai_follower_swap"'
-        ' | exe "augroup! vim_ai_follower_swap"'
-        " | unlet! g:vaf_p g:vaf_n | endtry"
+        ' | exe "augroup! vim_ai_follower_swap" | endtry'
+        " | endif | unlet! g:vaf_h g:vaf_n"
     )
 
 
@@ -154,10 +153,17 @@ def test_apply_edit_unlocks_the_buffer_only_for_the_animation(tmp_path: Path) ->
     assert commands[1] == ("Escape", False)
     assert commands[2] == (_goto("/tmp/f.txt"), True)
     assert commands[3] == ("Enter", False)
-    assert commands[4] == (":silent! CocDisable", True)
-    assert commands[5] == ("Enter", False)
-    assert commands[6] == (_UNLOCK_FOR_ANIMATION, True)
-    assert commands[7] == ("Enter", False)
+    # ...and nothing more until Vim confirms it landed there
+    assert commands[4:8] == [
+        ("Escape", False),
+        ("Escape", False),
+        (landed_line(), True),
+        ("Enter", False),
+    ]
+    assert commands[8] == (":silent! CocDisable", True)
+    assert commands[9] == ("Enter", False)
+    assert commands[10] == (_UNLOCK_FOR_ANIMATION, True)
+    assert commands[11] == ("Enter", False)
     assert commands[-2:] == [(_RELOCK_SYNCED, True), ("Enter", False)]
     assert result == AnimationResult("completed", 1)
 
@@ -320,25 +326,31 @@ def test_show_fresh_renames_in_place_and_reads_the_file_only_on_the_rename_line(
     assert commands[1] == ("Escape", False)
     assert commands[2] == (_wipe("/tmp/f.txt"), True)
     assert commands[3] == ("Enter", False)
-    # swap opted out BEFORE the rename: renaming a swap-enabled buffer runs
-    # the swap check, and a live Vim holding the file's swap made `:file`
-    # raise E325 (see tests/test_e2e_battery_tranche2.py)
-    assert commands[4] == (":setlocal noswapfile", True)
+    # swap opted out BEFORE the rename, on the rename's own guarded line:
+    # renaming a swap-enabled buffer runs the swap check, and a live Vim
+    # holding the file's swap made `:file` raise E325 (see
+    # tests/test_e2e_battery_tranche2.py). The rename line also resets
+    # buftype (a plugin scratch screen's buftype=nofile, inherited, made the
+    # user's :w fail with E382) BEFORE its read, which only reads a file into
+    # a regular buffer.
+    assert commands[4] == (_rename("/tmp/f.txt"), True)
     assert commands[5] == ("Enter", False)
-    # the rename line also resets buftype (a plugin scratch screen's
-    # buftype=nofile, inherited, made the user's :w fail with E382) BEFORE
-    # its read, which only reads a file into a regular buffer
-    assert commands[6] == (_rename("/tmp/f.txt"), True)
-    assert commands[7] == ("Enter", False)
-    assert commands[8] == (":filetype detect", True)
-    assert commands[9] == ("Enter", False)
-    assert commands[10] == (":silent! CocDisable", True)
+    # ...and nothing more until Vim confirms the rename landed
+    assert commands[6:10] == [
+        ("Escape", False),
+        ("Escape", False),
+        (landed_line(), True),
+        ("Enter", False),
+    ]
+    assert commands[10] == (":filetype detect", True)
     assert commands[11] == ("Enter", False)
-    assert commands[12] == (_UNLOCK_FOR_ANIMATION, True)
+    assert commands[12] == (":silent! CocDisable", True)
     assert commands[13] == ("Enter", False)
-    assert commands[14] == (":%d", True)
+    assert commands[14] == (_UNLOCK_FOR_ANIMATION, True)
     assert commands[15] == ("Enter", False)
-    assert commands[16] == ("i", True)
+    assert commands[16] == (":%d", True)
+    assert commands[17] == ("Enter", False)
+    assert commands[18] == ("i", True)
     assert commands[-2:] == [(_RELOCK_READONLY_SYNCED, True), ("Enter", False)]
     typed = [text for text, literal in commands if literal]
     assert "a" in typed
@@ -361,9 +373,11 @@ def test_show_fresh_with_empty_content_still_wipes_and_relocks(tmp_path: Path) -
         ("Escape", False),
         (_wipe("/tmp/f.txt"), True),
         ("Enter", False),
-        (":setlocal noswapfile", True),
-        ("Enter", False),
         (_rename("/tmp/f.txt"), True),
+        ("Enter", False),
+        ("Escape", False),
+        ("Escape", False),
+        (landed_line(), True),
         ("Enter", False),
         (":filetype detect", True),
         ("Enter", False),
@@ -526,10 +540,14 @@ def test_resume_navigates_to_the_pending_files_tab_first(tmp_path: Path) -> None
     ):
         follower.resume(pending)
     commands = _sent_commands(run)
-    assert commands[:4] == [
+    assert commands[:8] == [
         ("Escape", False),
         ("Escape", False),
         (_goto("/tmp/f.py"), True),
+        ("Enter", False),
+        ("Escape", False),
+        ("Escape", False),
+        (landed_line(), True),
         ("Enter", False),
     ]
 
@@ -587,6 +605,10 @@ def test_goto_file_sends_normal_mode_then_tab_drop() -> None:
         ("Escape", False),
         (_goto("/tmp/a.py"), True),
         ("Enter", False),
+        ("Escape", False),
+        ("Escape", False),
+        (landed_line(), True),
+        ("Enter", False),
     ]
 
 
@@ -599,6 +621,10 @@ def test_ensure_showing_navigates_by_tab_drop_and_locks() -> None:
         ("Escape", False),
         ("Escape", False),
         (_goto("/tmp/a.py"), True),
+        ("Enter", False),
+        ("Escape", False),
+        ("Escape", False),
+        (landed_line(), True),
         ("Enter", False),
         (_RELOAD_IF_CLEAN, True),
         ("Enter", False),
@@ -617,6 +643,10 @@ def test_reload_and_relock_navigates_then_reloads_and_relocks() -> None:
         ("Escape", False),
         ("Escape", False),
         (_goto("/tmp/a.py"), True),
+        ("Enter", False),
+        ("Escape", False),
+        ("Escape", False),
+        (landed_line(), True),
         ("Enter", False),
         (_RELOAD_DISCARDING, True),
         ("Enter", False),
@@ -637,6 +667,10 @@ def test_reload_from_disk_discards_under_the_swap_answer_and_locks() -> None:
         ("Escape", False),
         ("Escape", False),
         (_goto("/tmp/a.py"), True),
+        ("Enter", False),
+        ("Escape", False),
+        ("Escape", False),
+        (landed_line(), True),
         ("Enter", False),
         (
             ':exe "augroup vim_ai_follower_swap"'
@@ -661,16 +695,18 @@ def _wipe(path: str) -> str:
     with whatever the constant happens to say. The path is typed by handle
     (helpers.typed_path), never spelled on the line."""
     return (
-        f":let g:vaf_wipe_name = fnamemodify({typed_path(path)}, ':p')"
+        f":let g:vaf_wipe_name = {typed_path(path)}"
+        " | let g:vaf_wipe_name = g:vaf_wipe_name ==# ''"
+        " ? '' : fnamemodify(g:vaf_wipe_name, ':p')"
         " | let g:vaf_wipe_nr = get(filter(range(1, bufnr('$')),"
         ' \'bufexists(v:val) && bufname(v:val) !=# ""'
         ' && fnamemodify(bufname(v:val), ":p") ==# g:vaf_wipe_name\'), 0, -1)'
         " | if g:vaf_wipe_nr > 0 | exe 'silent! bwipeout! ' . g:vaf_wipe_nr | endif"
-        " | unlet! g:vaf_wipe_name g:vaf_wipe_nr"
+        " | unlet! g:vaf_h g:vaf_wipe_name g:vaf_wipe_nr"
     )
 
 
-def _rename(path: str, *, adopted: bool = False) -> str:
+def _rename(path: str, *, adopted: bool = False, in_new_tab: bool = False) -> str:
     """show_fresh's `:file {path}` rename-in-place line: the path is typed by
     handle into `g:vaf_p` and goes through fnameescape() (`#`, `%` and a
     space are live on Vim's command line), same as _goto, naming the buffer
@@ -682,11 +718,13 @@ def _rename(path: str, *, adopted: bool = False) -> str:
     short = "fnamemodify(g:vaf_p, ':.')"
     return (
         f":let g:vaf_p = {typed_path(path)}"
+        " | if g:vaf_p !=# ''" + (" | tabnew" if in_new_tab else "") + " | setlocal noswapfile"
         f" | silent exe 'file ' . fnameescape((fnamemodify({short}, ':p')"
         f" ==# fnamemodify(g:vaf_p, ':p') ? {short} : g:vaf_p))"
         + claim
         + " | setlocal buftype= modifiable noreadonly"
-        + " | noautocmd silent! edit! | silent! %d _ | unlet! g:vaf_p"
+        + " | noautocmd silent! edit! | silent! %d _"
+        + " | endif | unlet! g:vaf_h"
     )
 
 
@@ -760,16 +798,17 @@ def test_show_fresh_in_new_tab_opens_tab_before_renaming(
 ) -> None:
     follower.show_fresh("/tmp/new.py", "line1\n", in_new_tab=True)
     wipe = sent.index("text::" + _wipe("/tmp/new.py"))
-    tabnew = sent.index("text:::tabnew")
-    rename = sent.index("text::" + _rename("/tmp/new.py"))
-    assert wipe < tabnew < rename
+    # The tab opens on the rename's guarded line, only once the path read
+    # succeeded, never as a line of its own (a stray tab on a failed read).
+    rename = sent.index("text::" + _rename("/tmp/new.py", in_new_tab=True))
+    assert wipe < rename
+    assert "text:::tabnew" not in sent
 
 
 def test_show_fresh_default_renames_in_place(sent: list[str], follower: TmuxVimFollower) -> None:
     follower.show_fresh("/tmp/new.py", "line1\n")
-    # Vim commands carry their own leading ":", so the recorded entry has
-    # three colons — "text::tabnew" would never match anything.
-    assert "text:::tabnew" not in sent
+    assert "text::" + _rename("/tmp/new.py") in sent
+    assert not any("tabnew" in entry for entry in sent)
 
 
 _SWAP_BACK_ON = (
@@ -817,7 +856,11 @@ def test_show_fresh_turns_swap_back_on_after_the_rename_only_when_adopted(
     commands = _sent_commands(run)
     rename = commands.index((_rename("/tmp/f.txt", adopted=adopted), True))
     if adopted:
-        assert commands[rename + 1 : rename + 4] == [
+        assert commands[rename + 1 : rename + 8] == [
+            ("Enter", False),
+            ("Escape", False),
+            ("Escape", False),
+            (landed_line(), True),
             ("Enter", False),
             (_SWAP_BACK_ON, True),
             ("Enter", False),
