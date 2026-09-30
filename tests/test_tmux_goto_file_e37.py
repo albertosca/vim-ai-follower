@@ -47,7 +47,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from helpers import landed_line, resolve_typed_paths, typed_path
+from helpers import acting_start, landed_line, resolve_typed_paths
 
 from vim_ai_follower import control
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
@@ -64,9 +64,11 @@ def _goto(path: str) -> str:
     the same guard (tests/test_tmux_swap_choice.py); it is part of the
     literal, so it belongs in this spelling too."""
     return (
-        ":let g:vaf_p = " + typed_path(path) + " | if g:vaf_p !=# ''"
+        acting_start(path) + " | if g:vaf_p !=# ''"
+        " | let g:vaf_q = resolve(fnamemodify(g:vaf_p, ':p'))"
         " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
-        " && fnamemodify(bufname(v:val), '':p'') ==# fnamemodify(g:vaf_p, '':p'')'), 0, -1)"
+        " && index([g:vaf_q], resolve(fnamemodify(bufname(v:val), '':p'')), 0, &fileignorecase)"
+        " == 0'), 0, -1)"
         ' | exe "augroup vim_ai_follower_swap"'
         " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
         ' | exe "augroup END"'
@@ -74,13 +76,15 @@ def _goto(path: str) -> str:
         " | if g:vaf_n < 0 | exe 'silent tab drop ' . fnameescape("
         "(fnamemodify(fnamemodify(g:vaf_p, ':.'), ':p') ==# fnamemodify(g:vaf_p, ':p')"
         " ? fnamemodify(g:vaf_p, ':.') : g:vaf_p))"
+        " | let g:vaf_landed = bufnr('%')"
         " | elseif g:vaf_n != bufnr('%')"
         " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'silent tab sbuffer ' . g:vaf_n"
         " | endif"
-        r" | catch /^Vim\%((\a\+)\)\=:E37:/"
+        r" | catch /^Vim\%((\a\+)\)\=:E37:/ | let g:vaf_landed = bufnr('%')"
         ' | finally | exe "autocmd! vim_ai_follower_swap"'
         ' | exe "augroup! vim_ai_follower_swap" | endtry'
-        " | endif | unlet! g:vaf_h g:vaf_n"
+        " | if g:vaf_n > 0 && bufnr('%') == g:vaf_n | let g:vaf_landed = g:vaf_n | endif"
+        " | endif | unlet! g:vaf_h g:vaf_n g:vaf_q"
     )
 
 
@@ -174,12 +178,12 @@ def test_the_guard_catches_e37_only_and_hands_the_path_to_fnameescape() -> None:
     line = raw[0]
     assert "a b#c" not in line
     assert resolve_typed_paths(line) == _goto(path)
-    assert resolve_typed_paths(line).startswith(f":let g:vaf_p = {typed_path(path)} | ")
+    assert resolve_typed_paths(line).startswith(acting_start(path) + " | ")
     assert (
         " | exe 'silent tab drop ' . fnameescape((fnamemodify(fnamemodify(g:vaf_p, ':.'), ':p')"
         " ==# fnamemodify(g:vaf_p, ':p') ? fnamemodify(g:vaf_p, ':.') : g:vaf_p)) | "
     ) in line
-    assert line.endswith(" | endif | unlet! g:vaf_h g:vaf_n")
+    assert line.endswith(" | endif | unlet! g:vaf_h g:vaf_n g:vaf_q")
     assert r"^Vim\%((\a\+)\)\=:E37:" in line
     # The handle is read exactly once, outside the swap hook's double-quoted
     # exe segments, where `\` and `"` would bite.

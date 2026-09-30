@@ -7,6 +7,8 @@ from helpers import make_mock_tmux_run as _mock_tmux_run
 from helpers import register_fake_follower as _register_fake_follower
 
 from vim_ai_follower import cli, commands, control, session, state
+from vim_ai_follower.backends import NavigationFailed
+from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.diff import EditOp
 
 
@@ -537,3 +539,26 @@ def test_interrupt_during_handoff_signals_discard(
     popups = _popup_calls(popen)
     assert len(popups) == 1
     assert any("Discarded" in arg for arg in popups[0])
+
+
+def test_pause_resume_that_cannot_reach_the_file_keeps_the_remainder(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The navigation failed before anything was typed: the remainder is
+    still whole, so it stays recoverable, and the slot is released."""
+    _register_fake_follower("@1", "%2")
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
+    control.save_pending_apply_edit("@1", [op], 0.0, file_path="/tmp/f.py")
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()),
+        patch.object(
+            TmuxVimFollower, "resume", side_effect=NavigationFailed("did not land (no answer)")
+        ),
+    ):
+        assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 1
+
+    assert "could not resume: did not land (no answer)" in capsys.readouterr().err
+    assert control.has_pending_animation("@1") is True
+    assert control.is_animating("@1") is False

@@ -7,7 +7,7 @@ import sys
 from typing import Literal
 
 from vim_ai_follower import cache, config, control, keybindings, snapshot, tmux
-from vim_ai_follower.backends import get_follower
+from vim_ai_follower.backends import NavigationFailed, get_follower
 from vim_ai_follower.backends.nvim_connect import (
     NvimNeverListened,
     StandaloneLaunchFailed,
@@ -455,7 +455,14 @@ def cmd_pause(env: dict[str, str]) -> int:
         )
         assert isinstance(follower, TmuxVimFollower)  # only tmux ever persists pending state
         _show_popup(current, "Resuming", session.in_tmux)
-        result = follower.resume(pending)
+        try:
+            result = follower.resume(pending)
+        except NavigationFailed as failure:
+            # Nothing was typed after the failed navigation: the remainder is
+            # still whole, so it stays recoverable.
+            _resave_pending(session.window_id, pending)
+            print(f"claude-follow: could not resume: {failure}", file=sys.stderr)
+            return 1
     finally:
         control.clear_animating(session.window_id)
     print(f"claude-follow: resumed ({result.outcome})")

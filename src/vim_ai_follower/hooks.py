@@ -15,7 +15,13 @@ from typing import Any, Protocol
 
 from vim_ai_follower import binding, cache, config, control, keybindings, snapshot, writer_cue
 from vim_ai_follower import diff as diff_module
-from vim_ai_follower.backends import BufferProbe, Follower, get_follower, nvim_connect
+from vim_ai_follower.backends import (
+    BufferProbe,
+    Follower,
+    NavigationFailed,
+    get_follower,
+    nvim_connect,
+)
 from vim_ai_follower.backends.nvim_connect import (
     StandaloneLaunchFailed,
     launch_standalone_nvim,
@@ -948,12 +954,30 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         return 0
     try:
         return _animate_edit(payload, session, file_path, cfg)
+    except NavigationFailed as failure:
+        _skip_unreachable_edit(session.window_id, file_path, payload, failure)
+        return 0
     finally:
         # Release this window's animation slot on every path — including the
         # ones that never start an animation (no follower, unreadable/binary
         # file), which would otherwise hold the marker until the process
         # exits and needlessly block a concurrent hook in the meantime.
         control.clear_animating(session.window_id)
+
+
+def _skip_unreachable_edit(
+    window_id: str, file_path: str, payload: dict[str, Any], failure: NavigationFailed
+) -> None:
+    """The follower could not confirm it reached file_path's buffer, so the
+    backend sent nothing that would act on another one. Skip the edit: one
+    log line, the "Writing..." cue taken down, and the file marked stale so
+    its next touch retypes it (or, in an adopted editor, probes it) instead
+    of typing a diff onto a buffer this edit never reached."""
+    logger.warning("skipped the animation of %s: %s", file_path, failure)
+    FollowerState.mark_stale(window_id, file_path)
+    current = FollowerState.read(window_id)
+    if current is not None:
+        _refresh_writer_cue(window_id, current.target, payload)
 
 
 def _consume_pending_catchup(
@@ -1416,7 +1440,13 @@ def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
     # window_id is what lets an NvimFollower read its FollowerState: without
     # it an adopted nvim looks dedicated (locked on Read, its prompts answered).
     follower = get_follower(current.backend, current.target, window_id=session.window_id)
-    _ensure_buffer(session.window_id, follower, file_path)
+    try:
+        _ensure_buffer(session.window_id, follower, file_path)
+    except NavigationFailed as failure:
+        # Nothing after the failed navigation may run: the offset jump would
+        # move the cursor in whatever buffer is current.
+        logger.warning("skipped the Read of %s: %s", file_path, failure)
+        return 0
     _touch_and_evict(session.window_id, follower, current, file_path, cfg.max_tabs)
     offset = _tool_input(payload).get("offset")
     if isinstance(offset, int) and offset > 0:

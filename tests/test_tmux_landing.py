@@ -7,39 +7,50 @@ stale HOME answer, is tests/test_integration_stale_home.py."""
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from vim_ai_follower import cache
-from vim_ai_follower.backends import tmux_vim
-from vim_ai_follower.backends.tmux_vim import NavigationFailed, TmuxVimFollower
+from vim_ai_follower.backends import NavigationFailed, tmux_vim
+from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.diff import compute_edit_script
 from vim_ai_follower.tmux import TmuxPane
 
 pytestmark = pytest.mark.real_landing
 
-_LANDED = re.compile(r"writefile\(\['([0-9a-f]{8})'\], '([^']*)'\)")
+_LANDED = re.compile(r"writefile\(\[g:vaf_r, '([0-9a-f]{8})'\], '([^']*)'\)")
+_HANDLE = re.compile(r"let g:vaf_h = '([^']*)'")
 
 
-def _vim(lands: bool, sent: list[str]) -> object:
-    """A send_text double playing Vim: a navigating line's confirmation is
-    written only when `lands`."""
+def _vim(verdict: str | None, sent: list[str], reads_handle: bool = True) -> object:
+    """A send_text double playing Vim. A path read deletes its handle, as
+    Vim's does (unless `reads_handle` is off: a Vim whose `~` misses it). The
+    landing check writes `verdict` with the token, or nothing when None."""
 
     def send_text(self: object, text: str) -> None:
         sent.append(text)
+        handle = _HANDLE.search(text)
+        if reads_handle and handle:
+            Path(handle.group(1)).unlink(missing_ok=True)
         match = _LANDED.search(text)
-        if lands and match:
-            Path(match.group(2)).write_text(match.group(1) + "\n")
+        if verdict is not None and match:
+            Path(match.group(2)).write_text(f"{verdict}\n{match.group(1)}\n")
 
     return send_text
 
 
-def _run(lands: bool, call: object) -> tuple[list[str], BaseException | None]:
+def _run(
+    lands: bool | str | None, call: object, reads_handle: bool = True
+) -> tuple[list[str], BaseException | None]:
+    """lands: True answers "landed", False answers nothing, a string is the
+    verdict itself."""
+    verdict = "landed" if lands is True else None if lands is False else lands
     sent: list[str] = []
     with (
-        patch.object(TmuxPane, "send_text", _vim(lands, sent)),
+        patch.object(TmuxPane, "send_text", _vim(verdict, sent, reads_handle)),
         patch.object(TmuxPane, "send_key"),
         patch.object(TmuxPane, "pane_pid", return_value=None),
         patch.object(tmux_vim, "_PROBE_TIMEOUT_SECONDS", 0.05),
@@ -66,9 +77,10 @@ ACTING = {
 }
 
 
+@pytest.mark.parametrize("verdict", [False, "elsewhere", "unread", "garbage"])
 @pytest.mark.parametrize("name", ACTING)
-def test_nothing_follows_a_navigation_vim_did_not_confirm(name: str) -> None:
-    sent, error = _run(False, ACTING[name])
+def test_nothing_follows_a_navigation_vim_did_not_confirm(name: str, verdict: bool | str) -> None:
+    sent, error = _run(verdict, ACTING[name])
     assert isinstance(error, NavigationFailed)
     # The confirming line is the last thing typed: no lock, unlock, `%d`,
     # filetype, keystrokes or relock after it.
@@ -92,7 +104,7 @@ def test_a_stale_confirmation_from_an_earlier_line_is_not_taken() -> None:
     answer.parent.mkdir(parents=True)
 
     def stale(self: object, text: str) -> None:
-        answer.write_text("00000000\n")
+        answer.write_text("landed\n00000000\n")
 
     with (
         patch.object(TmuxPane, "send_text", stale),
@@ -118,16 +130,36 @@ def _record(marker_exists: bool) -> tuple[Path, Path]:
     return record, marker
 
 
-def test_a_failed_navigation_forgets_a_yes() -> None:
+def test_no_answer_and_an_unread_handle_forget_a_yes() -> None:
+    """What a Vim whose `~` is not the hook's leaves: it reads no handle and
+    its answer goes nowhere."""
     record, _marker = _record(True)
-    _sent, error = _run(False, ACTING["goto_file"])
+    _sent, error = _run(False, ACTING["goto_file"], reads_handle=False)
     assert isinstance(error, NavigationFailed)
+    assert "asking about its HOME again" in str(error)
     assert not record.exists()
+    assert not list(cache.CACHE_DIR.glob("p2-*"))  # the unread handle goes
+
+
+@pytest.mark.parametrize(
+    ("lands", "reason"),
+    [
+        (False, "no answer"),  # the handle was read: a busy or slow Vim
+        ("elsewhere", "it landed on another buffer"),
+        ("unread", "its path handle could not be read"),
+    ],
+)
+def test_other_failures_keep_a_yes(lands: bool | str, reason: str) -> None:
+    record, _marker = _record(True)
+    _sent, error = _run(lands, ACTING["goto_file"])
+    assert isinstance(error, NavigationFailed)
+    assert f"({reason})" in str(error)
+    assert record.exists()
 
 
 def test_a_failed_navigation_keeps_a_no() -> None:
     record, _marker = _record(False)
-    _sent, error = _run(False, ACTING["goto_file"])
+    _sent, error = _run(False, ACTING["goto_file"], reads_handle=False)
     assert isinstance(error, NavigationFailed)
     assert record.exists()
 
@@ -141,7 +173,9 @@ def test_a_confirmed_navigation_keeps_a_yes() -> None:
 
 def test_an_unanswered_probe_forgets_a_yes() -> None:
     record, _marker = _record(True)
-    _sent, error = _run(False, lambda follower: follower.probe_buffer("/tmp/t.py", "a\n"))
+    _sent, error = _run(
+        False, lambda follower: follower.probe_buffer("/tmp/t.py", "a\n"), reads_handle=False
+    )
     assert error is None
     assert not record.exists()
 
@@ -158,9 +192,56 @@ def test_an_unanswered_readonly_question_forgets_a_yes() -> None:
 
 
 def test_distrust_without_a_record_or_with_a_garbled_one_does_nothing() -> None:
-    tmux_vim._distrust_home("%2")
+    assert tmux_vim._distrust_home("%2") is False
     record = cache.CACHE_DIR / "home-2"
     record.parent.mkdir(parents=True)
     record.write_text("garbled")
-    tmux_vim._distrust_home("%2")
+    assert tmux_vim._distrust_home("%2") is False
     assert record.read_text() == "garbled"
+
+
+@pytest.mark.integration
+def test_a_real_vims_landing_left_by_an_earlier_line_never_confirms_a_new_one(
+    tmp_path: Path,
+) -> None:
+    """The check answers "landed" only for the landing its own acting line
+    recorded: an earlier line's leftovers (a garbled one never reached its
+    `unlet!`) name another token, and an acting line forgets them first."""
+    answer = tmp_path / "landed.txt"
+    out = tmp_path / "out.txt"
+    missing = tmp_path / "gone"
+    check = tmux_vim._ANSWER_IF_LANDED.format(
+        nonce="'bbbbbbbb'", answer=tmux_vim._vim_string(str(answer))
+    ).removeprefix(":")
+    start = tmux_vim._ACTING_START.format(
+        token="'cccccccc'",
+        read=f"let g:vaf_h = {tmux_vim._vim_string(str(missing))} | let g:vaf_p = ''",
+    ).removeprefix(":")
+    subprocess.run(
+        [
+            "vim",
+            "-Nu",
+            "NONE",
+            "-i",
+            "NONE",
+            "-es",
+            "-c",
+            "let g:vaf_p = '/x' | let g:vaf_k = 'aaaaaaaa' | let g:vaf_landed = bufnr('%')",
+            "-c",
+            check,
+            "-c",
+            f"call writefile(readfile('{answer}'), '{out}')",
+            "-c",
+            "let g:vaf_landed = bufnr('%') | let g:vaf_k = 'cccccccc'",
+            "-c",
+            start,
+            "-c",
+            f"call writefile(readfile('{out}') + [exists('g:vaf_landed') . ''], '{out}')",
+            "-c",
+            "qa!",
+        ],
+        check=True,
+        timeout=30,
+        stdin=subprocess.DEVNULL,
+    )
+    assert out.read_text().splitlines() == ["elsewhere", "bbbbbbbb", "0"]

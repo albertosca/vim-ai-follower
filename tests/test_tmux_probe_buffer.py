@@ -30,10 +30,12 @@ def _probe_line(path: str, probe: Path) -> str:
     test_tmux_vim._goto."""
     return (
         ":try | let g:vaf_p = " + typed_path(path) + " | if g:vaf_p !=# ''"
+        " | let g:vaf_q = resolve(fnamemodify(g:vaf_p, ':p'))"
         " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
-        " && fnamemodify(bufname(v:val), '':p'') ==# fnamemodify(g:vaf_p, '':p'')'), 0, -1)"
+        " && index([g:vaf_q], resolve(fnamemodify(bufname(v:val), '':p'')), 0, &fileignorecase)"
+        " == 0'), 0, -1)"
         f" | let g:vaf_r = writefile(getbufline(g:vaf_n, 1, '$') + ['{NONCE}'], '{probe}')"
-        " | endif | catch | finally | unlet! g:vaf_h g:vaf_p g:vaf_n g:vaf_r | endtry"
+        " | endif | catch | finally | unlet! g:vaf_h g:vaf_p g:vaf_n g:vaf_q g:vaf_r | endtry"
     )
 
 

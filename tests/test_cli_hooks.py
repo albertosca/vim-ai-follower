@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 from unittest.mock import call as mock_call
 
 import pytest
-from helpers import landed_line, resolve_typed_paths, typed_path
+from helpers import acting_start, landed_line, resolve_typed_paths, typed_path
 from helpers import make_mock_tmux_run as _mock_tmux_run
 from helpers import register_fake_follower as _register_fake_follower
 
@@ -33,7 +33,7 @@ from vim_ai_follower import (
     writer_cue,
 )
 from vim_ai_follower.animate import AnimationResult
-from vim_ai_follower.backends import nvim_connect
+from vim_ai_follower.backends import NavigationFailed, nvim_connect
 from vim_ai_follower.backends.nvim import _FIND_BUFFER_LUA
 from vim_ai_follower.backends.nvim_connect import NvimNeverListened
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
@@ -58,9 +58,11 @@ def _goto(path: object) -> str:
     around it answers the swap-file ATTENTION dialog with `(E)dit anyway`
     and is torn down in `finally`."""
     return (
-        ":let g:vaf_p = " + typed_path(path) + " | if g:vaf_p !=# ''"
+        acting_start(path) + " | if g:vaf_p !=# ''"
+        " | let g:vaf_q = resolve(fnamemodify(g:vaf_p, ':p'))"
         " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
-        " && fnamemodify(bufname(v:val), '':p'') ==# fnamemodify(g:vaf_p, '':p'')'), 0, -1)"
+        " && index([g:vaf_q], resolve(fnamemodify(bufname(v:val), '':p'')), 0, &fileignorecase)"
+        " == 0'), 0, -1)"
         ' | exe "augroup vim_ai_follower_swap"'
         " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
         ' | exe "augroup END"'
@@ -68,13 +70,15 @@ def _goto(path: object) -> str:
         " | if g:vaf_n < 0 | exe 'silent tab drop ' . fnameescape("
         "(fnamemodify(fnamemodify(g:vaf_p, ':.'), ':p') ==# fnamemodify(g:vaf_p, ':p')"
         " ? fnamemodify(g:vaf_p, ':.') : g:vaf_p))"
+        " | let g:vaf_landed = bufnr('%')"
         " | elseif g:vaf_n != bufnr('%')"
         " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'silent tab sbuffer ' . g:vaf_n"
         " | endif"
-        r" | catch /^Vim\%((\a\+)\)\=:E37:/"
+        r" | catch /^Vim\%((\a\+)\)\=:E37:/ | let g:vaf_landed = bufnr('%')"
         ' | finally | exe "autocmd! vim_ai_follower_swap"'
         ' | exe "augroup! vim_ai_follower_swap" | endtry'
-        " | endif | unlet! g:vaf_h g:vaf_n"
+        " | if g:vaf_n > 0 && bufnr('%') == g:vaf_n | let g:vaf_landed = g:vaf_n | endif"
+        " | endif | unlet! g:vaf_h g:vaf_n g:vaf_q"
     )
 
 
@@ -88,10 +92,13 @@ def _rename(path: object, *, in_new_tab: bool = False) -> str:
     change to it."""
     short = "fnamemodify(g:vaf_p, ':.')"
     return (
-        f":let g:vaf_p = {typed_path(path)}"
-        " | if g:vaf_p !=# ''" + (" | tabnew" if in_new_tab else "") + " | setlocal noswapfile"
+        acting_start(path)
+        + " | if g:vaf_p !=# ''"
+        + (" | tabnew" if in_new_tab else "")
+        + " | setlocal noswapfile"
         f" | silent exe 'file ' . fnameescape((fnamemodify({short}, ':p')"
         f" ==# fnamemodify(g:vaf_p, ':p') ? {short} : g:vaf_p))"
+        " | let g:vaf_landed = bufnr('%')"
         " | setlocal buftype= modifiable noreadonly"
         " | noautocmd silent! edit! | silent! %d _"
         " | endif | unlet! g:vaf_h"
@@ -2462,3 +2469,82 @@ def test_hook_post_read_builds_the_follower_with_its_window_id(
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
     assert captured.get("window_id") == "@1"
+
+
+def _hook_log_lines() -> list[str]:
+    return hooks.LOG_PATH.read_text().splitlines() if hooks.LOG_PATH.exists() else []
+
+
+def test_an_edit_the_follower_cannot_reach_is_skipped_in_one_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """NavigationFailed means the backend typed nothing after the failed
+    navigation. The hook skips the edit: rc 0, one log line and no
+    traceback, the "Writing..." cue taken down, the slot released, and the
+    file marked stale so its next touch does not type a diff onto a buffer
+    this edit never reached."""
+    target = tmp_path / "a.py"
+    target.write_text("x\n")
+    file_path = os.path.realpath(str(target))
+    snapshot.save("@1", file_path, "w\n")
+    _register_fake_follower("@1", "%2", open_files=(file_path,), shown_any=True)
+    surface = MagicMock()
+    monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: surface)
+    failure = NavigationFailed(f"the follower's Vim did not land on {file_path} (no answer)")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch.object(TmuxVimFollower, "probe_buffer", return_value="holds"),
+        patch.object(TmuxVimFollower, "apply_edit", side_effect=failure),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _edit_payload(target, session_id="$1")) == 0
+
+    lines = _hook_log_lines()
+    skipped = [line for line in lines if "skipped the animation" in line]
+    assert len(skipped) == 1, lines
+    assert "(no answer)" in skipped[0]
+    assert not any("Traceback" in line or "crashed" in line for line in lines), lines
+    surface.set_state.assert_called_once_with("Writing...")
+    surface.clear.assert_called_once()
+    refreshed = state.FollowerState.read("@1")
+    assert refreshed is not None
+    assert file_path in refreshed.stale_files
+    assert control.animating_state("@1") is None
+
+
+def test_a_read_the_follower_cannot_reach_moves_no_cursor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    target = tmp_path / "a.py"
+    target.write_text("x\ny\n")
+    _register_fake_follower("@1", "%2", shown_any=True)
+    payload: dict[str, object] = {
+        "tool_name": "Read",
+        "tool_input": {"file_path": str(target), "offset": 2},
+    }
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+        patch.object(
+            TmuxVimFollower, "ensure_showing", side_effect=NavigationFailed("did not land")
+        ),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    assert ":2" not in _literal_sends(run)
+    lines = _hook_log_lines()
+    assert [line for line in lines if "skipped the Read" in line and "did not land" in line]
+    assert not any("Traceback" in line for line in lines), lines
+    refreshed = state.FollowerState.read("@1")
+    assert refreshed is not None
+    assert os.path.realpath(str(target)) not in refreshed.open_files
+
+
+def test_an_unreachable_edit_after_a_concurrent_stop_touches_no_surface(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # `stop` may delete the window's state while the hook runs: the skip still
+    # logs, and there is no surface left to refresh.
+    surface = MagicMock()
+    monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: surface)
+    hooks._skip_unreachable_edit("@gone", "/tmp/a.py", {}, NavigationFailed("x"))
+    surface.clear.assert_not_called()
+    assert "skipped the animation of /tmp/a.py: x" in caplog.text

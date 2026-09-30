@@ -107,24 +107,35 @@ def typed_path(path: object) -> str:
     return f"<typed-path {path}>"
 
 
-# The landing confirmation a navigating line ends with
-# (tmux_vim._ANSWER_IF_LANDED): a fresh nonce written to the pane's
+# The landing check that follows a navigating line (tmux_vim._ANSWER_IF_LANDED):
+# the call's token (random hex, stamped by the acting line as `g:vaf_k` and
+# compared by the check), and the verdict written with it to the pane's
 # `landed-<pane>.txt`, named either way like a handle.
+_TOKEN = re.compile(r"'[0-9a-f]{8}'")
 _LANDED = re.compile(
-    r"""writefile\(\['[0-9a-f]{8}'\], (?:'[^']*/landed-[0-9]+\.txt'"""
+    r"""writefile\(\[g:vaf_r, <token>\], (?:'[^']*/landed-[0-9]+\.txt'"""
     r"""|expand\('~/[^']*/landed-[0-9]+\.txt',1\))\)"""
 )
-LANDED = "writefile([<nonce>], <landed>)"
+LANDED = "writefile([g:vaf_r, <token>], <landed>)"
+
+
+def acting_start(path: object) -> str:
+    """What resolve_typed_paths leaves of the start of a line that must land
+    on `path` (tmux_vim._ACTING_START)."""
+    return (
+        f":unlet! g:vaf_p g:vaf_landed | let g:vaf_k = <token> | let g:vaf_p = {typed_path(path)}"
+    )
 
 
 def landed_line() -> str:
     """What resolve_typed_paths leaves of the landing check that follows every
     navigating line (tmux_vim._ANSWER_IF_LANDED)."""
     return (
-        ":if get(g:, 'vaf_p', '') !=# ''"
-        " && fnamemodify(bufname('%'), ':p') ==# fnamemodify(g:vaf_p, ':p')"
-        f" | try | let g:vaf_r = {LANDED} | catch | endtry | endif"
-        " | unlet! g:vaf_p g:vaf_r"
+        ":let g:vaf_r = get(g:, 'vaf_p', '') ==# '' ? 'unread'"
+        " : get(g:, 'vaf_k', '') ==# <token> && get(g:, 'vaf_landed', -1) == bufnr('%')"
+        " ? 'landed' : 'elsewhere'"
+        f" | try | let g:vaf_r = {LANDED} | catch | endtry"
+        " | unlet! g:vaf_p g:vaf_k g:vaf_landed g:vaf_r"
     )
 
 
@@ -141,4 +152,4 @@ def resolve_typed_paths(text: str) -> str:
             handle = Path.home() / home_relative
         return f"let {variable} = {typed_path(os.fsdecode(handle.read_bytes()))}"
 
-    return _LANDED.sub(LANDED, _TYPED_PATH.sub(resolve, text))
+    return _LANDED.sub(LANDED, _TOKEN.sub("<token>", _TYPED_PATH.sub(resolve, text)))

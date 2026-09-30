@@ -17,6 +17,13 @@ from vim_ai_follower.diff import EditOp
 BufferProbe = Literal["holds", "differs", "absent", "unknown"]
 
 
+class NavigationFailed(RuntimeError):
+    """The editor did not confirm landing on the file a call had to act on,
+    so the call stopped before sending anything that acts on the current
+    buffer (the tmux backend's landing check). The hooks log it in one line
+    and skip the edit; the message says why."""
+
+
 class Follower(Protocol):
     """A target that can show and animate file edits. Multi-file navigation
     is tab-based in both backends: the tmux backend's goto_file sends one

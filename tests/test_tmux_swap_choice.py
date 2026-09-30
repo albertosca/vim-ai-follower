@@ -55,7 +55,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from helpers import resolve_typed_paths, typed_path
+from helpers import acting_start, resolve_typed_paths
 
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 
@@ -173,7 +173,7 @@ def test_the_swap_hook_never_carries_the_path() -> None:
     quoted = line.split('"')[1::2]
     assert quoted, "expected the exe-quoted segments the hook is built from"
     assert not any("readfile" in segment for segment in quoted)
-    assert resolve_typed_paths(line).startswith(f":let g:vaf_p = {typed_path(path)} | ")
+    assert resolve_typed_paths(line).startswith(acting_start(path) + " | ")
     assert "fnameescape((fnamemodify(fnamemodify(g:vaf_p, ':.'), ':p') ==#" in line
 
 

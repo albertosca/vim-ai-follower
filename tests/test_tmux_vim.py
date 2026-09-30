@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from helpers import landed_line, resolve_typed_paths, typed_path
+from helpers import acting_start, landed_line, resolve_typed_paths, typed_path
 from helpers import register_fake_follower as _register_fake_follower
 
 from vim_ai_follower import cache, config, control, state
@@ -27,9 +27,11 @@ def _goto(path: str) -> str:
     comment for why the bang, `:silent!`, 'hidden', 'shortmess' and
     'noswapfile' were all measured and rejected."""
     return (
-        ":let g:vaf_p = " + typed_path(path) + " | if g:vaf_p !=# ''"
+        acting_start(path) + " | if g:vaf_p !=# ''"
+        " | let g:vaf_q = resolve(fnamemodify(g:vaf_p, ':p'))"
         " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
-        " && fnamemodify(bufname(v:val), '':p'') ==# fnamemodify(g:vaf_p, '':p'')'), 0, -1)"
+        " && index([g:vaf_q], resolve(fnamemodify(bufname(v:val), '':p'')), 0, &fileignorecase)"
+        " == 0'), 0, -1)"
         ' | exe "augroup vim_ai_follower_swap"'
         " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
         ' | exe "augroup END"'
@@ -37,13 +39,15 @@ def _goto(path: str) -> str:
         " | if g:vaf_n < 0 | exe 'silent tab drop ' . fnameescape("
         "(fnamemodify(fnamemodify(g:vaf_p, ':.'), ':p') ==# fnamemodify(g:vaf_p, ':p')"
         " ? fnamemodify(g:vaf_p, ':.') : g:vaf_p))"
+        " | let g:vaf_landed = bufnr('%')"
         " | elseif g:vaf_n != bufnr('%')"
         " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'silent tab sbuffer ' . g:vaf_n"
         " | endif"
-        r" | catch /^Vim\%((\a\+)\)\=:E37:/"
+        r" | catch /^Vim\%((\a\+)\)\=:E37:/ | let g:vaf_landed = bufnr('%')"
         ' | finally | exe "autocmd! vim_ai_follower_swap"'
         ' | exe "augroup! vim_ai_follower_swap" | endtry'
-        " | endif | unlet! g:vaf_h g:vaf_n"
+        " | if g:vaf_n > 0 && bufnr('%') == g:vaf_n | let g:vaf_landed = g:vaf_n | endif"
+        " | endif | unlet! g:vaf_h g:vaf_n g:vaf_q"
     )
 
 
@@ -697,10 +701,11 @@ def _wipe(path: str) -> str:
     return (
         f":let g:vaf_wipe_name = {typed_path(path)}"
         " | let g:vaf_wipe_name = g:vaf_wipe_name ==# ''"
-        " ? '' : fnamemodify(g:vaf_wipe_name, ':p')"
+        " ? '' : resolve(fnamemodify(g:vaf_wipe_name, ':p'))"
         " | let g:vaf_wipe_nr = get(filter(range(1, bufnr('$')),"
-        ' \'bufexists(v:val) && bufname(v:val) !=# ""'
-        ' && fnamemodify(bufname(v:val), ":p") ==# g:vaf_wipe_name\'), 0, -1)'
+        ' \'bufexists(v:val) && bufname(v:val) !=# "" && g:vaf_wipe_name !=# ""'
+        ' && index([g:vaf_wipe_name], resolve(fnamemodify(bufname(v:val), ":p")),'
+        " 0, &fileignorecase) == 0'), 0, -1)"
         " | if g:vaf_wipe_nr > 0 | exe 'silent! bwipeout! ' . g:vaf_wipe_nr | endif"
         " | unlet! g:vaf_h g:vaf_wipe_name g:vaf_wipe_nr"
     )
@@ -717,11 +722,14 @@ def _rename(path: str, *, adopted: bool = False, in_new_tab: bool = False) -> st
     claim = " | let b:vaf_user_ro = 0 | let b:vaf_ro_ours = 2" if adopted else ""
     short = "fnamemodify(g:vaf_p, ':.')"
     return (
-        f":let g:vaf_p = {typed_path(path)}"
-        " | if g:vaf_p !=# ''" + (" | tabnew" if in_new_tab else "") + " | setlocal noswapfile"
+        acting_start(path)
+        + " | if g:vaf_p !=# ''"
+        + (" | tabnew" if in_new_tab else "")
+        + " | setlocal noswapfile"
         f" | silent exe 'file ' . fnameescape((fnamemodify({short}, ':p')"
         f" ==# fnamemodify(g:vaf_p, ':p') ? {short} : g:vaf_p))"
         + claim
+        + " | let g:vaf_landed = bufnr('%')"
         + " | setlocal buftype= modifiable noreadonly"
         + " | noautocmd silent! edit! | silent! %d _"
         + " | endif | unlet! g:vaf_h"
