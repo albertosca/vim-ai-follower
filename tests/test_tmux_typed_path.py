@@ -426,7 +426,7 @@ def test_a_real_vim_wipes_nothing_when_the_wipes_handle_is_missing(tmp_path: Pat
             "-c",
             "let g:dot = bufnr('%')",
             "-c",
-            tmux_vim._WIPE_BUFFER.format(read=missing).removeprefix(":"),
+            tmux_vim._WIPE_BUFFER.format(read=missing, folds=0).removeprefix(":"),
             "-c",
             f"call writefile([bufexists(g:dot) . '', bufname(g:dot)], '{out}')",
             "-c",
@@ -448,7 +448,7 @@ def test_a_real_vims_probe_gives_no_answer_when_its_handle_is_missing(tmp_path: 
     Path(missing.split("'")[1]).unlink()
     probe = tmp_path / "probe.txt"
     line = tmux_vim._PROBE_BUFFER.format(
-        read=missing, nonce="'n0nce'", probe=tmux_vim._vim_string(str(probe))
+        read=missing, nonce="'n0nce'", probe=tmux_vim._vim_string(str(probe)), folds=0
     )
     out = tmp_path / "out.txt"
     subprocess.run(

@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from helpers import resolve_typed_paths, typed_path
+from helpers import case_folds, find_buffer_spelled, resolve_typed_paths, typed_path
 
 from vim_ai_follower import cache
 from vim_ai_follower.backends import buffer_forms, tmux_vim
@@ -30,12 +30,10 @@ def _probe_line(path: str, probe: Path) -> str:
     test_tmux_vim._goto."""
     return (
         ":try | let g:vaf_p = " + typed_path(path) + " | if g:vaf_p !=# ''"
-        " | let g:vaf_q = resolve(fnamemodify(g:vaf_p, ':p'))"
-        " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
-        " && index([g:vaf_q], resolve(fnamemodify(bufname(v:val), '':p'')), 0, &fileignorecase)"
-        " == 0'), 0, -1)"
+        f" | {find_buffer_spelled('g:vaf_p', case_folds(path))}"
         f" | let g:vaf_r = writefile(getbufline(g:vaf_n, 1, '$') + ['{NONCE}'], '{probe}')"
-        " | endif | catch | finally | unlet! g:vaf_h g:vaf_p g:vaf_n g:vaf_q g:vaf_r | endtry"
+        " | endif | catch | finally"
+        " | unlet! g:vaf_h g:vaf_n g:vaf_q g:vaf_c g:vaf_i g:vaf_f g:vaf_p g:vaf_r | endtry"
     )
 
 

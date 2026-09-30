@@ -277,8 +277,8 @@ def _vim_display_name(path_expr: str) -> str:
     `<te/tmp/vafn/sub/a.py" 1L, 6B written` for `:w`; `:file sub/a.py`
     shows `s/a.py`, `sub/a.py` and `"sub/a.py" 1L, 6B written`, exactly as
     `:e sub/a.py` does. The buffer's FULL name is the same either way, so the
-    `:p` lookups (_FIND_BUFFER, _WIPE_BUFFER) still find it, and Vim re-bases
-    the short name itself on any later `:cd`.
+    `:p` lookups (_find_buffer) still find it, and Vim re-bases the short
+    name itself on any later `:cd`.
 
     `:.` compares against getcwd(), which is the PHYSICAL directory even when
     Vim was started from, or `:cd` to, a symlinked spelling of it (measured,
@@ -286,9 +286,9 @@ def _vim_display_name(path_expr: str) -> str:
     (hooks._file_path), so the two line up without resolving anything here.
 
     The short name is kept only when it ROUND-TRIPS: its `:p` must be
-    exactly the `:p` of the full path, which is the equation _FIND_BUFFER,
-    _WIPE_BUFFER and _PROBE_BUFFER test (`==#`). Otherwise the full path is
-    the name, as before relative names, and the lookups match it verbatim.
+    exactly the `:p` of the full path, the name the lookups (_find_buffer)
+    start from. Otherwise the full path is the name, as before relative
+    names, and the lookups match it verbatim.
     Two measured ways the short form fails to come back (Vim 9.2, macOS):
     - A wrong-CASE path. `:.` shortens case-INSENSITIVELY on macOS: with cwd
       `…/Proj`, `…/proj/sub/a.py` shortens to `sub/a.py`, whose `:p` is
@@ -304,25 +304,79 @@ def _vim_display_name(path_expr: str) -> str:
     )
 
 
-# `g:vaf_n` = the number of the buffer holding the file `g:vaf_p`, or -1
-# (see the comment above _SWAP_GROUP). Compared the way Vim itself tells
-# files apart, not by spelling: `resolve()`d full names (a buffer opened
-# through a file symlink, like a dotfiles checkout's ~/.vimrc, while the hook
-# passes the realpath), case-insensitively when 'fileignorecase' is on (a
-# case variant on macOS). `index(…, ic)` is the one comparison that takes
-# the flag as a value. Measured 2026-09-29: comparing `:p` names alone said
-# "absent" for both, and `:tab drop` then landed on the existing buffer
-# anyway (Vim matches files by identity), under a name no check expected.
-_FIND_BUFFER = (
-    "let g:vaf_q = resolve(fnamemodify(g:vaf_p, ':p'))"
-    " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
-    " && index([g:vaf_q], resolve(fnamemodify(bufname(v:val), '':p'')), 0, &fileignorecase)"
-    " == 0'), 0, -1)"
+def _resolved(variable: str, name: str) -> str:
+    """Statements setting `variable` to the `resolve()`d full name of the Vim
+    expression `name`, or to its plain full name when resolve() fails: a
+    symlink loop raises E655 (measured 2026-09-29), and inside a lookup over
+    every buffer one such name aborted the whole lookup, so while a looping
+    buffer existed every navigation failed (review of a790652)."""
+    return (
+        f"try | let {variable} = resolve(fnamemodify({name}, ':p'))"
+        f" | catch | let {variable} = fnamemodify({name}, ':p') | endtry"
+    )
+
+
+# Whether a name that differs from the target only in case still names it
+# ({folds}: 1 or 0, decided by Python from the FILESYSTEM, see _case_folds).
+# Never `&fileignorecase`: macOS Vim has it on by default, and on a
+# case-sensitive volume, where Readme.md and README.md are two files, it
+# made the follower act on the wrong one (review, 2026-09-29, measured on a
+# Case-sensitive APFS image: an Edit typed into the sibling's buffer, a
+# retype wiped it, an adopted Read locked the user's modified sibling).
+# `index(…, ic)` is the one comparison that takes it as a value.
+_SAME_AS_TARGET = "index([g:vaf_q], g:vaf_c, 0, {folds}) == 0"
+
+
+def _find_buffer(path: str) -> str:
+    """Statements setting `g:vaf_n` to the number of the buffer holding the
+    file named by the Vim variable `path`, or -1 (see the comment above
+    _SWAP_GROUP), and `g:vaf_q` to the target's full name. Compared the way
+    Vim itself tells files apart, not by spelling: `resolve()`d full names (a
+    buffer opened through a file symlink, like a dotfiles checkout's ~/.vimrc,
+    while the hook passes the realpath), case-insensitively where the
+    filesystem is ({folds}: a case variant on macOS). Measured 2026-09-29:
+    comparing `:p` names alone said "absent" for both, and `:tab drop` then
+    landed on the existing buffer anyway (Vim matches files by identity),
+    under a name no check expected.
+
+    A `:for` loop, not filter(): each name's resolve() needs its own
+    try/catch (_resolved), which an expression cannot hold. A number with no
+    buffer has the name '', whose `:p` is the working directory (trailing
+    slash included), which no file path equals."""
+    return (
+        _resolved("g:vaf_q", path) + " | let g:vaf_n = -1"
+        " | for g:vaf_i in range(1, bufnr('$'))"
+        f" | {_resolved('g:vaf_c', 'bufname(g:vaf_i)')}"
+        f" | if {_SAME_AS_TARGET} | let g:vaf_n = g:vaf_i | break | endif"
+        " | endfor"
+    )
+
+
+# The landing verdict's identity half: `g:vaf_landed` is set only when the
+# current buffer IS the target (the comparison _find_buffer makes, so a
+# symlink or a case variant of it counts), after whatever navigation ran.
+_LAND_IF_TARGET = (
+    _resolved("g:vaf_c", "bufname('%')")
+    + f" | if {_SAME_AS_TARGET} | let g:vaf_landed = bufnr('%') | endif"
 )
+# The acting lines' own file-name matching runs with 'fileignorecase' off,
+# restored in `finally`: Vim then tells files apart by identity (inode) as
+# the filesystem does — measured 2026-09-29, with it on (the macOS default)
+# `:tab drop README.md` landed on the Readme.md buffer and `:file README.md`
+# took Readme.md's buffer's name, both on a case-sensitive volume; with it
+# off both are right there, and on a case-insensitive volume Vim still finds
+# a case variant by inode. `g:vaf_f` holds the user's value.
+_NO_FIC_OPEN = "let g:vaf_f = &fic | let &fic = 0"
+_NO_FIC_CLOSE = "let &fic = g:vaf_f"
+# Everything the acting lines' lookups leave, unlet at their end.
+_LOOKUP_VARIABLES = "g:vaf_h g:vaf_n g:vaf_q g:vaf_c g:vaf_i g:vaf_f"
+
+
 # A line that must ACT on the target (goto, show_fresh's rename) records, by
-# buffer NUMBER, where it landed (`g:vaf_landed`, set only on the branch that
-# switched to or created the target; `:tab drop` onto an existing buffer for
-# the same file under another name IS the target) next to its call's token
+# buffer NUMBER, where it landed (`g:vaf_landed`, set only when, after its
+# navigation, the current buffer IS the target by _LAND_IF_TARGET's identity
+# comparison: an existing buffer for the same file under another name counts,
+# a sibling Vim switched to by name never does) next to its call's token
 # (`g:vaf_k`, set first, after an `unlet!` of the rest, so a value left by an
 # earlier, garbled line can never pass), and is followed by this one:
 # {answer} gets the verdict and {nonce} — "landed" only when the current
@@ -355,18 +409,18 @@ _ANSWER_IF_LANDED = (
 _ACTING_START = ":unlet! g:vaf_p g:vaf_landed | let g:vaf_k = {token} | {read}"
 _GOTO_FILE = (
     _ACTING_START + " | if g:vaf_p !=# ''"
-    f" | {_FIND_BUFFER} | {_SWAP_ANSWER_OPEN}"
+    f" | {_find_buffer('g:vaf_p')} | {_SWAP_ANSWER_OPEN} | {_NO_FIC_OPEN}"
     " | try"
     f" | if g:vaf_n < 0 | exe 'silent tab drop ' . fnameescape({_vim_display_name('g:vaf_p')})"
-    " | let g:vaf_landed = bufnr('%')"
     " | elseif g:vaf_n != bufnr('%')"
     " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'silent tab sbuffer ' . g:vaf_n"
     " | endif"
-    # E37 comes from the drop's trailing `:rewind`, after it landed.
-    r" | catch /^Vim\%((\a\+)\)\=:E37:/ | let g:vaf_landed = bufnr('%')"
-    f" | finally | {_SWAP_ANSWER_CLOSE} | endtry"
-    " | if g:vaf_n > 0 && bufnr('%') == g:vaf_n | let g:vaf_landed = g:vaf_n | endif"
-    " | endif | unlet! g:vaf_h g:vaf_n g:vaf_q"
+    # E37 comes from the drop's trailing `:rewind`, after it landed. Any
+    # other error aborts the line here, so nothing below runs.
+    r" | catch /^Vim\%((\a\+)\)\=:E37:/"
+    f" | finally | {_NO_FIC_CLOSE} | {_SWAP_ANSWER_CLOSE} | endtry"
+    f" | {_LAND_IF_TARGET}"
+    f" | endif | unlet! {_LOOKUP_VARIABLES}"
 )
 
 # ensure_showing's disk re-read, for the Read/binary navigation where
@@ -486,9 +540,9 @@ _RELOAD_DISCARDING = (
 #     failing `:let` hands over to the catch and the line completes.
 _PROBE_BUFFER = (
     ":try | {read} | if g:vaf_p !=# '' | "
-    + _FIND_BUFFER
+    + _find_buffer("g:vaf_p")
     + " | let g:vaf_r = writefile(getbufline(g:vaf_n, 1, '$') + [{nonce}], {probe}) | endif"
-    " | catch | finally | unlet! g:vaf_h g:vaf_p g:vaf_n g:vaf_q g:vaf_r | endtry"
+    f" | catch | finally | unlet! {_LOOKUP_VARIABLES} g:vaf_p g:vaf_r | endtry"
 )
 # How long probe_buffer waits for Vim's answer before calling it "unknown"
 # (the hook's safe side: a retype, or in an adopted Vim, leaving it alone).
@@ -499,7 +553,7 @@ _PROBE_BUFFER = (
 _PROBE_TIMEOUT_SECONDS = 2.0
 _PROBE_POLL_SECONDS = 0.01
 # How long a navigating line waits for Vim's landing confirmation
-# (_await_landing). Far longer than a probe's: the goto line is ~1000 typed
+# (_await_landing). Far longer than a probe's: the goto line is ~1500 typed
 # characters, and Vim echoes each one; measured 2026-09-29, a follower Vim
 # running a 15 ms timer (tests/test_integration_edit_no_reload.py's
 # observer) was still echoing the line after 2 s at load 3. Running out
@@ -833,18 +887,30 @@ def _await_landing(pane_id: str, answer: Path, nonce: str, file_path: str, handl
 # whichever neighbour received focus and eats an innocent one (live eviction
 # bug, 2026-07-15).
 _WIPE_BUFFER = (
-    # A failed read leaves '', which no buffer's `:p` equals ('' itself would
-    # be the working directory, which a directory buffer can be named). The
-    # comparison is _FIND_BUFFER's: same file, not same spelling.
-    ":{read} | let g:vaf_wipe_name = g:vaf_wipe_name ==# ''"
-    " ? '' : resolve(fnamemodify(g:vaf_wipe_name, ':p'))"
-    " | let g:vaf_wipe_nr = get(filter(range(1, bufnr('$')),"
-    ' \'bufexists(v:val) && bufname(v:val) !=# "" && g:vaf_wipe_name !=# ""'
-    ' && index([g:vaf_wipe_name], resolve(fnamemodify(bufname(v:val), ":p")),'
-    " 0, &fileignorecase) == 0'), 0, -1)"
-    " | if g:vaf_wipe_nr > 0 | exe 'silent! bwipeout! ' . g:vaf_wipe_nr | endif"
-    " | unlet! g:vaf_h g:vaf_wipe_name g:vaf_wipe_nr"
+    # A failed read leaves '', which wipes nothing. The lookup is
+    # _find_buffer's: same file, not same spelling.
+    ":{read} | if g:vaf_wipe_name !=# ''"
+    f" | {_find_buffer('g:vaf_wipe_name')}"
+    " | if g:vaf_n > 0 | exe 'silent! bwipeout! ' . g:vaf_n | endif"
+    f" | endif | unlet! {_LOOKUP_VARIABLES} g:vaf_wipe_name"
 )
+
+
+def _case_folds(file_path: str) -> int:
+    """1 when the filesystem holding file_path ignores case in its name (the
+    macOS default volume), 0 otherwise: the `{folds}` the lookups compare
+    buffer names with (_SAME_AS_TARGET). Asked of the filesystem itself, as
+    whether the path with every letter's case swapped is the same file; a
+    path with no letter, or one that cannot be checked (missing, unreadable),
+    is 0, the side that never takes one file for another. Per path, not per
+    Vim: a case-sensitive volume can be mounted anywhere."""
+    swapped = file_path.swapcase()
+    if swapped == file_path:
+        return 0
+    try:
+        return int(Path(file_path).samefile(swapped))
+    except (OSError, ValueError):
+        return 0
 
 
 @dataclass(frozen=True)
@@ -943,7 +1009,9 @@ class TmuxVimFollower:
         self._normal_mode(pane)
         token = secrets.token_hex(4)
         read, handle = _typed_path_and_handle(self.pane_id, file_path, "g:vaf_p")
-        pane.send_text(_GOTO_FILE.format(token=_vim_string(token), read=read))
+        pane.send_text(
+            _GOTO_FILE.format(token=_vim_string(token), read=read, folds=_case_folds(file_path))
+        )
         pane.send_key("Enter")
         _confirm_landing(pane, file_path, token, handle)
 
@@ -1001,7 +1069,10 @@ class TmuxVimFollower:
         pane = TmuxPane(pane_id=self.pane_id)
         self._normal_mode(pane)
         pane.send_text(
-            _WIPE_BUFFER.format(read=_typed_path(self.pane_id, file_path, "g:vaf_wipe_name"))
+            _WIPE_BUFFER.format(
+                read=_typed_path(self.pane_id, file_path, "g:vaf_wipe_name"),
+                folds=_case_folds(file_path),
+            )
         )
         pane.send_key("Enter")
 
@@ -1034,6 +1105,7 @@ class TmuxVimFollower:
                 read=_typed_path(self.pane_id, file_path, "g:vaf_p"),
                 nonce=_vim_string(nonce),
                 probe=_cache_file(self.pane_id, probe),
+                folds=_case_folds(file_path),
             )
         )
         pane.send_key("Enter")
@@ -1163,7 +1235,10 @@ class TmuxVimFollower:
         # name-pattern miss here leaves the old buffer alive, and the
         # `:file` below then hangs a SECOND buffer off the same path.
         pane.send_text(
-            _WIPE_BUFFER.format(read=_typed_path(self.pane_id, file_path, "g:vaf_wipe_name"))
+            _WIPE_BUFFER.format(
+                read=_typed_path(self.pane_id, file_path, "g:vaf_wipe_name"),
+                folds=_case_folds(file_path),
+            )
         )
         pane.send_key("Enter")
         # Everything from here to the rename is ONE line, run only when the
@@ -1192,7 +1267,10 @@ class TmuxVimFollower:
         # (_vim_display_name), not the full path the hook passes. The rename
         # is `silent`: `:file` prints the name it set (`"<name>" [Not
         # edited]`), which is the full path for a file outside the cwd
-        # (measured 2026-09-29); errors (E95) still show.
+        # (measured 2026-09-29); errors (E95) still show. It runs with
+        # 'fileignorecase' off (_NO_FIC_OPEN): with it on, `:file README.md`
+        # on a case-sensitive volume took the name of the Readme.md buffer
+        # (measured 2026-09-29), and the landing then confirms identity.
         # Then it READS the file into the buffer and clears it again, on the
         # same command line (see _READ_THEN_CLEAR): the rename left the buffer
         # "not edited", and a plain `:w` over the existing file then failed
@@ -1217,11 +1295,13 @@ class TmuxVimFollower:
         start = _ACTING_START.format(token=_vim_string(token), read=read)
         pane.send_text(
             f"{start} | if g:vaf_p !=# ''{' | tabnew' if in_new_tab else ''}"
-            " | setlocal noswapfile"
-            f" | silent exe 'file ' . fnameescape({_vim_display_name('g:vaf_p')}){claim}"
-            " | let g:vaf_landed = bufnr('%')"
-            f" | setlocal buftype= modifiable noreadonly | {_READ_THEN_CLEAR}"
-            " | endif | unlet! g:vaf_h"
+            f" | setlocal noswapfile | {_NO_FIC_OPEN}"
+            f" | try | silent exe 'file ' . fnameescape({_vim_display_name('g:vaf_p')})"
+            f" | finally | {_NO_FIC_CLOSE} | endtry{claim}"
+            f" | {_resolved('g:vaf_q', 'g:vaf_p')} | "
+            + _LAND_IF_TARGET.format(folds=_case_folds(file_path))
+            + f" | setlocal buftype= modifiable noreadonly | {_READ_THEN_CLEAR}"
+            f" | endif | unlet! {_LOOKUP_VARIABLES}"
         )
         pane.send_key("Enter")
         _confirm_landing(pane, file_path, token, handle)

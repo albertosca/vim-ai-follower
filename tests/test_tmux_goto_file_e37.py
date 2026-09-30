@@ -47,7 +47,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from helpers import acting_start, landed_line, resolve_typed_paths
+from helpers import acting_start, goto_spelled, landed_line, resolve_typed_paths
 
 from vim_ai_follower import control
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
@@ -55,37 +55,9 @@ from vim_ai_follower.diff import EditOp, compute_edit_script
 
 
 def _goto(path: str) -> str:
-    """The exact Ex line goto_file sends. Spelled out rather than imported
-    from tmux_vim._GOTO_FILE on purpose: importing the constant would make
-    every assertion below agree with whatever it happens to say, which is
-    precisely the change these tests exist to catch.
-
-    The `SwapExists` hook wrapping the try/catch is the swap-file half of
-    the same guard (tests/test_tmux_swap_choice.py); it is part of the
-    literal, so it belongs in this spelling too."""
-    return (
-        acting_start(path) + " | if g:vaf_p !=# ''"
-        " | let g:vaf_q = resolve(fnamemodify(g:vaf_p, ':p'))"
-        " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
-        " && index([g:vaf_q], resolve(fnamemodify(bufname(v:val), '':p'')), 0, &fileignorecase)"
-        " == 0'), 0, -1)"
-        ' | exe "augroup vim_ai_follower_swap"'
-        " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
-        ' | exe "augroup END"'
-        " | try"
-        " | if g:vaf_n < 0 | exe 'silent tab drop ' . fnameescape("
-        "(fnamemodify(fnamemodify(g:vaf_p, ':.'), ':p') ==# fnamemodify(g:vaf_p, ':p')"
-        " ? fnamemodify(g:vaf_p, ':.') : g:vaf_p))"
-        " | let g:vaf_landed = bufnr('%')"
-        " | elseif g:vaf_n != bufnr('%')"
-        " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'silent tab sbuffer ' . g:vaf_n"
-        " | endif"
-        r" | catch /^Vim\%((\a\+)\)\=:E37:/ | let g:vaf_landed = bufnr('%')"
-        ' | finally | exe "autocmd! vim_ai_follower_swap"'
-        ' | exe "augroup! vim_ai_follower_swap" | endtry'
-        " | if g:vaf_n > 0 && bufnr('%') == g:vaf_n | let g:vaf_landed = g:vaf_n | endif"
-        " | endif | unlet! g:vaf_h g:vaf_n g:vaf_q"
-    )
+    """The exact Ex line goto_file sends for `path` (helpers.goto_spelled:
+    spelled out there, never imported from tmux_vim._GOTO_FILE)."""
+    return goto_spelled(path)
 
 
 def _raw_commands(run_mock: MagicMock) -> list[tuple[str, bool]]:
@@ -183,7 +155,7 @@ def test_the_guard_catches_e37_only_and_hands_the_path_to_fnameescape() -> None:
         " | exe 'silent tab drop ' . fnameescape((fnamemodify(fnamemodify(g:vaf_p, ':.'), ':p')"
         " ==# fnamemodify(g:vaf_p, ':p') ? fnamemodify(g:vaf_p, ':.') : g:vaf_p)) | "
     ) in line
-    assert line.endswith(" | endif | unlet! g:vaf_h g:vaf_n g:vaf_q")
+    assert line.endswith(" | endif | unlet! g:vaf_h g:vaf_n g:vaf_q g:vaf_c g:vaf_i g:vaf_f")
     assert r"^Vim\%((\a\+)\)\=:E37:" in line
     # The handle is read exactly once, outside the swap hook's double-quoted
     # exe segments, where `\` and `"` would bite.

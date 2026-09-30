@@ -4,51 +4,26 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from helpers import acting_start, landed_line, resolve_typed_paths, typed_path
+from helpers import (
+    goto_spelled,
+    landed_line,
+    rename_spelled,
+    resolve_typed_paths,
+    wipe_spelled,
+)
 from helpers import register_fake_follower as _register_fake_follower
 
 from vim_ai_follower import cache, config, control, state
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends import get_follower
-from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
+from vim_ai_follower.backends.tmux_vim import TmuxVimFollower, _case_folds
 from vim_ai_follower.diff import EditOp, compute_edit_script
 
 
 def _goto(path: str) -> str:
-    """The exact Ex line goto_file sends to navigate to `path`.
-
-    Spelled out here rather than imported from tmux_vim._GOTO_FILE on
-    purpose: these assertions exist to catch an unintended change to that
-    constant, and importing it would make every one of them agree with
-    whatever the constant happens to say. The `:try`/`:catch` wrapper
-    swallows E37 (a modified target buffer) and nothing else; the
-    `SwapExists` hook around it answers the swap-file ATTENTION dialog
-    with `(E)dit anyway` and is torn down in `finally` — see _GOTO_FILE's
-    comment for why the bang, `:silent!`, 'hidden', 'shortmess' and
-    'noswapfile' were all measured and rejected."""
-    return (
-        acting_start(path) + " | if g:vaf_p !=# ''"
-        " | let g:vaf_q = resolve(fnamemodify(g:vaf_p, ':p'))"
-        " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
-        " && index([g:vaf_q], resolve(fnamemodify(bufname(v:val), '':p'')), 0, &fileignorecase)"
-        " == 0'), 0, -1)"
-        ' | exe "augroup vim_ai_follower_swap"'
-        " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
-        ' | exe "augroup END"'
-        " | try"
-        " | if g:vaf_n < 0 | exe 'silent tab drop ' . fnameescape("
-        "(fnamemodify(fnamemodify(g:vaf_p, ':.'), ':p') ==# fnamemodify(g:vaf_p, ':p')"
-        " ? fnamemodify(g:vaf_p, ':.') : g:vaf_p))"
-        " | let g:vaf_landed = bufnr('%')"
-        " | elseif g:vaf_n != bufnr('%')"
-        " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'silent tab sbuffer ' . g:vaf_n"
-        " | endif"
-        r" | catch /^Vim\%((\a\+)\)\=:E37:/ | let g:vaf_landed = bufnr('%')"
-        ' | finally | exe "autocmd! vim_ai_follower_swap"'
-        ' | exe "augroup! vim_ai_follower_swap" | endtry'
-        " | if g:vaf_n > 0 && bufnr('%') == g:vaf_n | let g:vaf_landed = g:vaf_n | endif"
-        " | endif | unlet! g:vaf_h g:vaf_n g:vaf_q"
-    )
+    """The exact Ex line goto_file sends for `path` (helpers.goto_spelled:
+    spelled out there, never imported from tmux_vim._GOTO_FILE)."""
+    return goto_spelled(path)
 
 
 # ensure_showing's clean-only disk re-read, spelled out for the same reason
@@ -692,48 +667,14 @@ def test_reload_from_disk_discards_under_the_swap_answer_and_locks() -> None:
 
 
 def _wipe(path: str) -> str:
-    """The exact Ex line an eviction sends to wipe `path`'s buffer.
-
-    Spelled out rather than imported from tmux_vim._WIPE_BUFFER, for the
-    same reason as _goto above: importing would make these assertions agree
-    with whatever the constant happens to say. The path is typed by handle
-    (helpers.typed_path), never spelled on the line."""
-    return (
-        f":let g:vaf_wipe_name = {typed_path(path)}"
-        " | let g:vaf_wipe_name = g:vaf_wipe_name ==# ''"
-        " ? '' : resolve(fnamemodify(g:vaf_wipe_name, ':p'))"
-        " | let g:vaf_wipe_nr = get(filter(range(1, bufnr('$')),"
-        ' \'bufexists(v:val) && bufname(v:val) !=# "" && g:vaf_wipe_name !=# ""'
-        ' && index([g:vaf_wipe_name], resolve(fnamemodify(bufname(v:val), ":p")),'
-        " 0, &fileignorecase) == 0'), 0, -1)"
-        " | if g:vaf_wipe_nr > 0 | exe 'silent! bwipeout! ' . g:vaf_wipe_nr | endif"
-        " | unlet! g:vaf_h g:vaf_wipe_name g:vaf_wipe_nr"
-    )
+    """The exact Ex line an eviction sends to wipe `path`'s buffer
+    (helpers.wipe_spelled)."""
+    return wipe_spelled(path)
 
 
 def _rename(path: str, *, adopted: bool = False, in_new_tab: bool = False) -> str:
-    """show_fresh's `:file {path}` rename-in-place line: the path is typed by
-    handle into `g:vaf_p` and goes through fnameescape() (`#`, `%` and a
-    space are live on Vim's command line), same as _goto, naming the buffer
-    relative to Vim's cwd (tmux_vim._vim_display_name); the rename is
-    `silent`, so its file-info message does not print the name. Spelled out
-    for the same reason as _goto/_wipe above. An adopted Vim's also claims
-    the readonly option for the follower."""
-    claim = " | let b:vaf_user_ro = 0 | let b:vaf_ro_ours = 2" if adopted else ""
-    short = "fnamemodify(g:vaf_p, ':.')"
-    return (
-        acting_start(path)
-        + " | if g:vaf_p !=# ''"
-        + (" | tabnew" if in_new_tab else "")
-        + " | setlocal noswapfile"
-        f" | silent exe 'file ' . fnameescape((fnamemodify({short}, ':p')"
-        f" ==# fnamemodify(g:vaf_p, ':p') ? {short} : g:vaf_p))"
-        + claim
-        + " | let g:vaf_landed = bufnr('%')"
-        + " | setlocal buftype= modifiable noreadonly"
-        + " | noautocmd silent! edit! | silent! %d _"
-        + " | endif | unlet! g:vaf_h"
-    )
+    """show_fresh's rename-in-place line (helpers.rename_spelled)."""
+    return rename_spelled(path, adopted=adopted, in_new_tab=in_new_tab)
 
 
 def test_close_tab_wipes_by_buffer_number_and_never_double_closes() -> None:
@@ -982,3 +923,18 @@ def test_the_restore_clears_the_last_answer_before_it_is_sent() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run"):
         follower.hand_over()
     assert not answer.exists()
+
+
+def test_case_folds_asks_the_filesystem_and_is_zero_whenever_it_cannot(tmp_path: Path) -> None:
+    """{folds} for the lookups: whether the path with its letters' case
+    swapped is the same file. Never 'fileignorecase' (see
+    tests/test_integration_same_file.py for two files differing only in case
+    on a case-sensitive volume)."""
+    existing = tmp_path / "Readme.md"
+    existing.write_text("x\n")
+    insensitive = Path(str(existing).swapcase()).exists()
+    assert _case_folds(str(existing)) == int(insensitive)
+    # No letter to swap, a missing file, a path no filesystem call takes.
+    assert _case_folds("/0/1.2") == 0
+    assert _case_folds(str(tmp_path / "missing.md")) == 0
+    assert _case_folds("/tmp/a\0b") == 0

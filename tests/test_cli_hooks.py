@@ -16,7 +16,13 @@ from unittest.mock import MagicMock, patch
 from unittest.mock import call as mock_call
 
 import pytest
-from helpers import acting_start, landed_line, resolve_typed_paths, typed_path
+from helpers import (
+    goto_spelled,
+    landed_line,
+    rename_spelled,
+    resolve_typed_paths,
+    typed_path,
+)
 from helpers import make_mock_tmux_run as _mock_tmux_run
 from helpers import register_fake_follower as _register_fake_follower
 
@@ -48,61 +54,14 @@ _READONLY_RELOCK_TAIL = (
 
 
 def _goto(path: object) -> str:
-    """The exact Ex line the tmux backend's goto_file sends for `path`.
-
-    Written out here instead of imported from tmux_vim._GOTO_FILE on
-    purpose: these assertions exist to catch an unintended change to that
-    constant, which importing it would hide. The `:try`/`:catch` wrapper
-    swallows E37 (a modified target buffer would otherwise leave a blocking
-    hit-enter prompt in the pane) and nothing else; the `SwapExists` hook
-    around it answers the swap-file ATTENTION dialog with `(E)dit anyway`
-    and is torn down in `finally`."""
-    return (
-        acting_start(path) + " | if g:vaf_p !=# ''"
-        " | let g:vaf_q = resolve(fnamemodify(g:vaf_p, ':p'))"
-        " | let g:vaf_n = get(filter(range(1, bufnr('$')), 'bufexists(v:val)"
-        " && index([g:vaf_q], resolve(fnamemodify(bufname(v:val), '':p'')), 0, &fileignorecase)"
-        " == 0'), 0, -1)"
-        ' | exe "augroup vim_ai_follower_swap"'
-        " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
-        ' | exe "augroup END"'
-        " | try"
-        " | if g:vaf_n < 0 | exe 'silent tab drop ' . fnameescape("
-        "(fnamemodify(fnamemodify(g:vaf_p, ':.'), ':p') ==# fnamemodify(g:vaf_p, ':p')"
-        " ? fnamemodify(g:vaf_p, ':.') : g:vaf_p))"
-        " | let g:vaf_landed = bufnr('%')"
-        " | elseif g:vaf_n != bufnr('%')"
-        " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'silent tab sbuffer ' . g:vaf_n"
-        " | endif"
-        r" | catch /^Vim\%((\a\+)\)\=:E37:/ | let g:vaf_landed = bufnr('%')"
-        ' | finally | exe "autocmd! vim_ai_follower_swap"'
-        ' | exe "augroup! vim_ai_follower_swap" | endtry'
-        " | if g:vaf_n > 0 && bufnr('%') == g:vaf_n | let g:vaf_landed = g:vaf_n | endif"
-        " | endif | unlet! g:vaf_h g:vaf_n g:vaf_q"
-    )
+    """The exact Ex line goto_file sends for `path` (helpers.goto_spelled:
+    spelled out there, never imported from tmux_vim._GOTO_FILE)."""
+    return goto_spelled(path)
 
 
 def _rename(path: object, *, in_new_tab: bool = False) -> str:
-    """show_fresh's `:file {path}` rename-in-place line, escaped: `#`, `%`
-    and a space are live on Vim's command line, so the path goes through a
-    Vim string literal and fnameescape(), same as _goto above, and names
-    the buffer relative to Vim's cwd (`:.`, full unless its `:p` round-trips,
-    see tmux_vim._vim_display_name). Spelled out
-    for the same reason: importing tmux_vim's f-string would agree with any
-    change to it."""
-    short = "fnamemodify(g:vaf_p, ':.')"
-    return (
-        acting_start(path)
-        + " | if g:vaf_p !=# ''"
-        + (" | tabnew" if in_new_tab else "")
-        + " | setlocal noswapfile"
-        f" | silent exe 'file ' . fnameescape((fnamemodify({short}, ':p')"
-        f" ==# fnamemodify(g:vaf_p, ':p') ? {short} : g:vaf_p))"
-        " | let g:vaf_landed = bufnr('%')"
-        " | setlocal buftype= modifiable noreadonly"
-        " | noautocmd silent! edit! | silent! %d _"
-        " | endif | unlet! g:vaf_h"
-    )
+    """show_fresh's rename-in-place line (helpers.rename_spelled)."""
+    return rename_spelled(path, in_new_tab=in_new_tab)
 
 
 # ensure_showing's clean-only disk re-read, spelled out for the same reason
