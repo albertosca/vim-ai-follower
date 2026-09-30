@@ -1271,6 +1271,13 @@ class TmuxVimFollower:
         # 'fileignorecase' off (_NO_FIC_OPEN): with it on, `:file README.md`
         # on a case-sensitive volume took the name of the Readme.md buffer
         # (measured 2026-09-29), and the landing then confirms identity.
+        # Everything after the rename that changes the current buffer (the
+        # readonly claim, the buftype/modifiable reset, the read-and-clear)
+        # runs only on that confirmed landing (`exists('g:vaf_landed')`,
+        # unlet by this call's _ACTING_START): a user autocommand can move
+        # the cursor on the rename (`BufFilePost … tabfirst`), and the tail
+        # then wiped the USER's buffer, unsaved text and all, before the
+        # landing check could stop anything (review, 2026-09-29).
         # Then it READS the file into the buffer and clears it again, on the
         # same command line (see _READ_THEN_CLEAR): the rename left the buffer
         # "not edited", and a plain `:w` over the existing file then failed
@@ -1297,10 +1304,11 @@ class TmuxVimFollower:
             f"{start} | if g:vaf_p !=# ''{' | tabnew' if in_new_tab else ''}"
             f" | setlocal noswapfile | {_NO_FIC_OPEN}"
             f" | try | silent exe 'file ' . fnameescape({_vim_display_name('g:vaf_p')})"
-            f" | finally | {_NO_FIC_CLOSE} | endtry{claim}"
+            f" | finally | {_NO_FIC_CLOSE} | endtry"
             f" | {_resolved('g:vaf_q', 'g:vaf_p')} | "
             + _LAND_IF_TARGET.format(folds=_case_folds(file_path))
-            + f" | setlocal buftype= modifiable noreadonly | {_READ_THEN_CLEAR}"
+            + f" | if exists('g:vaf_landed'){claim}"
+            f" | setlocal buftype= modifiable noreadonly | {_READ_THEN_CLEAR} | endif"
             f" | endif | unlet! {_LOOKUP_VARIABLES}"
         )
         pane.send_key("Enter")

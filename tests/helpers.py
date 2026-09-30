@@ -230,11 +230,12 @@ def rename_spelled(path: object, *, adopted: bool = False, in_new_tab: bool = Fa
         + " | setlocal noswapfile | let g:vaf_f = &fic | let &fic = 0"
         f" | try | silent exe 'file ' . fnameescape({_DISPLAY})"
         " | finally | let &fic = g:vaf_f | endtry"
-        + claim
         + f" | {_resolved_spelled('g:vaf_q', 'g:vaf_p')}"
         + f" | {land_if_target_spelled(case_folds(path))}"
+        + " | if exists('g:vaf_landed')"
+        + claim
         + " | setlocal buftype= modifiable noreadonly"
-        + " | noautocmd silent! edit! | silent! %d _"
+        + " | noautocmd silent! edit! | silent! %d _ | endif"
         + " | endif | unlet! g:vaf_h g:vaf_n g:vaf_q g:vaf_c g:vaf_i g:vaf_f"
     )
 

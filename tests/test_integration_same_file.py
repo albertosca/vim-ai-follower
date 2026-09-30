@@ -461,3 +461,50 @@ def test_a_navigation_vim_resolves_to_a_buffer_of_another_name_is_not_a_landing(
         _quick(lambda: follower.show_fresh(str(link), AFTER, in_new_tab=True))
     renamed = _state(pane, tmp_path / "s2.txt", wait_until)
     assert renamed["LINES"] != AFTER.splitlines(), renamed
+
+
+def test_a_rename_that_does_not_land_leaves_the_users_buffer_alone(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    """show_fresh's rename line goes on, after the `:file`, to make the buffer
+    writable, read the file and clear it (`edit!` then `%d`), and in an
+    adopted Vim to claim its readonly. All of that runs only on the
+    identity-confirmed landing of THIS call. Review, 2026-09-29: a user
+    autocommand switching tabs on the rename (`BufFilePost … tabfirst`) left
+    the user's buffer current; the landing check answered "elsewhere", but
+    the tail of the line had already wiped the user's unsaved text."""
+    root = Path(os.path.realpath(tmp_path))
+    (root / "user.txt").write_text("user line\n")
+    target = root / "jump.py"
+    target.write_text("jump = 1\n")
+    pane = _user_vim(tmux_session, monkeypatch, root, "user.txt")
+    _keys(pane, "-l", ":autocmd BufFilePost jump.py tabfirst")
+    _keys(pane, "Enter")
+    _keys(pane, "-l", "GoUSER UNSAVED")
+    _keys(pane, "Escape")
+    window_id = _tmux("display-message", "-p", "-t", pane, "#{window_id}")
+    FollowerState.set(window_id, backend="tmux", target=pane, adopted=True, speed="instant")
+    follower = TmuxVimFollower(pane_id=pane, pace_seconds=0.0, window_id=window_id)
+
+    with pytest.raises(NavigationFailed, match="landed on another buffer"):
+        _quick(lambda: follower.show_fresh(str(target), "jump = 1\n", in_new_tab=True))
+    user = _state(pane, tmp_path / "s1.txt", wait_until)
+    assert user["BUF"] == "user.txt", user
+    assert user["LINES"] == ["user line", "USER UNSAVED"], user
+    assert (user["MA"], user["RO"]) == ("1", "0"), user
+    assert "Press ENTER" not in _tmux("capture-pane", "-p", "-t", pane)
+    modified = tmp_path / "mod.txt"
+    _keys(
+        pane,
+        "-l",
+        "--",
+        f":call writefile([&modified, get(b:, 'vaf_ro_ours', 'none'), 'END'], '{modified}')",
+    )
+    _keys(pane, "Enter")
+    assert wait_until(
+        lambda: modified.exists() and modified.read_text().endswith("END\n"), timeout=10.0
+    )
+    assert modified.read_text().split() == ["1", "none", "END"]
