@@ -776,8 +776,13 @@ endfunction
 # trailing slash included) and `@NAME@` the dispatcher's name, both filled in
 # by _vim_functions. The dispatcher is defined LAST, so `exists()` of it is
 # true only once everything before it was read. The loop after it deletes the
-# dispatchers of other versions (`VafFollower_<6 hex>` exactly, nothing else
-# the user may have named alike).
+# dispatchers of other versions: a `VafFollower_<6 hex>` only when Vim says it
+# was set from the follower's own script for that hash, `vaf-<6 hex>.vim`
+# (`:verbose function`'s "Last set from <path>" line, whose words are
+# translated but whose path is not; measured 2026-10-05 in C and pt_BR). A
+# user function of the same name shape, set anywhere else, stays (review of
+# 1e558d0: `VafFollower_123abc()` was deleted). No variable records the
+# names, so nothing new is left in the user's namespace.
 _VIM_SCRIPT = (
     "\" vim-ai-follower's tmux backend: written to its cache directory and\n"
     '" sourced once per Vim (see backends/tmux_vim.py). Do not edit.\n'
@@ -802,11 +807,15 @@ endfunction
 
 for s:name in getcompletion('VafFollower_', 'function')
   let s:name = matchstr(s:name, '^VafFollower_\x\{6}\ze(')
-  if s:name !=# '' && s:name !=# '@NAME@'
+  if s:name ==# '' || s:name ==# '@NAME@'
+    continue
+  endif
+  let s:origin = get(split(execute('verbose function ' . s:name), "\n"), 1, '')
+  if s:origin =~# '[/\\]vaf-' . s:name[12:] . '\.vim\>'
     exe 'delfunction ' . s:name
   endif
 endfor
-unlet! s:name
+unlet! s:name s:origin
 let &cpo = s:cpo_save
 unlet s:cpo_save
 """
@@ -900,13 +909,20 @@ def _script_file(name: str, text: str) -> Path:
 
 def _call_line(op: str, *arguments: str | int) -> str:
     """The typed line that runs s:<op>(arguments) through the dispatcher, and
-    does nothing — no E117, no prompt — in a Vim that does not have it."""
+    does nothing — no E117, no prompt — in a Vim that does not have it.
+
+    No spaces around the bars: every typed line must fit two screen rows at
+    the follower pane's 49 columns, and that is 97 characters with the `:`
+    (measured 2026-10-05, Vim 9.2: `:` + 97 characters puts the cursor on a
+    third row). Show_fresh's rename is the longest call, and its handle
+    carries the pane id, which a long-lived tmux server takes past four
+    digits."""
     name, _text = _vim_functions()
     rendered = ",".join(
         _vim_string(argument) if isinstance(argument, str) else str(argument)
         for argument in (op, *arguments)
     )
-    return f":if exists('*{name}') | call {name}({rendered}) | endif"
+    return f":if exists('*{name}')|call {name}({rendered})|endif"
 
 
 def _define_line(pane_id: str) -> str:
@@ -926,7 +942,7 @@ def _define_line(pane_id: str) -> str:
         source = f"exe 'sil! so ' . fnameescape({_vim_string(str(path))})"
     else:
         source = f"sil! so {target}"
-    return f":if !exists('*{name}') | {source} | endif"
+    return f":if !exists('*{name}')|{source}|endif"
 
 
 # How long a path handle (see _path_handle) is kept before a later call sweeps

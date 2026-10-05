@@ -96,7 +96,7 @@ def route_exec_lua(nvim: MagicMock, *, buffer: int, display_name: str) -> None:
 # handle holds>) for the calls that read it, `<token>` for the landing check.
 FUNCTION = "<fn>"
 _FUNCTION_NAME = re.compile(r"VafFollower_[0-9a-f]{6}")
-_SOURCED = re.compile(r"sil! so \S+|exe 'sil! so ' \. fnameescape\('(?:[^']|'')*'\)")
+_SOURCED = re.compile(r"sil! so [^|\s]+|exe 'sil! so ' \. fnameescape\('(?:[^']|'')*'\)")
 _CALL = re.compile(r"call <fn>\('(\w+)'((?:,[^,)]+)*)\)")
 _HANDLE = re.compile(r"'(p[0-9]+-[0-9a-f]{6})'")
 # The calls whose handle argument names a path (tmux_vim._path_handle).
@@ -123,13 +123,13 @@ def call_spelled(op: str, *arguments: object) -> str:
         else str(argument)
         for argument in (op, *arguments)
     )
-    return f":if exists('*{FUNCTION}') | call {FUNCTION}({rendered}) | endif"
+    return f":if exists('*{FUNCTION}')|call {FUNCTION}({rendered})|endif"
 
 
 def define_line() -> str:
     """The line that sources the functions into a Vim that lacks them
     (tmux_vim._define_line), as resolve_typed_paths leaves it."""
-    return f":if !exists('*{FUNCTION}') | <script> | endif"
+    return f":if !exists('*{FUNCTION}')|<script>|endif"
 
 
 def landed_line() -> str:

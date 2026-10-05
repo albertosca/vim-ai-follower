@@ -38,8 +38,10 @@ HOSTILE = (
     "/tmp/app/[slug]/{a,b} %#$HOME.py",
     "/tmp/ünïcødé/ñ.py",
 )
-# Two screen rows at the follower pane's 49 columns.
-MAXIMUM_LINE_LENGTH = 98
+# Two screen rows at the follower pane's 49 columns, the typed `:` included.
+# Measured on Vim 9.2 in a 49-column tmux pane (2026-10-05): `:` + 96
+# characters fills both rows; `:` + 97 puts the cursor on a third.
+MAXIMUM_LINE_LENGTH = 97
 
 
 @pytest.mark.parametrize("path", HOSTILE)
@@ -175,15 +177,15 @@ def test_the_script_file_is_written_once_and_rewritten_when_it_differs() -> None
 def test_a_call_line_does_nothing_in_a_vim_without_the_functions() -> None:
     name, _ = tmux_vim._vim_functions()
     assert tmux_vim._call_line("goto", "p3-abcdef", 1) == (
-        f":if exists('*{name}') | call {name}('goto','p3-abcdef',1) | endif"
+        f":if exists('*{name}')|call {name}('goto','p3-abcdef',1)|endif"
     )
 
 
-@pytest.mark.parametrize("pane", ["%3", "%999", "%9999"])
+@pytest.mark.parametrize("pane", ["%3", "%999", "%1000", "%9999", "%99999", "%999999"])
 def test_every_typed_call_fits_two_screen_rows(pane: str) -> None:
-    """Up to a four-digit pane id, the longest call (show_fresh's rename)
-    and the define line, HOME-relative, stay within two rows at 49
-    columns."""
+    """Up to a six-digit pane id (a long-lived tmux server's), the longest
+    call (show_fresh's rename, whose handle carries the pane id) and the
+    define line, HOME-relative, stay within two rows at 49 columns."""
     number = int(pane.lstrip("%"))
     handle = f"p{number}-abcdef"
     lines = [
@@ -246,7 +248,7 @@ def _define(pane_pid: int | None, creates_marker: bool, sent: list[str]) -> str:
 
 
 def _sourced(line: str) -> str:
-    match = re.fullmatch(r":if !exists\('\*VafFollower_[0-9a-f]{6}'\) \| (.*) \| endif", line)
+    match = re.fullmatch(r":if !exists\('\*VafFollower_[0-9a-f]{6}'\)\|(.*)\|endif", line)
     assert match, line
     return match.group(1)
 
@@ -449,7 +451,7 @@ def test_a_real_vim_with_a_wildignore_over_the_cache_still_answers_and_sources(
     )
     with patch.object(tmux_vim, "_vim_shares_home", return_value=True):
         define = tmux_vim._define_line("%3")
-    assert " | sil! so ~/" in define, define
+    assert "|sil! so ~/" in define, define
     handle = tmux_vim._path_handle("%3", "/tmp/it's here.py")
     name = tmux_vim._vim_functions()[0]
     out = tmp_path / "out.bin"
@@ -546,12 +548,18 @@ def test_a_real_vim_drops_the_dispatchers_of_other_versions_and_nothing_else(
     tmp_path: Path,
 ) -> None:
     """A long-lived Vim that sourced an older version keeps only the
-    current dispatcher; a user function that merely looks alike stays."""
+    current dispatcher. A user function stays, even one named exactly like
+    a dispatcher (`VafFollower_` + 6 hex): only a function set from the
+    follower's own script for that hash (`vaf-<hash>.vim`) is ours."""
     name = tmux_vim._vim_functions()[0]
-    older = tmp_path / "older.vim"
-    older.write_text(
-        "function! VafFollower_0a0b0c(op, ...) abort\nendfunction\n"
+    older = tmp_path / "old-cache" / "vaf-0a0b0c.vim"
+    older.parent.mkdir()
+    older.write_text("function! VafFollower_0a0b0c(op, ...) abort\nendfunction\n")
+    user = tmp_path / "user.vim"
+    user.write_text(
         "function! VafFollower_mine() abort\nendfunction\n"
+        # The exact shape of a dispatcher's name, but the user's own.
+        "function! VafFollower_123abc() abort\nendfunction\n"
     )
     out = tmp_path / "out.txt"
     subprocess.run(
@@ -565,10 +573,13 @@ def test_a_real_vim_drops_the_dispatchers_of_other_versions_and_nothing_else(
             "-c",
             f"source {older}",
             "-c",
+            f"source {user}",
+            "-c",
             f"source {tmux_vim._script_file(name, tmux_vim._vim_functions()[1])}",
             "-c",
-            f"call writefile([exists('*VafFollower_0a0b0c') . '', exists('*VafFollower_mine')"
-            f" . '', exists('*{name}') . ''], '{out}')",
+            "call writefile(map(['VafFollower_0a0b0c', 'VafFollower_mine',"
+            f" 'VafFollower_123abc', '{name}'],"
+            f" {{_, function_name -> exists('*' . function_name) . ''}}), '{out}')",
             "-c",
             "qa!",
         ],
@@ -576,4 +587,4 @@ def test_a_real_vim_drops_the_dispatchers_of_other_versions_and_nothing_else(
         timeout=30,
         stdin=subprocess.DEVNULL,
     )
-    assert out.read_text().splitlines() == ["0", "1", "1"]
+    assert out.read_text().splitlines() == ["0", "1", "1", "1"]

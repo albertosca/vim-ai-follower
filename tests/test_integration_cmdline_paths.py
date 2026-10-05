@@ -84,8 +84,11 @@ def _logged_vim(
     return pane
 
 
-# Two screen rows at the follower pane's 49 columns.
-MAXIMUM_LINE_LENGTH = 98
+# Two screen rows at the follower pane's 49 columns, as getcmdline() reports
+# a line (without the typed `:`). Measured on Vim 9.2 in a 49-column tmux
+# pane (2026-10-05): `:` + 96 characters fills both rows; `:` + 97 puts the
+# cursor on a third.
+MAXIMUM_LINE_LENGTH = 96
 
 
 def _whole_lines(typed: list[str]) -> list[str]:
