@@ -30,9 +30,13 @@ jobs:
         with:
           fetch-depth: 0 # full history: a shallow clone dates every page with the newest commit
 
+      # uv runs the build, and pyproject's [tool.uv] python-preference =
+      # "only-system" makes it use .python-version (3.14) from the system only:
+      # with 3.11 installed here every `uv run` failed ("No interpreter found
+      # for Python 3.14"), measured on the first push of this workflow.
       - uses: actions/setup-python@v7
         with:
-          python-version: "3.11"
+          python-version-file: ".python-version"
 
       - uses: astral-sh/setup-uv@v10.2.0
 
