@@ -1820,6 +1820,68 @@ def test_read_skips_while_another_process_animates(tmp_path: Path) -> None:
     assert current.open_files == ()  # untouched
 
 
+_CONCURRENT_EDIT = """
+import sys, time
+from pathlib import Path
+from vim_ai_follower import cache, control
+cache.CACHE_DIR = Path(sys.argv[1])
+print(control.try_acquire_animating("@1"), flush=True)
+time.sleep(30)
+"""
+
+
+def test_a_read_holds_the_slot_while_it_navigates(tmp_path: Path) -> None:
+    """Final review of backlog-sweep-3, M2: the Read used to check the slot
+    and then navigate, and its navigation is several sends (define, goto,
+    Escape pair, landed, a wait of up to 10 s, reload, lock). An Edit hook
+    that took the slot in between had its insert mode ended by the Read's
+    Escape pair, and its remaining text typed as normal-mode commands. Here
+    another process tries to take the slot exactly there (when the Read asks
+    whether an Edit of the file is in flight, its first step after the
+    check): it must find the slot held by the Read, which still navigates and
+    releases the slot on its way out."""
+    target = tmp_path / "a.py"
+    target.write_text("content\n")
+    _register_fake_follower("@1", "%2", shown_any=True)
+    processes: list[subprocess.Popen[str]] = []
+    answers: list[str] = []
+    real_in_flight = hooks._edit_in_flight
+
+    def concurrent_edit_then_check(window_id: str, file_path: str, reader: str | None) -> bool:
+        process = subprocess.Popen(
+            [sys.executable, "-c", _CONCURRENT_EDIT, str(cache.CACHE_DIR)],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        processes.append(process)
+        assert process.stdout is not None
+        answers.append(process.stdout.readline().strip())
+        return real_in_flight(window_id, file_path, reader)
+
+    try:
+        with (
+            patch.object(hooks, "_edit_in_flight", side_effect=concurrent_edit_then_check),
+            patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+        ):
+            exit_code = hooks.cmd_hook_post(
+                {"TMUX_PANE": "%1"},
+                {"tool_name": "Read", "tool_input": {"file_path": str(target)}},
+            )
+    finally:
+        for process in processes:
+            process.kill()
+            process.wait()
+    assert exit_code == 0
+    assert answers == ["False"]  # the concurrent Edit found the slot taken
+    sent = [
+        command
+        for command in (call.args[0] for call in run.call_args_list)
+        if command[:2] == ["tmux", "send-keys"]
+    ]
+    assert sent != []  # the Read did navigate
+    assert control.animating_state("@1") is None  # and released the slot
+
+
 def test_skip_preserves_the_other_writers_pending_animation(tmp_path: Path) -> None:
     target = tmp_path / "a.py"
     target.write_text("new content\n")

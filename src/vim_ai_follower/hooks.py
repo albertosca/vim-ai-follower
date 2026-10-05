@@ -1418,10 +1418,31 @@ def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
     cfg = config.load()
     if not _passes_policy(cfg, file_path):
         return 0
-    if control.animating_state(session.window_id) is not None:
-        # Another live hook owns this window's pane: navigating now would
-        # interleave keystrokes with its animation. Skip; state untouched.
+    # The Read holds this window's animation slot for its whole navigation,
+    # taken with the same try-acquire as an Edit (final review of
+    # backlog-sweep-3, M2). A check-then-navigate left a gap: the navigation
+    # is several sends (define, goto, Escape pair, landed, a wait of up to
+    # 10 s, reload, lock), and an Edit hook that took the slot meanwhile had
+    # its insert mode ended by the Read's Escape pair and the rest of its
+    # text typed as normal-mode commands — in an adopted Vim, into the
+    # user's editor. "finishing", never "running": no driver runs here, so a
+    # P or S pressed meanwhile is told there is nothing to pause, instead of
+    # drawing a signal addressed to this process that nothing would read.
+    if not control.try_acquire_animating(session.window_id, state="finishing"):
+        # Another live hook owns this window's pane. Skip without waiting and
+        # leave the state alone: unlike a skipped Edit, a skipped Read leaves
+        # no buffer behind disk, so there is nothing to mark stale.
         return 0
+    try:
+        return _navigate_for_read(session, payload, file_path, cfg)
+    finally:
+        control.clear_animating(session.window_id)
+
+
+def _navigate_for_read(
+    session: Session, payload: dict[str, Any], file_path: str, cfg: config.Config
+) -> int:
+    """The Read's navigation; the caller holds the window's slot."""
     if _edit_in_flight(session.window_id, file_path, writer_cue.writer_identity(payload)):
         # What is known: another writer's Edit/MultiEdit/Write of this file
         # ran its pre hook less than IN_FLIGHT_TTL_SECONDS ago and has not
