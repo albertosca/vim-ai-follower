@@ -6,7 +6,7 @@ import subprocess
 import sys
 from typing import Literal
 
-from vim_ai_follower import cache, config, control, keybindings, snapshot, tmux
+from vim_ai_follower import cache, config, control, hooks, keybindings, snapshot, tmux
 from vim_ai_follower.backends import NavigationFailed, get_follower
 from vim_ai_follower.backends.nvim_connect import (
     NvimNeverListened,
@@ -259,7 +259,10 @@ def cmd_stop(env: dict[str, str]) -> int:
         if existing.adopted:
             # Adoption never took ownership of the pane — killing the
             # user's own Vim on stop would be destructive. Only close the
-            # tabs the follower itself opened there.
+            # tabs the follower itself opened there, and never discard the
+            # user's work: close_tab leaves a modified buffer, or one the user
+            # had open, where it is, and says so in hook.log.
+            hooks._configure_logging()
             follower = get_follower(existing.backend, existing.target, window_id=session.window_id)
             for path in existing.open_files:
                 follower.close_tab(path)

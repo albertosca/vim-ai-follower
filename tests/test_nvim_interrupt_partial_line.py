@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+from helpers import fresh_buffer
 
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends.nvim import NvimFollower, _animate_lines
@@ -78,7 +79,7 @@ def test_show_fresh_interrupted_mid_line_buffer_call_holds_only_the_typed_prefix
 ) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.05)
     nvim = MagicMock()
-    nvim.current.buffer.handle = 7
+    fresh_buffer(nvim)
     # outer(line0="ab") + char0 + char1 [types "ab"] = 3 calls; outer(line1) +
     # char0("w") -> 2 more calls; the 6th call (char1, before 'x') interrupts.
     signals = [None, None, None, None, None, "interrupt"]

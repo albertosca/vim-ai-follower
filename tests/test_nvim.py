@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
-from helpers import route_exec_lua
+from helpers import fresh_buffer, route_exec_lua
 
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends import get_follower
@@ -221,7 +221,7 @@ def test_is_alive_false_when_socket_missing() -> None:
 def test_show_fresh_never_edits_the_real_file_and_types_the_content(tmp_path: Path) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
-    nvim.current.buffer.handle = 7
+    fresh_buffer(nvim)
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
@@ -243,7 +243,7 @@ def test_show_fresh_opens_a_new_tab_when_requested(tmp_path: Path) -> None:
     # getting its own tab.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
-    nvim.current.buffer.handle = 7
+    fresh_buffer(nvim)
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/b.py")
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -254,10 +254,16 @@ def test_show_fresh_opens_a_new_tab_when_requested(tmp_path: Path) -> None:
     cmds = [c.args[0] for c in nvim.command.call_args_list]
     assert "tabnew" in cmds
     assert "enew" not in cmds
-    # the rename must land on the NEW tab's buffer, so it has to come after
-    tabnew_idx = nvim.mock_calls.index(call.command("tabnew"))
-    rename_idx = nvim.mock_calls.index(call.api.buf_set_name(nvim.current.buffer, "/tmp/b.py"))
-    assert tabnew_idx < rename_idx
+    # The name goes on the buffer show_fresh CREATED, by handle, and that
+    # buffer is put in the window of the tab the tabnew added — never "the
+    # current buffer after :tabnew", which a user autocommand can move
+    # (final review of backlog-sweep-3, I1).
+    assert call.api.buf_set_name(nvim.api.create_buf.return_value, "/tmp/b.py") in nvim.mock_calls
+    window = nvim.api.tabpage_get_win.return_value
+    added = nvim.api.tabpage_get_win.call_args.args[0]
+    assert added.handle == 2
+    assert call.api.win_set_buf(window, nvim.api.create_buf.return_value) in nvim.mock_calls
+    nvim.api.set_current_win.assert_called_once_with(window)
 
 
 def test_show_fresh_marks_animating_and_leaves_the_slot_to_its_owner(tmp_path: Path) -> None:
@@ -267,7 +273,7 @@ def test_show_fresh_marks_animating_and_leaves_the_slot_to_its_owner(tmp_path: P
     assert owner_control.try_acquire_animating("@1", tmp_path)
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
-    nvim.current.buffer.handle = 7
+    fresh_buffer(nvim)
     seen: list[bool] = []
 
     def _check(window_id: str, base_dir: Path | None = None) -> None:
@@ -291,7 +297,7 @@ def test_show_fresh_marks_animating_and_leaves_the_slot_to_its_owner(tmp_path: P
 def test_show_fresh_relocks_buffer_when_completed(tmp_path: Path) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
-    nvim.current.buffer.handle = 7
+    fresh_buffer(nvim)
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
@@ -309,7 +315,7 @@ def test_show_fresh_relocks_buffer_when_completed(tmp_path: Path) -> None:
 def test_show_fresh_leaves_buffer_modifiable_when_interrupted(tmp_path: Path) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
-    nvim.current.buffer.handle = 7
+    fresh_buffer(nvim)
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
@@ -326,7 +332,7 @@ def test_show_fresh_pause_saves_show_fresh_remainder_then_resumes(tmp_path: Path
 
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
-    nvim.current.buffer.handle = 7
+    fresh_buffer(nvim)
     saved: list[tuple[tuple[str, ...], bool, str]] = []
     real_save = control.save_pending_show_fresh
 
@@ -475,7 +481,7 @@ def test_drive_skips_relock_for_an_adopted_follower(tmp_path: Path) -> None:
 
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
-    nvim.current.buffer.handle = 7
+    fresh_buffer(nvim)
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
@@ -497,7 +503,7 @@ def test_drive_relocks_a_dedicated_follower_recorded_not_adopted(tmp_path: Path)
 
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
-    nvim.current.buffer.handle = 7
+    fresh_buffer(nvim)
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),

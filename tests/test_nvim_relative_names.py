@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
-from helpers import route_exec_lua
+from helpers import fresh_buffer, route_exec_lua
 
 from vim_ai_follower.backends.nvim import _DISPLAY_NAME_LUA, NvimFollower, _display_name
 
@@ -42,7 +42,7 @@ def test_the_lua_keeps_the_short_form_only_when_its_p_round_trips() -> None:
 
 def test_show_fresh_names_its_buffer_with_the_display_name(tmp_path: Path) -> None:
     nvim = _nvim("sub/a.py")
-    buf = nvim.current.buffer
+    buf = fresh_buffer(nvim)
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),

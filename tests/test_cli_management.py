@@ -8,11 +8,11 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from helpers import make_mock_tmux_run, resolve_typed_paths, wipe_spelled
+from helpers import evict_spelled, make_mock_tmux_run, resolve_typed_paths, wipe_spelled
 from helpers import register_fake_follower as _register_fake_follower
 
 from vim_ai_follower import cache, commands, config, control, keybindings, session, snapshot, state
-from vim_ai_follower.backends import nvim_connect
+from vim_ai_follower.backends import nvim_connect, tmux_vim
 from vim_ai_follower.backends.nvim import _FIND_BUFFER_LUA
 from vim_ai_follower.backends.nvim_connect import NvimNeverListened
 
@@ -737,7 +737,11 @@ def test_stop_with_corrupt_saved_bindings_falls_back_to_unbind() -> None:
     assert ["tmux", "unbind-key", "-T", "prefix", "S"] in unbinds
 
 
-def test_stop_on_adopted_pane_closes_tabs_but_not_the_pane() -> None:
+def test_stop_on_adopted_pane_closes_tabs_but_not_the_pane(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The mocked Vim never answers s:evict's verdict: don't wait for it.
+    monkeypatch.setattr(tmux_vim, "_PROBE_TIMEOUT_SECONDS", 0.01)
     a = "/tmp/a.py"
     b = "/tmp/b.py"
     with patch(
@@ -758,11 +762,14 @@ def test_stop_on_adopted_pane_closes_tabs_but_not_the_pane() -> None:
         c.args[0] for c in run.call_args_list if c.args[0][:4] == ["tmux", "send-keys", "-t", "%7"]
     ]
     literal = [resolve_typed_paths(c[6]) for c in sends if "-l" in c]
-    # close_tab resolves a buffer NUMBER and wipes that, because `:bwipeout!`
-    # takes a buffer-name PATTERN, not a path: `app/[slug]/page.tsx` is a
-    # character class and the wipe silently misses (measured 2026-09-22).
-    assert wipe_spelled(a) in literal
-    assert wipe_spelled(b) in literal
+    # close_tab resolves a buffer NUMBER, because `:bwipeout!` takes a
+    # buffer-name PATTERN, not a path: `app/[slug]/page.tsx` is a character
+    # class and the wipe silently misses (measured 2026-09-22). In the user's
+    # own Vim it goes through s:evict, which never wipes the user's work.
+    assert evict_spelled(a) in literal
+    assert evict_spelled(b) in literal
+    assert wipe_spelled(a) not in literal
+    assert wipe_spelled(b) not in literal
     # bwipeout alone closes each tab; a :tabclose here would eat an
     # innocent neighbor (see close_tab).
     assert not any("tabclose" in text for text in literal)

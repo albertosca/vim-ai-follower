@@ -20,7 +20,12 @@ import pynvim
 
 from vim_ai_follower import config, control
 from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult, _wait_while_paused
-from vim_ai_follower.backends import BufferProbe, classify_buffer
+from vim_ai_follower.backends import (
+    BufferProbe,
+    NavigationFailed,
+    classify_buffer,
+    log_adopted_close,
+)
 from vim_ai_follower.backends.nvim_prompt import dismiss_prompt, exec_logged, prompt_guard
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
 from vim_ai_follower.diff import EditOp, apply_ops
@@ -248,6 +253,40 @@ return vim.b[buf].{_SYNCED_TICK} == vim.api.nvim_buf_get_changedtick(buf)
 """
 
 
+# The marks an ADOPTED nvim's eviction and `claude-follow stop` go by (see the
+# tmux backend's _VIM_EVICT for the C1 reproduction and the rules): a buffer
+# the follower created (`b:vaf_created`: goto_file's create_buf,
+# _open_from_disk's bufadd, show_fresh's) and a window it opened for a buffer
+# the user already had (`w:vaf_opened`). Editor variables, not cache state:
+# they die with the editor, so an nvim restarted on the same socket holds no
+# buffer the follower would call its own.
+_CREATED = "vaf_created"
+_OPENED = "vaf_opened"
+# One RPC: what to do with an adopted nvim's buffer `buf` whose tab is being
+# closed. "Modified" is the negation of _IS_CLEAN_LUA (this backend never
+# writes, so a completed animation's buffer is 'modified' but clean): an
+# unclean buffer is "kept", a clean one the follower created is wiped, and
+# one the user had loses only the windows the follower opened for it.
+_EVICT_LUA = f"""
+local buf = ...
+local clean = not vim.bo[buf].modified
+  or vim.b[buf].{_SYNCED_TICK} == vim.api.nvim_buf_get_changedtick(buf)
+if not clean then return 'kept' end
+if vim.b[buf].{_CREATED} then
+  vim.cmd('silent! bwipeout! ' .. buf)
+  return 'wiped'
+end
+local verdict = 'forgotten'
+for _, window in ipairs(vim.fn.win_findbuf(buf)) do
+  if vim.w[window].{_OPENED} then
+    verdict = 'closed'
+    pcall(vim.api.nvim_win_close, window, false)
+  end
+end
+return verdict
+"""
+
+
 # show_fresh's read-then-clear of the buffer it just named; see the tmux
 # backend's _VIM_RENAME for why (E13 on a plain `:w`) and for each piece.
 # One nvim_command: nvim redraws only between requests, so the file's content
@@ -450,11 +489,7 @@ class NvimFollower:
             stale = _buffer_number(nvim, file_path)
             if stale != -1:
                 nvim.command(f"silent! bwipeout! {stale}")
-            if in_new_tab:
-                nvim.command("tabnew")
-            else:
-                nvim.command("enew")
-            _name_without_swap(nvim, nvim.current.buffer, file_path)
+            buf = self._fresh_buffer(nvim, file_path, in_new_tab)
             # Read the file in and clear it, in ONE command (nvim redraws only
             # between requests, so the content is never on screen): naming
             # left the buffer "not edited", and a plain `:w` after an
@@ -464,7 +499,6 @@ class NvimFollower:
             self._restore_swap_if_adopted(nvim)
             self._exec(nvim, "filetype detect")
             nvim.command("setlocal buftype=")
-            buf = nvim.current.buffer.handle
             lines = tuple(content.splitlines())
 
             def run() -> AnimationResult:
@@ -503,6 +537,52 @@ class NvimFollower:
                 return result
 
             return self._drive(nvim, buf, run)
+
+    def _fresh_buffer(self, nvim: pynvim.Nvim, file_path: str, in_new_tab: bool) -> int:
+        """A new buffer named file_path, shown in a new tab (in_new_tab) or
+        the current window, made current; its handle.
+
+        Created BY HANDLE and named before it is shown, never "the current
+        buffer after `:tabnew`": a user autocommand that jumps on the tabnew
+        (`BufEnter * if bufname('%') ==# '' … | tabfirst`) made the follower
+        rename the USER's buffer onto Claude's file and the read-and-clear
+        empty it, unsaved text and all (final review of backlog-sweep-3, I1,
+        reproduced at acce2b2). The new tab is found by handle too (the one
+        tabpage the tabnew added), and the empty buffer the tabnew put in it
+        is wiped once replaced, as `:enew` reuses an empty unnamed one. If,
+        after all that, the current buffer is still not the new one (another
+        autocommand moved the cursor), the new buffer is wiped again and
+        NavigationFailed raised: nothing has acted on any other buffer."""
+        buf = nvim.api.create_buf(True, False)
+        _name_without_swap(nvim, buf, file_path)
+        nvim.api.buf_set_var(buf, _CREATED, 1)
+        if in_new_tab:
+            before = {tab.handle for tab in nvim.api.list_tabpages()}
+            nvim.command("tabnew")
+            added = [tab for tab in nvim.api.list_tabpages() if tab.handle not in before]
+            window = nvim.api.tabpage_get_win(added[0]) if added else None
+        else:
+            window = nvim.api.get_current_win()
+        if window is not None:
+            scratch = nvim.api.win_get_buf(window)
+            nvim.api.win_set_buf(window, buf)
+            nvim.api.set_current_win(window)
+            if (
+                scratch != buf
+                and nvim.api.buf_get_name(scratch) == ""
+                and not nvim.api.buf_get_option(scratch, "modified")
+                and nvim.api.buf_line_count(scratch) == 1
+                and nvim.api.buf_get_lines(scratch, 0, 1, False) == [""]
+                and not nvim.funcs.win_findbuf(scratch.handle)
+            ):
+                nvim.command(f"silent! bwipeout {scratch.handle}")
+        handle: int = buf.handle
+        if window is None or nvim.api.get_current_buf() != buf:
+            nvim.command(f"silent! bwipeout! {handle}")
+            raise NavigationFailed(
+                f"the follower's nvim did not land on the new tab for {file_path}"
+            )
+        return handle
 
     def _run_ops(
         self,
@@ -891,6 +971,8 @@ class NvimFollower:
                     nvim.api.buf_set_option(bufnr, "swapfile", False)
                 nvim.command("tabnew")
                 nvim.api.win_set_buf(0, bufnr)
+                # The window is the follower's, the buffer is not (s:evict).
+                nvim.api.win_set_var(0, _OPENED, 1)
                 if loading:
                     self._restore_swap_if_adopted(nvim)
                 return
@@ -898,6 +980,7 @@ class NvimFollower:
             nvim.command("tabnew")
             buf = nvim.api.create_buf(True, False)
             _name_without_swap(nvim, buf, file_path)
+            nvim.api.buf_set_var(buf, _CREATED, 1)
             nvim.api.win_set_buf(0, buf)
             self._restore_swap_if_adopted(nvim)
 
@@ -980,6 +1063,7 @@ class NvimFollower:
         raises."""
         bufnr = nvim.funcs.bufadd(_display_name(nvim, file_path))
         nvim.api.buf_set_option(bufnr, "swapfile", False)
+        nvim.api.buf_set_var(bufnr, _CREATED, 1)
         # bufload fires BufRead/FileType, so the user's plugins run inside it:
         # through _exec, a message they print lands in hook.log instead of a
         # hit-enter prompt (nvim_prompt).
@@ -1080,8 +1164,17 @@ class NvimFollower:
         # measured that bwipeout! alone (without navigating there first)
         # already closes the right tab regardless of which one is current,
         # so this preamble isn't load-bearing, just consistent style.
+        #
+        # An ADOPTED nvim is the user's own editor: _EVICT_LUA decides, and
+        # nothing navigates first (goto_file would create a buffer for a
+        # file no buffer holds, only to wipe it again).
         nvim = self._connect()
         with self._guarded(nvim, "close_tab"):
+            if self._is_adopted():
+                bufnr = _buffer_number(nvim, file_path)
+                if bufnr != -1:
+                    log_adopted_close(file_path, nvim.exec_lua(_EVICT_LUA, bufnr))
+                return
             self.goto_file(file_path)
             bufnr = _buffer_number(nvim, file_path)
             if bufnr != -1:

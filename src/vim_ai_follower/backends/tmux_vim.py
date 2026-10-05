@@ -13,7 +13,12 @@ from pathlib import Path
 
 from vim_ai_follower import cache, config
 from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult, run_lines, run_ops
-from vim_ai_follower.backends import BufferProbe, NavigationFailed, classify_buffer
+from vim_ai_follower.backends import (
+    BufferProbe,
+    NavigationFailed,
+    classify_buffer,
+    log_adopted_close,
+)
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
 from vim_ai_follower.diff import EditOp
 from vim_ai_follower.state import FollowerState
@@ -502,9 +507,16 @@ function! s:goto(token, folds) abort
   let &fileignorecase = 0
   try
     if number < 0
+      let last = bufnr('$')
       exe 'silent tab drop ' . fnameescape(s:display(g:vaf_p))
-    elseif number != bufnr('%')
-      exe win_gotoid(get(win_findbuf(number), 0)) ? '' : 'silent tab sbuffer ' . number
+      if bufnr('%') > last
+        let b:vaf_created = 1
+      endif
+    elseif number != bufnr('%') && !win_gotoid(get(win_findbuf(number), 0))
+      exe 'silent tab sbuffer ' . number
+      if bufnr('%') == number
+        let w:vaf_opened = 1
+      endif
     endif
   catch /^Vim\%((\a\+)\)\=:E37:/
   finally
@@ -641,6 +653,19 @@ endfunction
 #   - In an adopted Vim (`adopted`) the rename also claims the option for the
 #     follower (see s:note_user_readonly): whatever readonly the renamed
 #     buffer carried belonged to the file it held before, never to this one.
+#   - In a new tab (`in_new_tab`, always so in an adopted Vim) the rename runs
+#     only on a buffer it has PROVEN is the one `tabnew` just made: a number
+#     above every number before it, unnamed and unmodified. The landing check
+#     cannot see it otherwise, because the rename makes whatever buffer it
+#     names "the target": a user autocommand that jumps back on `tabnew`
+#     (`BufEnter * if bufname('%') ==# '' … | tabfirst`) had the follower
+#     rename the USER's buffer onto Claude's file and the read-and-clear empty
+#     it, unsaved text and all (final review of backlog-sweep-3, I1). Without
+#     the proof nothing more runs and no landing is recorded: the empty buffer
+#     the tabnew left (s:drop_fresh, only while it is still unnamed and
+#     unmodified) goes, and Python's landing check reports NavigationFailed.
+#   - The buffer is marked as the follower's own (`b:vaf_created`), which is
+#     what lets a later eviction in an adopted Vim wipe it (s:evict).
 #
 # Then it READS the file into the buffer and clears it again, in the same
 # call. Renaming a buffer onto a path (`:file`, and nvim's buf_set_name)
@@ -663,13 +688,25 @@ endfunction
 #     columns; the buffer then just stays not edited, as before.
 #   - `%d _` into the black-hole register, leaving the user's registers alone.
 _VIM_RENAME = r"""
+function! s:drop_fresh(last) abort
+  let fresh = bufnr('$')
+  if fresh > a:last && bufname(fresh) ==# '' && !getbufvar(fresh, '&modified')
+    exe 'silent! bwipeout ' . fresh
+  endif
+endfunction
+
 function! s:rename(token, folds, in_new_tab, adopted) abort
   call s:acting_start(a:token)
   if g:vaf_p ==# ''
     return
   endif
   if a:in_new_tab
+    let last = bufnr('$')
     tabnew
+    if bufnr('%') <= last || bufname('%') !=# '' || &modified
+      call s:drop_fresh(last)
+      return
+    endif
   endif
   setlocal noswapfile
   let fileignorecase = &fileignorecase
@@ -681,6 +718,7 @@ function! s:rename(token, folds, in_new_tab, adopted) abort
   endtry
   call s:land_if_target(a:folds)
   if exists('g:vaf_landed')
+    let b:vaf_created = 1
     if a:adopted
       let b:vaf_user_ro = 0
       let b:vaf_ro_ours = 2
@@ -730,6 +768,69 @@ function! s:wipe(token, folds) abort
   if number > 0
     exe 'silent! bwipeout! ' . number
   endif
+endfunction
+"""
+
+# An ADOPTED Vim's eviction and `claude-follow stop` (s:evict). s:wipe above is
+# right for a dedicated follower, whose buffers are never the user's; in the
+# user's own Vim it discarded their work (final review of backlog-sweep-3, C1,
+# reproduced at acce2b2: Claude Read the file the user was editing, five more
+# Reads evicted it, and the unsaved text was gone). So, by buffer number:
+#
+#   - a MODIFIED buffer is never wiped ("kept"), whoever made it: it holds
+#     typing that is not on disk (the user's, or a hand-off's);
+#   - a buffer the follower did not create (`b:vaf_created`, set by s:goto's
+#     `:tab drop` and by s:rename) is never wiped at all: it was open in the
+#     user's Vim before the follower came to it. Only a window the follower
+#     opened for it (`w:vaf_opened`, s:goto's `:tab sbuffer`) is closed
+#     ("closed"), else nothing is ("forgotten");
+#   - a buffer the follower created and nobody changed is wiped ("wiped"), so
+#     max_tabs still caps the follower's own tabs.
+#
+# A buffer left in place gets back what the follower's Read lock took
+# (s:release): 'modifiable', and the readonly the user had (see
+# s:note_user_readonly). The marks are buffer and window variables, not
+# state in the cache, because they must die with the editor: an adopted Vim
+# restarted in the same shell holds only buffers the USER opened, and a mark
+# kept on the Python side would call them the follower's. Python waits for
+# the verdict (`evict-<pane>.txt`) and logs it.
+_VIM_EVICT = r"""
+function! s:release(number) abort
+  let variables = getbufvar(a:number, '')
+  if get(variables, 'vaf_ro_ours') == 1
+    call setbufvar(a:number, '&readonly', get(variables, 'vaf_user_ro', 0))
+    call setbufvar(a:number, '&modifiable', 1)
+  endif
+  call setbufvar(a:number, 'vaf_ro_ours', 0)
+  if has_key(variables, 'vaf_user_ro')
+    call remove(variables, 'vaf_user_ro')
+  endif
+endfunction
+
+function! s:evict(token, folds) abort
+  let path = s:read(a:token)
+  let number = path ==# '' ? -1 : s:find(path, a:folds)
+  if path ==# ''
+    let verdict = 'unread'
+  elseif number < 0
+    let verdict = 'absent'
+  elseif !getbufvar(number, '&modified') && getbufvar(number, 'vaf_created')
+    let verdict = 'wiped'
+    exe 'silent! bwipeout! ' . number
+  else
+    call s:release(number)
+    let verdict = getbufvar(number, '&modified') ? 'kept' : 'forgotten'
+    for id in verdict ==# 'kept' ? [] : win_findbuf(number)
+      if call('gettabwinvar', win_id2tabwin(id) + ['vaf_opened'])
+        let verdict = 'closed'
+        silent! call win_execute(id, 'close')
+      endif
+    endfor
+  endif
+  try
+    call writefile([verdict, a:token], s:dir . 'evict-' . s:pane(a:token) . '.txt')
+  catch
+  endtry
 endfunction
 """
 
@@ -799,6 +900,7 @@ _VIM_SCRIPT = (
     + _VIM_SWAP_BACK_ON
     + _VIM_RENAME
     + _VIM_WIPE
+    + _VIM_EVICT
     + _VIM_PROBE
     + r"""
 function! @NAME@(op, ...) abort
@@ -846,6 +948,11 @@ logger = logging.getLogger("vim_ai_follower")
 def _probe_path(pane_id: str) -> Path:
     """Where Vim writes probe_buffer's answer for this pane (s:probe)."""
     return cache.CACHE_DIR / f"probe-{pane_id.lstrip('%')}.txt"
+
+
+def _evict_answer_path(pane_id: str) -> Path:
+    """Where s:evict leaves an adopted eviction's verdict for this pane."""
+    return cache.CACHE_DIR / f"evict-{pane_id.lstrip('%')}.txt"
 
 
 def _readonly_answer_path(pane_id: str) -> Path:
@@ -1371,7 +1478,22 @@ class TmuxVimFollower:
         pane = TmuxPane(pane_id=self.pane_id)
         self._normal_mode(pane)
         self._define(pane)
-        self._send_wipe(pane, file_path)
+        if not self._is_adopted():
+            self._send_wipe(pane, file_path)
+            return
+        # The user's own Vim: never wipe their work (s:evict), and wait for
+        # the verdict so hook.log says what was left where.
+        answer = _evict_answer_path(self.pane_id)
+        answer.parent.mkdir(parents=True, exist_ok=True)
+        answer.unlink(missing_ok=True)
+        handle = _path_handle(self.pane_id, file_path)
+        pane.send_text(_call_line("evict", handle.name, _case_folds(file_path)))
+        pane.send_key("Enter")
+        lines = _await_answer(answer, handle.name, _PROBE_TIMEOUT_SECONDS)
+        answer.unlink(missing_ok=True)
+        if lines is None and _distrust_home(self.pane_id):
+            logger.warning("no answer from the follower's Vim; asking about its HOME again")
+        log_adopted_close(file_path, lines[0] if lines else None)
 
     def _send_wipe(self, pane: TmuxPane, file_path: str) -> None:
         handle = _path_handle(self.pane_id, file_path)

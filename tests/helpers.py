@@ -71,6 +71,27 @@ def register_fake_follower(
         )
 
 
+def fresh_buffer(nvim: MagicMock, handle: int = 7) -> MagicMock:
+    """Wire a mock nvim for NvimFollower._fresh_buffer, which show_fresh
+    names, reads and types into: the buffer create_buf returns is
+    `nvim.current.buffer` (the object the tests assert on) with `handle`, it
+    reads as current once shown, and `:tabnew` adds one tabpage."""
+    buffer: MagicMock = nvim.current.buffer
+    buffer.handle = handle
+    nvim.api.create_buf.return_value = buffer
+    nvim.api.get_current_buf.return_value = buffer
+    old_tab, new_tab = MagicMock(handle=1), MagicMock(handle=2)
+    tabs: list[list[MagicMock]] = [[old_tab]]
+
+    def list_tabpages() -> list[MagicMock]:
+        current = tabs[-1]
+        tabs.append([old_tab, new_tab])
+        return current
+
+    nvim.api.list_tabpages.side_effect = list_tabpages
+    return buffer
+
+
 def route_exec_lua(nvim: MagicMock, *, buffer: int, display_name: str) -> None:
     """Make a mock nvim's exec_lua answer per Lua chunk: the buffer lookup
     (_FIND_BUFFER_LUA) gets `buffer`, the naming (_DISPLAY_NAME_LUA) gets
@@ -100,7 +121,7 @@ _SOURCED = re.compile(r"sil! so [^|\s]+|exe 'sil! so ' \. fnameescape\('(?:[^']|
 _CALL = re.compile(r"call <fn>\('(\w+)'((?:,[^,)]+)*)\)")
 _HANDLE = re.compile(r"'(p[0-9]+-[0-9a-f]{6})'")
 # The calls whose handle argument names a path (tmux_vim._path_handle).
-_READING_OPS = {"goto", "rename", "wipe", "probe"}
+_READING_OPS = {"goto", "rename", "wipe", "probe", "evict"}
 # Every handle the backend created during the test, by name (conftest's
 # autouse record_path_handles): a test may read its sends after its own
 # CACHE_DIR patch is gone, and the line names the handle only.
@@ -166,6 +187,12 @@ def wipe_spelled(path: object) -> str:
     """What resolve_typed_paths leaves of the call an eviction (and
     show_fresh's pre-wipe) sends to wipe `path`'s buffer by NUMBER (s:wipe)."""
     return call_spelled("wipe", typed_path(path), case_folds(path))
+
+
+def evict_spelled(path: object) -> str:
+    """What resolve_typed_paths leaves of the call an ADOPTED Vim's eviction
+    (and `stop`) sends for `path`'s buffer (s:evict)."""
+    return call_spelled("evict", typed_path(path), case_folds(path))
 
 
 def probe_spelled(path: object) -> str:

@@ -16,7 +16,7 @@ from typing import Any
 from unittest.mock import MagicMock, call, patch
 
 import pytest
-from helpers import route_exec_lua
+from helpers import fresh_buffer, route_exec_lua
 
 from vim_ai_follower import state
 from vim_ai_follower.animate import AnimationResult
@@ -159,7 +159,7 @@ def test_show_fresh_opts_its_new_buffer_out_of_swap_before_naming_it(tmp_path: P
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
-    buf = nvim.current.buffer
+    buf = fresh_buffer(nvim)
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
@@ -215,7 +215,7 @@ def test_show_fresh_turns_swap_back_on_after_naming_only_when_adopted(
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
-    buf = nvim.current.buffer
+    buf = fresh_buffer(nvim)
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
@@ -296,7 +296,7 @@ def test_a_swap_that_cannot_be_turned_back_on_is_logged_and_left_off(
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
     nvim.exec_lua.return_value = -1
-    nvim.current.buffer.handle = 7
+    fresh_buffer(nvim)
 
     def exec2(command: str, opts: dict[str, bool]) -> dict[str, str]:
         if command == _SWAP_BACK_ON:

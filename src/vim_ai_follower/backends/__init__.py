@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Literal, Protocol
 
 from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult
@@ -15,6 +16,43 @@ from vim_ai_follower.diff import EditOp
 #     the user's unsaved typing, which a wipe would destroy;
 #   - "unknown": the editor never answered.
 BufferProbe = Literal["holds", "differs", "absent", "unknown"]
+
+
+logger = logging.getLogger("vim_ai_follower")
+
+# What closing a tab in an ADOPTED editor did with its buffer (the eviction
+# past max_tabs, and `claude-follow stop`), as the backends report it:
+#   - "wiped": the follower created it and nothing changed it since;
+#   - "kept": it is modified, so it stays loaded, tab and all;
+#   - "closed": the user had it open; only the tab the follower opened for it
+#     was closed;
+#   - "forgotten": the user had it open where it is; nothing was closed;
+#   - "absent": no buffer holds the file.
+# Every verdict but "wiped" and "absent" leaves the user's buffer where it is,
+# and the hook drops the file from its tracking either way.
+_ADOPTED_CLOSE_MESSAGES = {
+    "kept": "left %s open in the adopted editor: its buffer has unsaved changes",
+    "closed": "closed the follower's tab on %s and left the buffer: the user had it open",
+    "forgotten": "left %s where it is in the adopted editor: the user had it open",
+}
+
+
+def log_adopted_close(file_path: str, verdict: str | None) -> None:
+    """One hook.log line for an adopted editor's tab close that left the
+    buffer in place, or that went unconfirmed."""
+    if verdict in ("wiped", "absent"):
+        return
+    message = _ADOPTED_CLOSE_MESSAGES.get(verdict or "")
+    if message is None:
+        logger.warning(
+            "could not confirm what closing %s did in the adopted editor (%s)",
+            file_path,
+            verdict or "no answer",
+        )
+    elif verdict == "kept":
+        logger.warning(message, file_path)
+    else:
+        logger.info(message, file_path)
 
 
 class NavigationFailed(RuntimeError):
