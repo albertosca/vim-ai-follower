@@ -17,11 +17,13 @@ from unittest.mock import call as mock_call
 
 import pytest
 from helpers import (
+    call_spelled,
+    define_line,
     goto_spelled,
     landed_line,
     rename_spelled,
     resolve_typed_paths,
-    typed_path,
+    wipe_spelled,
 )
 from helpers import make_mock_tmux_run as _mock_tmux_run
 from helpers import register_fake_follower as _register_fake_follower
@@ -45,17 +47,17 @@ from vim_ai_follower.backends.nvim_connect import NvimNeverListened
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.session import Session
 
-# The tail of the readonly completion relock: the scoped swap answer around a
-# silent re-read, then the lock (tmux_vim._RELOCK_READONLY_SYNCED).
-_READONLY_RELOCK_TAIL = (
-    '| try | silent! edit! | finally | exe "autocmd! vim_ai_follower_swap"'
-    ' | exe "augroup! vim_ai_follower_swap" | endtry | setlocal readonly nomodifiable nopaste'
-)
+# The readonly completion relock of a dedicated follower: the scoped swap
+# answer around a silent re-read, then the lock (s:relock).
+_READONLY_RELOCK = call_spelled("relock", 1, 0)
+# The discarding reload (reload_and_relock's / reload_from_disk's `silent
+# edit!`, s:reload) of a dedicated follower.
+_RELOAD_DISCARDING = call_spelled("reload", 1, 0)
 
 
 def _goto(path: object) -> str:
-    """The exact Ex line goto_file sends for `path` (helpers.goto_spelled:
-    spelled out there, never imported from tmux_vim._GOTO_FILE)."""
+    """The call goto_file sends for `path` (helpers.goto_spelled: spelled
+    out there, never imported from tmux_vim)."""
     return goto_spelled(path)
 
 
@@ -64,16 +66,9 @@ def _rename(path: object, *, in_new_tab: bool = False) -> str:
     return rename_spelled(path, in_new_tab=in_new_tab)
 
 
-# ensure_showing's clean-only disk re-read, spelled out for the same reason
-# as _goto: importing tmux_vim._RELOAD_IF_CLEAN would agree with any change.
-_RELOAD_IF_CLEAN = (
-    ':exe "augroup vim_ai_follower_swap"'
-    " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
-    ' | exe "augroup END"'
-    " | try | if !&modified | silent edit | endif"
-    ' | finally | exe "autocmd! vim_ai_follower_swap"'
-    ' | exe "augroup! vim_ai_follower_swap" | endtry'
-)
+# ensure_showing's clean-only disk re-read (s:reload) in a dedicated Vim,
+# spelled out for the same reason as _goto.
+_RELOAD_IF_CLEAN = call_spelled("reload", 0, 0)
 
 
 def _literal_sends(run_mock: MagicMock) -> list[str]:
@@ -250,6 +245,7 @@ def test_hook_post_skips_binary_files_on_first_open(tmp_path: Path) -> None:
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert _literal_sends(run) == [
+        define_line(),
         _goto(target),
         landed_line(),
         _RELOAD_IF_CLEAN,
@@ -273,6 +269,7 @@ def test_hook_post_shows_a_rewritten_binary_on_subsequent_edit(tmp_path: Path) -
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert _literal_sends(run) == [
+        define_line(),
         _goto(target),
         landed_line(),
         _RELOAD_IF_CLEAN,
@@ -293,6 +290,7 @@ def test_hook_post_read_without_offset_does_not_navigate(tmp_path: Path) -> None
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert _literal_sends(run) == [
+        define_line(),
         _goto(target),
         landed_line(),
         _RELOAD_IF_CLEAN,
@@ -334,6 +332,7 @@ def test_hook_post_read_navigates_to_file_and_offset(tmp_path: Path) -> None:
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert _literal_sends(run) == [
+        define_line(),
         _goto(target),
         landed_line(),
         _RELOAD_IF_CLEAN,
@@ -358,6 +357,7 @@ def test_hook_post_read_navigates_even_when_file_already_current(tmp_path: Path)
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert _literal_sends(run) == [
+        define_line(),
         _goto(target),
         landed_line(),
         _RELOAD_IF_CLEAN,
@@ -434,7 +434,7 @@ def test_edit_of_tracked_file_uses_apply_edit_even_when_not_current(tmp_path: Pa
     # job, not cli.py's — then the diff is applied in place; show_fresh's
     # rename-in-place (":file <path>") never runs.
     assert _goto(a) in sends
-    assert not any(" | silent exe 'file ' . " in text for text in sends)
+    assert not any("'rename'" in text for text in sends)
     assert "print('a changed')" in sends
 
 
@@ -463,9 +463,7 @@ def test_eviction_closes_oldest_tab_before_animating(
     # that — wiping by name is a silent no-op for any path Vim reads as a
     # buffer-name pattern — and the wipe closes the tab by itself, so there
     # is no :tabclose (see close_tab).
-    close_index = next(
-        i for i, text in enumerate(sends) if f"let g:vaf_wipe_name = {typed_path(a)}" in text
-    )
+    close_index = sends.index(wipe_spelled(a))
     rename_index = sends.index(_rename(c, in_new_tab=True))
     assert close_index < rename_index
     assert not any("tabclose" in text for text in sends)
@@ -792,7 +790,7 @@ def test_hook_post_first_open_interrupted_prints_notification_with_partial_lines
     sends = _literal_sends(run)
     # No completion relock after an interrupt: show_fresh's relock is the SYNCED
     # form (a disk re-read, then the readonly lock), so match its tail.
-    assert not any(text.endswith(_READONLY_RELOCK_TAIL) for text in sends)
+    assert _READONLY_RELOCK not in sends
     out = json.loads(capsys.readouterr().out)
     context = out["hookSpecificOutput"]["additionalContext"]
     assert context.count("\n\na\n\n") == 1  # only the first line had been typed
@@ -1143,12 +1141,12 @@ def test_hook_post_des_interrupt_replays_the_remaining_animation(
 
     sends = _literal_sends(run)
     # never the instant full-file reload (reload_and_relock's `silent edit!`)
-    assert not any("| try | silent edit! |" in send for send in sends)
+    assert _RELOAD_DISCARDING not in sends
     # the replay typed the file's lines after the des-interrupt
     assert "a" in sends and "b" in sends
     # and relocked (fresh-retype lock) when the replay completed
     # the relock: the scoped swap answer, a silent re-read, the readonly lock
-    assert any(send.endswith(_READONLY_RELOCK_TAIL) for send in sends)
+    assert _READONLY_RELOCK in sends
     refreshed = state.FollowerState.read("@1")
     assert refreshed is not None
     assert refreshed.current_file == str(target)  # following resumed in place
@@ -1202,12 +1200,12 @@ def test_hook_post_des_interrupt_rebuilds_partial_content_before_replaying(
 
     sends = _literal_sends(run)
     # never the instant full-file reload (reload_and_relock's `silent edit!`)
-    assert not any("| try | silent edit! |" in send for send in sends)
+    assert _RELOAD_DISCARDING not in sends
     # the rebuild retyped the already-shown lines, then the replay typed
     # the genuine remainder
     assert "a" in sends and "b" in sends and "c" in sends and "d" in sends
     # the relock: the scoped swap answer, a silent re-read, the readonly lock
-    assert any(send.endswith(_READONLY_RELOCK_TAIL) for send in sends)
+    assert _READONLY_RELOCK in sends
     refreshed = state.FollowerState.read("@1")
     assert refreshed is not None
     assert refreshed.current_file == str(target)
@@ -1243,7 +1241,7 @@ def test_hook_post_des_interrupt_without_a_remainder_falls_back_to_reload(
 
     sends = _literal_sends(run)
     # the reload of the finished file, under the scoped (E)dit-anyway answer
-    assert any("| try | silent edit! | finally |" in send for send in sends)
+    assert _RELOAD_DISCARDING in sends
     assert ":setlocal readonly nomodifiable" in sends
     assert capsys.readouterr().out == ""
 

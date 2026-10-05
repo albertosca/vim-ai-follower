@@ -22,42 +22,43 @@ swap file itself on disk, so nobody's recovery data is destroyed.
 
 The mechanism is Vim's own `SwapExists` autocommand setting
 `v:swapchoice`, which answers the question without typing into a prompt
-at all. What this file pins is the exact shape of that one Ex line,
-because every property below was a measured failure of some other
-shape:
+at all. What this file pins is the exact shape of the Vim functions
+that carry it (s:goto, s:swap_answer_open/close, s:reload in
+tmux_vim._VIM_SCRIPT), because every property below was a measured
+failure of some other shape:
 
   * The hook is registered in its own augroup, and the augroup is opened
     by an `augroup` command FIRST. `:autocmd {group} ...` does not create
     a missing group — it fails with `E216` and leaves its own hit-enter
     prompt, which is the very failure being fixed.
-  * There is no bare `:autocmd!` in the line. It would only ever apply to
+  * There is no bare `:autocmd!` anywhere. It would only ever apply to
     the follower's own group, but if the preceding `augroup` ever failed
     it would run in the DEFAULT group and wipe every autocommand the user
     has.
   * Teardown is inside `finally`, not after `endtry`, so it runs on the
     E37 path and on an uncaught error too.
-  * `++once` bounds the one residual risk — the line being cut off
+  * `++once` bounds the one residual risk — the call being cut off
     mid-flight, before `finally` — to a single auto-answered dialog
     rather than the policy persisting in the user's Vim.
   * Scoping is by TIME, not by pattern: the hook exists only for the
     duration of the drop, so a user `:e` of a swapped file afterwards
     still gets the normal dialog. Matching on the path instead would mean
     escaping it into an autocmd pattern, and the path deliberately never
-    enters a Vim string literal.
+    enters a Vim string literal: it is read from a handle file.
 
 `shortmess+=A` and `set noswapfile` also clear the dialog on screen, and
 both were measured and rejected: they are global, are never restored,
 and silently disarm the user's own swap protection from then on. Neither
-appears in the line, and a test below says so.
+appears in the navigation, and a test below says so.
 """
 
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from helpers import acting_start, resolve_typed_paths
+from helpers import call_spelled, case_folds, resolve_typed_paths, typed_path, vim_function
 
-from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
+from vim_ai_follower.backends.tmux_vim import TmuxVimFollower, _vim_functions
 
 _GROUP = "vim_ai_follower_swap"
 
@@ -69,24 +70,13 @@ def _sent_text(run_mock: MagicMock) -> list[str]:
     ]
 
 
-def _goto_line(path: str = "/tmp/f.py") -> str:
-    follower = TmuxVimFollower(pane_id="%2")
-    with patch("vim_ai_follower.tmux.subprocess.run") as run:
-        follower.goto_file(path)
-    sent = _sent_text(run)
-    # The navigation, then its landing check (tmux_vim._ANSWER_IF_LANDED).
-    assert len(sent) == 2, f"goto_file sent {len(sent)} literal payloads: {sent!r}"
-    assert "landed-2.txt" in sent[1]
-    return sent[0]
-
-
-def test_the_line_registers_the_swap_hook_before_the_drop() -> None:
+def test_the_navigation_registers_the_swap_hook_before_the_drop() -> None:
     """Order is the whole point: the hook has to exist by the time
     `tab drop` opens the file, or the dialog is already on screen."""
-    line = _goto_line()
-    register = line.index("SwapExists")
-    drop = line.index("tab drop")
-    assert register < drop, f"the hook is registered after the drop:\n{line}"
+    goto = vim_function("goto")
+    register = goto.index("call s:swap_answer_open()")
+    drop = goto.index("tab drop")
+    assert register < drop, f"the hook is registered after the drop:\n{goto}"
 
 
 def test_the_hook_answers_edit_anyway_and_nothing_else() -> None:
@@ -94,90 +84,85 @@ def test_the_hook_answers_edit_anyway_and_nothing_else() -> None:
     (Recover, which would show the other Vim's swap contents instead of
     the file), 'q'/'a' (abort, which stalls the navigation) and 'd'
     (Delete it, which destroys someone's recovery data)."""
-    line = _goto_line()
-    assert "let v:swapchoice = 'e'" in line
+    script = _vim_functions()[1]
+    assert "let v:swapchoice = 'e'" in vim_function("swap_answer_open")
+    assert script.count("v:swapchoice") == 1
     for rejected in ("'r'", "'q'", "'a'", "'d'", "'o'"):
-        assert f"v:swapchoice = {rejected}" not in line
+        assert f"v:swapchoice = {rejected}" not in script
 
 
 def test_the_hook_is_registered_in_its_own_augroup_opened_first() -> None:
     """`:autocmd {group} ...` does NOT create a missing group: it fails
-    with E216 and leaves its own hit-enter prompt. So the line must open
-    the group with an `augroup` command before defining the autocommand,
-    and close it again."""
-    line = _goto_line()
-    open_group = line.index(f'exe "augroup {_GROUP}"')
-    define = line.index("autocmd SwapExists")
-    close_group = line.index('exe "augroup END"')
-    assert open_group < define < close_group, line
+    with E216 and leaves its own hit-enter prompt. So the group is opened
+    with an `augroup` command before the autocommand is defined, and
+    closed again."""
+    register = vim_function("swap_answer_open")
+    open_group = register.index(f"augroup {_GROUP}\n")
+    define = register.index("autocmd SwapExists")
+    close_group = register.index("augroup END")
+    assert open_group < define < close_group, register
     # The inline-group spelling is the E216 trap; it must not appear.
-    assert f"autocmd {_GROUP} SwapExists" not in line
+    assert f"autocmd {_GROUP} SwapExists" not in _vim_functions()[1]
 
 
-def test_the_line_contains_no_bare_autocmd_bang() -> None:
+def test_the_script_contains_no_bare_autocmd_bang() -> None:
     """A bare `:autocmd!` runs in whatever group is current. It is only
     safe while the preceding `augroup` is known to have succeeded — and
     if it ever ran in the default group it would delete every
-    autocommand the user has. Nothing in the line needs it, because
-    `finally` clears the group on every pass."""
-    line = _goto_line()
-    for command in line.split(" | "):
-        stripped = command.removeprefix(":").strip()
-        assert stripped != 'exe "autocmd!"', f"bare autocmd! in:\n{line}"
-    # Every teardown of autocommands names the group explicitly.
-    assert line.count("autocmd!") == line.count(f"autocmd! {_GROUP}") == 1
+    autocommand the user has. Nothing needs it, because `finally` clears
+    the group on every pass."""
+    script = _vim_functions()[1]
+    assert script.count("autocmd!") == script.count(f"autocmd! {_GROUP}") == 1
+    teardown = vim_function("swap_answer_close")
+    assert teardown.index(f"autocmd! {_GROUP}") < teardown.index(f"augroup! {_GROUP}")
 
 
 def test_teardown_is_in_finally_so_it_survives_the_e37_path() -> None:
-    """The same line already swallows E37 from `tab drop`'s trailing
-    `:rewind`. Teardown placed after `endtry` would be skipped on any
-    uncaught error, leaving the swap policy live in what, in adopt mode,
-    is the user's own Vim."""
-    line = _goto_line()
-    finally_at = line.index("| finally |")
-    assert finally_at < line.index(f'exe "autocmd! {_GROUP}"')
-    assert finally_at < line.index(f'exe "augroup! {_GROUP}"')
-    assert line.index("catch /") < finally_at
-    # ...and the try closes right after the teardown.
-    teardown_end = line.index(f'exe "augroup! {_GROUP}"') + len(f'exe "augroup! {_GROUP}"')
-    assert line[teardown_end:].startswith(" | endtry")
+    """The navigation swallows E37 from `tab drop`'s trailing `:rewind`.
+    Teardown placed after `endtry` would be skipped on any uncaught error,
+    leaving the swap policy live in what, in adopt mode, is the user's own
+    Vim."""
+    goto = vim_function("goto")
+    finally_at = goto.index("  finally\n")
+    assert goto.index("catch /") < finally_at
+    assert finally_at < goto.index("call s:swap_answer_close()") < goto.index("endtry")
 
 
 def test_the_hook_is_marked_once() -> None:
-    """Bounds the residual risk: if this line is ever cut off before
+    """Bounds the residual risk: if the call is ever cut off before
     `finally` runs, the stray hook answers at most one dialog and then
     removes itself, instead of persisting as a silent policy change."""
-    assert "autocmd SwapExists * ++once let" in _goto_line()
+    assert "autocmd SwapExists * ++once let" in vim_function("swap_answer_open")
 
 
-def test_the_line_never_touches_shortmess_or_swapfile() -> None:
+def test_the_navigation_never_touches_shortmess_or_swapfile() -> None:
     """Both clear the dialog and both leak: they are global, are never
     restored, and from then on the USER's own `:e` of a swapped file
     opens with no warning (shortmess) or with no crash recovery at all
     (noswapfile)."""
-    line = _goto_line()
-    assert "shortmess" not in line
-    assert "swapfile" not in line
-    assert "noswapfile" not in line
+    for name in ("goto", "swap_answer_open", "swap_answer_close"):
+        body = vim_function(name)
+        assert "shortmess" not in body
+        assert "swapfile" not in body
 
 
 def test_the_swap_hook_never_carries_the_path() -> None:
-    """The hook's `exe "..."` segments are double-quoted Vim strings, where
-    a backslash or `"` in a path would be reinterpreted. The path is not on
-    the line at all: it is read once from a handle file into `g:vaf_p`
-    (tmux_vim._typed_path), which fnameescape() is handed."""
+    """The path is not on the typed line at all: the call names a handle
+    file, which s:goto reads into `g:vaf_p` and hands to fnameescape()."""
     path = "/tmp/a b#c%d'e.py"
-    line = _goto_line(path)
-    assert "a b#c" not in line
-    assert line.count("readfile(") == 1
-    quoted = line.split('"')[1::2]
-    assert quoted, "expected the exe-quoted segments the hook is built from"
-    assert not any("readfile" in segment for segment in quoted)
-    assert resolve_typed_paths(line).startswith(acting_start(path) + " | ")
-    assert "fnameescape((fnamemodify(fnamemodify(g:vaf_p, ':.'), ':p') ==#" in line
+    follower = TmuxVimFollower(pane_id="%2")
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        follower.goto_file(path)
+    sent = _sent_text(run)
+    assert not any("a b#c" in line for line in sent)
+    resolved = [resolve_typed_paths(line) for line in sent]
+    assert call_spelled("goto", typed_path(path), case_folds(path)) in resolved
+    goto = vim_function("goto")
+    assert "let g:vaf_p = s:read(a:token)" in vim_function("acting_start")
+    assert "exe 'silent tab drop ' . fnameescape(s:display(g:vaf_p))" in goto
 
 
-def test_every_navigation_carries_the_swap_hook() -> None:
+def test_every_navigation_goes_through_the_guarded_goto() -> None:
     """goto_file is the single navigation preamble, so one guard covers
     every caller. If any method ever grew its own `tab drop`, it would
     reintroduce the stall on exactly the paths this fix is for."""
@@ -190,30 +175,28 @@ def test_every_navigation_carries_the_swap_hook() -> None:
     for name, args in callers:
         with patch("vim_ai_follower.tmux.subprocess.run") as run:
             getattr(follower, name)(*args)
-        drops = [text for text in _sent_text(run) if "tab drop" in text]
-        assert drops, f"{name} sent no navigation at all"
-        for drop in drops:
-            assert "SwapExists" in drop, f"{name} navigates without the hook: {drop!r}"
+        sent = _sent_text(run)
+        assert any("('goto'," in text for text in sent), f"{name} sent no navigation"
+        assert not any("tab drop" in text for text in sent), sent
+    script = _vim_functions()[1]
+    assert script.count("tab drop") == 1, "a second `tab drop` outside s:goto"
 
 
 def test_ensure_showings_reload_carries_the_same_scoped_answer() -> None:
     """ensure_showing re-reads a clean buffer with `:edit`, which re-runs
     the swap-name search and raises ATTENTION on its own when another Vim
-    owns `.swp` (measured; tests/test_integration_swap_choice.py). So that
-    line is guarded exactly like the drop: hook registered before the
-    `edit`, torn down in `finally`, `++once`, never `silent!` (which would
-    hide a dialog behind a blank screen), and a dirty buffer is skipped."""
+    owns `.swp` (measured; tests/test_integration_swap_choice.py). So the
+    reload is guarded exactly like the drop: hook registered before the
+    `edit`, torn down in `finally`, never `silent!` (which would hide a
+    dialog behind a blank screen), and a dirty buffer is skipped."""
     follower = TmuxVimFollower(pane_id="%2")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.ensure_showing("/tmp/f.py")
-    reloads = [text for text in _sent_text(run) if "silent edit" in text]
-    assert len(reloads) == 1, _sent_text(run)
-    line = reloads[0]
-    assert line.index("autocmd SwapExists * ++once let v:swapchoice = 'e'") < line.index(
-        "silent edit"
-    )
-    assert line.index("silent edit") < line.index("| finally |")
-    assert line.index("| finally |") < line.index(f'exe "autocmd! {_GROUP}"')
-    assert line.endswith(f'exe "augroup! {_GROUP}" | endtry')
-    assert "if !&modified | silent edit | endif" in line
-    assert "silent!" not in line
+    reloads = [text for text in _sent_text(run) if "'reload'" in text]
+    assert [resolve_typed_paths(text) for text in reloads] == [call_spelled("reload", 0, 0)]
+    reload = vim_function("reload")
+    assert reload.index("call s:swap_answer_open()") < reload.index("silent edit\n")
+    assert reload.index("silent edit\n") < reload.index("  finally\n")
+    assert reload.index("  finally\n") < reload.index("call s:swap_answer_close()")
+    assert "elseif !&modified\n      silent edit\n" in reload
+    assert "silent!" not in reload

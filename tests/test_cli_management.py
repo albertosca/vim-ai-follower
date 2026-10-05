@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from helpers import make_mock_tmux_run, resolve_typed_paths, typed_path
+from helpers import make_mock_tmux_run, resolve_typed_paths, wipe_spelled
 from helpers import register_fake_follower as _register_fake_follower
 
 from vim_ai_follower import cache, commands, config, control, keybindings, session, snapshot, state
@@ -761,8 +761,8 @@ def test_stop_on_adopted_pane_closes_tabs_but_not_the_pane() -> None:
     # close_tab resolves a buffer NUMBER and wipes that, because `:bwipeout!`
     # takes a buffer-name PATTERN, not a path: `app/[slug]/page.tsx` is a
     # character class and the wipe silently misses (measured 2026-09-22).
-    assert any(f"let g:vaf_wipe_name = {typed_path(a)}" in text for text in literal)
-    assert any(f"let g:vaf_wipe_name = {typed_path(b)}" in text for text in literal)
+    assert wipe_spelled(a) in literal
+    assert wipe_spelled(b) in literal
     # bwipeout alone closes each tab; a :tabclose here would eat an
     # innocent neighbor (see close_tab).
     assert not any("tabclose" in text for text in literal)

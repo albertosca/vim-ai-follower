@@ -236,7 +236,7 @@ class FollowerState:
         Only completion paths call this. An INTERRUPTED animation must leave
         the mark — the buffer really does hold a half-typed prefix — and so
         must navigation. On both backends a Read re-reads a CLEAN open
-        buffer (tmux `_RELOAD_IF_CLEAN`, nvim `_reload_if_clean`), which can
+        buffer (tmux s:reload, nvim `_reload_if_clean`), which can
         resync a stale one — but the mark is kept anyway, so the next Edit
         still retypes that file in full: a wasted retype, never a diff
         applied to the wrong base. Same no-state no-op as mark_stale."""

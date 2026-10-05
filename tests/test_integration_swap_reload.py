@@ -183,7 +183,9 @@ def test_the_adopted_swap_back_on_line_never_leaves_a_prompt(
         assert wait_until(ready.exists, timeout=5.0)
         subprocess.run(["tmux", "send-keys", "-t", pane, "Escape", "Escape"], check=True)
 
-        _keys(pane, tmux_vim._SWAP_BACK_ON)
+        # show_fresh's own lines: the functions, then the swap re-enable.
+        _keys(pane, tmux_vim._define_line(pane))
+        _keys(pane, tmux_vim._call_line("swap_back_on"))
         wait_until(lambda: "Press ENTER" in _tmux("capture-pane", "-p", "-t", pane), timeout=1.5)
         screen = _tmux("capture-pane", "-p", "-t", pane)
         assert "Press ENTER" not in screen, screen

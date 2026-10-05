@@ -166,6 +166,9 @@ def test_a_failed_navigation_never_touches_the_users_buffer(
     assert after_failure[:9] == before_follower[:9], after_failure
     assert user.read_text() == "user line\n"
     assert "E484" not in "\n".join(after_failure), after_failure
+    # The functions never reached this Vim (its `~` misses the script), and
+    # every call line is guarded: nothing called an unknown function.
+    assert "E117" not in "\n".join(after_failure), after_failure
     assert "Press ENTER" not in screen, screen
     assert str(other_home) not in screen, screen
 

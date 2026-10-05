@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from helpers import (
+    call_spelled,
+    define_line,
     goto_spelled,
     landed_line,
     rename_spelled,
@@ -21,66 +23,35 @@ from vim_ai_follower.diff import EditOp, compute_edit_script
 
 
 def _goto(path: str) -> str:
-    """The exact Ex line goto_file sends for `path` (helpers.goto_spelled:
-    spelled out there, never imported from tmux_vim._GOTO_FILE)."""
+    """The call goto_file sends for `path` (helpers.goto_spelled: spelled out
+    there, never imported from tmux_vim)."""
     return goto_spelled(path)
 
 
-# ensure_showing's clean-only disk re-read, spelled out for the same reason
-# as _goto: importing tmux_vim._RELOAD_IF_CLEAN would agree with any change.
-_RELOAD_IF_CLEAN = (
-    ':exe "augroup vim_ai_follower_swap"'
-    " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
-    ' | exe "augroup END"'
-    " | try | if !&modified | silent edit | endif"
-    ' | finally | exe "autocmd! vim_ai_follower_swap"'
-    ' | exe "augroup! vim_ai_follower_swap" | endtry'
-)
-
-
-# The completion relocks' `:e!` with the scoped (E)dit-anyway answer, and the
-# des-interrupt/grounding reload, spelled out for the same reason as _goto.
-_SYNC_FROM_DISK = (
-    ':exe "augroup vim_ai_follower_swap"'
-    " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
-    ' | exe "augroup END"'
-    " | try | silent! edit!"
-    ' | finally | exe "autocmd! vim_ai_follower_swap"'
-    ' | exe "augroup! vim_ai_follower_swap" | endtry'
-)
-_RELOCK_SYNCED = _SYNC_FROM_DISK + " | setlocal nomodifiable nopaste"
-_RELOCK_READONLY_SYNCED = _SYNC_FROM_DISK + " | setlocal readonly nomodifiable nopaste"
+# The lines that only call the functions (tmux_vim._VIM_SCRIPT), spelled out
+# for the same reason as _goto. The define line comes first in every entry
+# point that may be the first thing a Vim hears.
+_DEFINE = define_line()
+# ensure_showing's clean-only disk re-read and the discarding one, in a
+# dedicated Vim (an adopted Vim's carry adopted=1: they note the user's
+# readonly first).
+_RELOAD_IF_CLEAN = call_spelled("reload", 0, 0)
+_RELOAD_DISCARDING = call_spelled("reload", 1, 0)
+# The completion relocks, with their `:e!` disk sync under the scoped
+# (E)dit-anyway answer.
+_RELOCK_SYNCED = call_spelled("relock", 0, 0)
+_RELOCK_READONLY_SYNCED = call_spelled("relock", 1, 0)
 # The animation unlock, spelled out for the same reason as _goto.
 _UNLOCK_FOR_ANIMATION = ":setlocal noreadonly modifiable paste"
-# An ADOPTED Vim's readonly bookkeeping (tmux_vim._NOTE_USER_READONLY), spelled
-# out for the same reason as _goto: the note of the user's readonly, the
-# follower's claim on the option, and the restore every animation exit sends.
-_NOTE = "if !get(b:, 'vaf_ro_ours') | let b:vaf_user_ro = &readonly | endif"
-_ADOPTED_UNLOCK = f":{_NOTE} | setlocal noreadonly modifiable paste | let b:vaf_ro_ours = 2"
+# An ADOPTED Vim's readonly bookkeeping (s:note_user_readonly): the unlock
+# that notes the user's readonly and claims the option, the lock's claim, and
+# the restore every animation exit sends (its answer for pane %2).
+_ADOPTED_UNLOCK = call_spelled("unlock")
 _ADOPTED_LOCK_READONLY = ":setlocal readonly nomodifiable | let b:vaf_ro_ours = 1"
 
 
 def _restore() -> str:
-    """The restore line, with the answer file user_readonly reads (under the
-    test's isolated cache dir, for pane %2)."""
-    answer = str(cache.CACHE_DIR / "readonly-2.txt").replace("'", "''")
-    return (
-        ":if get(b:, 'vaf_user_ro') | setlocal readonly | let b:vaf_ro_ours = 0"
-        " | elseif get(b:, 'vaf_ro_ours') == 2 | let b:vaf_ro_ours = 0 | endif"
-        " | unlet! b:vaf_user_ro"
-        " | try | let g:vaf_r = writefile([&readonly && !get(b:, 'vaf_ro_ours') ? '1' : '0'],"
-        f" '{answer}') | catch | finally | unlet! g:vaf_r | endtry"
-    )
-
-
-_RELOAD_DISCARDING = (
-    ':exe "augroup vim_ai_follower_swap"'
-    " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
-    ' | exe "augroup END"'
-    " | try | silent edit!"
-    ' | finally | exe "autocmd! vim_ai_follower_swap"'
-    ' | exe "augroup! vim_ai_follower_swap" | endtry'
-)
+    return call_spelled("restore_readonly", 2)
 
 
 def test_is_alive_true_when_vim_is_running_in_pane() -> None:
@@ -127,22 +98,24 @@ def test_apply_edit_unlocks_the_buffer_only_for_the_animation(tmp_path: Path) ->
     ):
         result = follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
     commands = _sent_commands(run)
-    # goto_file's defensive preamble runs first
+    # goto_file's defensive preamble runs first: normal mode, the functions
+    # (sourced only when the Vim lacks them), then the navigation itself
     assert commands[0] == ("Escape", False)
     assert commands[1] == ("Escape", False)
-    assert commands[2] == (_goto("/tmp/f.txt"), True)
-    assert commands[3] == ("Enter", False)
+    assert commands[2:4] == [(_DEFINE, True), ("Enter", False)]
+    assert commands[4] == (_goto("/tmp/f.txt"), True)
+    assert commands[5] == ("Enter", False)
     # ...and nothing more until Vim confirms it landed there
-    assert commands[4:8] == [
+    assert commands[6:10] == [
         ("Escape", False),
         ("Escape", False),
         (landed_line(), True),
         ("Enter", False),
     ]
-    assert commands[8] == (":silent! CocDisable", True)
-    assert commands[9] == ("Enter", False)
-    assert commands[10] == (_UNLOCK_FOR_ANIMATION, True)
+    assert commands[10] == (":silent! CocDisable", True)
     assert commands[11] == ("Enter", False)
+    assert commands[12] == (_UNLOCK_FOR_ANIMATION, True)
+    assert commands[13] == ("Enter", False)
     assert commands[-2:] == [(_RELOCK_SYNCED, True), ("Enter", False)]
     assert result == AnimationResult("completed", 1)
 
@@ -259,11 +232,14 @@ def test_interrupted_animation_never_sends_a_disk_sync_reload(tmp_path: Path) ->
         result = follower.show_fresh("/tmp/f.txt", "a\nb\n")
     commands = _sent_commands(run)
     assert result.outcome == "interrupted"
-    # no disk sync of any shape once the animation has started (the relock
-    # carries it as `silent! edit!`); the rename line's read-then-clear runs
-    # before the unlock, on a buffer nothing has been typed into yet
+    # no disk sync of any shape once the animation has started (the synced
+    # relock carries it as `silent! edit!`, a reload as `edit`); the
+    # rename's read-then-clear runs before the unlock, on a buffer nothing
+    # has been typed into yet
     started = commands.index((_UNLOCK_FOR_ANIMATION, True))
-    assert not any("edit!" in text or "e!" in text for text, _ in commands[started:])
+    assert not any(
+        "e!" in text or "'relock'" in text or "'reload'" in text for text, _ in commands[started:]
+    )
 
 
 def test_get_follower_forwards_pace_seconds_for_tmux_backend() -> None:
@@ -303,33 +279,34 @@ def test_show_fresh_renames_in_place_and_reads_the_file_only_on_the_rename_line(
     # _normal_mode sends two prompt-proof Escapes first
     assert commands[0] == ("Escape", False)
     assert commands[1] == ("Escape", False)
-    assert commands[2] == (_wipe("/tmp/f.txt"), True)
-    assert commands[3] == ("Enter", False)
-    # swap opted out BEFORE the rename, on the rename's own guarded line:
-    # renaming a swap-enabled buffer runs the swap check, and a live Vim
-    # holding the file's swap made `:file` raise E325 (see
-    # tests/test_e2e_battery_tranche2.py). The rename line also resets
-    # buftype (a plugin scratch screen's buftype=nofile, inherited, made the
-    # user's :w fail with E382) BEFORE its read, which only reads a file into
-    # a regular buffer.
-    assert commands[4] == (_rename("/tmp/f.txt"), True)
+    assert commands[2:4] == [(_DEFINE, True), ("Enter", False)]
+    assert commands[4] == (_wipe("/tmp/f.txt"), True)
     assert commands[5] == ("Enter", False)
+    # The rename (s:rename) opts swap out BEFORE renaming: renaming a
+    # swap-enabled buffer runs the swap check, and a live Vim holding the
+    # file's swap made `:file` raise E325 (see
+    # tests/test_e2e_battery_tranche2.py). It also resets buftype (a plugin
+    # scratch screen's buftype=nofile, inherited, made the user's :w fail
+    # with E382) BEFORE its read, which only reads a file into a regular
+    # buffer (test_tmux_landing pins the function's text).
+    assert commands[6] == (_rename("/tmp/f.txt"), True)
+    assert commands[7] == ("Enter", False)
     # ...and nothing more until Vim confirms the rename landed
-    assert commands[6:10] == [
+    assert commands[8:12] == [
         ("Escape", False),
         ("Escape", False),
         (landed_line(), True),
         ("Enter", False),
     ]
-    assert commands[10] == (":filetype detect", True)
-    assert commands[11] == ("Enter", False)
-    assert commands[12] == (":silent! CocDisable", True)
+    assert commands[12] == (":filetype detect", True)
     assert commands[13] == ("Enter", False)
-    assert commands[14] == (_UNLOCK_FOR_ANIMATION, True)
+    assert commands[14] == (":silent! CocDisable", True)
     assert commands[15] == ("Enter", False)
-    assert commands[16] == (":%d", True)
+    assert commands[16] == (_UNLOCK_FOR_ANIMATION, True)
     assert commands[17] == ("Enter", False)
-    assert commands[18] == ("i", True)
+    assert commands[18] == (":%d", True)
+    assert commands[19] == ("Enter", False)
+    assert commands[20] == ("i", True)
     assert commands[-2:] == [(_RELOCK_READONLY_SYNCED, True), ("Enter", False)]
     typed = [text for text, literal in commands if literal]
     assert "a" in typed
@@ -350,6 +327,8 @@ def test_show_fresh_with_empty_content_still_wipes_and_relocks(tmp_path: Path) -
     assert commands == [
         ("Escape", False),
         ("Escape", False),
+        (_DEFINE, True),
+        ("Enter", False),
         (_wipe("/tmp/f.txt"), True),
         ("Enter", False),
         (_rename("/tmp/f.txt"), True),
@@ -447,10 +426,13 @@ def test_resume_apply_edit_replays_remaining_ops_and_relocks(tmp_path: Path) -> 
     ):
         result = follower.resume(pending)
     commands = _sent_commands(run)
-    assert commands[0] == (":silent! CocDisable", True)
-    assert commands[1] == ("Enter", False)
-    assert commands[2] == (_UNLOCK_FOR_ANIMATION, True)
+    # No file to navigate to, so the functions the relock calls are made
+    # sure of on their own.
+    assert commands[0:2] == [(_DEFINE, True), ("Enter", False)]
+    assert commands[2] == (":silent! CocDisable", True)
     assert commands[3] == ("Enter", False)
+    assert commands[4] == (_UNLOCK_FOR_ANIMATION, True)
+    assert commands[5] == ("Enter", False)
     assert commands[-2:] == [(_RELOCK_SYNCED, True), ("Enter", False)]
     assert result == AnimationResult("completed", 1)
 
@@ -467,8 +449,9 @@ def test_resume_show_fresh_replays_remaining_lines_and_relocks_with_readonly(
     ):
         result = follower.resume(pending)
     commands = _sent_commands(run)
-    assert commands[0] == (":silent! CocDisable", True)
-    assert commands[2] == (_UNLOCK_FOR_ANIMATION, True)
+    assert commands[0] == (_DEFINE, True)
+    assert commands[2] == (":silent! CocDisable", True)
+    assert commands[4] == (_UNLOCK_FOR_ANIMATION, True)
     assert commands[-2:] == [(_RELOCK_READONLY_SYNCED, True), ("Enter", False)]
     assert result == AnimationResult("completed", 2)
 
@@ -504,7 +487,7 @@ def test_resume_without_reload_relocks_without_reading_disk(
         result = follower.resume(pending, reload=False)
     commands = _sent_commands(run)
     assert commands[-2:] == [(relock, True), ("Enter", False)]
-    assert not any("e!" in text for text, _ in commands)
+    assert not any("e!" in text or "'relock'" in text for text, _ in commands)
     assert result.outcome == "completed"
 
 
@@ -519,9 +502,11 @@ def test_resume_navigates_to_the_pending_files_tab_first(tmp_path: Path) -> None
     ):
         follower.resume(pending)
     commands = _sent_commands(run)
-    assert commands[:8] == [
+    assert commands[:10] == [
         ("Escape", False),
         ("Escape", False),
+        (_DEFINE, True),
+        ("Enter", False),
         (_goto("/tmp/f.py"), True),
         ("Enter", False),
         ("Escape", False),
@@ -542,10 +527,8 @@ def test_resume_skips_navigation_when_pending_has_no_file_path(tmp_path: Path) -
     ):
         follower.resume(pending)
     commands = _sent_commands(run)
-    # Matches on the substring, not a ':tab drop' prefix: goto_file's Ex
-    # line now opens with ':try |', so a prefix check would pass whether or
-    # not the navigation was skipped.
-    assert not any("tab drop" in text for text, _ in commands)
+    # The navigation is a call to s:goto; the `:tab drop` is inside it.
+    assert not any("'goto'" in text for text, _ in commands)
 
 
 def test_resume_skips_relock_when_interrupted_again(tmp_path: Path) -> None:
@@ -582,6 +565,8 @@ def test_goto_file_sends_normal_mode_then_tab_drop() -> None:
     assert _sent_commands(run) == [
         ("Escape", False),
         ("Escape", False),
+        (_DEFINE, True),
+        ("Enter", False),
         (_goto("/tmp/a.py"), True),
         ("Enter", False),
         ("Escape", False),
@@ -599,6 +584,8 @@ def test_ensure_showing_navigates_by_tab_drop_and_locks() -> None:
     assert commands == [
         ("Escape", False),
         ("Escape", False),
+        (_DEFINE, True),
+        ("Enter", False),
         (_goto("/tmp/a.py"), True),
         ("Enter", False),
         ("Escape", False),
@@ -621,6 +608,8 @@ def test_reload_and_relock_navigates_then_reloads_and_relocks() -> None:
     assert commands == [
         ("Escape", False),
         ("Escape", False),
+        (_DEFINE, True),
+        ("Enter", False),
         (_goto("/tmp/a.py"), True),
         ("Enter", False),
         ("Escape", False),
@@ -645,21 +634,15 @@ def test_reload_from_disk_discards_under_the_swap_answer_and_locks() -> None:
     assert _sent_commands(run) == [
         ("Escape", False),
         ("Escape", False),
+        (_DEFINE, True),
+        ("Enter", False),
         (_goto("/tmp/a.py"), True),
         ("Enter", False),
         ("Escape", False),
         ("Escape", False),
         (landed_line(), True),
         ("Enter", False),
-        (
-            ':exe "augroup vim_ai_follower_swap"'
-            " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
-            ' | exe "augroup END"'
-            " | try | silent edit!"
-            ' | finally | exe "autocmd! vim_ai_follower_swap"'
-            ' | exe "augroup! vim_ai_follower_swap" | endtry',
-            True,
-        ),
+        (_RELOAD_DISCARDING, True),
         ("Enter", False),
         (":setlocal readonly nomodifiable", True),
         ("Enter", False),
@@ -703,6 +686,8 @@ def test_close_tab_wipes_by_buffer_number_and_never_double_closes() -> None:
     assert commands == [
         ("Escape", False),
         ("Escape", False),
+        (_DEFINE, True),
+        ("Enter", False),
         (_wipe("/tmp/old.py"), True),
         ("Enter", False),
     ]
@@ -724,7 +709,7 @@ def test_close_tab_never_sends_the_path_as_a_bwipeout_pattern() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.close_tab(path)
     texts = [text for text, literal in _sent_commands(run) if literal]
-    assert texts == [_wipe(path)]
+    assert texts == [_DEFINE, _wipe(path)]
     assert not any(f"bwipeout! {path}" in text for text in texts)
 
 
@@ -737,7 +722,7 @@ def test_close_tab_hands_an_apostrophe_in_the_path_over_intact() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.close_tab("/tmp/it's/a.py")
     texts = [text for text, literal in _sent_commands(run) if literal]
-    assert texts == [_wipe("/tmp/it's/a.py")]
+    assert texts == [_DEFINE, _wipe("/tmp/it's/a.py")]
     raw = [call.args[0][6] for call in run.call_args_list if "-l" in call.args[0]]
     assert raw and not any("it's" in text or "it''s" in text for text in raw)
 
@@ -760,13 +745,7 @@ def test_show_fresh_default_renames_in_place(sent: list[str], follower: TmuxVimF
     assert not any("tabnew" in entry for entry in sent)
 
 
-_SWAP_BACK_ON = (
-    # Spelled out, not imported, for the same reason as _goto/_wipe above.
-    ":let g:vaf_shortmess = &shortmess | set shortmess+=A"
-    " | try | silent! setlocal swapfile"
-    " | finally | let &shortmess = g:vaf_shortmess | unlet g:vaf_shortmess | endtry"
-    " | redraw"
-)
+_SWAP_BACK_ON = call_spelled("swap_back_on")
 
 
 def test_show_fresh_without_a_window_never_turns_swap_back_on() -> None:
@@ -818,7 +797,7 @@ def test_show_fresh_turns_swap_back_on_after_the_rename_only_when_adopted(
         assert (_SWAP_BACK_ON, True) not in commands
 
 
-# ---- adopted Vim: the user's readonly (see tmux_vim._NOTE_USER_READONLY)
+# ---- adopted Vim: the user's readonly (see tmux_vim's s:note_user_readonly)
 
 
 def _adopted_follower() -> TmuxVimFollower:
@@ -858,25 +837,22 @@ def test_an_adopted_show_fresh_relock_claims_its_own_readonly() -> None:
         follower.show_fresh("/tmp/f.txt", "a\n")
     commands = _sent_commands(run)
     assert commands[-4:] == [
-        (_RELOCK_READONLY_SYNCED + " | let b:vaf_ro_ours = 1", True),
+        (call_spelled("relock", 1, 1), True),
         ("Enter", False),
         (_restore(), True),
         ("Enter", False),
     ]
 
 
-@pytest.mark.parametrize(
-    ("entry", "reload"),
-    [("ensure_showing", _RELOAD_IF_CLEAN), ("reload_and_relock", _RELOAD_DISCARDING)],
-)
+@pytest.mark.parametrize(("entry", "discard"), [("ensure_showing", 0), ("reload_and_relock", 1)])
 def test_an_adopted_reload_notes_the_users_readonly_before_it_and_claims_the_lock(
-    entry: str, reload: str
+    entry: str, discard: int
 ) -> None:
     follower = _adopted_follower()
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         getattr(follower, entry)("/tmp/f.txt")
     assert _sent_commands(run)[-4:] == [
-        (f":{_NOTE} | {reload[1:]}", True),
+        (call_spelled("reload", discard, 1), True),
         ("Enter", False),
         (_ADOPTED_LOCK_READONLY, True),
         ("Enter", False),
@@ -887,7 +863,12 @@ def test_an_adopted_hand_over_restores_the_readonly() -> None:
     follower = _adopted_follower()
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.hand_over()
-    assert _sent_commands(run)[-2:] == [(_restore(), True), ("Enter", False)]
+    assert _sent_commands(run)[-4:] == [
+        (_DEFINE, True),
+        ("Enter", False),
+        (_restore(), True),
+        ("Enter", False),
+    ]
 
 
 def test_a_dedicated_follower_never_asks_whose_readonly_it_is() -> None:

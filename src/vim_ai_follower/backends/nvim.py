@@ -249,7 +249,7 @@ return vim.b[buf].{_SYNCED_TICK} == vim.api.nvim_buf_get_changedtick(buf)
 
 
 # show_fresh's read-then-clear of the buffer it just named; see the tmux
-# backend's _READ_THEN_CLEAR for why (E13 on a plain `:w`) and for each piece.
+# backend's _VIM_RENAME for why (E13 on a plain `:w`) and for each piece.
 # One nvim_command: nvim redraws only between requests, so the file's content
 # is never on screen. This is a disk read outside ensure_showing, but not a
 # navigation: it lands on the freshly created, empty buffer show_fresh is
@@ -281,7 +281,7 @@ def _display_name(nvim: pynvim.Nvim, file_path: str) -> str:
 
     The short name is kept only when its `:p` is exactly the full path's
     `:p` — the same round-trip guard as the tmux backend's
-    _vim_display_name, where it is load-bearing (its lookups compare `:p`
+    s:display (_VIM_LANDING), where it is load-bearing (its lookups compare `:p`
     with `==#`). Here _buffer_number canonicalizes with fs_realpath, so it
     would find either name; the guard is `:p`, not realpath, for parity:
     both backends then shorten exactly the same paths, and it needs no disk
@@ -459,7 +459,7 @@ class NvimFollower:
             # between requests, so the content is never on screen): naming
             # left the buffer "not edited", and a plain `:w` after an
             # interrupt failed with E13. Same fix and reasons as the tmux
-            # backend's _READ_THEN_CLEAR; swap is still off here.
+            # backend's s:rename (_VIM_RENAME); swap is still off here.
             nvim.command(_READ_THEN_CLEAR)
             self._restore_swap_if_adopted(nvim)
             self._exec(nvim, "filetype detect")
@@ -1023,7 +1023,7 @@ class NvimFollower:
         _reload_if_clean), in a dedicated and an adopted nvim alike, so a
         file rewritten outside Claude's Edits (a formatter, `sed -i`, a
         checkout) is shown as it is on disk: parity with the tmux backend's
-        `_RELOAD_IF_CLEAN`. A buffer holding the user's unsaved typing is
+        s:reload (`_VIM_RELOAD`). A buffer holding the user's unsaved typing is
         never re-read.
 
         Both branches lock the buffer (nomodifiable) before returning, via
@@ -1061,7 +1061,7 @@ class NvimFollower:
         output (_exec).
 
         Swap-safe as it stands, measured 2026-09-28: unlike Vim (see the tmux
-        backend's _RELOAD_IF_CLEAN), nvim's `:edit!` of a buffer that already
+        backend's _VIM_RELOAD), nvim's `:edit!` of a buffer that already
         has a swap keeps that swap and runs no new swap search, so with
         another nvim holding the file's `.swp` a UI nvim re-read with no
         ATTENTION and kept its `.swo` (tests/test_e2e_adopted_swap.py), and

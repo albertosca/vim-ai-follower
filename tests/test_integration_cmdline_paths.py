@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -81,6 +82,25 @@ def _logged_vim(
     )
     assert _tmux("display-message", "-p", "-t", pane, "#{pane_width}") == "49"
     return pane
+
+
+# Two screen rows at the follower pane's 49 columns.
+MAXIMUM_LINE_LENGTH = 98
+
+
+def _whole_lines(typed: list[str]) -> list[str]:
+    """Each command line as it stood when Enter ran it: the last logged state
+    before the next CmdlineEnter (states are logged per typed character)."""
+    lines: list[str] = []
+    current: str | None = None
+    for state in [*typed, "ENTER"]:
+        if state == "ENTER":
+            if current is not None:
+                lines.append(current)
+            current = None
+        else:
+            current = state
+    return lines
 
 
 def _dump(pane: str, out: Path, wait_until: Callable[..., bool]) -> tuple[list[str], list[str]]:
@@ -180,9 +200,9 @@ def test_no_absolute_path_ever_reaches_the_command_line(
         follower.goto_file(str(target))
         follower.ensure_showing(str(target))
         assert follower.probe_buffer(str(target), AFTER) == "holds"
-    follower.ensure_showing(str(read_only))  # _GOTO_FILE's `:tab drop` path
+    follower.ensure_showing(str(read_only))  # s:goto's `:tab drop` path
     # A listed buffer whose tab the user closed ('nohidden' unloads it):
-    # _GOTO_FILE's `:tab sbuffer`, which reads the file back in.
+    # s:goto's `:tab sbuffer`, which reads the file back in.
     follower.goto_file(str(outside))
     subprocess.run(["tmux", "send-keys", "-t", pane, "-l", "--", ":tabclose"], check=True)
     subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
@@ -220,3 +240,128 @@ def test_no_absolute_path_ever_reaches_the_command_line(
         # The cache in full: `~` in this Vim is not the hook's HOME.
         assert any(str(cache.CACHE_DIR) in line for line in typed), typed
         assert [line for line in home_relative if "readfile(" in line] == []
+
+    # Every line is short: one or two screen rows at the pane's 49 columns,
+    # never the old 12-30-row block of Vim script. The logic lives in Vim
+    # functions defined once; a line only calls them. A Vim on another HOME
+    # gets its one source line with the cache directory in full, so that
+    # line may be longer by exactly the difference between the spellings.
+    longest = MAXIMUM_LINE_LENGTH
+    if vim_home == "other-home":
+        longest += len(str(cache.CACHE_DIR)) - len("~/.cache/claude-vim-follower")
+    too_long = [line for line in _whole_lines(typed) if len(line) > longest]
+    assert too_long == [], [(len(line), line) for line in too_long]
+
+
+def _keys(pane: str, *keys: str) -> None:
+    subprocess.run(["tmux", "send-keys", "-t", pane, *keys], check=True)
+
+
+def _buffer_state(pane: str, out: Path, wait_until: Callable[..., bool]) -> list[str]:
+    """The current buffer's name and flags, user.txt's lines and modified
+    flag, and whether a hit-enter prompt is pending — straight out of Vim,
+    deleted first and waited on a sentinel."""
+    out.unlink(missing_ok=True)
+    _keys(pane, "Escape", "Escape")
+    _keys(
+        pane,
+        "-l",
+        "--",
+        ":call writefile(['BUF=' . bufname('%'), 'MA=' . &modifiable, 'RO=' . &readonly,"
+        " 'TABS=' . tabpagenr('$')] + getbufline('user.txt', 1, '$')"
+        f" + [getbufvar('user.txt', '&modified') . '', 'END'], '{out}')",
+    )
+    _keys(pane, "Enter")
+    assert wait_until(lambda: out.exists() and out.read_text().endswith("END\n"), timeout=10.0), (
+        _tmux("capture-pane", "-p", "-t", pane)
+    )
+    return out.read_text().splitlines()[:-1]
+
+
+@pytest.mark.parametrize("loss", ["functions-deleted", "vim-restarted"])
+def test_a_vim_that_lost_the_functions_gets_them_again_on_the_next_call(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+    loss: str,
+) -> None:
+    """The lines only CALL functions defined once per Vim, so a Vim that no
+    longer has them — the user's `:delfunction`, or an adopted Vim restarted
+    in the same shell (same pane process, so nothing on the tmux side
+    changed) — must get them again on the very next call: that call lands,
+    leaves no prompt (no E117) and never touches the user's own buffer."""
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    assert "TMUX" not in os.environ
+    socket = _tmux("display-message", "-p", "#{socket_path}")
+    assert socket.startswith(os.path.realpath(os.environ["TMUX_TMPDIR"]) + "/"), socket
+    root = Path(os.path.realpath(tmp_path))
+    home, proj = root / "home", root / "proj"
+    home.mkdir()
+    proj.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cache, "CACHE_DIR", home / ".cache" / "claude-vim-follower")
+    target = proj / "target.py"
+    target.write_text(BEFORE)
+    user = proj / "user.txt"
+    user.write_text("user line\n")
+    # The user's shell at the follower pane's width: an adopted Vim runs in it.
+    pane = _tmux(
+        "split-window", "-h", "-t", tmux_session, "-c", str(proj), "-P", "-F", "#{pane_id}",
+        "env", "-i", f"HOME={home}", f"PATH={os.environ['PATH']}", "TERM=xterm-256color",
+        "bash", "--norc", "--noprofile",
+    )  # fmt: skip
+    assert _tmux("display-message", "-p", "-t", pane, "#{pane_width}") == "49"
+
+    def start_vim() -> None:
+        _keys(pane, "-l", "--", "vim -N -u NONE -i NONE user.txt")
+        _keys(pane, "Enter")
+        assert wait_until(
+            lambda: _tmux("display-message", "-p", "-t", pane, "#{pane_current_command}") == "vim",
+            timeout=10.0,
+        )
+
+    start_vim()
+    window_id = _tmux("display-message", "-p", "-t", pane, "#{window_id}")
+    FollowerState.set(window_id, backend="tmux", target=pane, adopted=True, speed="instant")
+    follower = TmuxVimFollower(pane_id=pane, pace_seconds=0.0, window_id=window_id)
+    follower.goto_file(str(target))
+    assert _buffer_state(pane, tmp_path / "s0.txt", wait_until)[0] == "BUF=target.py"
+
+    if loss == "functions-deleted":
+        _keys(
+            pane,
+            "-l",
+            "--",
+            ":for name in getcompletion('VafFollower', 'function')"
+            " | exe 'delfunction ' . matchstr(name, '^[^(]*') | endfor",
+        )
+        _keys(pane, "Enter")
+        _keys(pane, "-l", "--", ":tabfirst")
+        _keys(pane, "Enter")
+    else:
+        _keys(pane, "-l", "--", ":qa!")
+        _keys(pane, "Enter")
+        assert wait_until(
+            lambda: _tmux("display-message", "-p", "-t", pane, "#{pane_current_command}") == "bash",
+            timeout=10.0,
+        )
+        start_vim()
+    _keys(pane, "-l", "--", "GoUSER UNSAVED WORK")
+    _keys(pane, "Escape")
+    before = _buffer_state(pane, tmp_path / "s1.txt", wait_until)
+    assert before[:3] == ["BUF=user.txt", "MA=1", "RO=0"], before
+    assert before[4:] == ["user line", "USER UNSAVED WORK", "1"], before
+
+    started = time.monotonic()
+    follower.ensure_showing(str(target))  # raises NavigationFailed if it did not land
+    assert time.monotonic() - started < 5.0
+    after = _buffer_state(pane, tmp_path / "s2.txt", wait_until)
+    screen = _tmux("capture-pane", "-p", "-t", pane)
+    assert after[:4] == ["BUF=target.py", "MA=0", "RO=1", "TABS=2"], after
+    # user.txt is still the user's: text, modified flag and all.
+    assert after[4:] == ["user line", "USER UNSAVED WORK", "1"], after
+    assert user.read_text() == "user line\n"
+    assert "Press ENTER" not in screen, screen
+    assert "E117" not in screen, screen
+    assert follower.probe_buffer(str(target), BEFORE) == "holds"

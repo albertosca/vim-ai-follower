@@ -466,7 +466,7 @@ def _ensure_buffer(window_id: str, follower: Follower, file_path: str) -> None:
     showing the real on-disk content is exactly what's wanted. Both backends
     re-read an already-open buffer when it is CLEAN, so a file rewritten
     outside Claude's Edits is not shown stale, and leave one holding unsaved
-    user typing alone: tmux through the swap-guarded `_RELOAD_IF_CLEAN`,
+    user typing alone: tmux through the swap-guarded s:reload (`_VIM_RELOAD`),
     nvim through `_reload_if_clean`, where "clean" also covers a buffer
     holding only follower text (it is never written, so always 'modified').
     A fresh text edit
@@ -1363,7 +1363,7 @@ def _edit_in_flight(window_id: str, file_path: str, reader: str | None) -> bool:
     screen, animated from the buffer the re-read would have overwritten.
 
     Both backends re-read a CLEAN open buffer on a Read (tmux's
-    `_RELOAD_IF_CLEAN`, nvim's `_reload_if_clean`), and a file no buffer
+    s:reload, nvim's `_reload_if_clean`), and a file no buffer
     holds is opened from disk; either way the finished file would be on
     screen before the Edit's post hook typed it, and its base probe would
     then find a buffer that is not its base: a dedicated follower wiped and

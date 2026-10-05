@@ -1,5 +1,5 @@
 """A Read re-reads a CLEAN open buffer on nvim too (parity with the tmux
-backend's `_RELOAD_IF_CLEAN`), against real nvims: a file rewritten outside
+backend's s:reload), against real nvims: a file rewritten outside
 Claude's Edits (a formatter, `sed -i`, a `git checkout`) is shown as it is on
 disk, and a buffer holding the user's unsaved typing is never touched.
 

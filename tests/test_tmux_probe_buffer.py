@@ -15,26 +15,15 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from helpers import case_folds, find_buffer_spelled, resolve_typed_paths, typed_path
+from helpers import define_line, probe_spelled, resolve_typed_paths, vim_function
 
 from vim_ai_follower import cache
 from vim_ai_follower.backends import buffer_forms, tmux_vim
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 
-NONCE = "n0nce"
-
-
-def _probe_line(path: str, probe: Path) -> str:
-    """The exact Ex line probe_buffer sends, spelled out (not imported) so an
-    unintended change to the constant is caught — same rule as
-    test_tmux_vim._goto."""
-    return (
-        ":try | let g:vaf_p = " + typed_path(path) + " | if g:vaf_p !=# ''"
-        f" | {find_buffer_spelled('g:vaf_p', case_folds(path))}"
-        f" | let g:vaf_r = writefile(getbufline(g:vaf_n, 1, '$') + ['{NONCE}'], '{probe}')"
-        " | endif | catch | finally"
-        " | unlet! g:vaf_h g:vaf_n g:vaf_q g:vaf_c g:vaf_i g:vaf_f g:vaf_p g:vaf_r | endtry"
-    )
+# The random part of the probe's handle name, which is also its nonce.
+HANDLE_HEX = "abc123"
+NONCE = f"p3-{HANDLE_HEX}"
 
 
 def _vim(writes: Callable[[Path], None] | None) -> Callable[..., None]:
@@ -42,7 +31,7 @@ def _vim(writes: Callable[[Path], None] | None) -> Callable[..., None]:
     Vim and produces the probe file."""
 
     def _send_text(self: object, text: str) -> None:
-        if "writefile" in text and writes is not None:
+        if "('probe'," in text and writes is not None:
             writes(cache.CACHE_DIR / "probe-3.txt")
 
     return _send_text
@@ -65,7 +54,7 @@ def _probe(writes: Callable[[Path], None] | None, content: str) -> tuple[str, li
     with (
         patch("vim_ai_follower.backends.tmux_vim.TmuxPane.send_text", _record),
         patch("vim_ai_follower.backends.tmux_vim.TmuxPane.send_key"),
-        patch("vim_ai_follower.backends.tmux_vim.secrets.token_hex", return_value=NONCE),
+        patch("vim_ai_follower.backends.tmux_vim.secrets.token_hex", return_value=HANDLE_HEX),
     ):
         held = TmuxVimFollower(pane_id="%3").probe_buffer("/w/f.py", content)
     return held, sent
@@ -74,7 +63,22 @@ def _probe(writes: Callable[[Path], None] | None, content: str) -> tuple[str, li
 def test_sends_the_probe_line_and_answers_holds_for_a_matching_buffer() -> None:
     held, sent = _probe(_dump("a", "b", NONCE), "a\nb\n")
     assert held == "holds"
-    assert sent == [_probe_line("/w/f.py", cache.CACHE_DIR / "probe-3.txt")]
+    assert sent == [define_line(), probe_spelled("/w/f.py")]
+
+
+def test_the_probe_never_leaves_a_prompt_and_dumps_the_buffer_by_number() -> None:
+    """s:probe, spelled out where it matters: the lookup by NUMBER (never a
+    name pattern), the handle name closing the dump as its nonce, the
+    pane's answer file, and the whole body inside try with an empty
+    catch-all, so no failure (an unwritable cache, E482) leaves a prompt."""
+    probe = vim_function("probe")
+    assert "let lines = getbufline(s:find(path, a:folds), 1, '$')" in probe
+    assert "call writefile(lines + [a:token], s:dir . 'probe-' . s:pane(a:token) . '.txt')" in (
+        probe
+    )
+    body = probe.splitlines()[1:-1]
+    assert body[0] == "  try"
+    assert body[-2:] == ["  catch", "  endtry"]
 
 
 def test_a_buffer_holding_other_content_is_not_the_base() -> None:

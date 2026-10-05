@@ -8,7 +8,7 @@ each live on Vim's command line the way `:tab drop`'s argument was before
 The reproduction is end to end through the real hook pipeline, because the
 symptom is not the rename alone: `show_fresh` (a Write, since the file is
 fresh) sets the buffer name, and the next `apply_edit` (an Edit) looks that
-buffer up BY THE EXACT `:p` NAME (`_GOTO_FILE`'s by-number lookup). A wrong
+buffer up BY THE EXACT `:p` NAME (s:goto's by-number lookup). A wrong
 name there is invisible to `show_fresh` itself and only surfaces as the
 Edit missing the buffer and opening a duplicate tab.
 """

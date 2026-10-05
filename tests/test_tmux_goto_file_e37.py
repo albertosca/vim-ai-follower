@@ -47,7 +47,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from helpers import acting_start, goto_spelled, landed_line, resolve_typed_paths
+from helpers import define_line, goto_spelled, landed_line, resolve_typed_paths, vim_function
 
 from vim_ai_follower import control
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
@@ -55,8 +55,8 @@ from vim_ai_follower.diff import EditOp, compute_edit_script
 
 
 def _goto(path: str) -> str:
-    """The exact Ex line goto_file sends for `path` (helpers.goto_spelled:
-    spelled out there, never imported from tmux_vim._GOTO_FILE)."""
+    """The call goto_file sends for `path` (helpers.goto_spelled: spelled
+    out there, never imported from tmux_vim)."""
     return goto_spelled(path)
 
 
@@ -84,8 +84,9 @@ def _sent_commands(run_mock: MagicMock) -> list[tuple[str, bool]]:
 
 
 def _assert_navigates_through_the_guard(commands: list[tuple[str, bool]], file_path: str) -> None:
-    """Every goto_file call site must navigate through the guarded line —
-    never a bare `:tab drop`, which is what would put the prompt back."""
+    """Every goto_file call site must navigate through the guarded call
+    (s:goto) — never a bare `:tab drop`, which is what would put the prompt
+    back."""
     guarded = (_goto(file_path), True)
     indices = [i for i, c in enumerate(commands) if c == guarded]
     assert indices, f"no guarded navigation to {file_path!r} found in {commands!r}"
@@ -101,7 +102,7 @@ def _assert_navigates_through_the_guard(commands: list[tuple[str, bool]], file_p
 def test_goto_file_sends_the_guarded_line_with_no_python_branching() -> None:
     """goto_file cannot see whether the target buffer is dirty or already
     current — TmuxPane has no read/capture path — so it sends the identical
-    guarded Ex line unconditionally, for every target state."""
+    guarded call unconditionally, for every target state."""
     follower = TmuxVimFollower(pane_id="%2")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.goto_file("/tmp/dirty_and_current.py")
@@ -109,6 +110,8 @@ def test_goto_file_sends_the_guarded_line_with_no_python_branching() -> None:
     assert _sent_commands(run) == [
         ("Escape", False),
         ("Escape", False),
+        (define_line(), True),
+        ("Enter", False),
         (_goto("/tmp/dirty_and_current.py"), True),
         ("Enter", False),
         ("Escape", False),
@@ -117,6 +120,8 @@ def test_goto_file_sends_the_guarded_line_with_no_python_branching() -> None:
         ("Enter", False),
         ("Escape", False),
         ("Escape", False),
+        (define_line(), True),
+        ("Enter", False),
         (_goto("/tmp/clean_and_elsewhere.py"), True),
         ("Enter", False),
         ("Escape", False),
@@ -127,17 +132,17 @@ def test_goto_file_sends_the_guarded_line_with_no_python_branching() -> None:
 
 
 def test_the_guard_catches_e37_only_and_hands_the_path_to_fnameescape() -> None:
-    """Two properties of the literal that the call-site tests above would
-    not notice on their own.
+    """Two properties of the navigation that the call-site tests above
+    would not notice on their own.
 
     The catch pattern is Vim's documented `Vim(cmd):E37:` exception form,
     anchored — a looser one could swallow an unrelated failure; `:exe`
     keeps it matching (the error still reads `Vim(drop):E37:`). And the
     path never reaches `tab drop` bare: as a raw argument `#`/`%`/`$` were
     expanded, a space split it in two and a glob opened a sibling
-    (tests/test_integration_goto_file_escaping.py). It is not on the line
-    at all: Vim reads it from a handle file (tmux_vim._typed_path, so the
-    command-line echo never shows the absolute path) into a variable, and
+    (tests/test_integration_goto_file_escaping.py). It is not on the typed
+    line at all: the call names a handle file (so the command-line echo
+    never shows the absolute path), s:goto reads it into a variable, and
     Vim's own fnameescape() does the rest. The variable is bound once,
     because the same path also feeds the by-number buffer lookup."""
     path = "/tmp/a b#c%d'e.py"
@@ -145,24 +150,18 @@ def test_the_guard_catches_e37_only_and_hands_the_path_to_fnameescape() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.goto_file(path)
     raw = [text for text, literal in _raw_commands(run) if literal]
-    assert len(raw) == 2  # the navigation, then its landing check
-    assert resolve_typed_paths(raw[1]) == landed_line()
-    line = raw[0]
-    assert "a b#c" not in line
-    assert resolve_typed_paths(line) == _goto(path)
-    assert resolve_typed_paths(line).startswith(acting_start(path) + " | ")
-    assert (
-        " | exe 'silent tab drop ' . fnameescape((fnamemodify(fnamemodify(g:vaf_p, ':.'), ':p')"
-        " ==# fnamemodify(g:vaf_p, ':p') ? fnamemodify(g:vaf_p, ':.') : g:vaf_p)) | "
-    ) in line
-    assert line.endswith(" | endif | unlet! g:vaf_h g:vaf_n g:vaf_q g:vaf_c g:vaf_i g:vaf_f")
-    assert r"^Vim\%((\a\+)\)\=:E37:" in line
-    # The handle is read exactly once, outside the swap hook's double-quoted
-    # exe segments, where `\` and `"` would bite.
-    assert line.count("readfile(") == 1
-    quoted_segments = line.split('"')[1::2]
-    assert quoted_segments, "expected the swap hook's exe-quoted segments"
-    assert not any("readfile" in segment for segment in quoted_segments)
+    # the functions, the navigation, then its landing check
+    assert [resolve_typed_paths(text) for text in raw] == [
+        define_line(),
+        _goto(path),
+        landed_line(),
+    ]
+    assert not any("a b#c" in text for text in raw)
+    goto = vim_function("goto")
+    assert goto.count("call s:acting_start(a:token)") == 1
+    assert "let g:vaf_p = s:read(a:token)" in vim_function("acting_start")
+    assert "exe 'silent tab drop ' . fnameescape(s:display(g:vaf_p))" in goto
+    assert "\n  catch /^Vim\\%((\\a\\+)\\)\\=:E37:/\n  finally\n" in goto
 
 
 def test_ensure_showing_navigates_through_the_guard() -> None:
@@ -197,8 +196,10 @@ def test_close_tab_deliberately_does_not_navigate_at_all() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.close_tab("/tmp/f.py")
     texts = [text for text, _ in _sent_commands(run)]
-    assert not any("tab drop" in text for text in texts)
-    assert not any("vim_ai_follower_swap" in text for text in texts)
+    assert not any("'goto'" in text for text in texts)
+    wipe = vim_function("wipe")
+    assert "tab drop" not in wipe
+    assert "swap_answer" not in wipe
 
 
 def test_rewrite_buffer_navigates_through_the_guard(tmp_path: Path) -> None:

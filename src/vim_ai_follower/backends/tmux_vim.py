@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import logging
 import os
 import re
@@ -17,6 +18,40 @@ from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
 from vim_ai_follower.diff import EditOp
 from vim_ai_follower.state import FollowerState
 from vim_ai_follower.tmux import TmuxPane
+
+# This backend drives Vim by TYPING Ex commands (`tmux send-keys`), and Vim
+# echoes every typed command on its command line before it runs it. The logic
+# below used to be typed whole on every call: the navigation line alone grew to
+# ~1,500 characters, a 12-30-row block of Vim script flashing over the
+# follower's bottom on every Edit and Read (found on the demo, 2026-10-05). So
+# the logic is Vim script, defined ONCE per Vim as functions (_VIM_SCRIPT,
+# sourced from a file in the cache directory), and a typed line only calls
+# them: one or two screen rows at the follower pane's 49 columns (_call_line).
+#
+# Every public entry point that may be the first thing a Vim hears from this
+# hook sends _define_line first: it sources the script only when the function
+# is missing. That is what heals a Vim that lost the functions — the user's
+# `:delfunction`, or an adopted Vim restarted in the same shell, which tmux
+# cannot tell apart from the old one (same pane process) — on the very next
+# call, with no state on the Python side. Each call line is guarded by the same
+# `exists()`, so a Vim the source did not reach (another HOME, see
+# _home_relative) runs nothing, raises no E117 prompt, and simply does not
+# answer: the navigation then fails safe (_await_landing).
+#
+# The script is legacy Vim script, run with 'cpoptions' at its Vim default.
+# Every function is `abort`, so an error stops it exactly where an error used
+# to stop the rest of a typed line; `try`/`finally` still run their cleanup.
+# The helpers are script-local (`s:`), so the user's namespace gets ONE
+# function, the dispatcher, named after a hash of the script
+# (`VafFollower_<6 hex>`): a Vim holding an older version's functions sources
+# the new one instead of calling it with the wrong arguments, and the new
+# script deletes the older dispatchers it finds. The only globals the lines
+# share between them are the landing's (`g:vaf_p`, `g:vaf_k`, `g:vaf_landed`,
+# see _VIM_LANDING), unlet by the line that answers.
+#
+# The script names the cache directory itself (`s:dir`), in full: it is a file,
+# never echoed, so the handle, probe and answer files the functions read and
+# write need no `~` and no HOME question. Only the define line types a path.
 
 # The lock protocol, as literal Vim ex-command lines. The follower buffer is
 # read-only by default so a stray keystroke can't corrupt it; an animation
@@ -35,13 +70,13 @@ from vim_ai_follower.tmux import TmuxPane
 # ensure_showing's lock, and an Edit that follows either one used to be
 # rescued by accident: goto_file's `:tab drop` re-read the file, and a reload
 # resets 'readonly'. Now that goto_file never reloads a loaded buffer (see
-# _GOTO_FILE), the unlock has to say it (measured 2026-09-23).
+# _VIM_GOTO), the unlock has to say it (measured 2026-09-23).
 #
 # But in an ADOPTED Vim a readonly the USER set (`:view`, `vim -R`) is theirs
 # to keep, and both the unlock and the completion relock's `:e!` (a reload
 # resets 'readonly') took it away, for good on the interrupted path. So an
 # adopted Vim's lines record the user's readonly in `b:vaf_user_ro` and
-# _RESTORE_READONLY puts it back on every exit: after the relock, at an
+# s:restore_readonly puts it back on every exit: after the relock, at an
 # interrupt, and in hand_over. Paused time never leaves the run, so it needs
 # nothing. A DEDICATED follower's readonly is never the user's (ruling,
 # 2026-09-28): it gets the plain lines above and no restore at all.
@@ -57,7 +92,7 @@ from vim_ai_follower.tmux import TmuxPane
 # the follower's readonly buffer, the tick moved, and the follower's readonly
 # was handed back as the user's; measured 2026-09-28).
 #
-# _NOTE_USER_READONLY runs before every step of the follower's that changes
+# s:note_user_readonly runs before every step of the follower's that changes
 # the option (the Read's reload and lock, the des-interrupt's reload, the
 # unlock): while the follower has no claim, the current value is the user's
 # and is recorded, 0 included, so a readonly the user dropped since is not
@@ -72,25 +107,43 @@ _LOCK_READONLY = ":setlocal readonly nomodifiable"
 _UNLOCK_FOR_ANIMATION = ":setlocal noreadonly modifiable paste"
 _RELOCK = ":setlocal nomodifiable nopaste"
 _RELOCK_READONLY = ":setlocal readonly nomodifiable nopaste"
-_NOTE_USER_READONLY = "if !get(b:, 'vaf_ro_ours') | let b:vaf_user_ro = &readonly | endif"
 _ADOPTED_LOCK_READONLY = _LOCK_READONLY + " | let b:vaf_ro_ours = 1"
-_ADOPTED_UNLOCK_FOR_ANIMATION = (
-    f":{_NOTE_USER_READONLY} | {_UNLOCK_FOR_ANIMATION[1:]} | let b:vaf_ro_ours = 2"
-)
+_OUR_READONLY_CLAIM = " | let b:vaf_ro_ours = 1"
 # The restore also leaves its answer for user_readonly (the hand-off cue) in
-# {answer}: whether the buffer is now readonly by the user's setting. Written
-# here, by the line the follower sends anyway, so the cue costs no extra
-# keystrokes into a Vim the user is about to type into (a separate probe line
-# at the hand-off interleaved with the user's first keys; measured
-# 2026-09-28 with a test's keys, which garbled both command lines). Inside
-# try/catch and via `let`, like _PROBE_BUFFER: no failure may leave a prompt.
-_RESTORE_READONLY = (
-    ":if get(b:, 'vaf_user_ro') | setlocal readonly | let b:vaf_ro_ours = 0"
-    " | elseif get(b:, 'vaf_ro_ours') == 2 | let b:vaf_ro_ours = 0 | endif"
-    " | unlet! b:vaf_user_ro"
-    " | try | let g:vaf_r = writefile([&readonly && !get(b:, 'vaf_ro_ours') ? '1' : '0'],"
-    " {answer}) | catch | finally | unlet! g:vaf_r | endtry"
-)
+# `readonly-<pane>.txt`: whether the buffer is now readonly by the user's
+# setting. Written here, by the line the follower sends anyway, so the cue
+# costs no extra keystrokes into a Vim the user is about to type into (a
+# separate probe line at the hand-off interleaved with the user's first keys;
+# measured 2026-09-28 with a test's keys, which garbled both command lines).
+# Inside try/catch: no failure may leave a prompt.
+_VIM_READONLY = r"""
+function! s:note_user_readonly() abort
+  if !get(b:, 'vaf_ro_ours')
+    let b:vaf_user_ro = &readonly
+  endif
+endfunction
+
+function! s:unlock() abort
+  call s:note_user_readonly()
+  setlocal noreadonly modifiable paste
+  let b:vaf_ro_ours = 2
+endfunction
+
+function! s:restore_readonly(pane) abort
+  if get(b:, 'vaf_user_ro')
+    setlocal readonly
+    let b:vaf_ro_ours = 0
+  elseif get(b:, 'vaf_ro_ours') == 2
+    let b:vaf_ro_ours = 0
+  endif
+  unlet! b:vaf_user_ro
+  let answer = &readonly && !get(b:, 'vaf_ro_ours') ? '1' : '0'
+  try
+    call writefile([answer], s:dir . 'readonly-' . a:pane . '.txt')
+  catch
+  endtry
+endfunction
+"""
 
 # CoC's inlay hints (parameter names, inferred return types — coc-pyright's
 # pyright.inlayHints.* etc.) render as virtual text once the follower's
@@ -108,7 +161,8 @@ _RESTORE_READONLY = (
 _COC_DISABLE = ":silent! CocDisable"
 _COC_ENABLE = ":silent! CocEnable"
 
-# goto_file's navigation, wrapped so a dirty target can't stall the pane.
+# goto_file's navigation (s:goto), wrapped so a dirty target can't stall the
+# pane.
 #
 # `:tab drop {file}` finishes by running `:rewind` on the arglist it just
 # set, and `:rewind` calls Vim's abandon check against the buffer it has
@@ -135,15 +189,16 @@ _COC_ENABLE = ":silent! CocEnable"
 #     `silent!` leaves nothing on screen to explain why).
 #   - `set hidden` around the drop does not even work: the same-file path
 #     adds Vim's CCGD_MULTWIN flag, which skips the 'hidden' escape, so
-#     E37 still fires — and a `|`-chained restore never runs after the
-#     error, leaking `hidden` ON into what, in adopt mode, is the user's
-#     own Vim (measured: &hidden left at 1 in all three dirty scenarios).
+#     E37 still fires — and a restore that is not in `finally` never runs
+#     after the error, leaking `hidden` ON into what, in adopt mode, is the
+#     user's own Vim (measured: &hidden left at 1 in all three dirty
+#     scenarios).
 #
 # The catch pattern is the documented `Vim(cmd):E37:` form and is narrow
 # in both directions (measured against E17/E212/E325/E370, all of which
 # still surface exactly as they do today).
 #
-# The SECOND stall the same line has to survive is Vim's swap-file
+# The SECOND stall the same navigation has to survive is Vim's swap-file
 # `E325: ATTENTION` dialog, which `:tab drop` raises whenever the target
 # has a `.file.swp` — another Vim holding it open (the everyday adopt-mode
 # case: the user's own editor on the file Claude is writing), or a stale
@@ -172,29 +227,30 @@ _COC_ENABLE = ":silent! CocEnable"
 #   - `set noswapfile` is global too and costs the user crash recovery for
 #     every file they open afterwards.
 #
-# So the hook is registered and torn down inside this one Ex line:
+# So the hook is registered and torn down around the one read that needs it
+# (s:swap_answer_open / s:swap_answer_close):
 #
 #   - It lives in its own augroup, created by an `augroup` command first.
 #     `:autocmd {group} ...` does NOT create a missing group: it fails
 #     with `E216` and leaves its own hit-enter prompt (measured), which is
 #     the very failure being fixed.
-#   - There is deliberately no bare `:autocmd!` anywhere in the line. It
-#     would only ever apply to `vim_ai_follower_swap`, but if the
-#     preceding `augroup` ever failed it would run in the DEFAULT group
-#     and wipe every autocommand the user has. Nothing in the line needs
-#     it: `finally` clears the group on every pass.
-#   - The teardown is in `finally`, not after `endtry`, so it runs on the
-#     E37 path and on an uncaught error too (both measured: no residue,
-#     and a non-E37 error still reaches the user).
-#   - `++once` bounds the one residual risk — this line being cut off
+#   - There is deliberately no bare `:autocmd!` anywhere. It would only
+#     ever apply to `vim_ai_follower_swap`, but if the preceding `augroup`
+#     ever failed it would run in the DEFAULT group and wipe every
+#     autocommand the user has. Nothing needs it: `finally` clears the
+#     group on every pass.
+#   - The teardown is in `finally`, so it runs on the E37 path and on an
+#     uncaught error too (both measured: no residue, and a non-E37 error
+#     still reaches the user).
+#   - `++once` bounds the one residual risk — the call being cut off
 #     mid-flight, before `finally` — to a single auto-answered dialog
 #     instead of the policy persisting in the user's Vim.
 #
 # Scoping is by TIME, not by pattern: the hook exists only for the
 # duration of this drop, so a user `:e` of a swapped file afterwards
 # still gets the normal dialog (measured). Matching on the path instead
-# would mean escaping it into an autocmd pattern — the quoting hazard
-# this line otherwise avoids entirely.
+# would mean escaping it into an autocmd pattern — a quoting hazard
+# avoided entirely.
 #
 # And `:tab drop` is only the FALLBACK, for a file no buffer holds yet —
 # the one case where reading disk is the intent. An already-loaded buffer
@@ -207,17 +263,15 @@ _COC_ENABLE = ":silent! CocEnable"
 # pre-edit snapshot) on top of it: duplicated lines until the relock's `:e!`
 # snapped them back. The nvim backend's goto_file has the same rule.
 #
-# The number is resolved the way _WIPE_BUFFER does it — the path is read
-# into a variable (_typed_path) and the buffer list is walked comparing `:p`
-# names —
-# because `bufnr()` and `:buffer {name}` take a PATTERN. A window already
-# showing it is focused (`win_gotoid`, any tab); a loaded buffer with no
-# window gets a new tab via `:tab sbuffer {nr}`, which does not re-read a
-# loaded buffer; the current buffer is left alone. All three stay inside
-# the try/SwapExists guard: `:tab sbuffer` on a listed-but-unloaded buffer
-# does read the file, and can raise the ATTENTION dialog like the drop.
-# The `g:` variables are unlet in `finally` (inert if a cut-off line leaves
-# them, like _WIPE_BUFFER's).
+# The number is resolved the way s:wipe does it — the path is read from a
+# handle file (s:read) and the buffer list is walked comparing full names
+# (s:find) — because `bufnr()` and `:buffer {name}` take a PATTERN. A window
+# already showing it is focused (`win_gotoid`, any tab); a loaded buffer
+# with no window gets a new tab via `:tab sbuffer {nr}`, which does not
+# re-read a loaded buffer; the current buffer is left alone. All three stay
+# inside the try/SwapExists guard: `:tab sbuffer` on a listed-but-unloaded
+# buffer does read the file, and can raise the ATTENTION dialog like the
+# drop.
 #
 # The drop and `:tab sbuffer` are `silent` (never `silent!`, see above: errors
 # and the E37 exception still come through, measured by
@@ -226,22 +280,18 @@ _COC_ENABLE = ":silent! CocEnable"
 # file outside the cwd that name is the full path — shown on the command line
 # the path handle exists to keep it off (measured 2026-09-29,
 # tests/test_integration_cmdline_paths.py).
-#
-# The line is kept short on purpose (short `g:` names, win_gotoid's own
-# return value picking between focus and `:tab sbuffer`): at 49 columns every
-# ~49 characters is another screen row of command-line echo. The unnamed
-# buffer needs no guard in the lookup: `fnamemodify('', ':p')` is the working
-# DIRECTORY, trailing slash included, which no file path can equal.
-_SWAP_GROUP = "vim_ai_follower_swap"
-# The time-scoped `(E)dit anyway` answer, as the two halves every
-# disk-reading line wraps itself in (the opening registers it; the closing
-# runs in `finally`). See above for why each piece has this exact shape.
-_SWAP_ANSWER_OPEN = (
-    f'exe "augroup {_SWAP_GROUP}"'
-    " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
-    ' | exe "augroup END"'
-)
-_SWAP_ANSWER_CLOSE = f'exe "autocmd! {_SWAP_GROUP}" | exe "augroup! {_SWAP_GROUP}"'
+_VIM_SWAP_ANSWER = r"""
+function! s:swap_answer_open() abort
+  augroup vim_ai_follower_swap
+    autocmd SwapExists * ++once let v:swapchoice = 'e'
+  augroup END
+endfunction
+
+function! s:swap_answer_close() abort
+  autocmd! vim_ai_follower_swap
+  augroup! vim_ai_follower_swap
+endfunction
+"""
 
 # The completion relocks' `:e!` disk sync (see the lock protocol at the top),
 # carrying the same scoped (E)dit-anyway answer. `:edit` re-runs the swap
@@ -252,187 +302,230 @@ _SWAP_ANSWER_CLOSE = f'exe "autocmd! {_SWAP_GROUP}" | exe "augroup! {_SWAP_GROUP
 # `setlocal` never ran and the follower's next keys answered the dialog
 # (measured 2026-09-28 at 49 columns, tests/test_integration_swap_reload.py).
 # `silent!` stays on the edit itself: the relock never showed an error before.
-_SYNC_FROM_DISK = (
-    f":{_SWAP_ANSWER_OPEN} | try | silent! edit! | finally | {_SWAP_ANSWER_CLOSE} | endtry"
-)
-_RELOCK_SYNCED = _SYNC_FROM_DISK + " | " + _RELOCK[1:]
-_RELOCK_READONLY_SYNCED = _SYNC_FROM_DISK + " | " + _RELOCK_READONLY[1:]
-# The relocks that set the follower's own readonly; in an adopted Vim they
-# also mark the follower's claim on it (see _NOTE_USER_READONLY).
-_READONLY_RELOCKS = (_RELOCK_READONLY, _RELOCK_READONLY_SYNCED)
-_OUR_READONLY_CLAIM = " | let b:vaf_ro_ours = 1"
+# The relocks that set the follower's own readonly in an adopted Vim also
+# mark the follower's claim on it (`claim`, see s:note_user_readonly).
+_VIM_RELOCK = r"""
+function! s:relock(readonly, claim) abort
+  call s:swap_answer_open()
+  try
+    silent! edit!
+  finally
+    call s:swap_answer_close()
+  endtry
+  if a:readonly
+    setlocal readonly nomodifiable nopaste
+  else
+    setlocal nomodifiable nopaste
+  endif
+  if a:claim
+    let b:vaf_ro_ours = 1
+  endif
+endfunction
+"""
 
-
-def _vim_display_name(path_expr: str) -> str:
-    """A Vim expression naming the file `path_expr` (a Vim expression for its
-    full path) the way Vim names a file opened by RELATIVE path: relative to
-    the working directory when it is under it, full otherwise. It is the
-    argument show_fresh's `:file` and _GOTO_FILE's `:tab drop` hand to
-    fnameescape().
-
-    Why: Vim keeps a name it was given in full as typed, and shortens it only
-    when a `:cd` happens. Measured 2026-09-29 on Vim 9.2 at 49 columns, cwd
-    /private/tmp/vafn: `:file /private/tmp/vafn/sub/a.py` showed the tabline
-    as `/p/t/v/s/a.py`, the full path in the statusline and
-    `<te/tmp/vafn/sub/a.py" 1L, 6B written` for `:w`; `:file sub/a.py`
-    shows `s/a.py`, `sub/a.py` and `"sub/a.py" 1L, 6B written`, exactly as
-    `:e sub/a.py` does. The buffer's FULL name is the same either way, so the
-    `:p` lookups (_find_buffer) still find it, and Vim re-bases the short
-    name itself on any later `:cd`.
-
-    `:.` compares against getcwd(), which is the PHYSICAL directory even when
-    Vim was started from, or `:cd` to, a symlinked spelling of it (measured,
-    macOS /tmp -> /private/tmp); the hook hands the backend a realpath
-    (hooks._file_path), so the two line up without resolving anything here.
-
-    The short name is kept only when it ROUND-TRIPS: its `:p` must be
-    exactly the `:p` of the full path, the name the lookups (_find_buffer)
-    start from. Otherwise the full path is the name, as before relative
-    names, and the lookups match it verbatim.
-    Two measured ways the short form fails to come back (Vim 9.2, macOS):
-    - A wrong-CASE path. `:.` shortens case-INSENSITIVELY on macOS: with cwd
-      `…/Proj`, `…/proj/sub/a.py` shortens to `sub/a.py`, whose `:p` is
-      `…/Proj/sub/a.py` — not the hook's `…/proj/sub/a.py` (the hook's
-      realpath keeps the case it was given). Every lookup missed: the probe
-      said "absent", show_fresh's pre-wipe missed so `:file` hit E95 and
-      stacked unnamed tabs, max_tabs eviction never fired, `:w` gave E32.
-    - A relative name starting with `~` (a directory literally called `~x`
-      under the cwd): `:p` reads it as user x's home, not the file."""
-    short = f"fnamemodify({path_expr}, ':.')"
-    return (
-        f"(fnamemodify({short}, ':p') ==# fnamemodify({path_expr}, ':p') ? {short} : {path_expr})"
-    )
-
-
-def _resolved(variable: str, name: str) -> str:
-    """Statements setting `variable` to the `resolve()`d full name of the Vim
-    expression `name`, or to its plain full name when resolve() fails: a
-    symlink loop raises E655 (measured 2026-09-29), and inside a lookup over
-    every buffer one such name aborted the whole lookup, so while a looping
-    buffer existed every navigation failed (review of a790652)."""
-    return (
-        f"try | let {variable} = resolve(fnamemodify({name}, ':p'))"
-        f" | catch | let {variable} = fnamemodify({name}, ':p') | endtry"
-    )
-
-
-# Whether a name that differs from the target only in case still names it
-# ({folds}: 1 or 0, decided by Python from the FILESYSTEM, see _case_folds).
-# Never `&fileignorecase`: macOS Vim has it on by default, and on a
-# case-sensitive volume, where Readme.md and README.md are two files, it
-# made the follower act on the wrong one (review, 2026-09-29, measured on a
-# Case-sensitive APFS image: an Edit typed into the sibling's buffer, a
-# retype wiped it, an adopted Read locked the user's modified sibling).
-# `index(…, ic)` is the one comparison that takes it as a value.
-_SAME_AS_TARGET = "index([g:vaf_q], g:vaf_c, 0, {folds}) == 0"
-
-
-def _find_buffer(path: str) -> str:
-    """Statements setting `g:vaf_n` to the number of the buffer holding the
-    file named by the Vim variable `path`, or -1 (see the comment above
-    _SWAP_GROUP), and `g:vaf_q` to the target's full name. Compared the way
-    Vim itself tells files apart, not by spelling: `resolve()`d full names (a
-    buffer opened through a file symlink, like a dotfiles checkout's ~/.vimrc,
-    while the hook passes the realpath), case-insensitively where the
-    filesystem is ({folds}: a case variant on macOS). Measured 2026-09-29:
-    comparing `:p` names alone said "absent" for both, and `:tab drop` then
-    landed on the existing buffer anyway (Vim matches files by identity),
-    under a name no check expected.
-
-    A `:for` loop, not filter(): each name's resolve() needs its own
-    try/catch (_resolved), which an expression cannot hold. A number with no
-    buffer has the name '', whose `:p` is the working directory (trailing
-    slash included), which no file path equals."""
-    return (
-        _resolved("g:vaf_q", path) + " | let g:vaf_n = -1"
-        " | for g:vaf_i in range(1, bufnr('$'))"
-        f" | {_resolved('g:vaf_c', 'bufname(g:vaf_i)')}"
-        f" | if {_SAME_AS_TARGET} | let g:vaf_n = g:vaf_i | break | endif"
-        " | endfor"
-    )
-
-
-# The landing verdict's identity half: `g:vaf_landed` is set only when the
-# current buffer IS the target (the comparison _find_buffer makes, so a
-# symlink or a case variant of it counts), after whatever navigation ran.
-_LAND_IF_TARGET = (
-    _resolved("g:vaf_c", "bufname('%')")
-    + f" | if {_SAME_AS_TARGET} | let g:vaf_landed = bufnr('%') | endif"
-)
-# The acting lines' own file-name matching runs with 'fileignorecase' off,
-# restored in `finally`: Vim then tells files apart by identity (inode) as
-# the filesystem does — measured 2026-09-29, with it on (the macOS default)
-# `:tab drop README.md` landed on the Readme.md buffer and `:file README.md`
-# took Readme.md's buffer's name, both on a case-sensitive volume; with it
-# off both are right there, and on a case-insensitive volume Vim still finds
-# a case variant by inode. `g:vaf_f` holds the user's value.
-_NO_FIC_OPEN = "let g:vaf_f = &fic | let &fic = 0"
-_NO_FIC_CLOSE = "let &fic = g:vaf_f"
-# Everything the acting lines' lookups leave, unlet at their end.
-_LOOKUP_VARIABLES = "g:vaf_h g:vaf_n g:vaf_q g:vaf_c g:vaf_i g:vaf_f"
-
-
-# A line that must ACT on the target (goto, show_fresh's rename) records, by
-# buffer NUMBER, where it landed (`g:vaf_landed`, set only when, after its
-# navigation, the current buffer IS the target by _LAND_IF_TARGET's identity
-# comparison: an existing buffer for the same file under another name counts,
-# a sibling Vim switched to by name never does) next to its call's token
-# (`g:vaf_k`, set first, after an `unlet!` of the rest, so a value left by an
-# earlier, garbled line can never pass), and is followed by this one:
-# {answer} gets the verdict and {nonce} — "landed" only when the current
-# buffer is that one; "unread" when the path handle could not be read (a
-# HOME question gone stale); "elsewhere" otherwise. The Python side
-# waits for it (_await_landing) and sends nothing more without it, so no
-# lock, unlock, keystroke or relock can land on whatever buffer happened to
-# be current (review, 2026-09-29: a failed goto let a Read lock the user's
+# Names, lookups and the landing verdict.
+#
+# s:display: the name a file `path` gets the way Vim names a file opened by
+# RELATIVE path: relative to the working directory when it is under it, full
+# otherwise. It is the argument s:rename's `:file` and s:goto's `:tab drop`
+# hand to fnameescape(). Why: Vim keeps a name it was given in full as typed,
+# and shortens it only when a `:cd` happens. Measured 2026-09-29 on Vim 9.2 at
+# 49 columns, cwd /private/tmp/vafn: `:file /private/tmp/vafn/sub/a.py` showed
+# the tabline as `/p/t/v/s/a.py`, the full path in the statusline and
+# `<te/tmp/vafn/sub/a.py" 1L, 6B written` for `:w`; `:file sub/a.py` shows
+# `s/a.py`, `sub/a.py` and `"sub/a.py" 1L, 6B written`, exactly as `:e
+# sub/a.py` does. The buffer's FULL name is the same either way, so the `:p`
+# lookups (s:find) still find it, and Vim re-bases the short name itself on
+# any later `:cd`. `:.` compares against getcwd(), which is the PHYSICAL
+# directory even when Vim was started from, or `:cd` to, a symlinked spelling
+# of it (measured, macOS /tmp -> /private/tmp); the hook hands the backend a
+# realpath (hooks._file_path), so the two line up without resolving anything
+# here. The short name is kept only when it ROUND-TRIPS: its `:p` must be
+# exactly the `:p` of the full path, the name the lookups start from.
+# Otherwise the full path is the name, and the lookups match it verbatim. Two
+# measured ways the short form fails to come back (Vim 9.2, macOS):
+#   - A wrong-CASE path. `:.` shortens case-INSENSITIVELY on macOS: with cwd
+#     `…/Proj`, `…/proj/sub/a.py` shortens to `sub/a.py`, whose `:p` is
+#     `…/Proj/sub/a.py` — not the hook's `…/proj/sub/a.py` (the hook's
+#     realpath keeps the case it was given). Every lookup missed: the probe
+#     said "absent", show_fresh's pre-wipe missed so `:file` hit E95 and
+#     stacked unnamed tabs, max_tabs eviction never fired, `:w` gave E32.
+#   - A relative name starting with `~` (a directory literally called `~x`
+#     under the cwd): `:p` reads it as user x's home, not the file.
+#
+# s:resolved: the `resolve()`d full name of `name`, or its plain full name
+# when resolve() fails: a symlink loop raises E655 (measured 2026-09-29), and
+# inside a lookup over every buffer one such name aborted the whole lookup,
+# so while a looping buffer existed every navigation failed (review of
+# a790652). Each name gets its own try, which is why s:find is a `:for` loop,
+# never filter().
+#
+# s:same_file: whether `name` is the file `target` (already resolved) names,
+# compared the way Vim itself tells files apart, not by spelling: resolve()d
+# full names (a buffer opened through a file symlink, like a dotfiles
+# checkout's ~/.vimrc, while the hook passes the realpath), and
+# case-insensitively exactly where the FILESYSTEM is (`folds`: 1 or 0, decided
+# by Python, see _case_folds). Never `&fileignorecase`: macOS Vim has it on by
+# default, and on a case-sensitive volume, where Readme.md and README.md are
+# two files, it made the follower act on the wrong one (review, 2026-09-29,
+# measured on a Case-sensitive APFS image: an Edit typed into the sibling's
+# buffer, a retype wiped it, an adopted Read locked the user's modified
+# sibling). `index(…, ic)` is the one comparison that takes it as a value.
+# Measured 2026-09-29: comparing `:p` names alone said "absent" for a symlink
+# and a case variant, and `:tab drop` then landed on the existing buffer anyway
+# (Vim matches files by identity), under a name no check expected.
+#
+# s:find: the number of the buffer holding `path`, or -1. A number with no
+# buffer has the name '', whose `:p` is the working directory (trailing slash
+# included), which no file path equals.
+#
+# s:read: the path a handle file holds (see _path_handle), deleting the
+# handle; '' when it cannot be read (one swept under a stalled Vim), and every
+# function then acts on nothing. `filereadable()` first, never a try around
+# the read: measured 2026-09-29 (Vim 9.2), readfile()'s E484 is not a clean
+# exception on a typed line, and a missing handle must cost nothing.
+# Byte-exact: `readfile(…, 'b')` joined on "\n" gives back exactly the bytes
+# Python wrote, a newline in the path included (binary mode keeps a CR and
+# adds no item for a missing final newline).
+#
+# The landing (s:acting_start, s:land_if_target, s:landed). A call that must
+# ACT on the target (goto, show_fresh's rename) records, by buffer NUMBER,
+# where it landed (`g:vaf_landed`, set only when, after its navigation, the
+# current buffer IS the target by s:same_file: an existing buffer for the
+# same file under another name counts, a sibling Vim switched to by name never
+# does) next to its call's token (`g:vaf_k`, set first, after an `unlet!` of
+# the rest, so a value left by an earlier, garbled call can never pass), and
+# is followed by a call to s:landed, which writes the verdict and the token to
+# `landed-<pane>.txt`: "landed" only when the current buffer is that one;
+# "unread" when the path handle could not be read; "elsewhere" otherwise. The
+# Python side waits for it (_await_landing) and sends nothing more without it,
+# so no lock, unlock, keystroke or relock can land on whatever buffer happened
+# to be current (review, 2026-09-29: a failed goto let a Read lock the user's
 # own modified buffer, and an Edit's relock `:e!` discard the user's unsaved
-# text).
+# text). The token is the call's handle name (`p<pane>-<6 hex>`), which also
+# names the pane whose answer file it is.
 #
-# A line of its own, after an Escape pair, never the acting line's tail.
-# Measured 2026-09-29 (tests/test_integration_edit_no_reload.py's no-window
-# case: one tab left, so `:tab sbuffer` opens a second): the goto line, 21-27
-# screen rows at 49 columns, leaves Vim at a prompt that shows nothing new.
-# As the line's tail, the answer never came, even after 90 s; as a separate
-# line, its first screen row (49 characters) was swallowed and the rest ran
-# as `ufname('%')…` (E492). Before the landing check, the line swallowed there
-# was `:silent! CocDisable`, unnoticed. The Escape pair (_normal_mode's)
+# s:landed is a line of its own, after an Escape pair, never the acting call's
+# tail. Measured 2026-09-29 (tests/test_integration_edit_no_reload.py's
+# no-window case: one tab left, so `:tab sbuffer` opens a second): the goto
+# line, then 21-27 screen rows at 49 columns, left Vim at a prompt that showed
+# nothing new. As the line's tail, the answer never came, even after 90 s; as
+# a separate line, its first screen row (49 characters) was swallowed and the
+# rest ran as `ufname('%')…` (E492). The Escape pair (_normal_mode's)
 # dismisses the prompt, and the check then runs whole.
-_ANSWER_IF_LANDED = (
-    ":let g:vaf_r = get(g:, 'vaf_p', '') ==# '' ? 'unread'"
-    " : get(g:, 'vaf_k', '') ==# {nonce} && get(g:, 'vaf_landed', -1) == bufnr('%')"
-    " ? 'landed' : 'elsewhere'"
-    " | try | let g:vaf_r = writefile([g:vaf_r, {nonce}], {answer}) | catch | endtry"
-    " | unlet! g:vaf_p g:vaf_k g:vaf_landed g:vaf_r"
-)
-# The start every acting line shares: forget any earlier landing, stamp this
-# call's token (see _ANSWER_IF_LANDED), read the path.
-_ACTING_START = ":unlet! g:vaf_p g:vaf_landed | let g:vaf_k = {token} | {read}"
-_GOTO_FILE = (
-    _ACTING_START + " | if g:vaf_p !=# ''"
-    f" | {_find_buffer('g:vaf_p')} | {_SWAP_ANSWER_OPEN} | {_NO_FIC_OPEN}"
-    " | try"
-    f" | if g:vaf_n < 0 | exe 'silent tab drop ' . fnameescape({_vim_display_name('g:vaf_p')})"
-    " | elseif g:vaf_n != bufnr('%')"
-    " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'silent tab sbuffer ' . g:vaf_n"
-    " | endif"
-    # E37 comes from the drop's trailing `:rewind`, after it landed. Any
-    # other error aborts the line here, so nothing below runs.
-    r" | catch /^Vim\%((\a\+)\)\=:E37:/"
-    f" | finally | {_NO_FIC_CLOSE} | {_SWAP_ANSWER_CLOSE} | endtry"
-    f" | {_LAND_IF_TARGET}"
-    f" | endif | unlet! {_LOOKUP_VARIABLES}"
-)
+_VIM_LANDING = r"""
+function! s:display(path) abort
+  let short = fnamemodify(a:path, ':.')
+  return fnamemodify(short, ':p') ==# fnamemodify(a:path, ':p') ? short : a:path
+endfunction
 
-# ensure_showing's disk re-read, for the Read/binary navigation where
-# showing the file AS IT IS ON DISK is the whole point. goto_file no longer
-# re-reads a loaded buffer (it runs before animations, where that is the
-# bug above), so a file open and clean in the follower that something other
-# than Claude's Edit rewrote — a formatter run through Bash, `sed -i`, a
-# `git checkout` — would otherwise be shown stale, and locked read-only.
+function! s:resolved(name) abort
+  try
+    return resolve(fnamemodify(a:name, ':p'))
+  catch
+    return fnamemodify(a:name, ':p')
+  endtry
+endfunction
+
+function! s:same_file(target, name, folds) abort
+  return index([a:target], s:resolved(a:name), 0, a:folds) == 0
+endfunction
+
+function! s:find(path, folds) abort
+  let target = s:resolved(a:path)
+  for number in range(1, bufnr('$'))
+    if s:same_file(target, bufname(number), a:folds)
+      return number
+    endif
+  endfor
+  return -1
+endfunction
+
+function! s:read(handle) abort
+  let handle = s:dir . a:handle
+  let path = filereadable(handle) ? join(readfile(handle, 'b'), "\n") : ''
+  call delete(handle)
+  return path
+endfunction
+
+function! s:pane(token) abort
+  return matchstr(a:token, '^p\zs[0-9]\+')
+endfunction
+
+function! s:acting_start(token) abort
+  unlet! g:vaf_p g:vaf_landed
+  let g:vaf_k = a:token
+  let g:vaf_p = s:read(a:token)
+endfunction
+
+function! s:land_if_target(folds) abort
+  if s:same_file(s:resolved(g:vaf_p), bufname('%'), a:folds)
+    let g:vaf_landed = bufnr('%')
+  endif
+endfunction
+
+function! s:landed(token) abort
+  if get(g:, 'vaf_p', '') ==# ''
+    let verdict = 'unread'
+  elseif get(g:, 'vaf_k', '') ==# a:token && get(g:, 'vaf_landed', -1) == bufnr('%')
+    let verdict = 'landed'
+  else
+    let verdict = 'elsewhere'
+  endif
+  try
+    call writefile([verdict, a:token], s:dir . 'landed-' . s:pane(a:token) . '.txt')
+  catch
+  endtry
+  unlet! g:vaf_p g:vaf_k g:vaf_landed
+endfunction
+"""
+
+# s:goto: see the comment above _VIM_SWAP_ANSWER. 'fileignorecase' is off
+# for the navigation, restored in `finally`: Vim then tells files apart by
+# identity (inode) as the filesystem does — measured 2026-09-29, with it on
+# (the macOS default) `:tab drop README.md` landed on the Readme.md buffer
+# and `:file README.md` took Readme.md's buffer's name, both on a
+# case-sensitive volume; with it off both are right there, and on a
+# case-insensitive volume Vim still finds a case variant by inode. E37 comes
+# from the drop's trailing `:rewind`, after it landed, and falls through to
+# the landing check; any other error aborts the function there, so the
+# landing is never recorded.
+_VIM_GOTO = r"""
+function! s:goto(token, folds) abort
+  call s:acting_start(a:token)
+  if g:vaf_p ==# ''
+    return
+  endif
+  let number = s:find(g:vaf_p, a:folds)
+  call s:swap_answer_open()
+  let fileignorecase = &fileignorecase
+  let &fileignorecase = 0
+  try
+    if number < 0
+      exe 'silent tab drop ' . fnameescape(s:display(g:vaf_p))
+    elseif number != bufnr('%')
+      exe win_gotoid(get(win_findbuf(number), 0)) ? '' : 'silent tab sbuffer ' . number
+    endif
+  catch /^Vim\%((\a\+)\)\=:E37:/
+  finally
+    let &fileignorecase = fileignorecase
+    call s:swap_answer_close()
+  endtry
+  call s:land_if_target(a:folds)
+endfunction
+"""
+
+# ensure_showing's disk re-read (s:reload with discard 0), for the Read/binary
+# navigation where showing the file AS IT IS ON DISK is the whole point.
+# goto_file no longer re-reads a loaded buffer (it runs before animations,
+# where that is the bug above), so a file open and clean in the follower that
+# something other than Claude's Edit rewrote — a formatter run through Bash,
+# `sed -i`, a `git checkout` — would otherwise be shown stale, and locked
+# read-only.
 #
-#   - `if !&modified`: a dirty buffer is typed-but-unsaved content (an
-#     interrupt hand-off, a killed hook) and is never discarded here; that
-#     also makes E37 unreachable, so no catch is needed.
+#   - `!&modified`: a dirty buffer is typed-but-unsaved content (an interrupt
+#     hand-off, a killed hook) and is never discarded here; that also makes
+#     E37 unreachable, so no catch is needed.
 #   - `:edit` re-runs Vim's swap-name search, and that DOES raise ATTENTION
 #     on its own (measured 2026-09-23): when the user's editor opened the
 #     file first it owns `.swp`, the follower took `.swo`, and the reload
@@ -444,15 +537,41 @@ _GOTO_FILE = (
 #     wrapping into a hit-enter prompt at 49 columns without hiding errors.
 #   - `:edit` works on a 'nomodifiable' buffer and keeps the option; it
 #     resets 'readonly', which ensure_showing's lock re-asserts right after.
-# show_fresh's swap re-enable for an ADOPTED Vim (Alberto's ruling,
-# 2026-09-28): without a swap, a crash loses what the user types into the
-# buffer and a second editor opening the file gets no ATTENTION. Turning swap
-# on runs the swap check the rename's opt-out avoided; measured 2026-09-28 at
-# 49 columns with an owner Vim holding `.swp`, a plain `:setlocal swapfile`
-# left the ATTENTION block at `-- More --`, a scoped SwapExists answer does
-# not fire for an option toggle, and `shortmess+=A` saved and restored in
-# `finally` was silent, created `.swo`, and a second Vim opening the file
-# still got its SwapExists. The nvim backend runs the same toggle over RPC.
+#
+# reload_from_disk's and the des-interrupt's re-read (discard 1): the same
+# without the clean check, for a buffer that holds only follower text the
+# hook has decided to discard (see hooks._animate_edit, after a completed
+# catch-up), or the user's typing a des-interrupt discards. In an adopted
+# Vim (`adopted`) the user's readonly is noted first, since the reload resets
+# it (see s:note_user_readonly).
+_VIM_RELOAD = r"""
+function! s:reload(discard, adopted) abort
+  if a:adopted
+    call s:note_user_readonly()
+  endif
+  call s:swap_answer_open()
+  try
+    if a:discard
+      silent edit!
+    elseif !&modified
+      silent edit
+    endif
+  finally
+    call s:swap_answer_close()
+  endtry
+endfunction
+"""
+
+# show_fresh's swap re-enable for an ADOPTED Vim (s:swap_back_on, Alberto's
+# ruling, 2026-09-28): without a swap, a crash loses what the user types into
+# the buffer and a second editor opening the file gets no ATTENTION. Turning
+# swap on runs the swap check the rename's opt-out avoided; measured
+# 2026-09-28 at 49 columns with an owner Vim holding `.swp`, a plain
+# `:setlocal swapfile` left the ATTENTION block at `-- More --`, a scoped
+# SwapExists answer does not fire for an option toggle, and `shortmess+=A`
+# saved and restored in `finally` was silent, created `.swo`, and a second Vim
+# opening the file still got its SwapExists. The nvim backend runs the same
+# toggle over RPC.
 #
 # Prompt-proof when the toggle fails. A swap file Vim cannot create (E303:
 # no writable 'directory') makes Vim set need_wait_return itself, so the line
@@ -462,15 +581,69 @@ _GOTO_FILE = (
 # trailing `redraw` (an intentional redraw clears need_wait_return) is what
 # removes it, and with a writable 'directory' the swap is still created.
 # The swap then stays unmade, which is the safe side.
-_SWAP_BACK_ON = (
-    ":let g:vaf_shortmess = &shortmess | set shortmess+=A"
-    " | try | silent! setlocal swapfile"
-    " | finally | let &shortmess = g:vaf_shortmess | unlet g:vaf_shortmess | endtry"
-    " | redraw"
-)
+_VIM_SWAP_BACK_ON = r"""
+function! s:swap_back_on() abort
+  let shortmess = &shortmess
+  set shortmess+=A
+  try
+    silent! setlocal swapfile
+  finally
+    let &shortmess = shortmess
+  endtry
+  redraw
+endfunction
+"""
 
-# show_fresh's read of the file into the buffer it just renamed, cleared again
-# at once. Renaming a buffer onto a path (`:file`, and nvim's buf_set_name)
+# show_fresh's rename-in-place (s:rename). Deliberately never `:e file_path`:
+# that would load the file's real (already-written) content and flash the
+# finished result on screen before the wipe+retype, spoiling the "watch it
+# type" effect. Instead the current buffer (or a new tab's) is renamed onto
+# the path, and nothing after it runs until Python's landing check: a failed
+# read opens no stray tab and does not turn swap off for the user's current
+# buffer.
+#
+#   - Swap off BEFORE naming: renaming a swap-enabled buffer runs the swap
+#     check for the new name, and when a live Vim holds the file's swap
+#     `:file` raises E325 — at 49 columns a hit-enter prompt that the next
+#     keystrokes have to dismiss (measured 2026-09-28: an Edit whose buffer
+#     had vanished, retyped here since the base probe; a fresh Write of a
+#     swap-held file hit it too). The buffer is display-only, so there is
+#     nothing for a swap to protect, and 'swapfile' is buffer-local: every
+#     other buffer keeps its check. Unlike s:goto's SwapExists answer, this
+#     path reads no file, so there is no ATTENTION dialog to answer, only the
+#     check to skip.
+#   - The path goes through fnameescape(), same as s:goto: raw, `#`, `%` and
+#     a space rename the buffer onto the wrong name (measured 2026-09-24: a
+#     space alone left the buffer unnamed), and the by-number lookup that a
+#     later Edit's goto_file does then misses it and opens a duplicate tab.
+#     The name is the cwd-relative one Vim would give the file itself
+#     (s:display). The rename is `silent`: `:file` prints the name it set
+#     (`"<name>" [Not edited]`), which is the full path for a file outside
+#     the cwd (measured 2026-09-29); errors (E95) still show. It runs with
+#     'fileignorecase' off: with it on, `:file README.md` on a
+#     case-sensitive volume took the name of the Readme.md buffer (measured
+#     2026-09-29), and the landing then confirms identity.
+#   - Everything after the rename that changes the current buffer (the
+#     readonly claim, the buftype/modifiable reset, the read-and-clear) runs
+#     only on that confirmed landing (`exists('g:vaf_landed')`, unlet by this
+#     call's s:acting_start): a user autocommand can move the cursor on the
+#     rename (`BufFilePost … tabfirst`), and the tail then wiped the USER's
+#     buffer, unsaved text and all, before the landing check could stop
+#     anything (review, 2026-09-29).
+#   - The renamed-over buffer may be a plugin scratch screen (start screens
+#     set buftype=nofile, and often nomodifiable); the rename inherits both.
+#     It is made a regular, modifiable, writable file buffer here, BEFORE the
+#     read: a nofile buffer reads no file, and on a nomodifiable one the `%d`
+#     fails (E21, silenced), leaving the file it just read on screen until
+#     the run's own `:%d` (measured 2026-09-28 on a startify-like buffer).
+#     buftype= also keeps the user's :w after an interrupt from failing with
+#     E382.
+#   - In an adopted Vim (`adopted`) the rename also claims the option for the
+#     follower (see s:note_user_readonly): whatever readonly the renamed
+#     buffer carried belonged to the file it held before, never to this one.
+#
+# Then it READS the file into the buffer and clears it again, in the same
+# call. Renaming a buffer onto a path (`:file`, and nvim's buf_set_name)
 # marks it "not edited", and Vim refuses a plain `:w` of a not-edited buffer
 # over an existing file with `E13: File exists (add ! to override)`; only a
 # read or a write clears the mark (measured 2026-09-28, Vim and nvim alike).
@@ -479,71 +652,166 @@ _SWAP_BACK_ON = (
 # plain `:w` after something else rewrote the file asks "changed since reading
 # it" instead of overwriting silently (a not-edited buffer skipped that check).
 #
-#   - It runs on show_fresh's rename line: Vim does not redraw between the
-#     commands of one command line, so the file's content is never on screen
-#     (the rename still exists so that nothing else ever is).
+#   - Vim does not redraw in the middle of a call, so the file's content is
+#     never on screen (the rename still exists so that nothing else ever is).
 #   - `noautocmd`: no BufRead autocommands, so plugins (CoC) attach no
 #     earlier than they did (the relock's `:e!`), and none can force a redraw
-#     mid-line. `:filetype detect` runs afterwards anyway.
-#   - swap is already off (show_fresh sets `noswapfile` before the rename), so
-#     the read raises no ATTENTION; an adopted Vim's swap goes back on after.
+#     mid-call. `:filetype detect` runs afterwards anyway.
+#   - swap is already off, so the read raises no ATTENTION; an adopted Vim's
+#     swap goes back on after (s:swap_back_on).
 #   - `silent!`: a file that cannot be read must not leave a prompt at 49
 #     columns; the buffer then just stays not edited, as before.
 #   - `%d _` into the black-hole register, leaving the user's registers alone.
-_READ_THEN_CLEAR = "noautocmd silent! edit! | silent! %d _"
+_VIM_RENAME = r"""
+function! s:rename(token, folds, in_new_tab, adopted) abort
+  call s:acting_start(a:token)
+  if g:vaf_p ==# ''
+    return
+  endif
+  if a:in_new_tab
+    tabnew
+  endif
+  setlocal noswapfile
+  let fileignorecase = &fileignorecase
+  let &fileignorecase = 0
+  try
+    silent exe 'file ' . fnameescape(s:display(g:vaf_p))
+  finally
+    let &fileignorecase = fileignorecase
+  endtry
+  call s:land_if_target(a:folds)
+  if exists('g:vaf_landed')
+    if a:adopted
+      let b:vaf_user_ro = 0
+      let b:vaf_ro_ours = 2
+    endif
+    setlocal buftype= modifiable noreadonly
+    noautocmd silent! edit!
+    silent! %d _
+  endif
+endfunction
+"""
 
-_RELOAD_IF_CLEAN = (
-    f":{_SWAP_ANSWER_OPEN}"
-    " | try | if !&modified | silent edit | endif"
-    f" | finally | {_SWAP_ANSWER_CLOSE} | endtry"
-)
+# Wipe the buffer holding a given file (s:wipe), resolved by NUMBER rather
+# than by name. This is the eviction primitive close_tab uses and the
+# pre-wipe show_fresh does before it renames a buffer onto the same path.
+#
+# `:bwipeout {name}` does NOT take a file name: it takes a buffer-name
+# pattern (`:h {bufname}`). A real path containing `[`, `]`, `{` or `}`
+# therefore matches nothing, and `:silent!` swallows the E94 that says so —
+# measured 2026-09-22 against a real tmux+vim: the "evicted" buffer and its
+# tab both survive, so max_tabs stops capping anything. `#`, `%` and `$` are
+# worse still: those are expanded on the command line itself (alternate
+# file, current file, environment variable), so the wipe targets some other
+# buffer entirely. `bufnr()` is no escape — it pattern-matches by the same
+# rules (the nvim backend used it until 2026-09-22 and resolved
+# `app/[slug]/page.tsx` to its sibling `app/s/page.tsx`; see its
+# `_buffer_number`).
+#
+# So the path never reaches a pattern at all: it is read from a handle file
+# into a string, and the buffer list is walked (s:find: same file, not same
+# spelling). Only an exact hit is wiped, and a miss — or a handle that could
+# not be read, which gives '' — wipes nothing. That is load-bearing, not
+# merely tidy: a bare `:bwipeout!` with no number would wipe the CURRENT
+# buffer, and `fnamemodify('', ':p')` is the working directory, the name of a
+# buffer opened on `.`.
+#
+# Never follow this with `:tabclose`. Wiping a buffer that is its tab's only
+# window already closes that tab, and the "safety" close then lands on
+# whichever neighbour received focus and eats an innocent one (live eviction
+# bug, 2026-07-15).
+_VIM_WIPE = r"""
+function! s:wipe(token, folds) abort
+  let path = s:read(a:token)
+  if path ==# ''
+    return
+  endif
+  let number = s:find(path, a:folds)
+  if number > 0
+    exe 'silent! bwipeout! ' . number
+  endif
+endfunction
+"""
 
-# reload_from_disk's re-read: _RELOAD_IF_CLEAN without the clean check, for a
-# buffer that holds only follower text the hook has decided to discard (see
-# hooks._animate_edit, after a completed catch-up). Same scoped swap answer
-# and the same `silent`, for the same reasons.
-_RELOAD_DISCARDING = (
-    f":{_SWAP_ANSWER_OPEN} | try | silent edit! | finally | {_SWAP_ANSWER_CLOSE} | endtry"
-)
-
-
-# probe_buffer's read-back: the one place this keystroke-driven backend asks
-# Vim a question. Vim writes the lines of the buffer file_path names into a
-# probe file that Python polls for. It looks the buffer up by NUMBER exactly
-# like _GOTO_FILE (never a name pattern) and never navigates: `:tab sbuffer`
-# on an unloaded buffer is the very disk read the question exists to avoid.
+# probe_buffer's read-back (s:probe): the one place this keystroke-driven
+# backend asks Vim about a buffer's content. Vim writes the lines of the
+# buffer the handle names into `probe-<pane>.txt`, which Python polls for. It
+# looks the buffer up by NUMBER exactly like s:goto (never a name pattern) and
+# never navigates: `:tab sbuffer` on an unloaded buffer is the very disk read
+# the question exists to avoid.
 #
 #   - getbufline() of an unloaded buffer (listed, but its tab was closed under
 #     'nohidden') and of a missing one (-1) is an empty list, while a loaded
 #     buffer always has at least one line — so "no lines" already means
 #     "absent", with no status field to keep in sync (classify_buffer);
-#   - a nonce closes the dump, so a half-written file, or one left by an
+#   - the token closes the dump, so a half-written file, or one left by an
 #     older probe that timed out and landed late, is never read as this
 #     probe's answer;
 #   - the lines themselves, not a `sha256()` of them: that needs +cryptv, and
 #     an E117 at 49 columns is a hit-enter prompt that would eat the
 #     animation's keystrokes;
-#   - everything inside `try | … | catch | finally | … | endtry`, with an
-#     empty catch-all: no failure may leave a prompt in the pane. Measured
-#     2026-09-25 on a real Vim at 49 columns: an unwritable probe directory
-#     raised `E482: Can't create file <path>`, whose long path wrapped into
-#     "Press ENTER or type command to continue" — and in an adopted Vim nothing
-#     is sent after the probe to dismiss it. Swallowed, the error just means
-#     no answer, which the poll turns into "unknown" at the timeout. `silent!`
-#     was not used: it scopes to one command, and the lookup's filter() can
-#     fail too;
-#   - `let g:vaf_r = writefile(…)`, never `call writefile(…)`: measured on the
-#     same Vim, a `:call` whose function fails skips the REST OF THE LINE, so
-#     `catch`/`finally`/`endtry` were never read and the unclosed `:try` left
-#     the command line waiting for more (a `:  ` continuation prompt) —
-#     no hit-enter message, but every later keystroke fed an open block. A
-#     failing `:let` hands over to the catch and the line completes.
-_PROBE_BUFFER = (
-    ":try | {read} | if g:vaf_p !=# '' | "
-    + _find_buffer("g:vaf_p")
-    + " | let g:vaf_r = writefile(getbufline(g:vaf_n, 1, '$') + [{nonce}], {probe}) | endif"
-    f" | catch | finally | unlet! {_LOOKUP_VARIABLES} g:vaf_p g:vaf_r | endtry"
+#   - everything inside try with an empty catch-all: no failure may leave a
+#     prompt in the pane. Measured 2026-09-25 on a real Vim at 49 columns: an
+#     unwritable probe directory raised `E482: Can't create file <path>`,
+#     whose long path wrapped into "Press ENTER or type command to continue" —
+#     and in an adopted Vim nothing is sent after the probe to dismiss it.
+#     Swallowed, the error just means no answer, which the poll turns into
+#     "unknown" at the timeout;
+#   - a handle that could not be read writes no answer at all, so it is
+#     "unknown", never "absent".
+_VIM_PROBE = r"""
+function! s:probe(token, folds) abort
+  try
+    let path = s:read(a:token)
+    if path !=# ''
+      let lines = getbufline(s:find(path, a:folds), 1, '$')
+      call writefile(lines + [a:token], s:dir . 'probe-' . s:pane(a:token) . '.txt')
+    endif
+  catch
+  endtry
+endfunction
+"""
+
+# The whole script. `@DIR@` is the cache directory (a Vim string literal,
+# trailing slash included) and `@NAME@` the dispatcher's name, both filled in
+# by _vim_functions. The dispatcher is defined LAST, so `exists()` of it is
+# true only once everything before it was read. The loop after it deletes the
+# dispatchers of other versions (`VafFollower_<6 hex>` exactly, nothing else
+# the user may have named alike).
+_VIM_SCRIPT = (
+    "\" vim-ai-follower's tmux backend: written to its cache directory and\n"
+    '" sourced once per Vim (see backends/tmux_vim.py). Do not edit.\n'
+    "scriptencoding utf-8\n"
+    "let s:cpo_save = &cpo\n"
+    "set cpo&vim\n"
+    "let s:dir = @DIR@\n"
+    + _VIM_READONLY
+    + _VIM_SWAP_ANSWER
+    + _VIM_RELOCK
+    + _VIM_LANDING
+    + _VIM_GOTO
+    + _VIM_RELOAD
+    + _VIM_SWAP_BACK_ON
+    + _VIM_RENAME
+    + _VIM_WIPE
+    + _VIM_PROBE
+    + r"""
+function! @NAME@(op, ...) abort
+  return call('s:' . a:op, a:000)
+endfunction
+
+for s:name in getcompletion('VafFollower_', 'function')
+  let s:name = matchstr(s:name, '^VafFollower_\x\{6}\ze(')
+  if s:name !=# '' && s:name !=# '@NAME@'
+    exe 'delfunction ' . s:name
+  endif
+endfor
+unlet! s:name
+let &cpo = s:cpo_save
+unlet s:cpo_save
+"""
 )
+
 # How long probe_buffer waits for Vim's answer before calling it "unknown"
 # (the hook's safe side: a retype, or in an adopted Vim, leaving it alone).
 # Measured 2026-09-24 against a real tmux+vim at load 4-6: a
@@ -553,25 +821,26 @@ _PROBE_BUFFER = (
 _PROBE_TIMEOUT_SECONDS = 2.0
 _PROBE_POLL_SECONDS = 0.01
 # How long a navigating line waits for Vim's landing confirmation
-# (_await_landing). Far longer than a probe's: the goto line is ~1500 typed
-# characters, and Vim echoes each one; measured 2026-09-29, a follower Vim
-# running a 15 ms timer (tests/test_integration_edit_no_reload.py's
-# observer) was still echoing the line after 2 s at load 3. Running out
-# means the edit is skipped, so this is sized for a slow Vim; the one case
-# that always waits it out is a navigation that cannot land (a stale HOME
-# answer), and that one heals itself (_distrust_home).
+# (_await_landing). Far longer than a probe's: measured 2026-09-29, when the
+# goto line was ~1500 typed characters, a follower Vim running a 15 ms timer
+# (tests/test_integration_edit_no_reload.py's observer) was still echoing it
+# after 2 s at load 3. The lines are short calls now, but running out means
+# the edit is skipped, so this stays sized for a slow Vim; the one case that
+# always waits it out is a navigation that cannot land (a stale HOME answer,
+# so the functions were never sourced), and that one heals itself
+# (_distrust_home).
 _LANDING_TIMEOUT_SECONDS = 10.0
 
 logger = logging.getLogger("vim_ai_follower")
 
 
 def _probe_path(pane_id: str) -> Path:
-    """Where Vim writes probe_buffer's answer for this pane."""
+    """Where Vim writes probe_buffer's answer for this pane (s:probe)."""
     return cache.CACHE_DIR / f"probe-{pane_id.lstrip('%')}.txt"
 
 
 def _readonly_answer_path(pane_id: str) -> Path:
-    """Where _RESTORE_READONLY leaves user_readonly's answer for this pane."""
+    """Where s:restore_readonly leaves user_readonly's answer for this pane."""
     return cache.CACHE_DIR / f"readonly-{pane_id.lstrip('%')}.txt"
 
 
@@ -600,36 +869,95 @@ def _vim_string(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
-# How long a path handle (see _typed_path) is kept before a later call sweeps
-# it, whichever pane it was for. Vim deletes a handle on the same line that
-# reads it, well under a second after the send even at load 15; this only
-# bounds the ones no Vim ever read (a cut-off line, a Vim on another HOME, a
+def _vim_functions() -> tuple[str, str]:
+    """(dispatcher name, script text) of _VIM_SCRIPT for the current cache
+    directory. The name carries a hash of the text, so any change to the
+    script, or another cache directory, is another name (see the comment at
+    the top)."""
+    text = _VIM_SCRIPT.replace("@DIR@", _vim_string(f"{cache.CACHE_DIR}/"))
+    name = "VafFollower_" + hashlib.sha256(text.encode()).hexdigest()[:6]
+    return name, text.replace("@NAME@", name)
+
+
+def _script_file(name: str, text: str) -> Path:
+    """The script's file in the cache directory, written when missing or not
+    exactly `text`: through a temporary file and a rename, so a Vim never
+    sources a half-written one."""
+    directory = cache.CACHE_DIR
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"vaf-{name.removeprefix('VafFollower_')}.vim"
+    data = text.encode()
+    try:
+        if path.read_bytes() == data:
+            return path
+    except OSError:
+        pass
+    partial = directory / f".{path.name}.{secrets.token_hex(4)}"
+    partial.write_bytes(data)
+    partial.replace(path)
+    return path
+
+
+def _call_line(op: str, *arguments: str | int) -> str:
+    """The typed line that runs s:<op>(arguments) through the dispatcher, and
+    does nothing — no E117, no prompt — in a Vim that does not have it."""
+    name, _text = _vim_functions()
+    rendered = ",".join(
+        _vim_string(argument) if isinstance(argument, str) else str(argument)
+        for argument in (op, *arguments)
+    )
+    return f":if exists('*{name}') | call {name}({rendered}) | endif"
+
+
+def _define_line(pane_id: str) -> str:
+    """The typed line that sources the script when this Vim lacks its
+    dispatcher (see the comment at the top). `sil! so` keeps it short and
+    silent: a file Vim cannot read (a Vim on another HOME, see
+    _home_relative) is no error, no prompt; the calls then do nothing and the
+    navigation fails safe. A `~/…` name or a path of safe characters is typed
+    as is (`:source` expands `~` itself, and 'wildignore' does not apply,
+    measured 2026-10-05); any other path goes through fnameescape()."""
+    name, text = _vim_functions()
+    path = _script_file(name, text)
+    target = _home_relative(pane_id, path)
+    if target is None and _EXPAND_SAFE.fullmatch(str(path)):
+        target = str(path)
+    if target is None:
+        source = f"exe 'sil! so ' . fnameescape({_vim_string(str(path))})"
+    else:
+        source = f"sil! so {target}"
+    return f":if !exists('*{name}') | {source} | endif"
+
+
+# How long a path handle (see _path_handle) is kept before a later call sweeps
+# it, whichever pane it was for. Vim deletes a handle in the call that reads
+# it, well under a second after the send even at load 15; this only bounds
+# the ones no Vim ever read (a cut-off line, a Vim without the functions, a
 # pane that died). Sweeping one early fails safe, never to another file: a
-# missing handle reads as '' (_typed_path) and the line then acts on nothing,
-# and a line that had to act says so by not answering (_ANSWER_IF_LANDED).
+# missing handle reads as '' (s:read) and the call then acts on nothing, and
+# a call that had to act says so by not answering "landed" (s:landed).
 _PATH_HANDLE_MAX_AGE_SECONDS = 600.0
 
-# The characters a HOME-relative cache path may have to be typed as
-# `expand('~/…', 1)`: expand() would also expand a wildcard (`*?[{`), `$NAME`,
-# a backtick command or a second `~` in it. The real one is
-# `.cache/claude-vim-follower`. The `1` (nosuf) matters as much: without it
-# 'wildignore' applies, and measured 2026-09-29 (Vim 9.2) a Vim with
-# `wildignore=*/.cache/*` expands the handle to '' (E484 on the read).
+# The characters a cache path may have to be typed bare: as `~/…` (the HOME
+# question's expand(), and the define line's `:source`, which would also
+# expand a wildcard `*?[{`, `$NAME`, a backtick command or a second `~` in
+# it), and as an absolute path on the define line. The real one is
+# `.cache/claude-vim-follower`. The question's `1` (nosuf) matters as much:
+# without it 'wildignore' applies, and measured 2026-09-29 (Vim 9.2) a Vim
+# with `wildignore=*/.cache/*` expands a cache path to ''.
 _EXPAND_SAFE = re.compile(r"[A-Za-z0-9._/-]+")
 
 # The one-time question to a pane's Vim: create {marker} (a `~/…` path under
 # the hook's cache directory) through Vim's own `~`. It lands in the hook's
-# CACHE_DIR only when that Vim's HOME is the hook's HOME. Inside try/catch and
-# via `let`, like _PROBE_BUFFER: no failure may leave a prompt.
-_HOME_CHECK = (
-    ":try | let g:vaf_r = writefile([], expand({marker}, 1))"
-    " | catch | finally | unlet! g:vaf_r | endtry"
-)
+# CACHE_DIR only when that Vim's HOME is the hook's HOME. `silent!` on the one
+# command: a failure (another HOME without that directory, E482) shows
+# nothing and leaves no prompt.
+_HOME_CHECK = ":silent! call writefile([], expand({marker}, 1))"
 
 
 def _vim_shares_home(pane_id: str, cache_relative: str) -> bool:
-    """Whether `~` in this pane's Vim is the hook's HOME, so a cache file can
-    be typed as `~/{cache_relative}/…`.
+    """Whether `~` in this pane's Vim is the hook's HOME, so the script file
+    can be typed as `~/{cache_relative}/…`.
 
     They can differ: a dedicated follower's Vim gets the tmux server's
     environment and an adopted one the user's shell's, while the hook has
@@ -649,11 +977,12 @@ def _vim_shares_home(pane_id: str, cache_relative: str) -> bool:
     The pane process is the Vim itself for a dedicated follower (a new Vim is
     a new pane) but the user's shell for an adopted one, so a Vim restarted
     in that shell inherits the answer: right unless it was started with
-    another HOME (`HOME=… vim`). Then its handle reads come back '', the
-    navigation does not land, nothing more is sent (_ANSWER_IF_LANDED), and
-    the unanswered question drops the stale "yes" (_distrust_home) so the
-    next call asks this Vim again. Asking every Vim would take a round trip
-    per call; tmux names no foreground pid to key on."""
+    another HOME (`HOME=… vim`). Then its define line sources nothing, the
+    calls do nothing, the navigation does not land and nothing more is sent
+    (s:landed), and the unanswered question drops the stale "yes"
+    (_distrust_home) so the next call asks this Vim again. Asking every Vim
+    would take a round trip per call; tmux names no foreground pid to key
+    on."""
     pane = TmuxPane(pane_id=pane_id)
     pane_pid = pane.pane_pid()
     if pane_pid is None:
@@ -683,66 +1012,46 @@ def _vim_shares_home(pane_id: str, cache_relative: str) -> bool:
     return True
 
 
-def _cache_file(pane_id: str, path: Path) -> str:
-    """A Vim expression naming `path`, a file in the cache directory, as short
-    as is safe: `expand('~/.cache/claude-vim-follower/…', 1)` when this pane's
-    Vim shares the hook's HOME, the absolute literal otherwise. Typed lines
-    are echoed on Vim's command line (see _typed_path), and HOME is often a
-    long absolute directory of its own (in the demo, one under /tmp).
-
-    `~` needs expand(): measured 2026-09-29 (Vim 9.2), readfile() and
-    writefile() take `~/…` literally (E484/E482)."""
-    directory = cache.CACHE_DIR
+def _home_relative(pane_id: str, path: Path) -> str | None:
+    """`path`, a file in the cache directory, as `~/.cache/…` when this
+    pane's Vim shares the hook's HOME and the name is safe to type bare;
+    None otherwise. Typed lines are echoed on Vim's command line, and HOME is
+    often a long absolute directory of its own (in the demo, one under
+    /tmp)."""
     try:
-        cache_relative = Path(os.path.realpath(directory)).relative_to(
+        cache_relative = Path(os.path.realpath(cache.CACHE_DIR)).relative_to(
             os.path.realpath(Path.home())
         )
     except ValueError:
-        return _vim_string(str(path))
+        return None
     if not _EXPAND_SAFE.fullmatch(str(cache_relative)) or not _EXPAND_SAFE.fullmatch(path.name):
-        return _vim_string(str(path))
+        return None
     if not _vim_shares_home(pane_id, str(cache_relative)):
-        return _vim_string(str(path))
-    return f"expand('~/{cache_relative}/{path.name}',1)"
+        return None
+    return f"~/{cache_relative}/{path.name}"
 
 
-def _typed_path(pane_id: str, file_path: str, var: str) -> str:
-    """_typed_path_and_handle's statements alone."""
-    return _typed_path_and_handle(pane_id, file_path, var)[0]
-
-
-def _typed_path_and_handle(pane_id: str, file_path: str, var: str) -> tuple[str, Path]:
-    """Vim statements setting `var` to `file_path` without spelling it: the
-    path is written to a handle file in the cache directory and the
-    typed line reads it back (`readfile()`) and deletes it, naming the handle
-    HOME-relative when it can (_cache_file). A handle Vim cannot read (a
-    stale HOME answer, one swept under a stalled Vim) gives '', and every
-    line using it then acts on nothing.
-
-    `filereadable()` first, never a try around the read: measured 2026-09-29
-    (Vim 9.2), readfile()'s E484 inside a one-line `try | … | catch |
-    endtry` aborts the REST of the line, `catch` and `endtry` included, so
-    the error shows (a hit-enter prompt at 49 columns, naming the missing
-    handle) and the try is left open.
+def _path_handle(pane_id: str, file_path: str) -> Path:
+    """A handle file in the cache directory holding `file_path`, for a call
+    to read (s:read) instead of the path being typed.
 
     Why: this backend TYPES its Ex commands, and Vim echoes a typed command on
     its command line before running it. With the path spelled in the line,
     every edit and navigation flashed the target's absolute path in the
     follower's footer, up to five screen rows of it at 49 columns (found on a
     demo recording, 2026-09-29; tests/test_integration_cmdline_paths.py logs
-    every command-line change). The line now shows only the cache handle.
+    every command-line change). The line now shows only the handle's name,
+    `p<pane>-<6 hex>`, which is also the call's token (s:landed).
 
     - One handle PER CALL (a random suffix), never a fixed per-pane file: Vim
       runs a line some time after the send returns, so a fixed file could be
       rewritten by the next call first — close_tab's eviction followed by
       show_fresh's pre-wipe would then both wipe the NEW file, and the evicted
-      one would stay. A handle is only ever read by the line that names it,
-      which deletes it right after (`delete()`), and is created exclusively
-      (`xb`), so two calls never share one.
+      one would stay. A handle is only ever read by the call that names it,
+      which deletes it right after, and is created exclusively (`xb`), so two
+      calls never share one.
     - Byte-exact: the file holds `os.fsencode(file_path)` with no trailing
-      newline, and `readfile(…, 'b')` joined on "\n" gives back exactly those
-      bytes, a newline in the path included (binary mode keeps a CR and adds
-      no item for a missing final newline). A NUL cannot occur in a path."""
+      newline (see s:read). A NUL cannot occur in a path."""
     directory = cache.CACHE_DIR
     directory.mkdir(parents=True, exist_ok=True)
     now = time.time()
@@ -761,45 +1070,39 @@ def _typed_path_and_handle(pane_id: str, file_path: str, var: str) -> tuple[str,
                 stream.write(os.fsencode(file_path))
         except FileExistsError:
             continue
-        return (
-            f"let g:vaf_h = {_cache_file(pane_id, handle)}"
-            f" | let {var} = filereadable(g:vaf_h) ? join(readfile(g:vaf_h,'b'),\"\\n\") : ''"
-            " | call delete(g:vaf_h)"
-        ), handle
+        return handle
 
 
-# A path handle's name (_typed_path): `p<pane number>-<6 hex>`.
+# A path handle's name (_path_handle): `p<pane number>-<6 hex>`.
 _HANDLE_NAME = re.compile(r"p[0-9]+-[0-9a-f]{6}")
 
 
 def _goto_answer_path(pane_id: str) -> Path:
-    """Where a line that must land on its target confirms it did."""
+    """Where a call that must land on its target confirms it did (s:landed)."""
     return cache.CACHE_DIR / f"landed-{pane_id.lstrip('%')}.txt"
 
 
-def _confirm_landing(pane: TmuxPane, file_path: str, token: str, handle: Path) -> None:
-    """Ask Vim whether the acting line just sent (stamped with `token`, its
-    path read from `handle`) landed on file_path, and raise NavigationFailed
-    unless it says so."""
+def _confirm_landing(pane: TmuxPane, file_path: str, handle: Path) -> None:
+    """Ask Vim whether the acting call just sent (whose token is `handle`'s
+    name, the file it read its path from) landed on file_path, and raise
+    NavigationFailed unless it says so."""
     answer = _goto_answer_path(pane.pane_id)
     answer.parent.mkdir(parents=True, exist_ok=True)
     answer.unlink(missing_ok=True)
-    # Clears a prompt the acting line can leave (see _ANSWER_IF_LANDED).
+    # Clears a prompt the acting call can leave (see s:landed).
     pane.send_key("Escape")
     pane.send_key("Escape")
-    pane.send_text(
-        _ANSWER_IF_LANDED.format(nonce=_vim_string(token), answer=_cache_file(pane.pane_id, answer))
-    )
+    pane.send_text(_call_line("landed", handle.name))
     pane.send_key("Enter")
-    _await_landing(pane.pane_id, answer, token, file_path, handle)
+    _await_landing(pane.pane_id, answer, handle.name, file_path, handle)
 
 
 def _distrust_home(pane_id: str) -> bool:
     """Forget a "yes" to the HOME question (see _vim_shares_home) after a
     question to the pane's Vim went unanswered: if its `~` is no longer the
-    hook's (an adopted pane's shell restarted Vim with another HOME), every
-    `~/…` name it is typed misses, and only a new question finds out. A
-    recorded "no" is kept: asking again costs a full wait for nothing."""
+    hook's (an adopted pane's shell restarted Vim with another HOME), the
+    `~/…` script name it is typed misses, and only a new question finds out.
+    A recorded "no" is kept: asking again costs a full wait for nothing."""
     record = cache.CACHE_DIR / f"home-{pane_id.lstrip('%')}"
     try:
         _pid, marker = record.read_text().split()
@@ -811,8 +1114,8 @@ def _distrust_home(pane_id: str) -> bool:
     return True
 
 
-# Why a navigation did not land, per _ANSWER_IF_LANDED's verdict (None: no
-# answer at all).
+# Why a navigation did not land, per s:landed's verdict (None: no answer at
+# all).
 _NOT_LANDED = {
     "unread": "its path handle could not be read",
     "elsewhere": "it landed on another buffer",
@@ -832,15 +1135,16 @@ def _await_answer(path: Path, nonce: str, timeout: float) -> list[str] | None:
 
 
 def _await_landing(pane_id: str, answer: Path, nonce: str, file_path: str, handle: Path) -> None:
-    """Raise NavigationFailed unless Vim confirmed (_ANSWER_IF_LANDED) that the
-    current buffer is the one the acting line landed on.
+    """Raise NavigationFailed unless Vim confirmed (s:landed) that the
+    current buffer is the one the acting call landed on.
 
     Only a failure that points at the HOME question distrusts its answer: no
     answer at all while the path handle is still unread (Vim deletes it as it
-    reads it), which is what a Vim whose `~` is not the hook's leaves — both
-    names it was typed miss. An answer, or a handle Vim did read, means the
-    `~/…` names reach it: a landing elsewhere, a Vim busy in the command-line
-    window, or one too slow for the wait skip the edit and keep the answer."""
+    reads it), which is what a Vim whose `~` is not the hook's leaves — the
+    script was never sourced there, so nothing ran. An answer, or a handle
+    Vim did read, means the functions reach it: a landing elsewhere, a Vim
+    busy in the command-line window, or one too slow for the wait skip the
+    edit and keep the answer."""
     lines = _await_answer(answer, nonce, _LANDING_TIMEOUT_SECONDS)
     answer.unlink(missing_ok=True)
     if lines == ["landed"]:
@@ -853,53 +1157,10 @@ def _await_landing(pane_id: str, answer: Path, nonce: str, file_path: str, handl
     raise NavigationFailed(f"the follower's Vim did not land on {file_path} ({reason})")
 
 
-# Wipe the buffer holding a given file, resolved by NUMBER rather than by
-# name. This is the eviction primitive close_tab uses and the pre-wipe
-# show_fresh does before it renames a buffer onto the same path.
-#
-# `:bwipeout {name}` does NOT take a file name: it takes a buffer-name
-# pattern (`:h {bufname}`). A real path containing `[`, `]`, `{` or `}`
-# therefore matches nothing, and `:silent!` swallows the E94 that says so —
-# measured 2026-09-22 against a real tmux+vim: the "evicted" buffer and its
-# tab both survive, so max_tabs stops capping anything. `#`, `%` and `$` are
-# worse still: those are expanded on the command line itself (alternate
-# file, current file, environment variable), so the wipe targets some other
-# buffer entirely. `bufnr()` is no escape — it pattern-matches by the same
-# rules (the nvim backend used it until 2026-09-22 and resolved
-# `app/[slug]/page.tsx` to its sibling `app/s/page.tsx`; see its
-# `_buffer_number`).
-#
-# So the path never reaches a pattern at all. Vim reads it from a handle
-# file into a string (see _typed_path), and the buffer list is walked comparing FULL
-# names; `:p` normalizes both sides, so `/a/./b.py` and `/a/b.py` still
-# match. Only an exact hit is wiped, and a miss wipes nothing — which is
-# load-bearing, not merely tidy: a bare `:bwipeout!` with no number would
-# wipe the CURRENT buffer.
-#
-# The two `g:` variables are unlet in the same line. They exist because the
-# comparison target has to be referenced from inside filter()'s expression
-# STRING, and nesting a path through two levels of Vim string quoting is the
-# hazard this whole constant exists to avoid. A line cut off mid-flight can
-# leave them behind; they are inert, and the next call overwrites them.
-#
-# Never follow this with `:tabclose`. Wiping a buffer that is its tab's only
-# window already closes that tab, and the "safety" close then lands on
-# whichever neighbour received focus and eats an innocent one (live eviction
-# bug, 2026-07-15).
-_WIPE_BUFFER = (
-    # A failed read leaves '', which wipes nothing. The lookup is
-    # _find_buffer's: same file, not same spelling.
-    ":{read} | if g:vaf_wipe_name !=# ''"
-    f" | {_find_buffer('g:vaf_wipe_name')}"
-    " | if g:vaf_n > 0 | exe 'silent! bwipeout! ' . g:vaf_n | endif"
-    f" | endif | unlet! {_LOOKUP_VARIABLES} g:vaf_wipe_name"
-)
-
-
 def _case_folds(file_path: str) -> int:
     """1 when the filesystem holding file_path ignores case in its name (the
-    macOS default volume), 0 otherwise: the `{folds}` the lookups compare
-    buffer names with (_SAME_AS_TARGET). Asked of the filesystem itself, as
+    macOS default volume), 0 otherwise: the `folds` the lookups compare
+    buffer names with (s:same_file). Asked of the filesystem itself, as
     whether the path with every letter's case swapped is the same file; a
     path with no letter, or one that cannot be checked (missing, unreadable),
     is 0, the side that never takes one file for another. Per path, not per
@@ -911,6 +1172,30 @@ def _case_folds(file_path: str) -> int:
         return int(Path(file_path).samefile(swapped))
     except (OSError, ValueError):
         return 0
+
+
+@dataclass(frozen=True)
+class _Relock:
+    """How a completed animation relocks its buffer (see the lock protocol at
+    the top): `synced` re-reads the file first (s:relock), `readonly` sets the
+    follower's readonly lock, which an adopted Vim's relock also claims (see
+    s:note_user_readonly)."""
+
+    synced: bool
+    readonly: bool
+
+    def line(self, adopted: bool) -> str:
+        claim = adopted and self.readonly
+        if self.synced:
+            return _call_line("relock", int(self.readonly), int(claim))
+        plain = _RELOCK_READONLY if self.readonly else _RELOCK
+        return plain + (_OUR_READONLY_CLAIM if claim else "")
+
+
+_RELOCK_SYNCED = _Relock(synced=True, readonly=False)
+_RELOCK_READONLY_SYNCED = _Relock(synced=True, readonly=True)
+_RELOCK_PLAIN = _Relock(synced=False, readonly=False)
+_RELOCK_READONLY_PLAIN = _Relock(synced=False, readonly=True)
 
 
 @dataclass(frozen=True)
@@ -962,20 +1247,23 @@ class TmuxVimFollower:
         pane.send_key("Escape")
 
     def _unlock_line(self) -> str:
-        return _ADOPTED_UNLOCK_FOR_ANIMATION if self._is_adopted() else _UNLOCK_FOR_ANIMATION
+        return _call_line("unlock") if self._is_adopted() else _UNLOCK_FOR_ANIMATION
 
-    def _send_reload_and_lock(self, pane: TmuxPane, reload: str) -> None:
-        """A disk re-read (`reload`, which resets 'readonly'), then the
+    def _define(self, pane: TmuxPane) -> None:
+        """Make sure this Vim has the functions the call lines run (see the
+        comment at the top of this module)."""
+        pane.send_text(_define_line(self.pane_id))
+        pane.send_key("Enter")
+
+    def _send_reload_and_lock(self, pane: TmuxPane, *, discard: bool) -> None:
+        """A disk re-read (s:reload, which resets 'readonly'), then the
         follower's readonly lock. In an adopted Vim the user's readonly is
-        noted first and the lock claims the option (see _NOTE_USER_READONLY)."""
-        if self._is_adopted():
-            pane.send_text(f":{_NOTE_USER_READONLY} | {reload[1:]}")
-            pane.send_key("Enter")
-            pane.send_text(_ADOPTED_LOCK_READONLY)
-        else:
-            pane.send_text(reload)
-            pane.send_key("Enter")
-            pane.send_text(_LOCK_READONLY)
+        noted first and the lock claims the option (see
+        s:note_user_readonly)."""
+        adopted = self._is_adopted()
+        pane.send_text(_call_line("reload", int(discard), int(adopted)))
+        pane.send_key("Enter")
+        pane.send_text(_ADOPTED_LOCK_READONLY if adopted else _LOCK_READONLY)
         pane.send_key("Enter")
 
     def goto_file(self, file_path: str) -> None:
@@ -983,8 +1271,8 @@ class TmuxVimFollower:
         name, immune to the user closing/reordering tabs), opening one if
         missing. A buffer that already holds the file is switched to by
         number and NEVER re-read from disk — only a file no buffer holds
-        goes through `:tab drop` (see _GOTO_FILE for the reload bug that
-        rule fixes). Wrapped in _GOTO_FILE's guards so neither a modified
+        goes through `:tab drop` (see _VIM_SWAP_ANSWER for the reload bug
+        that rule fixes). Wrapped in s:goto's guards so neither a modified
         target (E37) nor a swap file on the target (the ATTENTION dialog,
         answered `(E)dit anyway`) can leave a blocking prompt in the pane
         — see that constant for why the bang, `:silent!`, 'hidden',
@@ -995,25 +1283,23 @@ class TmuxVimFollower:
         reload_and_relock, rewrite_buffer, resume and close_tab at once.
 
         file_path reaches Vim as a string read from a handle file
-        (_typed_path: never spelled on the command line, which Vim echoes)
+        (_path_handle: never spelled on the command line, which Vim echoes)
         run through Vim's own `fnameescape()`, never raw: as a bare `tab drop`
         argument `#`/`%` expanded to the alternate/current file, `$NAME` to
         an environment variable, a space split it into two files and a glob
         opened a matching sibling (all measured 2026-09-22). `:exe` keeps
         the E37 catch intact — the error still reads `Vim(drop):E37:`.
 
-        Waits for Vim to confirm it landed (_ANSWER_IF_LANDED) and raises
+        Waits for Vim to confirm it landed (s:landed) and raises
         NavigationFailed otherwise, so no caller sends a lock, an unlock, an
         animation or a relock onto whatever buffer is current instead."""
         pane = TmuxPane(pane_id=self.pane_id)
         self._normal_mode(pane)
-        token = secrets.token_hex(4)
-        read, handle = _typed_path_and_handle(self.pane_id, file_path, "g:vaf_p")
-        pane.send_text(
-            _GOTO_FILE.format(token=_vim_string(token), read=read, folds=_case_folds(file_path))
-        )
+        self._define(pane)
+        handle = _path_handle(self.pane_id, file_path)
+        pane.send_text(_call_line("goto", handle.name, _case_folds(file_path)))
         pane.send_key("Enter")
-        _confirm_landing(pane, file_path, token, handle)
+        _confirm_landing(pane, file_path, handle)
 
     def reload_and_relock(self, file_path: str) -> None:
         """Des-interrupt: discard the user's unsaved typing by reloading the
@@ -1021,8 +1307,8 @@ class TmuxVimFollower:
         self.goto_file(file_path)
         pane = TmuxPane(pane_id=self.pane_id)
         # Not a bare `:e!`: on a buffer with swap on whose file another Vim
-        # holds, it put up the whole ATTENTION dialog (see _SYNC_FROM_DISK).
-        self._send_reload_and_lock(pane, _RELOAD_DISCARDING)
+        # holds, it put up the whole ATTENTION dialog (see _VIM_RELOCK).
+        self._send_reload_and_lock(pane, discard=True)
 
     def reload_from_disk(self, file_path: str) -> None:
         """Ground the buffer on the file as it is on disk, discarding what it
@@ -1032,7 +1318,7 @@ class TmuxVimFollower:
         `:checktime` raises the blocking W12 dialog."""
         self.goto_file(file_path)
         pane = TmuxPane(pane_id=self.pane_id)
-        self._send_reload_and_lock(pane, _RELOAD_DISCARDING)
+        self._send_reload_and_lock(pane, discard=True)
 
     def rewrite_buffer(self, file_path: str, content: str) -> AnimationResult:
         """Instantly (pace 0) rebuild the buffer to `content` — the
@@ -1058,7 +1344,7 @@ class TmuxVimFollower:
         an empty buffer, which is fine.
 
         There is deliberately no goto_file preamble. It was never
-        load-bearing — _WIPE_BUFFER resolves a buffer NUMBER, and wiping by
+        load-bearing — s:wipe resolves a buffer NUMBER, and wiping by
         number closes the right tab from wherever the cursor happens to be,
         the same thing the nvim backend measured for its own close_tab — and
         it was actively harmful: `:tab drop` on a path Vim does not already
@@ -1068,48 +1354,43 @@ class TmuxVimFollower:
         while the follower's own bookkeeping stayed pinned at the limit."""
         pane = TmuxPane(pane_id=self.pane_id)
         self._normal_mode(pane)
-        pane.send_text(
-            _WIPE_BUFFER.format(
-                read=_typed_path(self.pane_id, file_path, "g:vaf_wipe_name"),
-                folds=_case_folds(file_path),
-            )
-        )
+        self._define(pane)
+        self._send_wipe(pane, file_path)
+
+    def _send_wipe(self, pane: TmuxPane, file_path: str) -> None:
+        handle = _path_handle(self.pane_id, file_path)
+        pane.send_text(_call_line("wipe", handle.name, _case_folds(file_path)))
         pane.send_key("Enter")
 
     def ensure_showing(self, file_path: str) -> None:
         """The Read/binary entry point: show the file as it is ON DISK. It
         is the one navigation that re-reads a loaded buffer (clean only, see
-        _RELOAD_IF_CLEAN); goto_file itself never does, because it also runs
+        s:reload); goto_file itself never does, because it also runs
         before every animation."""
         self.goto_file(file_path)
         pane = TmuxPane(pane_id=self.pane_id)
         # Locked by default so a stray keystroke into this pane can't corrupt
         # the buffer: our own animation is indistinguishable from real
         # typing at the tty level, so it must explicitly unlock around itself.
-        self._send_reload_and_lock(pane, _RELOAD_IF_CLEAN)
+        self._send_reload_and_lock(pane, discard=False)
 
     def probe_buffer(self, file_path: str, content: str) -> BufferProbe:
         """What Vim's buffer for file_path holds relative to `content`, the
         base an edit script is about to be typed onto (see BufferProbe). The
-        probe is a round-trip (_PROBE_BUFFER): Vim dumps the buffer to a file
+        probe is a round-trip (s:probe): Vim dumps the buffer to a file
         and this polls for it. No answer within _PROBE_TIMEOUT_SECONDS is
         "unknown"."""
         probe = _probe_path(self.pane_id)
         probe.parent.mkdir(parents=True, exist_ok=True)
         probe.unlink(missing_ok=True)
-        nonce = secrets.token_hex(8)
         pane = TmuxPane(pane_id=self.pane_id)
         self._normal_mode(pane)
-        pane.send_text(
-            _PROBE_BUFFER.format(
-                read=_typed_path(self.pane_id, file_path, "g:vaf_p"),
-                nonce=_vim_string(nonce),
-                probe=_cache_file(self.pane_id, probe),
-                folds=_case_folds(file_path),
-            )
-        )
+        self._define(pane)
+        # The handle's name is also the answer's nonce (see s:probe).
+        handle = _path_handle(self.pane_id, file_path)
+        pane.send_text(_call_line("probe", handle.name, _case_folds(file_path)))
         pane.send_key("Enter")
-        lines = _await_answer(probe, nonce, _PROBE_TIMEOUT_SECONDS)
+        lines = _await_answer(probe, handle.name, _PROBE_TIMEOUT_SECONDS)
         if lines is None:
             logger.warning(
                 "no answer from the follower's Vim about %s within %.1fs%s",
@@ -1124,7 +1405,7 @@ class TmuxVimFollower:
     def user_readonly(self, file_path: str) -> bool:
         """See Follower.user_readonly. A dedicated follower never asks: its
         readonly is never the user's. In an adopted Vim, the answer the last
-        readonly restore left (_RESTORE_READONLY), waited for up to
+        readonly restore left (s:restore_readonly), waited for up to
         _PROBE_TIMEOUT_SECONDS; every hand-off follows one (an interrupt's, or
         hand_over's), which deletes the old answer before it is sent. No
         answer is False, the plain cue."""
@@ -1152,11 +1433,11 @@ class TmuxVimFollower:
         answer = _readonly_answer_path(self.pane_id)
         answer.parent.mkdir(parents=True, exist_ok=True)
         answer.unlink(missing_ok=True)
-        pane.send_text(_RESTORE_READONLY.format(answer=_cache_file(self.pane_id, answer)))
+        pane.send_text(_call_line("restore_readonly", int(self.pane_id.lstrip("%"))))
         pane.send_key("Enter")
 
     def _with_unlocked(
-        self, relock: str, run: Callable[[TmuxPane], AnimationResult]
+        self, relock: _Relock, run: Callable[[TmuxPane], AnimationResult]
     ) -> AnimationResult:
         """Owns the lock protocol shared by every animation entry point.
         'paste' suppresses autoindent/smartindent/cindent for the duration:
@@ -1166,8 +1447,8 @@ class TmuxVimFollower:
         modifiable. A pause never reaches here: it loops inside run_ops/
         run_lines and only returns once the run has actually completed or
         been interrupted, so 'relock' only ever fires on a genuinely
-        completed outcome. Callers own the exact relock string, which
-        prepends a silent `:e!` disk sync (see apply_edit/show_fresh/
+        completed outcome. Callers own the relock, whose synced form
+        starts with a silent `:e!` disk sync (see apply_edit/show_fresh/
         resume) — the buffer's name matches the file Claude just wrote, so
         the reload is visually a no-op, but it grounds the buffer's
         timestamp and clears the W11 staleness that an unsynced retype
@@ -1176,13 +1457,11 @@ class TmuxVimFollower:
         pane = TmuxPane(pane_id=self.pane_id)
         pane.send_text(_COC_DISABLE)
         pane.send_key("Enter")
-        pane.send_text(_ADOPTED_UNLOCK_FOR_ANIMATION if adopted else _UNLOCK_FOR_ANIMATION)
+        pane.send_text(_call_line("unlock") if adopted else _UNLOCK_FOR_ANIMATION)
         pane.send_key("Enter")
         result = run(pane)
         if result.outcome != "interrupted":
-            if adopted and relock in _READONLY_RELOCKS:
-                relock += _OUR_READONLY_CLAIM
-            pane.send_text(relock)
+            pane.send_text(relock.line(adopted))
             pane.send_key("Enter")
         if adopted:
             # After the relock, whose `:e!` resets 'readonly' (and on an
@@ -1225,99 +1504,30 @@ class TmuxVimFollower:
 
     def show_fresh(self, file_path: str, content: str, in_new_tab: bool = False) -> AnimationResult:
         pane = TmuxPane(pane_id=self.pane_id)
-        # Deliberately never `:e file_path` here: that would load the file's
-        # real (already-written) content and flash the finished result on
-        # screen before the wipe+retype, spoiling the "watch it type" effect.
-        # Instead the current buffer is wiped and renamed in place, so the
-        # real content is never displayed before we type it back in.
+        # The current buffer (or a new tab's) is wiped and renamed in place,
+        # so the file's real, already-written content is never displayed
+        # before it is typed back in (see _VIM_RENAME).
         self._normal_mode(pane)
+        self._define(pane)
         # Same by-number wipe as close_tab, and for the same reason: a
         # name-pattern miss here leaves the old buffer alive, and the
         # `:file` below then hangs a SECOND buffer off the same path.
+        self._send_wipe(pane, file_path)
+        # The rename, run only when the path read succeeded, and nothing
+        # after it is sent until Vim confirms it landed (_confirm_landing).
+        handle = _path_handle(self.pane_id, file_path)
+        adopted = self._is_adopted()
         pane.send_text(
-            _WIPE_BUFFER.format(
-                read=_typed_path(self.pane_id, file_path, "g:vaf_wipe_name"),
-                folds=_case_folds(file_path),
-            )
+            _call_line("rename", handle.name, _case_folds(file_path), int(in_new_tab), int(adopted))
         )
         pane.send_key("Enter")
-        # Everything from here to the rename is ONE line, run only when the
-        # path read succeeded, and nothing after it is sent until Vim confirms
-        # the rename landed (_confirm_landing): a failed read must not open a
-        # stray tab, turn swap off for the user's current buffer, or let the
-        # `%d` and the typing below run on it.
-        #
-        # Opt the buffer out of swap BEFORE naming it: renaming a swap-enabled
-        # buffer runs the swap check for the new name, and when a live Vim
-        # holds the file's swap `:file` raises E325 — at 49 columns a
-        # hit-enter prompt that the next keystrokes have to dismiss (measured
-        # 2026-09-28: an Edit whose buffer had vanished, retyped here since
-        # the base probe; a fresh Write of a swap-held file hit it too). The
-        # buffer is display-only, so there is nothing for a swap to protect,
-        # and 'swapfile' is buffer-local: every other buffer keeps its check.
-        # Unlike _GOTO_FILE's SwapExists answer, this path reads no file, so
-        # there is no ATTENTION dialog to answer, only the check to skip.
-        # file_path is read from a handle (_typed_path) into g:vaf_p and goes
-        # through fnameescape(), same as _GOTO_FILE: raw on the command line,
-        # `#`, `%` and a space rename
-        # the buffer onto the wrong name (measured 2026-09-24: a space alone
-        # left the buffer unnamed), and the by-number lookup that a later
-        # Edit's goto_file does then misses it and opens a duplicate tab.
-        # The name is the cwd-relative one Vim would give the file itself
-        # (_vim_display_name), not the full path the hook passes. The rename
-        # is `silent`: `:file` prints the name it set (`"<name>" [Not
-        # edited]`), which is the full path for a file outside the cwd
-        # (measured 2026-09-29); errors (E95) still show. It runs with
-        # 'fileignorecase' off (_NO_FIC_OPEN): with it on, `:file README.md`
-        # on a case-sensitive volume took the name of the Readme.md buffer
-        # (measured 2026-09-29), and the landing then confirms identity.
-        # Everything after the rename that changes the current buffer (the
-        # readonly claim, the buftype/modifiable reset, the read-and-clear)
-        # runs only on that confirmed landing (`exists('g:vaf_landed')`,
-        # unlet by this call's _ACTING_START): a user autocommand can move
-        # the cursor on the rename (`BufFilePost … tabfirst`), and the tail
-        # then wiped the USER's buffer, unsaved text and all, before the
-        # landing check could stop anything (review, 2026-09-29).
-        # Then it READS the file into the buffer and clears it again, on the
-        # same command line (see _READ_THEN_CLEAR): the rename left the buffer
-        # "not edited", and a plain `:w` over the existing file then failed
-        # with E13, so the hand-off cue's ":w releases" was false for every
-        # Write interrupted before the relock's `:e!`.
-        #
-        # The renamed-over buffer may be a plugin scratch screen (start
-        # screens set buftype=nofile, and often nomodifiable); the rename
-        # inherits both. It is made a regular, modifiable, writable file
-        # buffer here, BEFORE the read: a nofile buffer reads no file, and on
-        # a nomodifiable one the `%d` fails (E21, silenced), leaving the file
-        # it just read on screen until the run's own `:%d` (measured
-        # 2026-09-28 on a startify-like buffer). buftype= also keeps the
-        # user's :w after an interrupt from failing with E382.
-        #
-        # In an adopted Vim the rename also claims the option for the follower
-        # (see _NOTE_USER_READONLY): whatever readonly the renamed buffer
-        # carried belonged to the file it held before, never to this one.
-        claim = " | let b:vaf_user_ro = 0 | let b:vaf_ro_ours = 2" if self._is_adopted() else ""
-        token = secrets.token_hex(4)
-        read, handle = _typed_path_and_handle(self.pane_id, file_path, "g:vaf_p")
-        start = _ACTING_START.format(token=_vim_string(token), read=read)
-        pane.send_text(
-            f"{start} | if g:vaf_p !=# ''{' | tabnew' if in_new_tab else ''}"
-            f" | setlocal noswapfile | {_NO_FIC_OPEN}"
-            f" | try | silent exe 'file ' . fnameescape({_vim_display_name('g:vaf_p')})"
-            f" | finally | {_NO_FIC_CLOSE} | endtry"
-            f" | {_resolved('g:vaf_q', 'g:vaf_p')} | "
-            + _LAND_IF_TARGET.format(folds=_case_folds(file_path))
-            + f" | if exists('g:vaf_landed'){claim}"
-            f" | setlocal buftype= modifiable noreadonly | {_READ_THEN_CLEAR} | endif"
-            f" | endif | unlet! {_LOOKUP_VARIABLES}"
-        )
-        pane.send_key("Enter")
-        _confirm_landing(pane, file_path, token, handle)
+        _confirm_landing(pane, file_path, handle)
         # An ADOPTED Vim is the user's own editor: its buffer gets swap back
         # on right after the rename, with the ATTENTION message suppressed for
-        # that one step (see _SWAP_BACK_ON). A dedicated follower's stays off.
-        if self._is_adopted():
-            pane.send_text(_SWAP_BACK_ON)
+        # that one step (see _VIM_SWAP_BACK_ON). A dedicated follower's stays
+        # off.
+        if adopted:
+            pane.send_text(_call_line("swap_back_on"))
             pane.send_key("Enter")
         # `:filetype detect` must run BEFORE 'paste' is enabled below: it
         # loads the filetype's indent/ftplugin scripts, which can turn
@@ -1378,6 +1588,8 @@ class TmuxVimFollower:
         del seeded
         if pending.file_path:
             self.goto_file(pending.file_path)
+        else:
+            self._define(TmuxPane(pane_id=self.pane_id))
         on_resume = (lambda: self.goto_file(pending.file_path)) if pending.file_path else None
         # The pace-0 catch-up (cmd_pause / _handle_hook_post_edit replaying
         # with pace_seconds=0.0) must stay silent forever — it must never
@@ -1392,7 +1604,7 @@ class TmuxVimFollower:
         # a base — the consumer's live-buffer fallback must stay meaningful.
         if isinstance(pending, PendingApplyEdit):
             return self._with_unlocked(
-                _RELOCK_SYNCED if reload else _RELOCK,
+                _RELOCK_SYNCED if reload else _RELOCK_PLAIN,
                 lambda pane: run_ops(
                     pane,
                     self.window_id,
@@ -1404,7 +1616,7 @@ class TmuxVimFollower:
                 ),
             )
         return self._with_unlocked(
-            _RELOCK_READONLY_SYNCED if reload else _RELOCK_READONLY,
+            _RELOCK_READONLY_SYNCED if reload else _RELOCK_READONLY_PLAIN,
             lambda pane: run_lines(
                 pane,
                 self.window_id,
@@ -1429,8 +1641,9 @@ class TmuxVimFollower:
         pane.send_key("Enter")
         # A hand-off after rewrite_buffer's unlock (a replay interrupted
         # mid-rebuild), or of a crash-orphaned remainder, gives an adopted
-        # Vim's user back their readonly here (see _NOTE_USER_READONLY).
+        # Vim's user back their readonly here (see s:note_user_readonly).
         if self._is_adopted():
+            self._define(pane)
             self._send_restore_readonly(pane)
 
     def goto_line(self, offset: int) -> None:

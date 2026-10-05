@@ -1,6 +1,6 @@
 """The tmux backend's landing check: a line that must act on its target
 (goto_file's navigation, show_fresh's rename) answers only once the current
-buffer IS the target (tmux_vim._ANSWER_IF_LANDED), and nothing more is sent
+buffer IS the target (tmux_vim's s:landed), and nothing more is sent
 without that answer. The real-Vim half, with a user's unsaved buffer and a
 stale HOME answer, is tests/test_integration_stale_home.py."""
 
@@ -21,23 +21,27 @@ from vim_ai_follower.tmux import TmuxPane
 
 pytestmark = pytest.mark.real_landing
 
-_LANDED = re.compile(r"writefile\(\[g:vaf_r, '([0-9a-f]{8})'\], '([^']*)'\)")
-_HANDLE = re.compile(r"let g:vaf_h = '([^']*)'")
+# The landing check's call (s:landed) and the calls that read a path handle,
+# each naming its handle (`p<pane>-<6 hex>`, also the call's token).
+_LANDED = re.compile(r"\('landed','(p([0-9]+)-[0-9a-f]{6})'\)")
+_HANDLE = re.compile(r"\('(?:goto|rename|probe|wipe)','(p[0-9]+-[0-9a-f]{6})'")
 
 
 def _vim(verdict: str | None, sent: list[str], reads_handle: bool = True) -> object:
     """A send_text double playing Vim. A path read deletes its handle, as
-    Vim's does (unless `reads_handle` is off: a Vim whose `~` misses it). The
+    Vim's does (unless `reads_handle` is off: a Vim that never got the
+    functions, because the `~` it was told to source them from misses). The
     landing check writes `verdict` with the token, or nothing when None."""
 
     def send_text(self: object, text: str) -> None:
         sent.append(text)
         handle = _HANDLE.search(text)
         if reads_handle and handle:
-            Path(handle.group(1)).unlink(missing_ok=True)
+            (cache.CACHE_DIR / handle.group(1)).unlink(missing_ok=True)
         match = _LANDED.search(text)
         if verdict is not None and match:
-            Path(match.group(2)).write_text(f"{verdict}\n{match.group(1)}\n")
+            answer = cache.CACHE_DIR / f"landed-{match.group(2)}.txt"
+            answer.write_text(f"{verdict}\n{match.group(1)}\n")
 
     return send_text
 
@@ -104,7 +108,7 @@ def test_a_stale_confirmation_from_an_earlier_line_is_not_taken() -> None:
     answer.parent.mkdir(parents=True)
 
     def stale(self: object, text: str) -> None:
-        answer.write_text("landed\n00000000\n")
+        answer.write_text("landed\np2-000000\n")
 
     with (
         patch.object(TmuxPane, "send_text", stale),
@@ -201,22 +205,17 @@ def test_distrust_without_a_record_or_with_a_garbled_one_does_nothing() -> None:
 
 
 @pytest.mark.integration
-def test_a_real_vims_landing_left_by_an_earlier_line_never_confirms_a_new_one(
-    tmp_path: Path,
+def test_a_real_vims_landing_left_by_an_earlier_call_never_confirms_a_new_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The check answers "landed" only for the landing its own acting line
-    recorded: an earlier line's leftovers (a garbled one never reached its
-    `unlet!`) name another token, and an acting line forgets them first."""
-    answer = tmp_path / "landed.txt"
+    """The check answers "landed" only for the landing its own acting call
+    recorded: an earlier call's leftovers (a garbled one never reached its
+    `unlet!`) name another token, and an acting call forgets them first."""
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    name, text = tmux_vim._vim_functions()
+    script = tmux_vim._script_file(name, text)
+    answer = cache.CACHE_DIR / "landed-2.txt"
     out = tmp_path / "out.txt"
-    missing = tmp_path / "gone"
-    check = tmux_vim._ANSWER_IF_LANDED.format(
-        nonce="'bbbbbbbb'", answer=tmux_vim._vim_string(str(answer))
-    ).removeprefix(":")
-    start = tmux_vim._ACTING_START.format(
-        token="'cccccccc'",
-        read=f"let g:vaf_h = {tmux_vim._vim_string(str(missing))} | let g:vaf_p = ''",
-    ).removeprefix(":")
     subprocess.run(
         [
             "vim",
@@ -226,15 +225,19 @@ def test_a_real_vims_landing_left_by_an_earlier_line_never_confirms_a_new_one(
             "NONE",
             "-es",
             "-c",
-            "let g:vaf_p = '/x' | let g:vaf_k = 'aaaaaaaa' | let g:vaf_landed = bufnr('%')",
+            f"source {script}",
             "-c",
-            check,
+            "let g:vaf_p = '/x' | let g:vaf_k = 'p2-aaaaaa' | let g:vaf_landed = bufnr('%')",
+            "-c",
+            f"call {name}('landed', 'p2-bbbbbb')",
             "-c",
             f"call writefile(readfile('{answer}'), '{out}')",
             "-c",
-            "let g:vaf_landed = bufnr('%') | let g:vaf_k = 'cccccccc'",
+            "let g:vaf_landed = bufnr('%') | let g:vaf_k = 'p2-cccccc'",
+            # The handle is missing: the path reads as '', and the start
+            # forgets the landing all the same.
             "-c",
-            start,
+            f"call {name}('acting_start', 'p2-cccccc')",
             "-c",
             f"call writefile(readfile('{out}') + [exists('g:vaf_landed') . ''], '{out}')",
             "-c",
@@ -244,4 +247,4 @@ def test_a_real_vims_landing_left_by_an_earlier_line_never_confirms_a_new_one(
         timeout=30,
         stdin=subprocess.DEVNULL,
     )
-    assert out.read_text().splitlines() == ["elsewhere", "bbbbbbbb", "0"]
+    assert out.read_text().splitlines() == ["elsewhere", "p2-bbbbbb", "0"]

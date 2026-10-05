@@ -87,60 +87,58 @@ def route_exec_lua(nvim: MagicMock, *, buffer: int, display_name: str) -> None:
     nvim.exec_lua.side_effect = answer
 
 
-# The statements the tmux backend types in place of a path: a guarded read of
-# the one-shot handle file that holds it, then its deletion
-# (tmux_vim._typed_path), the handle named either by its absolute path or
-# HOME-relative through expand(). Spelled out rather than imported, like the
-# command literals the tests pin.
-_TYPED_PATH = re.compile(
-    r"""let g:vaf_h = (?:'((?:[^']|'')*)'|expand\('~/([^']*)',1\))"""
-    r""" \| let (\S+) = filereadable\(g:vaf_h\) \? join\(readfile\(g:vaf_h,'b'\),"\\n"\) : ''"""
-    r""" \| call delete\(g:vaf_h\)"""
-)
+# The tmux backend types only short calls into Vim functions it defines once
+# per Vim (tmux_vim._VIM_SCRIPT). Its lines are spelled out here rather than
+# built from tmux_vim, like the command literals the tests pin, with three
+# normalizations (resolve_typed_paths): the dispatcher's name (a hash of the
+# script) becomes `<fn>`, the script file the define line sources becomes
+# `<script>`, and a call's handle argument becomes typed_path(<the path the
+# handle holds>) for the calls that read it, `<token>` for the landing check.
+FUNCTION = "<fn>"
+_FUNCTION_NAME = re.compile(r"VafFollower_[0-9a-f]{6}")
+_SOURCED = re.compile(r"sil! so \S+|exe 'sil! so ' \. fnameescape\('(?:[^']|'')*'\)")
+_CALL = re.compile(r"call <fn>\('(\w+)'((?:,[^,)]+)*)\)")
+_HANDLE = re.compile(r"'(p[0-9]+-[0-9a-f]{6})'")
+# The calls whose handle argument names a path (tmux_vim._path_handle).
+_READING_OPS = {"goto", "rename", "wipe", "probe"}
+# Every handle the backend created during the test, by name (conftest's
+# autouse record_path_handles): a test may read its sends after its own
+# CACHE_DIR patch is gone, and the line names the handle only.
+PATH_HANDLES: dict[str, Path] = {}
 
 
 def typed_path(path: object) -> str:
     """What resolve_typed_paths leaves in a sent line where the tmux backend
-    typed `path` by handle, as the value of the read's variable (the rest of
-    the statement is `let <var> = `). Never Vim syntax, so a line that spelled
-    the path itself can never match an expectation built from this."""
+    passed `path` by handle. Never Vim syntax, so a line that spelled the path
+    itself can never match an expectation built from this."""
     return f"<typed-path {path}>"
 
 
-# The landing check that follows a navigating line (tmux_vim._ANSWER_IF_LANDED):
-# the call's token (random hex, stamped by the acting line as `g:vaf_k` and
-# compared by the check), and the verdict written with it to the pane's
-# `landed-<pane>.txt`, named either way like a handle.
-_TOKEN = re.compile(r"'[0-9a-f]{8}'")
-_LANDED = re.compile(
-    r"""writefile\(\[g:vaf_r, <token>\], (?:'[^']*/landed-[0-9]+\.txt'"""
-    r"""|expand\('~/[^']*/landed-[0-9]+\.txt',1\))\)"""
-)
-LANDED = "writefile([g:vaf_r, <token>], <landed>)"
-
-
-def acting_start(path: object) -> str:
-    """What resolve_typed_paths leaves of the start of a line that must land
-    on `path` (tmux_vim._ACTING_START)."""
-    return (
-        f":unlet! g:vaf_p g:vaf_landed | let g:vaf_k = <token> | let g:vaf_p = {typed_path(path)}"
+def call_spelled(op: str, *arguments: object) -> str:
+    """The typed line that runs s:<op>(arguments) through the dispatcher,
+    guarded so a Vim without it runs nothing (tmux_vim._call_line)."""
+    rendered = ",".join(
+        f"'{argument}'"
+        if isinstance(argument, str) and not argument.startswith("<")
+        else str(argument)
+        for argument in (op, *arguments)
     )
+    return f":if exists('*{FUNCTION}') | call {FUNCTION}({rendered}) | endif"
+
+
+def define_line() -> str:
+    """The line that sources the functions into a Vim that lacks them
+    (tmux_vim._define_line), as resolve_typed_paths leaves it."""
+    return f":if !exists('*{FUNCTION}') | <script> | endif"
 
 
 def landed_line() -> str:
-    """What resolve_typed_paths leaves of the landing check that follows every
-    navigating line (tmux_vim._ANSWER_IF_LANDED)."""
-    return (
-        ":let g:vaf_r = get(g:, 'vaf_p', '') ==# '' ? 'unread'"
-        " : get(g:, 'vaf_k', '') ==# <token> && get(g:, 'vaf_landed', -1) == bufnr('%')"
-        " ? 'landed' : 'elsewhere'"
-        f" | try | let g:vaf_r = {LANDED} | catch | endtry"
-        " | unlet! g:vaf_p g:vaf_k g:vaf_landed g:vaf_r"
-    )
+    """The landing check that follows every navigating call (s:landed)."""
+    return call_spelled("landed", "<token>")
 
 
 def case_folds(path: object) -> int:
-    """What the tmux backend's lookups get as {folds} for `path`: 1 when the
+    """What the tmux backend's lookups get as `folds` for `path`: 1 when the
     filesystem finds the same file under the path with every letter's case
     swapped, else 0. Decided here independently of tmux_vim._case_folds."""
     text = str(path)
@@ -152,118 +150,54 @@ def case_folds(path: object) -> int:
         return 0
 
 
-def _resolved_spelled(variable: str, name: str) -> str:
-    return (
-        f"try | let {variable} = resolve(fnamemodify({name}, ':p'))"
-        f" | catch | let {variable} = fnamemodify({name}, ':p') | endtry"
-    )
-
-
-def find_buffer_spelled(variable: str, folds: int) -> str:
-    """The tmux backend's buffer lookup (tmux_vim._find_buffer), spelled out
-    rather than imported so an unintended change to it is caught: resolve()d
-    full names, each resolve() guarded (a symlink loop raises E655), compared
-    with the filesystem's case folding as a literal."""
-    return (
-        _resolved_spelled("g:vaf_q", variable) + " | let g:vaf_n = -1"
-        " | for g:vaf_i in range(1, bufnr('$'))"
-        f" | {_resolved_spelled('g:vaf_c', 'bufname(g:vaf_i)')}"
-        f" | if index([g:vaf_q], g:vaf_c, 0, {folds}) == 0 | let g:vaf_n = g:vaf_i | break | endif"
-        " | endfor"
-    )
-
-
-def land_if_target_spelled(folds: int) -> str:
-    """The identity half of the landing verdict (tmux_vim._LAND_IF_TARGET)."""
-    return (
-        _resolved_spelled("g:vaf_c", "bufname('%')")
-        + f" | if index([g:vaf_q], g:vaf_c, 0, {folds}) == 0"
-        " | let g:vaf_landed = bufnr('%') | endif"
-    )
-
-
-_SHORT = "fnamemodify(g:vaf_p, ':.')"
-_DISPLAY = f"(fnamemodify({_SHORT}, ':p') ==# fnamemodify(g:vaf_p, ':p') ? {_SHORT} : g:vaf_p)"
-
-
 def goto_spelled(path: object) -> str:
-    """What resolve_typed_paths leaves of the exact Ex line the tmux backend's
-    goto_file sends for `path`, spelled out (never imported from
-    tmux_vim._GOTO_FILE: importing would make every assertion agree with
-    whatever the constant says). The `:try`/`:catch` swallows E37 and nothing
-    else; the `SwapExists` hook answers the ATTENTION dialog `(E)dit anyway`;
-    'fileignorecase' is off for the navigation and restored in `finally`; the
-    landing is recorded only when the current buffer is the target."""
-    folds = case_folds(path)
-    return (
-        acting_start(path) + " | if g:vaf_p !=# ''"
-        f" | {find_buffer_spelled('g:vaf_p', folds)}"
-        ' | exe "augroup vim_ai_follower_swap"'
-        " | exe \"autocmd SwapExists * ++once let v:swapchoice = 'e'\""
-        ' | exe "augroup END"'
-        " | let g:vaf_f = &fic | let &fic = 0"
-        " | try"
-        f" | if g:vaf_n < 0 | exe 'silent tab drop ' . fnameescape({_DISPLAY})"
-        " | elseif g:vaf_n != bufnr('%')"
-        " | exe win_gotoid(get(win_findbuf(g:vaf_n), 0)) ? '' : 'silent tab sbuffer ' . g:vaf_n"
-        " | endif"
-        r" | catch /^Vim\%((\a\+)\)\=:E37:/"
-        ' | finally | let &fic = g:vaf_f | exe "autocmd! vim_ai_follower_swap"'
-        ' | exe "augroup! vim_ai_follower_swap" | endtry'
-        f" | {land_if_target_spelled(folds)}"
-        " | endif | unlet! g:vaf_h g:vaf_n g:vaf_q g:vaf_c g:vaf_i g:vaf_f"
-    )
+    """What resolve_typed_paths leaves of the call goto_file sends for
+    `path` (s:goto)."""
+    return call_spelled("goto", typed_path(path), case_folds(path))
 
 
 def rename_spelled(path: object, *, adopted: bool = False, in_new_tab: bool = False) -> str:
-    """What resolve_typed_paths leaves of show_fresh's rename-in-place line:
-    the path typed by handle into `g:vaf_p` through fnameescape(), named
-    relative to Vim's cwd when that round-trips (tmux_vim._vim_display_name),
-    `silent`, with 'fileignorecase' off; an adopted Vim's also claims the
-    readonly option; the landing is recorded only when the renamed buffer is
-    the target. Spelled out for the same reason as goto_spelled."""
-    claim = " | let b:vaf_user_ro = 0 | let b:vaf_ro_ours = 2" if adopted else ""
-    return (
-        acting_start(path)
-        + " | if g:vaf_p !=# ''"
-        + (" | tabnew" if in_new_tab else "")
-        + " | setlocal noswapfile | let g:vaf_f = &fic | let &fic = 0"
-        f" | try | silent exe 'file ' . fnameescape({_DISPLAY})"
-        " | finally | let &fic = g:vaf_f | endtry"
-        + f" | {_resolved_spelled('g:vaf_q', 'g:vaf_p')}"
-        + f" | {land_if_target_spelled(case_folds(path))}"
-        + " | if exists('g:vaf_landed')"
-        + claim
-        + " | setlocal buftype= modifiable noreadonly"
-        + " | noautocmd silent! edit! | silent! %d _ | endif"
-        + " | endif | unlet! g:vaf_h g:vaf_n g:vaf_q g:vaf_c g:vaf_i g:vaf_f"
-    )
+    """What resolve_typed_paths leaves of show_fresh's rename call
+    (s:rename)."""
+    return call_spelled("rename", typed_path(path), case_folds(path), int(in_new_tab), int(adopted))
 
 
 def wipe_spelled(path: object) -> str:
-    """What resolve_typed_paths leaves of the exact Ex line an eviction (and
-    show_fresh's pre-wipe) sends to wipe `path`'s buffer by NUMBER, spelled
-    out for the same reason as goto_spelled."""
-    return (
-        f":let g:vaf_wipe_name = {typed_path(path)}"
-        " | if g:vaf_wipe_name !=# ''"
-        f" | {find_buffer_spelled('g:vaf_wipe_name', case_folds(path))}"
-        " | if g:vaf_n > 0 | exe 'silent! bwipeout! ' . g:vaf_n | endif"
-        " | endif | unlet! g:vaf_h g:vaf_n g:vaf_q g:vaf_c g:vaf_i g:vaf_f g:vaf_wipe_name"
-    )
+    """What resolve_typed_paths leaves of the call an eviction (and
+    show_fresh's pre-wipe) sends to wipe `path`'s buffer by NUMBER (s:wipe)."""
+    return call_spelled("wipe", typed_path(path), case_folds(path))
+
+
+def probe_spelled(path: object) -> str:
+    """What resolve_typed_paths leaves of probe_buffer's call (s:probe)."""
+    return call_spelled("probe", typed_path(path), case_folds(path))
+
+
+def vim_function(name: str) -> str:
+    """The body of the script-local function s:<name> in the script the tmux
+    backend defines, from its `function!` line to its `endfunction`."""
+    from vim_ai_follower.backends.tmux_vim import _vim_functions
+
+    text = _vim_functions()[1]
+    start = text.index(f"function! s:{name}(")
+    return text[start : text.index("endfunction", start) + len("endfunction")]
 
 
 def resolve_typed_paths(text: str) -> str:
-    """`text` with every handle read replaced by typed_path(<what the handle
-    holds>). The handle must exist and hold the exact bytes: reading it is
-    how the test knows which file the line names."""
+    """`text` normalized as described above. A handle a reading call names
+    must exist and hold the exact bytes: reading it is how the test knows
+    which file the line names."""
+    text = _SOURCED.sub("<script>", _FUNCTION_NAME.sub(FUNCTION, text))
 
-    def resolve(match: re.Match[str]) -> str:
-        absolute, home_relative, variable = match.groups()
-        if absolute is not None:
-            handle = Path(absolute.replace("''", "'"))
-        else:
-            handle = Path.home() / home_relative
-        return f"let {variable} = {typed_path(os.fsdecode(handle.read_bytes()))}"
+    def resolve(call: re.Match[str]) -> str:
+        op, arguments = call.group(1), call.group(2)
 
-    return _LANDED.sub(LANDED, _TOKEN.sub("<token>", _TYPED_PATH.sub(resolve, text)))
+        def argument(match: re.Match[str]) -> str:
+            if op not in _READING_OPS:
+                return "<token>"
+            handle = PATH_HANDLES[match.group(1)]
+            return typed_path(os.fsdecode(handle.read_bytes()))
+
+        return f"call {FUNCTION}('{op}'{_HANDLE.sub(argument, arguments)})"
+
+    return _CALL.sub(resolve, text)

@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from helpers import resolve_typed_paths
+from helpers import PATH_HANDLES, resolve_typed_paths
 
 from vim_ai_follower import cache, config, hooks, session, snapshot
 from vim_ai_follower.backends import tmux_vim
@@ -32,6 +32,22 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[N
     monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
     yield
     hooks.logger.handlers.clear()
+
+
+@pytest.fixture(autouse=True)
+def record_path_handles(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Remember every path handle the tmux backend creates, by name, for
+    helpers.resolve_typed_paths: the sent line names only the handle."""
+    create = tmux_vim._path_handle
+
+    def recorded(pane_id: str, file_path: str) -> Path:
+        handle = create(pane_id, file_path)
+        PATH_HANDLES[handle.name] = handle
+        return handle
+
+    monkeypatch.setattr(tmux_vim, "_path_handle", recorded)
+    yield
+    PATH_HANDLES.clear()
 
 
 @pytest.fixture(autouse=True)

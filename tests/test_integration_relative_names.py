@@ -161,7 +161,7 @@ def test_opening_a_file_no_buffer_holds_names_it_relative_to_the_cwd(
     wait_until: Callable[..., bool],
     adopted: bool,
 ) -> None:
-    """ensure_showing of a file no buffer holds: _GOTO_FILE's `:tab drop`."""
+    """ensure_showing of a file no buffer holds: s:goto's `:tab drop`."""
     real, _ = project
     target = real / "b.py"
     target.write_text(CONTENT)
