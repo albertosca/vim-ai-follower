@@ -32,8 +32,13 @@ for tool in vhs tmux vim curl shasum; do
 done
 [[ -x "$REPO/.venv/bin/python3" ]] || { echo "record_demo: run 'uv sync --extra dev' first" >&2; exit 1; }
 
-# Short on purpose: a Unix socket path is capped near 104 bytes.
+# Short on purpose: a Unix socket path is capped near 104 bytes. Resolved to
+# its realpath (/tmp is a symlink to /private/tmp on macOS): with WORK spelled
+# /tmp/... while the follower opens files by realpath, Vim could not shorten
+# the names against its cwd and showed the scratch path in the tabline and in
+# the "written" message.
 R=$(mktemp -d /tmp/vafdemo.XXXX)
+R=$(cd "$R" && pwd -P)
 SOCK="$R/s/demo.sock"
 
 tmux_demo() { env -u TMUX -u TMUX_PANE tmux -S "$SOCK" "$@"; }
@@ -72,7 +77,7 @@ cleanup() {
     # follower's own hook.log are the only record of what went wrong.
     mkdir -p "$LOGS_OUT"
     cp "$R/w/driver.err" "$R/w/hooks.log" "$R/h/.cache/claude-vim-follower/hook.log" "$LOGS_OUT/" 2> /dev/null || true
-    case "$R" in /tmp/vafdemo.*) rm -rf "$R" ;; esac
+    case "$R" in /tmp/vafdemo.* | /private/tmp/vafdemo.*) rm -rf "$R" ;; esac
     exit "$status"
 }
 trap cleanup EXIT

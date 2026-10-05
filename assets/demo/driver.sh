@@ -34,6 +34,9 @@ payload() {
     printf '{"tool_name":"%s","tool_input":{"file_path":"%s"},"session_id":"demo"}' "$1" "$2"
 }
 
+# Isolation evidence for the logs record_demo.sh keeps: the server this
+# driver talks to is the demo's private socket, never the user's.
+echo "demo tmux: $(tmux display-message -p 'socket=#{socket_path} pid=#{pid}') TMUX=$TMUX" >&2
 window_id=$(tmux display-message -p '#{window_id}')
 ANIMATING="$HOME/.cache/claude-vim-follower/$window_id.animating"
 
@@ -125,7 +128,10 @@ wait_for_screen "for _ in range"
 you_do "[prefix P] pause"
 press_prefix P
 wait_for_state paused
-sleep 3
+# The state line is read from the follower's own animating marker, not
+# scripted: it is what the hook itself recorded.
+note "  follower state: $(animating_state) (Vim holds; nothing is typed)"
+sleep 3.5
 you_do "[prefix P] resume"
 press_prefix P
 wait "$first"
@@ -193,16 +199,31 @@ press_prefix S
 wait_for_state handoff
 sleep 2.5
 
-you_do "type a line of your own, then :w!"
+# Save with whatever the border cue says releases Claude (":w releases" or
+# ":w! releases"), read from the follower pane's real title.
+cue=$(tmux display-message -p -t "$follower" '#{pane_title}')
+save=":w"
+[[ $cue == *":w! releases"* ]] && save=":w!"
+you_do "type a line of your own, then $save"
 tmux send-keys -t "$follower" G o
 type_into "$follower" "# you: negative n still needs a test"
 tmux send-keys -t "$follower" Escape
 sleep 1
-# :w! rather than :w: a fresh file's buffer was renamed in place, so a plain
-# :w stops at E13 "File exists" (measured 2026-09-23), even though the
-# border cue says ":w releases". The hand-off message in cmd_pause says :w!.
-type_into "$follower" ":w!"
+type_into "$follower" "$save"
 tmux send-keys -t "$follower" Enter
+# Vim may stop the save at "file has been changed since reading it ... (y/n)"
+# (a known BACKLOG item: the buffer's timestamp predates Claude's write).
+# When it does, the "user" answers y on screen rather than the demo hiding it.
+for ((i = 0; i < 60; i++)); do
+    kill -0 "$tests" 2> /dev/null || break
+    if tmux capture-pane -p -t "$follower" | grep -qF -- "(y/n)"; then
+        sleep 1.5
+        you_do "Vim: file changed since reading, write anyway? y"
+        tmux send-keys -t "$follower" -l y
+        break
+    fi
+    sleep 0.05
+done
 wait "$tests"
 sleep 0.5
 
@@ -224,7 +245,7 @@ paragraphs = context.split("\n\n")
 opening = paragraphs[0].split(" Only this much")[0]
 print(f"{opening} [...]\n{paragraphs[-1]}")
 PYEOF
-sleep 7
+sleep 6
 echo
 note "end of demo"
 sleep 120
