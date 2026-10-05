@@ -15,8 +15,9 @@ Com `adopt_existing: true`, em vez de abrir um pane novo, o follower controla um
 Porque é **o seu** editor:
 
 - A adoção é estritamente opt-in.
-- A aba em que você estava nunca é renomeada por cima — um arquivo novo sempre abre na sua própria aba.
+- A aba em que você estava nunca é renomeada por cima — um arquivo novo sempre abre na sua própria aba, e o follower só dá nome ao buffer vazio com que essa aba foi criada. Se um autocommand seu te leva pra outra aba quando ela abre, o seu buffer continua intacto: no Vim essa edição não é mostrada (fica registrada em `~/.cache/claude-vim-follower/hook.log`), no Neovim ela vai pro buffer novo do próprio follower.
 - No `stop`, a adoção nunca mata o seu Vim; ela só fecha as abas que abriu.
+- Nem o `stop` nem uma aba que passa de `max_tabs` descartam o seu trabalho. Um buffer com alterações não salvas continua aberto onde está, e um buffer que você já tinha aberto antes de o follower chegar nele (por exemplo, um arquivo que você estava editando quando o Claude o leu) nunca é fechado: no máximo o follower fecha uma aba que ele abriu pra mostrá-lo. Cada caso desses fica registrado no `hook.log`. Só um arquivo que o próprio follower abriu, sem nada não salvo, tem a aba fechada.
 
 ## Quando o seu buffer não é o que o Claude editou
 

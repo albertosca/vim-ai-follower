@@ -10,6 +10,6 @@ Editing a file already open navigates back to its tab first (by name, so it surv
 
 ## How many tabs it keeps
 
-The tab list is recency-ordered; the least-recently-used tab is closed once you exceed `max_tabs` (default `5`, see [Configuration](../reference/config.md)). The file being animated or handed over is never the one evicted.
+The tab list is recency-ordered; the least-recently-used tab is closed once you exceed `max_tabs` (default `5`, see [Configuration](../reference/config.md)). The file being animated or handed over is never the one evicted. In an [adopted editor](adopting-an-editor.md) eviction never closes a buffer with unsaved changes, or one you had open yourself.
 
 Neovim opens real tabs too — the same tab-cycling experience as tmux, kept in sync via its RPC API; per-file eviction still applies (see [Neovim backend](nvim-backend.md)).

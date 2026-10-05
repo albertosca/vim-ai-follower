@@ -15,8 +15,9 @@ With `adopt_existing: true`, instead of splitting a new pane the follower drives
 Because it is **your** editor:
 
 - Adoption is strictly opt-in.
-- The tab you were on is never renamed over — a new file always opens in its own tab.
+- The tab you were on is never renamed over — a new file always opens in its own tab, and the follower names only the empty buffer that tab was created with. If one of your autocommands moves you to another tab as it opens, your buffer is still left alone: on Vim that edit is not shown (it is logged to `~/.cache/claude-vim-follower/hook.log`), on Neovim it goes into the follower's own new buffer.
 - On `stop`, adoption never kills your Vim; it only closes the tabs it opened.
+- Neither `stop` nor a tab falling past `max_tabs` ever discards your work. A buffer with unsaved changes stays open where it is, and a buffer you had open before the follower came to it (for example, a file you were editing when Claude read it) is never closed: at most the follower closes a tab it opened to show it. Each such case is logged to `hook.log`. Only a file the follower opened itself, with nothing unsaved in it, has its tab closed.
 
 ## When your buffer is not what Claude edited
 

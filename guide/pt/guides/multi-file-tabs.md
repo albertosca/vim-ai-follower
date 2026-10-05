@@ -10,6 +10,6 @@ Editar um arquivo já aberto navega de volta pra sua aba primeiro (pelo nome, en
 
 ## Quantas abas ele mantém
 
-A lista de abas é ordenada por uso recente; a aba menos usada recentemente é fechada assim que você passa de `max_tabs` (padrão `5`, veja [Configuração](../reference/config.md)). O arquivo sendo animado ou entregue nunca é o escolhido pra evicção.
+A lista de abas é ordenada por uso recente; a aba menos usada recentemente é fechada assim que você passa de `max_tabs` (padrão `5`, veja [Configuração](../reference/config.md)). O arquivo sendo animado ou entregue nunca é o escolhido pra evicção. Num [editor adotado](adopting-an-editor.md) a evicção nunca fecha um buffer com alterações não salvas, nem um que você mesmo tinha aberto.
 
 O Neovim também abre abas de verdade — a mesma experiência de ciclar abas do tmux, mantida em sincronia pela API de RPC; a evicção por arquivo continua valendo (veja [Backend Neovim](nvim-backend.md)).
