@@ -21,6 +21,7 @@ from vim_ai_follower.backends import (
     NavigationFailed,
     get_follower,
     nvim_connect,
+    without_bom,
 )
 from vim_ai_follower.backends.nvim_connect import (
     StandaloneLaunchFailed,
@@ -1240,6 +1241,10 @@ def _animate_edit(
         return 0
 
     after = raw_after.decode("utf-8", errors="replace")
+    # What is TYPED (and what a partial is built from) leaves out a leading
+    # UTF-8 BOM, which the editors keep in 'bomb' instead of the buffer; the
+    # hand-off wait still compares disk with `after` itself (see without_bom).
+    typed_after = without_bom(after)
 
     # After the catch-up above, never before it: the replay is what brings
     # the buffer to this edit's base, and probing first would see its
@@ -1254,6 +1259,7 @@ def _animate_edit(
     # be retyped, and "holds" — including a stale file the user resynced with
     # `:e!` — is a diff onto the user's own buffer.
     before = load_snapshot(session.window_id, file_path)
+    typed_before = without_bom(before)
     if not is_fresh or current.adopted:
         probe = _probe_base(follower, file_path, before)
         if probe == "holds":
@@ -1287,7 +1293,7 @@ def _animate_edit(
     _touch_and_evict(session.window_id, follower, current, file_path, cfg.max_tabs)
 
     if is_fresh:
-        result = follower.show_fresh(file_path, after, in_new_tab=current.shown_any)
+        result = follower.show_fresh(file_path, typed_after, in_new_tab=current.shown_any)
         if result.outcome == "interrupted":
             # Clear the display-only pointer — the user owns the buffer now
             # and may change it under us. Freshness is keyed on open_files,
@@ -1301,12 +1307,12 @@ def _animate_edit(
             # the `:silent! e!` relock.
             # (_await_user_handoff restores tracking on a des-interrupt.)
             FollowerState.update_current_file(session.window_id, None)
-            partial = _reconstruct_partial_fresh(after, result.completed_count)
+            partial = _reconstruct_partial_fresh(typed_after, result.completed_count)
             # Keep the remainder around: a des-interrupt replays it from
             # the interrupt point instead of flashing the finished file.
             control.save_pending_show_fresh(
                 session.window_id,
-                tuple(after.splitlines())[result.completed_count :],
+                tuple(typed_after.splitlines())[result.completed_count :],
                 config.pace_seconds_for(current.speed),
                 continuation=result.completed_count > 0,
                 file_path=file_path,
@@ -1323,17 +1329,17 @@ def _animate_edit(
             _refresh_writer_cue(session.window_id, current.target, payload)
         return 0
 
-    ops = diff_module.compute_edit_script(before, after)
+    ops = diff_module.compute_edit_script(typed_before, typed_after)
     # `before` goes along for the tmux backend: its driver cannot read the
     # buffer, so this is the only way its pause-time crash fallback can record
     # the applied prefix. It is the same string the interrupt path below
     # replays the ops onto, so the two can never disagree.
-    result = follower.apply_edit(file_path, ops, before=before)
+    result = follower.apply_edit(file_path, ops, before=typed_before)
     if result.outcome == "interrupted":
         FollowerState.update_current_file(session.window_id, None)
         # completed_count indexes the very ops list the animation walked —
         # computing the script once keeps this reconstruction truthful.
-        partial = diff_module.apply_ops(before, ops[: result.completed_count])
+        partial = diff_module.apply_ops(typed_before, ops[: result.completed_count])
         control.save_pending_apply_edit(
             session.window_id,
             ops[result.completed_count :],

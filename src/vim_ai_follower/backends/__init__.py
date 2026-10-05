@@ -17,6 +17,9 @@ from vim_ai_follower.diff import EditOp
 #   - "unknown": the editor never answered.
 BufferProbe = Literal["holds", "differs", "absent", "unknown"]
 
+# The UTF-8 byte order mark as decoded text (see buffer_forms).
+BOM = "\ufeff"
+
 
 logger = logging.getLogger("vim_ai_follower")
 
@@ -136,15 +139,27 @@ def buffer_forms(content: str) -> list[list[str]]:
     line (an editor's buffer of "a\nb\n" is ["a", "b"]), and an empty file is
     a single empty line. A file whose every line ends in CR is also accepted
     without them, because Vim and nvim load it with fileformat=dos and strip
-    the CRs from the buffer. Splits on "\n" only, never str.splitlines(),
-    which would also break on form feeds and U+2028 that stay inside an
-    editor's line."""
+    the CRs from the buffer. A file starting with a UTF-8 BOM (U+FEFF) is
+    also accepted without it, because both editors load it into 'bomb' and
+    leave it out of the buffer, while the hook's snapshot keeps it (final
+    review of backlog-sweep-3, I2: every BOM file probed "differs"). Splits
+    on "\n" only, never str.splitlines(), which would also break on form
+    feeds and U+2028 that stay inside an editor's line."""
     text = content[:-1] if content.endswith("\n") else content
     lines = text.split("\n")
     forms = [lines]
     if all(line.endswith("\r") for line in lines):
         forms.append([line[:-1] for line in lines])
+    if lines[0].startswith(BOM):
+        forms += [[form[0].removeprefix(BOM), *form[1:]] for form in forms]
     return forms
+
+
+def without_bom(content: str) -> str:
+    """`content` as an editor's buffer holds it: without a leading UTF-8 BOM,
+    which Vim and nvim keep in 'bomb' instead. What the follower TYPES, so it
+    never types the BOM character into line 1 (see buffer_forms)."""
+    return content.removeprefix(BOM)
 
 
 def classify_buffer(lines: list[str], content: str) -> BufferProbe:
