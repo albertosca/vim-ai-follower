@@ -292,6 +292,24 @@ def test_the_watchdog_dismisses_a_prompt_raised_inside_the_body(
     assert ":messages after apply_edit: vaf-probe: long message" in caplog.text
 
 
+def test_a_dismissal_counts_before_nvim_has_left_the_prompt(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The blocked body resumes as soon as the watchdog answers, while the
+    # watchdog still waits for nvim to leave the prompt (up to
+    # _SETTLE_SECONDS). A body that ends inside that wait must still see the
+    # dismissal, or the :messages tail is never logged (a CI runner hit it).
+    main = _nvim()
+    main.api.exec2.return_value = {"output": "vaf-probe: long message\n"}
+    dog = _nvim(_IDLE, *([_PROMPT] * 60))
+    with (
+        caplog.at_level(logging.WARNING, logger="vim_ai_follower"),
+        prompt_guard(main, lambda: dog, key="/s", adopted=False, label="apply_edit"),
+    ):
+        assert _wait_for(lambda: dog.api.input.called)
+    assert ":messages after apply_edit: vaf-probe: long message" in caplog.text
+
+
 def test_the_watchdog_stops_and_closes_its_connection_when_the_body_raises() -> None:
     dog = _nvim()
     with (

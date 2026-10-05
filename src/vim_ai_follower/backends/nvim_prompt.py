@@ -187,14 +187,23 @@ def _answer_for(mode: dict[str, Any]) -> str | None:
     return _ANSWERS.get(mode.get("mode", "")) if mode.get("blocking") else None
 
 
-def dismiss_prompt(nvim: Any, socket_path: str) -> dict[str, Any] | None:
+def dismiss_prompt(
+    nvim: Any,
+    socket_path: str,
+    on_answered: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any] | None:
     """Answer a blocking hit-enter (<CR>) or more-prompt (<Esc>) and return the
     mode that was answered, or None when nothing was sent. Only the guard
     holding `socket_path`'s answer lock answers, and only if the prompt is
     still up when it re-reads under the lock (module docstring). After
     answering, still under the lock, it waits up to _SETTLE_SECONDS for nvim
     to leave that mode, so no one — itself on its next poll included — sees
-    the same prompt again. Fast requests only."""
+    the same prompt again. Fast requests only.
+
+    `on_answered` runs right after the answer is sent, BEFORE that wait: the
+    call the prompt was blocking resumes at once, and its guard may end
+    inside the wait — it must already know a prompt was dismissed (a CI
+    runner lost the :messages tail that way, 2026-10-05)."""
     if _answer_for(nvim.api.get_mode()) is None:
         return None  # the common case: no prompt, no lock file touched
     with _answer_lock(socket_path) as held:
@@ -205,6 +214,8 @@ def dismiss_prompt(nvim: Any, socket_path: str) -> dict[str, Any] | None:
         if key is None:
             return None
         nvim.api.input(key)
+        if on_answered is not None:
+            on_answered(mode)
         deadline = time.monotonic() + _SETTLE_SECONDS
         while time.monotonic() < deadline and nvim.api.get_mode() == mode:
             time.sleep(_SETTLE_POLL_SECONDS)
@@ -251,6 +262,14 @@ class Watchdog:
     def start(self) -> None:
         self._thread.start()
 
+    def _answered(self, mode: dict[str, Any]) -> None:
+        self.dismissals += 1
+        logger.warning(
+            "nvim follower: dismissed a %s during %s (watchdog)",
+            _NAMES[mode["mode"]],
+            self._label,
+        )
+
     def _run(self) -> None:
         try:
             nvim = self._connect()
@@ -261,14 +280,7 @@ class Watchdog:
             return
         try:
             while not self._stop.is_set():
-                seen = dismiss_prompt(nvim, self._key)
-                if seen is not None:
-                    self.dismissals += 1
-                    logger.warning(
-                        "nvim follower: dismissed a %s during %s (watchdog)",
-                        _NAMES[seen["mode"]],
-                        self._label,
-                    )
+                dismiss_prompt(nvim, self._key, self._answered)
                 self._stop.wait(POLL_SECONDS)
         except Exception as exc:
             if not self._stop.is_set():
