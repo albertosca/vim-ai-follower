@@ -508,3 +508,51 @@ def test_a_request_says_whether_it_reached_a_live_owner(tmp_path: Path) -> None:
     control.mark_animating("@1", base_dir=tmp_path)
     assert control.request_pause("@1", base_dir=tmp_path) is True
     assert control.request_interrupt("@1", base_dir=tmp_path) is True
+
+
+def _dead_pid() -> int:
+    finished = subprocess.Popen(["true"])
+    finished.wait()
+    return finished.pid
+
+
+def test_clearing_signals_sweeps_what_killed_processes_left_behind(tmp_path: Path) -> None:
+    # D1 residual: a process killed between its claim (rename to .claimed) and
+    # the unlink, or between a request's temp write and its replace, leaves a
+    # file nothing ever reads. clear_signals collects those of dead pids only.
+    dead, live = _dead_pid(), os.getpid()
+    names = [
+        f"@1.{kind}.{pid}.{suffix}"
+        for kind in ("pause", "interrupt")
+        for pid in (dead, live)
+        for suffix in ("claimed", "tmp")
+    ]
+    for name in names:
+        (tmp_path / name).write_text("1")
+    other_window = tmp_path / f"@10.pause.{dead}.claimed"
+    other_window.write_text("1")
+    not_a_pid = tmp_path / "@1.pause.x.tmp"
+    not_a_pid.write_text("1")
+
+    control.clear_signals("@1", base_dir=tmp_path)
+
+    left = sorted(path.name for path in tmp_path.iterdir())
+    assert left == sorted(
+        [name for name in names if f".{live}." in name] + [other_window.name, not_a_pid.name]
+    )
+
+
+def test_sweeping_signal_leftovers_with_none_is_quiet(tmp_path: Path) -> None:
+    control.sweep_signal_leftovers("@1", base_dir=tmp_path / "missing")
+    control.sweep_signal_leftovers("@1", base_dir=tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_the_leftover_sweep_reads_a_window_id_literally(tmp_path: Path) -> None:
+    dead = _dead_pid()
+    bracketed = tmp_path / f"term-[ab].pause.{dead}.claimed"
+    lookalike = tmp_path / f"term-a.pause.{dead}.claimed"
+    bracketed.write_text("1")
+    lookalike.write_text("1")
+    control.sweep_signal_leftovers("term-[ab]", base_dir=tmp_path)
+    assert [path.name for path in tmp_path.iterdir()] == [lookalike.name]

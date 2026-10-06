@@ -5,6 +5,7 @@ resumable pending-animation snapshot."""
 from __future__ import annotations
 
 import fcntl
+import glob
 import json
 import os
 from collections.abc import Iterator
@@ -66,6 +67,23 @@ def check_signal(
 def clear_signals(window_id: str, base_dir: Path | None = None) -> None:
     _pause_path(window_id, base_dir).unlink(missing_ok=True)
     _interrupt_path(window_id, base_dir).unlink(missing_ok=True)
+    sweep_signal_leftovers(window_id, base_dir)
+
+
+def sweep_signal_leftovers(window_id: str, base_dir: Path | None = None) -> None:
+    """Remove the `<signal>.<pid>.claimed` and `<signal>.<pid>.tmp` files a
+    process left when it was killed between its claim (_consume's rename) and
+    the unlink, or between a request's temp write and its replace. Nothing
+    ever reads them; a live process's are never touched."""
+    for signal_path in (_pause_path(window_id, base_dir), _interrupt_path(window_id, base_dir)):
+        prefix = f"{signal_path.name}."
+        for suffix in (".claimed", ".tmp"):
+            # Escaped: a window id is an identity string, never a pattern.
+            pattern = f"{glob.escape(signal_path.name)}.*{suffix}"
+            for leftover in signal_path.parent.glob(pattern):
+                pid = leftover.name[len(prefix) : -len(suffix)]
+                if pid.isdigit() and not _alive(int(pid)):
+                    leftover.unlink(missing_ok=True)
 
 
 def _request(path: Path, window_id: str, base_dir: Path | None) -> bool:
