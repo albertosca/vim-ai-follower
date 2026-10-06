@@ -329,11 +329,24 @@ return verdict
 
 # show_fresh's read-then-clear of the buffer it just named; see the tmux
 # backend's _VIM_RENAME for why (E13 on a plain `:w`) and for each piece.
-# One nvim_command: nvim redraws only between requests, so the file's content
-# is never on screen. This is a disk read outside ensure_showing, but not a
+# One request: nvim redraws only between requests, so the file's content is
+# never on screen. This is a disk read outside ensure_showing, but not a
 # navigation: it lands on the freshly created, empty buffer show_fresh is
 # about to type into, so there is nothing to discard and no E37 to meet.
-_READ_THEN_CLEAR = "noautocmd silent! edit! | silent! %d _"
+#
+# With the buffer's 'undolevels' at -1 for that one step, so neither the read
+# nor the clear is an undo step: a `%d` on the undo stack kept a huge file in
+# memory, and the user's `u` on a handed-over or adopted buffer brought the
+# whole finished file back (C5 residual). The buffer-local value is saved
+# raw (-123456 means "use the global") and put back even if the read fails.
+_READ_THEN_CLEAR_LUA = """
+local buf = ...
+local saved = vim.bo[buf].undolevels
+vim.bo[buf].undolevels = -1
+local ok, failure = pcall(vim.cmd, 'noautocmd silent! edit! | silent! %d _')
+vim.bo[buf].undolevels = saved
+if not ok then error(failure) end
+"""
 
 
 # One RPC: nvim's cwd-relative form of the path, kept only when it
@@ -564,7 +577,7 @@ class NvimFollower:
             # left the buffer "not edited", and a plain `:w` after an
             # interrupt failed with E13. Same fix and reasons as the tmux
             # backend's s:rename (_VIM_RENAME); swap is still off here.
-            nvim.command(_READ_THEN_CLEAR)
+            nvim.exec_lua(_READ_THEN_CLEAR_LUA, buf)
             self._restore_swap_if_adopted(nvim)
             self._exec(nvim, "filetype detect")
             nvim.command("setlocal buftype=")

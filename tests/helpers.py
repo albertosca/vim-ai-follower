@@ -99,10 +99,12 @@ def route_exec_lua(nvim: MagicMock, *, buffer: int, display_name: str) -> None:
     to buf_set_name/bufadd as the name, and a test asserting the name would
     then pin whatever the mock happened to return. A completion's stamp
     (_STAMP_IF_EXPECTED_LUA) answers True, as for a buffer that holds what
-    the run typed."""
+    the run typed; show_fresh's read-then-clear (_READ_THEN_CLEAR_LUA)
+    returns nothing."""
     from vim_ai_follower.backends.nvim import (
         _DISPLAY_NAME_LUA,
         _FIND_BUFFER_LUA,
+        _READ_THEN_CLEAR_LUA,
         _STAMP_IF_EXPECTED_LUA,
     )
 
@@ -110,6 +112,7 @@ def route_exec_lua(nvim: MagicMock, *, buffer: int, display_name: str) -> None:
         _FIND_BUFFER_LUA: buffer,
         _DISPLAY_NAME_LUA: display_name,
         _STAMP_IF_EXPECTED_LUA: True,
+        _READ_THEN_CLEAR_LUA: None,
     }
 
     def answer(code: str, *args: object) -> object:

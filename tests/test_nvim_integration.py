@@ -876,3 +876,41 @@ def test_the_status_float_follows_the_backend_into_a_new_tab(
     ]
     assert len(here) == 1, "the cue stayed behind when goto_file switched tabs"
     assert len(_floating_windows(nvim)) == 1
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("count", "signal"),
+    [(20000, "interrupt"), (50, None)],
+    ids=["huge-interrupted-at-once", "small-completed"],
+)
+def test_show_freshs_read_then_clear_leaves_no_undo_step(
+    headless_nvim: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    count: int,
+    signal: str | None,
+) -> None:
+    # The read-then-clear (show_fresh's E13 fix) must not leave the read-in
+    # file on the undo stack: a huge one is held in memory, and the user's
+    # `u` on a handed-over (or adopted) buffer brought the whole finished
+    # file back in one step. Oldest reachable state = the cleared buffer.
+    from vim_ai_follower import cache
+
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    FollowerState.set("@1", "nvim", headless_nvim, adopted=False, speed="instant")
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    target = tmp_path / "big.py"
+    content = "".join(f"line {index}\n" for index in range(count))
+    target.write_text(content)
+    monkeypatch.setattr(control, "check_signal", lambda *args, **kwargs: signal)
+    expected = "interrupted" if signal else "completed"
+    assert follower.show_fresh(str(target), content).outcome == expected
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    nvim.api.buf_set_option(0, "modifiable", True)
+    # The buffer's own 'undolevels' is back to "use the global" (-123456).
+    assert nvim.exec_lua("return vim.bo.undolevels") == -123456
+    nvim.command("silent! undo 0")
+
+    assert nvim.current.buffer[:] == [""]
