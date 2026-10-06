@@ -835,9 +835,12 @@ def cmd_hook_pre(env: dict[str, str], payload: dict[str, Any]) -> int:
 def cmd_hook_failure(env: dict[str, str], payload: dict[str, Any]) -> int:
     """PostToolUseFailure (the tool was allowed and failed while executing)
     and PermissionDenied (auto mode denied it): the Edit will never post, so
-    its in-flight mark is dropped. Clearing is always safe, so neither the
-    enabled flag nor the open policy is consulted — a toggle or a config
-    change between pre and here must not strand the mark.
+    its in-flight mark is dropped — when the mark is this writer's, or its
+    writer is unknown (""). A mark another writer set stays: that writer's
+    Edit of the same file is still in flight, and a payload with no identity
+    proves no ownership of a known writer's mark. Neither the enabled flag
+    nor the open policy is consulted — a toggle or a config change between
+    pre and here must not strand the mark.
 
     Measured on Claude Code 2.1.284: a user answering "No" at a permission
     prompt fires neither event; that mark is dropped by the same writer's
@@ -851,7 +854,12 @@ def cmd_hook_failure(env: dict[str, str], payload: dict[str, Any]) -> int:
     file_path = _file_path(payload)
     if file_path is None:
         return 0
-    snapshot.clear_in_flight(session.window_id, file_path)
+    # Only this writer's own mark, or one whose writer is unknown: another
+    # writer's Edit of the same file may still be in flight, and its post
+    # hook has yet to run (D2 residual minors).
+    writer = snapshot.in_flight_writer(session.window_id, file_path)
+    if writer in ("", writer_cue.writer_identity(payload) or ""):
+        snapshot.clear_in_flight(session.window_id, file_path)
     return 0
 
 
@@ -1390,7 +1398,13 @@ def _edit_in_flight(window_id: str, file_path: str, reader: str | None) -> bool:
     denied. A user's "No" at the permission prompt fires no hook at all, so
     this is what lets the usual fallback (`sed -i` through Bash, then a Read
     to check) resync the follower instead of being silenced until expiry.
-    The mark is dropped and the Read goes ahead."""
+    The mark is dropped and the Read goes ahead.
+
+    An identity is writer_cue.writer_identity's (agent_id, else session_id),
+    and a payload with neither has NONE — the mark records "" and the reader
+    is None, never a shared fallback identity — so two callers without one
+    never match: neither's Read drops the other's mark (pinned by
+    test_a_mark_without_a_writer_is_never_cleared_by_a_read)."""
     if not snapshot.in_flight(window_id, file_path):
         return False
     writer = snapshot.in_flight_writer(window_id, file_path)
@@ -1449,15 +1463,21 @@ def _navigate_for_read(
     session: Session, payload: dict[str, Any], file_path: str, cfg: config.Config
 ) -> int:
     """The Read's navigation; the caller holds the window's slot."""
-    if _edit_in_flight(session.window_id, file_path, writer_cue.writer_identity(payload)):
-        # What is known: another writer's Edit/MultiEdit/Write of this file
-        # ran its pre hook less than IN_FLIGHT_TTL_SECONDS ago and has not
-        # posted, and the file no longer holds that edit's snapshot. Whether
-        # it is about to post or was denied is not known here.
+    reader = writer_cue.writer_identity(payload)
+    if _edit_in_flight(session.window_id, file_path, reader):
+        # What is known: an Edit/MultiEdit/Write of this file ran its pre
+        # hook less than IN_FLIGHT_TTL_SECONDS ago and has not posted, and
+        # the file no longer holds that edit's snapshot. Whether it is about
+        # to post or was denied is not known here. It is ANOTHER writer's
+        # only when both identities are known: a payload without one could
+        # be the writer itself.
+        writer = snapshot.in_flight_writer(session.window_id, file_path)
+        whose = "another writer's pre hook ran" if reader and writer else "writer unknown"
         logger.info(
             "skipped the Read of %s: an Edit/Write of it is in flight or failed "
-            "(another writer's pre hook ran, no post hook yet, and the file changed since)",
+            "(%s, no post hook yet, and the file changed since)",
             file_path,
+            whose,
         )
         return 0
     current = _live_follower_healing_keys(session) or _maybe_auto_open(session, file_path, cfg)

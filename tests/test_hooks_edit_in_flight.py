@@ -232,12 +232,12 @@ def test_clearing_a_mark_that_was_never_set_is_harmless(tmp_path: Path) -> None:
 # writer's Edit tool call is over, however it ended.
 
 
-def _failure(target: Path, tool: str = "Edit") -> None:
+def _failure(target: Path, tool: str = "Edit", **extra: Any) -> None:
     with patch(
         "vim_ai_follower.tmux.subprocess.run",
         return_value=MagicMock(returncode=0, stdout="@1\n"),
     ):
-        assert hooks.cmd_hook_failure(_ENV, _payload(tool, target)) == 0
+        assert hooks.cmd_hook_failure(_ENV, {**_payload(tool, target), **extra}) == 0
 
 
 @pytest.mark.parametrize("tool", ["Edit", "MultiEdit", "Write"])
@@ -246,6 +246,43 @@ def test_the_failure_hook_clears_the_mark(tmp_path: Path, tool: str) -> None:
     target.write_text("one\n")
     _pre(target, tool)
     _failure(target, tool)
+    assert not snapshot.in_flight("@1", _real(target))
+
+
+def test_a_failure_of_another_writers_edit_leaves_the_mark(tmp_path: Path) -> None:
+    """Writer B's Edit of the file failed while writer A's is in flight: the
+    mark is A's, and A's post hook has yet to run."""
+    target = tmp_path / "a.py"
+    target.write_text("one\n")
+    _pre(target, session_id="sess-a")
+    _failure(target, session_id="sess-b")
+    assert snapshot.in_flight("@1", _real(target))
+    assert snapshot.in_flight_writer("@1", _real(target)) == "sess-a"
+
+
+def test_a_failure_without_a_writer_leaves_a_known_writers_mark(tmp_path: Path) -> None:
+    target = tmp_path / "a.py"
+    target.write_text("one\n")
+    _pre(target, session_id="sess-a")
+    _failure(target)
+    assert snapshot.in_flight("@1", _real(target))
+
+
+def test_a_failure_of_the_marks_own_writer_clears_it(tmp_path: Path) -> None:
+    target = tmp_path / "a.py"
+    target.write_text("one\n")
+    _pre(target, session_id="sess-a", agent_id="agent-1")
+    _failure(target, session_id="sess-a", agent_id="agent-1")
+    assert not snapshot.in_flight("@1", _real(target))
+
+
+def test_any_failure_clears_a_mark_whose_writer_is_unknown(tmp_path: Path) -> None:
+    """A mark set by a payload with no identity could be anyone's: it is
+    cleared, as before, rather than stranded until it expires."""
+    target = tmp_path / "a.py"
+    target.write_text("one\n")
+    _pre(target)
+    _failure(target, session_id="sess-b")
     assert not snapshot.in_flight("@1", _real(target))
 
 
@@ -371,7 +408,7 @@ def test_a_read_by_another_writer_is_still_held_back(tmp_path: Path) -> None:
     ]
     assert snapshot.in_flight("@1", _real(target))
     log = hooks.LOG_PATH.read_text()
-    assert "an Edit/Write of it is in flight or failed" in log
+    assert "an Edit/Write of it is in flight or failed (another writer's pre hook ran" in log
     assert "written but not yet animated" not in log
 
 
@@ -385,6 +422,23 @@ def test_a_mark_without_a_writer_is_never_cleared_by_a_read(tmp_path: Path) -> N
     target.write_text("one\ntwo\n")
     assert _read(target) == []
     assert snapshot.in_flight("@1", _real(target))
+    # Neither side is known to be "another writer".
+    log = hooks.LOG_PATH.read_text()
+    assert "an Edit/Write of it is in flight or failed (writer unknown" in log
+    assert "another writer" not in log
+
+
+def test_a_read_without_a_writer_is_not_called_another_writer(tmp_path: Path) -> None:
+    target = tmp_path / "a.py"
+    target.write_text("one\n")
+    _register_fake_follower("@1", "%2", shown_any=True)
+    _pre(target, session_id="sess-a")
+    target.write_text("one\ntwo\n")
+    assert _read(target) == []  # the Read's payload carries no identity
+    assert snapshot.in_flight("@1", _real(target))
+    log = hooks.LOG_PATH.read_text()
+    assert "an Edit/Write of it is in flight or failed (writer unknown" in log
+    assert "another writer" not in log
 
 
 def test_the_post_hook_clears_the_mark_when_the_follower_is_disabled(tmp_path: Path) -> None:
