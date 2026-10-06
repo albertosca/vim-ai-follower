@@ -168,7 +168,10 @@ def test_the_guard_catches_e37_only_and_hands_the_path_to_fnameescape() -> None:
         "\n  catch /^Vim\\%((\\a\\+)\\)\\=:E37:/\n  catch\n"
         "    let g:vaf_nav_error = v:exception\n  finally\n"
     ) in goto
-    assert goto.endswith("  endtry\n  call s:land_if_target(a:folds)\nendfunction")
+    # The landing check right after the try decides, and the ownership marks
+    # follow it (never inside the try, where a caught error skips them).
+    assert "  endtry\n  call s:land_if_target(a:folds)\n  if !exists('g:vaf_landed')\n" in goto
+    assert "vaf_created" not in goto[: goto.index("  endtry\n")]
 
 
 def test_ensure_showing_navigates_through_the_guard() -> None:

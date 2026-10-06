@@ -564,7 +564,13 @@ endfunction
 # function before its landing was recorded, although Vim had landed, and
 # every Read of a file no buffer held answered "elsewhere" (measured
 # 2026-10-06; tests/test_integration_relock_autocmd.py). Whether it landed is
-# the landing check's to say, never the error's.
+# the landing check's to say, never the error's. The follower's ownership
+# marks come after it, under the same proof, so an error cannot skip them:
+# `b:vaf_created` only on the landed buffer when it is newer than every
+# buffer before the call, `w:vaf_opened` only on a new window in a new tab
+# that `:tab sbuffer` opened. Inside the try, a caught BufReadPost error
+# skipped `b:vaf_created`, and an adopted eviction then left the tab as the
+# user's (review of T6+T7, I3).
 _VIM_GOTO = r"""
 function! s:goto(token, folds) abort
   call s:acting_start(a:token)
@@ -572,21 +578,19 @@ function! s:goto(token, folds) abort
     return
   endif
   let number = s:find(g:vaf_p, a:folds)
+  let last = bufnr('$')
+  let window = win_getid()
+  let tabs = tabpagenr('$')
+  let opening = 0
   call s:swap_answer_open()
   let fileignorecase = &fileignorecase
   let &fileignorecase = 0
   try
     if number < 0
-      let last = bufnr('$')
       exe 'silent tab drop ' . fnameescape(s:display(g:vaf_p))
-      if bufnr('%') > last
-        let b:vaf_created = 1
-      endif
     elseif number != bufnr('%') && !win_gotoid(get(win_findbuf(number), 0))
+      let opening = 1
       exe 'silent tab sbuffer ' . number
-      if bufnr('%') == number
-        let w:vaf_opened = 1
-      endif
     endif
   catch /^Vim\%((\a\+)\)\=:E37:/
   catch
@@ -596,6 +600,14 @@ function! s:goto(token, folds) abort
     call s:swap_answer_close()
   endtry
   call s:land_if_target(a:folds)
+  if !exists('g:vaf_landed')
+    return
+  endif
+  if number < 0 && bufnr('%') > last
+    let b:vaf_created = 1
+  elseif opening && win_getid() != window && tabpagenr('$') > tabs
+    let w:vaf_opened = 1
+  endif
 endfunction
 """
 

@@ -288,3 +288,30 @@ def test_a_read_lands_even_when_a_user_bufreadpost_errors(
     assert modifiable == "0"  # the Read's lock ran: no prompt ate it
     # The error was silenced in Vim, so the hook log says it.
     assert "the follower's Vim raised: Vim(echoerr):x" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "autocmd", ["", "autocmd BufReadPost *.py echoerr 'x'"], ids=["clean", "echoerr"]
+)
+def test_an_adopted_read_through_an_erroring_autocommand_is_still_evictable(
+    autocmd: str, tmux_session: str, tmp_path: Path, wait_until: Callable[..., bool]
+) -> None:
+    """Review of T6+T7, I3: the caught error skipped `b:vaf_created`, so
+    s:evict took the follower's own tab for the user's ("forgotten") and
+    every such Read left one more tab past max_tabs."""
+    user = tmp_path / "user.txt"
+    user.write_text("mine\n")
+    pane = vim_pane(tmux_session, tmp_path, wait_until, f"edit {user}")
+    if autocmd:
+        _keys(pane, ":" + autocmd)
+    adopted = follower(pane, adopted=True)
+    target = tmp_path / "t.py"
+    target.write_text(BEFORE)
+
+    adopted.ensure_showing(str(target))
+    created = "tabpagenr('$') . get(b:, 'vaf_created', 0)"
+    assert state(pane, tmp_path, wait_until, created)[2] == "21"
+    adopted.close_tab(str(target))
+
+    gone = f"tabpagenr('$') . bufexists('{target}') . bufname('%')"
+    assert state(pane, tmp_path, wait_until, gone)[2] == f"10{user}"
