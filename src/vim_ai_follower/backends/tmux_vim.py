@@ -1001,12 +1001,13 @@ endfunction
 # The whole script. `@DIR@` is the cache directory (a Vim string literal,
 # trailing slash included) and `@NAME@` the dispatcher's name, both filled in
 # by _vim_functions. The dispatcher is defined LAST, and only when every
-# `s:` helper the script defines exists (`@HELPERS@`, the `exists()` chain
-# _vim_functions builds from the script's own `function! s:` lines, so it
-# cannot drift): `:source` carries on past an error and the define line's
-# `sil!` hides it, so a helper that failed to define (a Vim too old for its
-# syntax) leaves no dispatcher, the calls do nothing and the navigation
-# fails safe (SHRINK review, M3). The loop after it deletes the dispatchers
+# `s:` helper the script defines exists, and so does the preamble's `s:dir`
+# (`@HELPERS@`, the `exists()` chain _vim_functions builds from the
+# script's own `function! s:` lines, so it cannot drift): `:source` carries
+# on past an error and the define line's `sil!` hides it, so a helper or a
+# preamble statement that failed (a Vim too old for its syntax) leaves no
+# dispatcher, the calls do nothing and the navigation fails safe (SHRINK
+# review M3; T9 review m1). The loop after it deletes the dispatchers
 # of other versions: a `VafFollower_<6 hex>` only when Vim says it was set
 # from the follower's own script for that hash IN THIS CACHE DIRECTORY,
 # `s:dir . 'vaf-<6 hex>.vim'` (`:verbose function`'s "Last set from <path>"
@@ -1228,7 +1229,9 @@ def _vim_functions() -> tuple[str, str]:
     the top)."""
     helpers = dict.fromkeys(re.findall(r"^function! s:(\w+)", _VIM_SCRIPT, re.MULTILINE))
     text = _VIM_SCRIPT.replace("@DIR@", _vim_string(f"{cache.CACHE_DIR}/")).replace(
-        "@HELPERS@", " && ".join(f"exists('*s:{helper}')" for helper in helpers)
+        "@HELPERS@",
+        # s:dir is the preamble's last statement (review of T9, m1).
+        " && ".join(["exists('s:dir')", *(f"exists('*s:{helper}')" for helper in helpers)]),
     )
     name = "VafFollower_" + hashlib.sha256(text.encode()).hexdigest()[:6]
     return name, text.replace("@NAME@", name)

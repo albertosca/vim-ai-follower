@@ -771,16 +771,24 @@ def test_a_real_vim_drops_the_dispatchers_of_other_versions_and_nothing_else(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize(
+    ("intact", "broken_into"),
+    [
+        ("function! s:goto(token, folds) abort", "function! s:goto(token, folds abort"),
+        # A script-level statement before the helpers (review of T9, m1).
+        ("let s:dir = @DIR@\n", "let s:dir = @DIR@ .\n"),
+    ],
+    ids=["helper", "preamble"],
+)
 def test_a_real_vim_defines_no_dispatcher_from_a_half_loaded_script(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, intact: str, broken_into: str
 ) -> None:
     """`:source` carries on past an error, and the define line's `sil!`
-    hides it: a helper that failed to define must not leave a dispatcher
-    behind, or every call would run against a half-loaded script. Without
-    the dispatcher the calls do nothing and the navigation fails safe."""
-    broken = tmux_vim._VIM_SCRIPT.replace(
-        "function! s:goto(token, folds) abort", "function! s:goto(token, folds abort"
-    )
+    hides it: a helper that failed to define, or a preamble statement that
+    failed (no `s:dir`), must not leave a dispatcher behind, or every call
+    would run against a half-loaded script. Without the dispatcher the calls
+    do nothing and the navigation fails safe."""
+    broken = tmux_vim._VIM_SCRIPT.replace(intact, broken_into)
     assert broken != tmux_vim._VIM_SCRIPT
     monkeypatch.setattr(tmux_vim, "_VIM_SCRIPT", broken)
     with patch.object(tmux_vim, "_home_relative", return_value=None):
