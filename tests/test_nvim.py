@@ -11,6 +11,7 @@ from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends import get_follower
 from vim_ai_follower.backends.nvim import _FIND_BUFFER_LUA, NvimFollower, _animate_lines
 from vim_ai_follower.diff import EditOp, compute_edit_script
+from vim_ai_follower.state import FollowerState
 
 # --- _animate_lines driver (mocked Nvim) ---------------------------------
 
@@ -297,6 +298,9 @@ def test_show_fresh_marks_animating_and_leaves_the_slot_to_its_owner(tmp_path: P
 
 
 def test_show_fresh_relocks_buffer_when_completed(tmp_path: Path) -> None:
+    FollowerState.set(
+        "@1", "nvim", "/tmp/x.sock", adopted=False, base_dir=tmp_path
+    )  # proven dedicated
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")

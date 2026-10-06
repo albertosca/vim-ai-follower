@@ -32,7 +32,8 @@ def _buffer_9_not_clean(code: str, *args: object) -> object:
 
 
 def test_ensure_showing_locks_an_existing_buffer_after_switching_to_it() -> None:
-    follower = NvimFollower(socket_path="/tmp/x.sock")
+    state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=False)  # proven dedicated
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
     nvim.exec_lua.side_effect = _buffer_9_not_clean
     nvim.api.get_current_buf.return_value.handle = 9
@@ -46,11 +47,12 @@ def test_ensure_showing_locks_an_existing_buffer_after_switching_to_it() -> None
 
 
 def test_ensure_showing_locks_unconditionally_without_checking_prior_state() -> None:
+    state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=False)  # proven dedicated
     # hand_over (or an in-progress edit interrupted) leaves a buffer
     # modifiable; a later Read-navigation back to it must relock it, exactly
     # like tmux's ensure_showing unconditionally resends `_LOCK_READONLY`
     # rather than first querying the current lock state.
-    follower = NvimFollower(socket_path="/tmp/x.sock")
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
     nvim.exec_lua.side_effect = _buffer_9_not_clean
     nvim.api.get_current_buf.return_value.handle = 9
@@ -134,7 +136,8 @@ def test_apply_edit_leaves_an_adopted_followers_disk_loaded_buffer_modifiable(
 
 
 def test_ensure_showing_locks_a_disk_loaded_buffer_for_a_never_seen_file() -> None:
-    follower = NvimFollower(socket_path="/tmp/x.sock")
+    state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=False)  # proven dedicated
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     nvim.funcs.bufadd.return_value = 42
@@ -152,6 +155,7 @@ def test_ensure_showing_locks_a_disk_loaded_buffer_for_a_never_seen_file() -> No
 
 
 def test_apply_edit_locks_the_disk_loaded_buffer_when_the_original_vanished() -> None:
+    state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=False)  # proven dedicated
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
@@ -186,3 +190,83 @@ def test_goto_file_itself_never_touches_modifiable() -> None:
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.goto_file("/tmp/f.py")
     nvim.api.buf_set_option.assert_not_called()
+
+
+# Fail closed: a FollowerState that is gone (a concurrent `claude-follow stop`
+# between two entry points of one hook) proves nothing about whose nvim this
+# is, so no entry point locks a buffer and every event-firing command runs
+# plainly, its messages left for the user to see (exec_logged adopted=True).
+
+
+def _state_gone(tmp_path: Path) -> None:
+    """A dedicated follower's state, written and then removed: what a
+    `claude-follow stop` racing the hook leaves behind."""
+    state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=False)
+    state.FollowerState.clear("@1")
+    assert state.FollowerState.read("@1") is None
+
+
+def test_ensure_showing_with_the_state_gone_locks_nothing_and_logs_nothing(
+    tmp_path: Path,
+) -> None:
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
+    nvim = MagicMock()
+    nvim.exec_lua.side_effect = lambda code, *args: True if code == _IS_CLEAN_LUA else 9
+    nvim.api.get_current_buf.return_value.handle = 9
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch.object(NvimFollower, "goto_file"),
+        patch("vim_ai_follower.backends.nvim.exec_logged") as exec_logged,
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+    ):
+        _state_gone(tmp_path)
+        follower.ensure_showing("/tmp/f.py")
+    assert call(9, "modifiable", False) not in nvim.api.buf_set_option.call_args_list
+    exec_logged.assert_called_once_with(nvim, "silent edit!", adopted=True)
+
+
+def test_ensure_showing_of_a_new_file_with_the_state_gone_locks_nothing(tmp_path: Path) -> None:
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
+    nvim = MagicMock()
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
+    nvim.funcs.bufadd.return_value = 42
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim.exec_logged") as exec_logged,
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+    ):
+        _state_gone(tmp_path)
+        follower.ensure_showing("/tmp/f.py")
+    assert call(42, "modifiable", False) not in nvim.api.buf_set_option.call_args_list
+    assert exec_logged.call_args_list == [
+        call(nvim, "call bufload(42)", adopted=True),
+        call(nvim, "filetype detect", adopted=True),
+    ]
+
+
+def test_reload_and_relock_with_the_state_gone_locks_nothing(tmp_path: Path) -> None:
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
+    nvim = MagicMock()
+    nvim.api.get_current_buf.return_value.handle = 9
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch.object(NvimFollower, "goto_file"),
+        patch("vim_ai_follower.backends.nvim.exec_logged") as exec_logged,
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+    ):
+        _state_gone(tmp_path)
+        follower.reload_and_relock("/tmp/f.py")
+    nvim.api.buf_set_option.assert_not_called()
+    exec_logged.assert_called_once_with(nvim, "edit!", adopted=True)
+
+
+def test_a_completed_drive_with_the_state_gone_leaves_the_buffer_modifiable(
+    tmp_path: Path,
+) -> None:
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
+    nvim = MagicMock()
+    with patch("vim_ai_follower.cache.CACHE_DIR", tmp_path):
+        _state_gone(tmp_path)
+        result = follower._drive(nvim, 9, lambda: AnimationResult("completed", 1))
+    assert result == AnimationResult("completed", 1)
+    assert nvim.api.buf_set_option.call_args_list == [call(9, "modifiable", True)]

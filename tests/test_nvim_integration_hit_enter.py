@@ -229,7 +229,7 @@ def test_a_plugin_prompt_never_freezes_the_dedicated_follower(
 
         def next_hook() -> tuple[bool, str]:
             alive = follower.is_alive()
-            NvimStatusSurface(socket_path=sock).set_state("Writing...")
+            NvimStatusSurface(socket_path=sock, adopted=False).set_state("Writing...")
             return alive, follower.probe_buffer(str(target), _CONTENT)
 
         finished, box = _in_thread(next_hook)

@@ -172,7 +172,16 @@ def test_read_defaults_new_fields_for_old_state_files(tmp_path: Path) -> None:
     (tmp_path / "$9.pane").write_text('{"backend": "tmux", "target": "%5"}')
     raw = FollowerState.read("$9", base_dir=tmp_path)
     assert raw is not None
-    assert (raw.open_files, raw.enabled, raw.adopted, raw.shown_any) == ((), True, False, False)
+    assert (raw.open_files, raw.enabled, raw.shown_any) == ((), True, False)
+
+
+def test_a_state_file_without_adopted_reads_as_adopted(tmp_path: Path) -> None:
+    # Missing means unknown, and unknown must not lock a buffer or press keys:
+    # every reader of `adopted` takes the user's-editor side when it is True.
+    (tmp_path / "$9.pane").write_text('{"backend": "nvim", "target": "/tmp/x.sock"}')
+    raw = FollowerState.read("$9", base_dir=tmp_path)
+    assert raw is not None
+    assert raw.adopted is True
 
 
 def test_update_replaces_only_given_fields(tmp_path: Path) -> None:

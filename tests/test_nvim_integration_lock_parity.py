@@ -37,6 +37,9 @@ def test_ensure_showing_a_never_seen_file_locks_the_loaded_buffer(
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    FollowerState.set(
+        "@1", "nvim", headless_nvim, adopted=False, speed="instant"
+    )  # proven dedicated, at the pace this follower was built with
 
     read_me = tmp_path / "read_me.py"
     read_me.write_text("disk1\ndisk2\n")
@@ -79,6 +82,9 @@ def test_ensure_showing_an_existing_unlocked_buffer_switches_to_it_and_locks_it(
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    FollowerState.set(
+        "@1", "nvim", headless_nvim, adopted=False, speed="instant"
+    )  # proven dedicated, at the pace this follower was built with
 
     target = tmp_path / "live.py"
     target.write_text("STALE DISK CONTENT\n")
@@ -139,6 +145,9 @@ def test_apply_edit_on_a_vanished_buffer_locks_the_disk_loaded_buffer(
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    FollowerState.set(
+        "@1", "nvim", headless_nvim, adopted=False, speed="instant"
+    )  # proven dedicated, at the pace this follower was built with
 
     target = tmp_path / "wiped.py"
     before = "a\nb\nc\n"
@@ -203,6 +212,9 @@ def test_read_navigation_then_a_real_edit_on_the_same_file_still_animates(
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    FollowerState.set(
+        "@1", "nvim", headless_nvim, adopted=False, speed="instant"
+    )  # proven dedicated, at the pace this follower was built with
 
     target = tmp_path / "read_then_edit.py"
     before = "a\nb\nc\n"
@@ -238,6 +250,9 @@ def test_read_navigation_then_show_fresh_on_the_same_file_still_animates(
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    FollowerState.set(
+        "@1", "nvim", headless_nvim, adopted=False, speed="instant"
+    )  # proven dedicated, at the pace this follower was built with
 
     target = tmp_path / "read_then_fresh.py"
     target.write_text("original disk content\n")

@@ -84,7 +84,9 @@ class FollowerState:
             # such key: default it, exactly like the other late fields.
             stale_files=tuple(data.get("stale_files", [])),
             enabled=data.get("enabled", True),
-            adopted=data.get("adopted", False),
+            # Missing means unknown, and unknown must not lock or press keys:
+            # every reader of `adopted` takes the user's-editor side on True.
+            adopted=data.get("adopted", True),
             shown_any=data.get("shown_any", False),
             writers=tuple(data.get("writers", [])),
             writer_labels=tuple(data.get("writer_labels", [])),

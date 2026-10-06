@@ -187,10 +187,11 @@ class NvimStatusSurface:
     method runs under nvim_prompt's sweep + watchdog: a hit-enter prompt a
     plugin left behind would otherwise freeze the hook right here, before the
     follower's own entry point could sweep it. `adopted` (from FollowerState,
-    via status_surface_for) turns that off for the user's own editor."""
+    via status_surface_for) turns that off for the user's own editor. It
+    defaults to True: a surface nobody told is dedicated presses no keys."""
 
     socket_path: str
-    adopted: bool = False
+    adopted: bool = True
 
     def _connect(self) -> pynvim.Nvim:
         import pynvim

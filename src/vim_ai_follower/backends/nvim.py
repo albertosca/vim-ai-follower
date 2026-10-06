@@ -398,6 +398,16 @@ class NvimFollower:
         state = FollowerState.read(self.window_id)
         return state is not None and not state.adopted
 
+    def _locks_buffers(self) -> bool:
+        """Whether this follower may lock a buffer (nomodifiable): only a
+        follower its FollowerState PROVES dedicated. Fails closed like
+        _is_dedicated, and for the same reason: with the state gone mid-hook
+        (a concurrent `claude-follow stop`), nothing proves the nvim is not
+        the user's own editor, and a lock there would shut them out of their
+        own buffer. An unlocked dedicated buffer only costs a stray keystroke
+        on a display-only buffer."""
+        return self._is_dedicated()
+
     def is_alive(self) -> bool:
         """A FAST request on purpose: nvim answers get_mode even while a
         hit-enter prompt blocks every other call, so a follower stuck on a
@@ -429,7 +439,12 @@ class NvimFollower:
         autocmd that errors) raises out of exec2. Uncaught, it aborted
         show_fresh right after the rename and left an empty buffer. It is
         logged instead, and the buffer is left swap-off: the state the
-        follower already chose before the re-enable, and the safe side."""
+        follower already chose before the re-enable, and the safe side.
+
+        Asks _is_adopted, not _is_dedicated, on purpose: with the state gone
+        it skips the re-enable, and turning swap back on is the safe side
+        either way (a dedicated follower's buffer with swap on only costs a
+        swap file; an adopted one's with it off is what this restores)."""
         if not self._is_adopted():
             return
         try:
@@ -441,7 +456,7 @@ class NvimFollower:
     def _exec(self, nvim: pynvim.Nvim, command: str) -> None:
         """An event-firing Ex command (filetype detect, edit!, bufload): its
         synchronous plugin output is captured and logged, see exec_logged."""
-        exec_logged(nvim, command, adopted=self._is_adopted())
+        exec_logged(nvim, command, adopted=not self._is_dedicated())
 
     def _drive(
         self,
@@ -467,7 +482,7 @@ class NvimFollower:
         if result.outcome != "interrupted":
             # The buffer now holds exactly what Claude wrote: see _IS_CLEAN_LUA.
             nvim.api.buf_set_var(buf, _SYNCED_TICK, nvim.api.buf_get_changedtick(buf))
-            if not self._is_adopted():
+            if self._locks_buffers():
                 nvim.api.buf_set_option(buf, "modifiable", False)
         return result
 
@@ -764,7 +779,7 @@ class NvimFollower:
         with self._guarded(nvim, "reload_and_relock"):
             self.goto_file(file_path)
             self._exec(nvim, "edit!")
-            if not self._is_adopted():
+            if self._locks_buffers():
                 buf = nvim.api.get_current_buf().handle
                 nvim.api.buf_set_option(buf, "modifiable", False)
 
@@ -1073,7 +1088,7 @@ class NvimFollower:
         nvim.api.win_set_buf(0, bufnr)
         self._restore_swap_if_adopted(nvim)
         self._exec(nvim, "filetype detect")
-        if not self._is_adopted():
+        if self._locks_buffers():
             nvim.api.buf_set_option(bufnr, "modifiable", False)
 
     def probe_buffer(self, file_path: str, content: str) -> BufferProbe:
@@ -1130,7 +1145,7 @@ class NvimFollower:
                 self.goto_file(file_path)
                 buf = nvim.api.get_current_buf().handle
                 self._reload_if_clean(nvim, buf)
-                if not self._is_adopted():
+                if self._locks_buffers():
                     nvim.api.buf_set_option(buf, "modifiable", False)
                 return
             self._open_from_disk(nvim, file_path)

@@ -355,7 +355,7 @@ def test_a_dedicated_followers_cue_sweeps_a_leftover_prompt_before_drawing() -> 
     # entry point could sweep it.
     nvim = _prompt_blocked_nvim()
     with patch("pynvim.attach", return_value=nvim):
-        NvimStatusSurface(socket_path="/tmp/x.sock").set_state("Writing...")
+        NvimStatusSurface(socket_path="/tmp/x.sock", adopted=False).set_state("Writing...")
     nvim.api.input.assert_called_once_with("<CR>")
     assert nvim.mock_calls.index(call.api.input("<CR>")) < nvim.mock_calls.index(
         call.api.list_wins()
@@ -384,3 +384,14 @@ def test_status_surface_for_carries_the_adopted_flag_to_the_nvim_surface() -> No
     surface = status_surface_for(state)
     assert isinstance(surface, NvimStatusSurface)
     assert surface.adopted is True
+
+
+def test_a_surface_built_without_the_adopted_flag_never_answers_prompts() -> None:
+    # Unknown must not press keys: only a caller that KNOWS the follower is
+    # dedicated (status_surface_for, from FollowerState) turns the sweep on.
+    nvim = _prompt_blocked_nvim()
+    with patch("pynvim.attach", return_value=nvim) as attach:
+        NvimStatusSurface(socket_path="/tmp/x.sock").set_state("Writing...")
+    nvim.api.get_mode.assert_not_called()
+    nvim.api.input.assert_not_called()
+    assert attach.call_count == 1

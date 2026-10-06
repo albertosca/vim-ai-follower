@@ -13,6 +13,7 @@ from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends.nvim import NvimFollower
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
 from vim_ai_follower.diff import EditOp
+from vim_ai_follower.state import FollowerState
 
 
 def test_ensure_showing_switches_to_an_existing_buffer_without_touching_disk() -> None:
@@ -31,7 +32,8 @@ def test_ensure_showing_switches_to_an_existing_buffer_without_touching_disk() -
 
 
 def test_ensure_showing_loads_the_real_disk_content_when_no_buffer_exists() -> None:
-    follower = NvimFollower(socket_path="/tmp/x.sock")
+    FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=False)  # proven dedicated
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     nvim.funcs.bufadd.return_value = 42
@@ -83,6 +85,7 @@ def test_goto_line_keeps_an_in_range_offset() -> None:
 
 
 def test_apply_edit_shows_disk_content_instead_of_animating_into_nothing() -> None:
+    FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=False)  # proven dedicated
     # The ops were computed against a snapshot of a buffer that no longer
     # exists; animating them into a fresh empty buffer either fabricates
     # wrong content or raises "Index out of bounds".

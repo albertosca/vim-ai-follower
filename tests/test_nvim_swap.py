@@ -38,7 +38,8 @@ def _order(nvim: MagicMock, wanted: Any) -> int:
 
 
 def test_ensure_showing_disables_the_buffers_swapfile_before_loading_it() -> None:
-    follower = NvimFollower(socket_path="/tmp/x.sock")
+    state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=False)  # proven dedicated
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = _disk_loading_nvim()
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -58,6 +59,7 @@ def test_ensure_showing_disables_the_buffers_swapfile_before_loading_it() -> Non
 
 
 def test_apply_edits_vanished_buffer_branch_also_disables_the_swapfile() -> None:
+    state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=False)  # proven dedicated
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = _disk_loading_nvim()
     ops = [EditOp(kind="replace", start_line=3, end_line=3, new_lines=("C",))]
@@ -73,9 +75,10 @@ def test_apply_edits_vanished_buffer_branch_also_disables_the_swapfile() -> None
 
 
 def test_the_disk_loading_branch_writes_exactly_three_buffer_options() -> None:
+    state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=False)  # proven dedicated
     # Pins the whole option set, so an extra (or a GLOBAL) option write shows
     # up as a failure here rather than as a surprise in the user's own nvim.
-    follower = NvimFollower(socket_path="/tmp/x.sock")
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = _disk_loading_nvim()
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),

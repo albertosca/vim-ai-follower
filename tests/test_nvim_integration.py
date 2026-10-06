@@ -437,6 +437,9 @@ def test_des_interrupt_replays_a_show_fresh_remainder_to_exact_content(
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    FollowerState.set(
+        "@1", "nvim", headless_nvim, adopted=False, speed="instant"
+    )  # proven dedicated; instant keeps the pace-0 signal count
     file_a = str(tmp_path / "a.py")
     content = "l0\nl1\nl2\nl3\n"
     lines = content.splitlines()
@@ -642,6 +645,9 @@ def test_hand_over_reasserts_the_buffer_is_modifiable(
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    FollowerState.set(
+        "@1", "nvim", headless_nvim, adopted=False, speed="instant"
+    )  # proven dedicated, at the pace this follower was built with
     file_a = str(tmp_path / "a.py")
     follower.show_fresh(file_a, "a = 1\n")  # completes -> relocked nomodifiable
     nvim = pynvim.attach("socket", path=headless_nvim)
