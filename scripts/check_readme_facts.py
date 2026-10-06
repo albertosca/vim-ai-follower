@@ -34,6 +34,7 @@ FACT_FILES = (
     "guide/en/llms.txt",
 )
 LINK_FILES = ("README.md", "README.pt.md")
+PREVIEW_FILES = ("assets/site/social-preview.svg",)
 STALE_BAND = 100
 
 _BLOCK = re.compile(r"<!-- facts -->(.*?)<!-- /facts -->", re.DOTALL)
@@ -108,6 +109,36 @@ def fact_problems(name: str, text: str, real: Facts) -> list[str]:
     return problems
 
 
+def preview_problems(name: str, text: str, real: Facts) -> list[str]:
+    counts = {_number(match) for match in _TESTS.findall(text)}
+    if not counts:
+        return [f'{name}: no test count ("N+ unit tests")']
+    if len(counts) > 1:
+        return [
+            f"{name}: its test counts disagree ({sorted(counts)}):"
+            " title, aria-label and text must match"
+        ]
+    claimed = counts.pop()
+    problems: list[str] = []
+    if claimed > real.tests:
+        problems.append(
+            f"{name}: claims {claimed}+ tests but there are {real.tests} — a false claim"
+        )
+    elif real.tests - claimed > STALE_BAND:
+        problems.append(
+            f"{name}: claims {claimed}+ tests, real {real.tests} — stale by more than {STALE_BAND}"
+        )
+    for coverage in re.findall(r"(\d+)% branch", text):
+        if int(coverage) != real.coverage:
+            problems.append(f"{name}: coverage must read {real.coverage}% (the CI gate)")
+    if problems:
+        problems.append(
+            f"{name}: re-render assets/site/social-preview.png and re-upload it"
+            " (GitHub → Settings → Social preview)"
+        )
+    return problems
+
+
 def slug(heading: str) -> str:
     text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", heading)
     text = text.strip().lower()
@@ -160,6 +191,8 @@ def main(argv: list[str]) -> int:
     problems: list[str] = []
     for name in FACT_FILES:
         problems += fact_problems(name, (repo / name).read_text(), real)
+    for name in PREVIEW_FILES:
+        problems += preview_problems(name, (repo / name).read_text(), real)
     for name in LINK_FILES:
         problems += link_problems(repo, name)
     for problem in problems:

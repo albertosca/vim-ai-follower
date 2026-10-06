@@ -215,7 +215,41 @@ def test_main_exit_codes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> 
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(good)
+    for name in _crf().PREVIEW_FILES:
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("<svg><title>1+ unit tests · 100% branch</title></svg>")
     assert _crf().main(["x", "--junit", str(report), "--repo", str(tmp_path)]) == 0
     (tmp_path / "README.md").write_text(_block("1+ tests · 95% · v0.2.8"))
     assert _crf().main(["x", "--junit", str(report), "--repo", str(tmp_path)]) == 1
     assert "coverage must read" in capsys.readouterr().err
+    (tmp_path / "README.md").write_text(good)
+    (tmp_path / _crf().PREVIEW_FILES[0]).write_text("<svg><title>9+ unit tests</title></svg>")
+    assert _crf().main(["x", "--junit", str(report), "--repo", str(tmp_path)]) == 1
+    assert "social-preview.svg: claims 9+" in capsys.readouterr().err
+
+
+def _svg(label: str, title: str, text: str) -> str:
+    return f'<svg aria-label="{label}"><title>{title}</title><text>{text}</text></svg>'
+
+
+def test_the_social_preview_must_carry_a_current_test_count() -> None:
+    module = _crf()
+    real = module.Facts(tests=1125, coverage=100, version="0.3.0")
+    stale = _svg("x 700+ unit tests", "x 700+ unit tests", "700+ unit tests")
+    assert module.preview_problems("assets/site/social-preview.svg", stale, real)
+
+
+def test_every_count_in_the_preview_must_agree() -> None:
+    module = _crf()
+    real = module.Facts(tests=1125, coverage=100, version="0.3.0")
+    mixed = _svg("1100+ unit tests", "1100+ unit tests", "1000+ unit tests")
+    assert module.preview_problems("assets/site/social-preview.svg", mixed, real)
+
+
+def test_a_current_preview_passes() -> None:
+    module = _crf()
+    real = module.Facts(tests=1125, coverage=100, version="0.3.0")
+    line = "1100+ unit tests · 100% branch"
+    good = _svg(line, line, line)
+    assert module.preview_problems("assets/site/social-preview.svg", good, real) == []
