@@ -11,6 +11,9 @@ behind eats it and the test says so.
   left on, it disables every insert-mode mapping and abbreviation and all
   auto-indenting for the user, in every buffer. The hand-off gives back the
   value the user had (in an adopted Vim, possibly on).
+- A buffer the user made 'nomodifiable' themselves, in an adopted Vim, gets
+  that back when an animation on it is interrupted: the unlock turned it on,
+  and only the readonly was ever recorded and restored (N4).
 - A user autocommand that THROWS on the completion relock's `:e!` (s:relock):
   the `:e!` sat in a `try … finally` with no `catch`, so the exception ran the
   `finally` and then aborted the function before its `setlocal`, leaving the
@@ -184,3 +187,18 @@ def test_an_interrupt_gives_the_users_paste_back(
     assert result.outcome == "interrupted"
     modifiable, paste, *_ = state(pane, tmp_path, wait_until)
     assert (modifiable, paste) == ("1", users_paste)
+
+
+def test_an_interrupt_hands_back_the_users_own_nomodifiable(
+    tmux_session: str, tmp_path: Path, wait_until: Callable[..., bool]
+) -> None:
+    target = tmp_path / "t.py"
+    target.write_text(BEFORE)
+    pane = vim_pane(tmux_session, tmp_path, wait_until, f"edit {target}")
+    _keys(pane, ":setlocal nomodifiable")
+    follower(pane, adopted=True).ensure_showing(str(target))  # Claude's Read
+
+    result = interrupted_edit(follower(pane, adopted=True, speed="lento"), target)
+
+    assert result.outcome == "interrupted"
+    assert state(pane, tmp_path, wait_until)[0] == "0"

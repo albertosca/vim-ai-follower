@@ -316,3 +316,33 @@ def test_a_stop_then_start_racing_a_read_never_wipes_the_users_modified_buffer(
     report = _buffer(pane, tmp_path / "b.txt", "mine.py", wait_until)
     assert report["EXISTS"] == "1", report
     assert report["LINES"] == ["mine = 1", UNSAVED], report
+
+
+@pytest.mark.parametrize("close", ["eviction", "stop"])
+def test_releasing_the_read_lock_keeps_the_users_own_nomodifiable(
+    close: str,
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    """The user set 'nomodifiable' on their own buffer; Claude's Read locks
+    it (the follower's readonly and nomodifiable), and releasing that lock
+    must hand back the user's 'nomodifiable', not turn it on (N4)."""
+    root = Path(os.path.realpath(tmp_path))
+    mine = root / "mine.py"
+    mine.write_text("mine = 1\n")
+    others = _others(root, 1)
+    pane, window_id, follower = _adopted(tmux_session, monkeypatch, root, "mine.py")
+    _keys(pane, "-l", ":setlocal nomodifiable")
+    _keys(pane, "Enter")
+
+    _read(window_id, follower, mine, 1)
+    if close == "eviction":
+        _read(window_id, follower, others[0], 1)
+    else:
+        assert commands.cmd_stop({"TMUX_PANE": pane}) == 0
+
+    report = _buffer(pane, tmp_path / "b.txt", "mine.py", wait_until)
+    assert report["EXISTS"] == "1", report
+    assert report["MA"] == "0", report

@@ -104,7 +104,13 @@ from vim_ai_follower.tmux import TmuxPane
 # and is recorded, 0 included, so a readonly the user dropped since is not
 # restored later. While the follower's claim is on, the earlier record stands;
 # that is also what carries it across a killed hook or an exception mid-run.
-# The restore drops the record once used. The one thing it cannot see is the
+# The restore drops the record once used. 'modifiable' is recorded with it
+# (`b:vaf_user_ma`), under the same rule: the follower's locks turn it off and
+# its unlock and release turned it back ON, even on a buffer the user had made
+# 'nomodifiable' themselves (N4, final review of backlog-sweep-3). The restore
+# puts back a recorded 'nomodifiable' (never turns the option on: after a
+# completed animation the relock's lock stands) and s:release puts back the
+# recorded value, 1 when there is none. The one thing it cannot see is the
 # user changing 'readonly' while the follower's own lock is on (a bare
 # `:setlocal readonly`, or `:view` of a file the follower has locked): with
 # no autocommand in the user's Vim, that is indistinguishable from the
@@ -142,6 +148,7 @@ _VIM_READONLY = r"""
 function! s:note_user_readonly() abort
   if !get(b:, 'vaf_ro_ours')
     let b:vaf_user_ro = &readonly
+    let b:vaf_user_ma = &modifiable
   endif
 endfunction
 
@@ -159,7 +166,10 @@ function! s:restore_readonly(pane) abort
   elseif get(b:, 'vaf_ro_ours') == 2
     let b:vaf_ro_ours = 0
   endif
-  unlet! b:vaf_user_ro
+  if !get(b:, 'vaf_user_ma', 1)
+    setlocal nomodifiable
+  endif
+  unlet! b:vaf_user_ro b:vaf_user_ma
   let answer = &readonly && !get(b:, 'vaf_ro_ours') ? '1' : '0'
   try
     call writefile([answer], s:dir . 'readonly-' . a:pane . '.txt')
@@ -749,6 +759,7 @@ function! s:rename(token, folds, in_new_tab, adopted) abort
     let b:vaf_created = 1
     if a:adopted
       let b:vaf_user_ro = 0
+      let b:vaf_user_ma = 1
       let b:vaf_ro_ours = 2
     endif
     setlocal buftype= modifiable noreadonly
@@ -816,7 +827,7 @@ endfunction
 #     max_tabs still caps the follower's own tabs.
 #
 # A buffer left in place gets back what the follower's Read lock took
-# (s:release): 'modifiable', and the readonly the user had (see
+# (s:release): the 'modifiable' and the readonly the user had (see
 # s:note_user_readonly). The marks are buffer and window variables, not
 # state in the cache, because they must die with the editor: an adopted Vim
 # restarted in the same shell holds only buffers the USER opened, and a mark
@@ -827,12 +838,14 @@ function! s:release(number) abort
   let variables = getbufvar(a:number, '')
   if get(variables, 'vaf_ro_ours') == 1
     call setbufvar(a:number, '&readonly', get(variables, 'vaf_user_ro', 0))
-    call setbufvar(a:number, '&modifiable', 1)
+    call setbufvar(a:number, '&modifiable', get(variables, 'vaf_user_ma', 1))
   endif
   call setbufvar(a:number, 'vaf_ro_ours', 0)
-  if has_key(variables, 'vaf_user_ro')
-    call remove(variables, 'vaf_user_ro')
-  endif
+  for name in ['vaf_user_ro', 'vaf_user_ma']
+    if has_key(variables, name)
+      call remove(variables, name)
+    endif
+  endfor
 endfunction
 
 function! s:evict(token, folds) abort
