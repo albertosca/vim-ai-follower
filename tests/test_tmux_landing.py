@@ -6,8 +6,10 @@ stale HOME answer, is tests/test_integration_stale_home.py."""
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -158,7 +160,7 @@ def test_other_failures_keep_a_yes(lands: bool | str, reason: str) -> None:
     record, _marker = _record(True)
     _sent, error = _run(lands, ACTING["goto_file"])
     assert isinstance(error, NavigationFailed)
-    assert f"({reason})" in str(error)
+    assert f"({reason}" in str(error)  # no answer goes on: "; not retrying …"
     assert record.exists()
 
 
@@ -235,6 +237,73 @@ def test_an_unrequested_readonly_answer_is_never_waited_for_or_read(
     ):
         assert TmuxVimFollower(pane_id="%2", window_id="@9").user_readonly("/tmp/t.py") is False
     assert "no readonly answer" not in caplog.text
+
+
+# --- final M3: one unanswered landing backs the pane off ---
+
+
+def test_no_answer_backs_the_pane_off_and_the_next_calls_send_nothing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _sent, error = _run(False, ACTING["goto_file"])
+    assert isinstance(error, NavigationFailed)
+    assert "(no answer; not retrying for 30 s)" in str(error)
+    assert tmux_vim._unanswered_path("%2").exists()
+    calls = {
+        **ACTING,
+        "probe_buffer": lambda follower: follower.probe_buffer("/tmp/t.py", "a\n"),
+        "close_tab": lambda follower: follower.close_tab("/tmp/t.py"),
+    }
+    for name, call in calls.items():
+        sent, error = _run(True, call)
+        assert sent == [], name
+        if name in ("probe_buffer", "close_tab"):
+            assert error is None
+        else:
+            assert isinstance(error, NavigationFailed), name
+            assert "did not answer 0 s ago; not retrying for another 30 s" in str(error)
+    assert "did not ask the follower's Vim about /tmp/t.py: the follower's Vim" in caplog.text
+    assert "did not close the tab of /tmp/t.py: the follower's Vim" in caplog.text
+
+
+def test_no_answer_explained_by_a_home_distrust_does_not_back_off() -> None:
+    """The HOME distrust comes first: the next call asks again and heals at
+    once (tests/test_integration_stale_home.py)."""
+    record, _marker = _record(True)
+    _sent, error = _run(False, ACTING["goto_file"], reads_handle=False)
+    assert isinstance(error, NavigationFailed)
+    assert str(error).endswith("(no answer; asking about its HOME again)")
+    assert not record.exists()
+    assert not tmux_vim._unanswered_path("%2").exists()
+
+
+@pytest.mark.parametrize("lands", ["elsewhere", "unread"])
+def test_an_answer_that_is_not_a_landing_does_not_back_off(lands: str) -> None:
+    _sent, error = _run(lands, ACTING["goto_file"])
+    assert isinstance(error, NavigationFailed)
+    assert not tmux_vim._unanswered_path("%2").exists()
+
+
+def test_a_landing_after_the_backoff_ends_it() -> None:
+    marker = tmux_vim._unanswered_path("%2")
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+    expired = time.time() - tmux_vim._UNANSWERED_BACKOFF_SECONDS - 1
+    os.utime(marker, (expired, expired))
+    sent, error = _run(True, ACTING["goto_file"])
+    assert error is None
+    assert sent != []
+    assert not marker.exists()
+
+
+def test_a_backoff_from_the_future_lasts_no_longer_than_the_backoff() -> None:
+    """A clock set back: the mark's age is negative."""
+    marker = tmux_vim._unanswered_path("%2")
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.touch()
+    future = time.time() + 3600
+    os.utime(marker, (future, future))
+    assert tmux_vim._backoff("%2") == (0.0, tmux_vim._UNANSWERED_BACKOFF_SECONDS)
 
 
 def test_distrust_without_a_record_or_with_a_garbled_one_does_nothing() -> None:

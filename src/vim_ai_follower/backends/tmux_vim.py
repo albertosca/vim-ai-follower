@@ -1034,8 +1034,54 @@ _PROBE_POLL_SECONDS = 0.01
 # so the functions were never sourced), and that one heals itself
 # (_distrust_home).
 _LANDING_TIMEOUT_SECONDS = 10.0
+# How long a pane whose Vim left a landing unanswered is not asked again
+# (_unanswered_path). A Vim held in the command-line window, or an adopted
+# one running `:!make`, never answers: every hook waited the whole landing
+# timeout, one after another (final M3).
+_UNANSWERED_BACKOFF_SECONDS = 30.0
 
 logger = logging.getLogger("vim_ai_follower")
+
+
+def _unanswered_path(pane_id: str) -> Path:
+    """Marks that this pane's Vim left a landing unanswered (_await_landing);
+    its mtime is when. While it is younger than _UNANSWERED_BACKOFF_SECONDS
+    the navigating calls fail at once and send nothing (_backoff_remaining);
+    a confirmed landing removes it."""
+    return cache.CACHE_DIR / f"unanswered-{pane_id.lstrip('%')}"
+
+
+def _backoff(pane_id: str) -> tuple[float, float] | None:
+    """(seconds since this pane's Vim left a landing unanswered, seconds of
+    backoff left), or None when the pane is not backing off."""
+    try:
+        age = time.time() - _unanswered_path(pane_id).stat().st_mtime
+    except OSError:
+        return None
+    remaining = min(_UNANSWERED_BACKOFF_SECONDS - age, _UNANSWERED_BACKOFF_SECONDS)
+    if remaining <= 0:
+        return None
+    return max(age, 0.0), remaining
+
+
+def _backoff_reason(pane_id: str) -> str | None:
+    """Why nothing is sent to this pane now (see _backoff), for hook.log;
+    None when it is not backing off."""
+    backoff = _backoff(pane_id)
+    if backoff is None:
+        return None
+    age, remaining = backoff
+    return (
+        f"the follower's Vim did not answer {age:.0f} s ago; "
+        f"not retrying for another {remaining:.0f} s"
+    )
+
+
+def _raise_if_backing_off(pane_id: str, file_path: str) -> None:
+    """NavigationFailed at once, with no key sent, while the pane backs off."""
+    reason = _backoff_reason(pane_id)
+    if reason is not None:
+        raise NavigationFailed(f"not navigating to {file_path}: {reason}")
 
 
 def _probe_path(pane_id: str) -> Path:
@@ -1379,17 +1425,28 @@ def _await_landing(pane_id: str, answer: Path, nonce: str, file_path: str, handl
     answer at all while the path handle is still unread (Vim deletes it as it
     reads it), which is what a Vim whose `~` is not the hook's leaves — the
     script was never sourced there, so nothing ran. An answer, or a handle
-    Vim did read, means the functions reach it: a landing elsewhere, a Vim
-    busy in the command-line window, or one too slow for the wait skip the
-    edit and keep the answer."""
+    Vim did read, means the functions reach it: a landing elsewhere, or a
+    Vim too slow for the wait, skip the edit and keep the answer.
+
+    Any other no answer at all puts the pane in a backoff
+    (_unanswered_path): a Vim that is blocked (`:!make` in an adopted Vim, a
+    long `:sleep`) would otherwise stall every hook for the whole wait, one
+    after another (final M3). A confirmed landing ends it."""
     lines = _await_answer(answer, nonce, _LANDING_TIMEOUT_SECONDS)
     answer.unlink(missing_ok=True)
     if lines == ["landed"]:
+        _unanswered_path(pane_id).unlink(missing_ok=True)
         return
     verdict = lines[0] if lines else None
     reason = _NOT_LANDED.get(verdict, "an unexpected answer")
     if lines is None and handle.exists() and _distrust_home(pane_id):
+        # First: the next call asks about HOME again and heals at once, so
+        # no backoff holds it (tests/test_integration_stale_home.py).
         reason += "; asking about its HOME again"
+    elif lines is None:
+        with contextlib.suppress(OSError):
+            _unanswered_path(pane_id).touch()
+        reason += f"; not retrying for {_UNANSWERED_BACKOFF_SECONDS:.0f} s"
     handle.unlink(missing_ok=True)
     raise NavigationFailed(f"the follower's Vim did not land on {file_path} ({reason})")
 
@@ -1543,6 +1600,7 @@ class TmuxVimFollower:
         Waits for Vim to confirm it landed (s:landed) and raises
         NavigationFailed otherwise, so no caller sends a lock, an unlock, an
         animation or a relock onto whatever buffer is current instead."""
+        _raise_if_backing_off(self.pane_id, file_path)
         pane = TmuxPane(pane_id=self.pane_id)
         self._normal_mode(pane)
         self._define(pane)
@@ -1601,7 +1659,14 @@ class TmuxVimFollower:
         hold OPENS a tab for it, so an eviction whose wipe then missed
         ADDED a tab instead of removing one. With the name-pattern wipe that
         preceded it, that pair is how the tab count climbed past max_tabs
-        while the follower's own bookkeeping stayed pinned at the limit."""
+        while the follower's own bookkeeping stayed pinned at the limit.
+
+        While the pane backs off (see _await_landing) nothing is sent and
+        the tab stays, with one hook.log line."""
+        reason = _backoff_reason(self.pane_id)
+        if reason is not None:
+            logger.warning("did not close the tab of %s: %s", file_path, reason)
+            return
         pane = TmuxPane(pane_id=self.pane_id)
         self._normal_mode(pane)
         self._define(pane)
@@ -1648,7 +1713,12 @@ class TmuxVimFollower:
         base an edit script is about to be typed onto (see BufferProbe). The
         probe is a round-trip (s:probe): Vim dumps the buffer to a file
         and this polls for it. No answer within _PROBE_TIMEOUT_SECONDS is
-        "unknown"."""
+        "unknown", and so is every probe while the pane backs off (see
+        _await_landing), at once and with nothing sent."""
+        reason = _backoff_reason(self.pane_id)
+        if reason is not None:
+            logger.warning("did not ask the follower's Vim about %s: %s", file_path, reason)
+            return "unknown"
         probe = _probe_path(self.pane_id)
         probe.parent.mkdir(parents=True, exist_ok=True)
         probe.unlink(missing_ok=True)
@@ -1828,6 +1898,7 @@ class TmuxVimFollower:
         )
 
     def show_fresh(self, file_path: str, content: str, in_new_tab: bool = False) -> AnimationResult:
+        _raise_if_backing_off(self.pane_id, file_path)
         pane = TmuxPane(pane_id=self.pane_id)
         # The current buffer (or a new tab's) is wiped and renamed in place,
         # so the file's real, already-written content is never displayed
