@@ -686,13 +686,16 @@ endfunction
 #     buffer, unsaved text and all, before the landing check could stop
 #     anything (review, 2026-09-29).
 #   - The renamed-over buffer may be a plugin scratch screen (start screens
-#     set buftype=nofile, and often nomodifiable); the rename inherits both.
-#     It is made a regular, modifiable, writable file buffer here, BEFORE the
-#     read: a nofile buffer reads no file, and on a nomodifiable one the `%d`
-#     fails (E21, silenced), leaving the file it just read on screen until
-#     the run's own `:%d` (measured 2026-09-28 on a startify-like buffer).
+#     set buftype=nofile, bufhidden=wipe, nobuflisted, and often
+#     nomodifiable); the rename inherits all of them. It is made a regular,
+#     listed, modifiable, writable file buffer here, BEFORE the read: a
+#     nofile buffer reads no file, and on a nomodifiable one the `%d` fails
+#     (E21, silenced), leaving the file it just read on screen until the
+#     run's own `:%d` (measured 2026-09-28 on a startify-like buffer).
 #     buftype= also keeps the user's :w after an interrupt from failing with
-#     E382.
+#     E382; bufhidden= and buflisted keep the file's buffer in `:ls` and
+#     alive when its window moves on (bufhidden=wipe wiped it on the first
+#     `:enew`, C2/C3 minor; tests/test_integration_show_fresh_escaping.py).
 #   - In an adopted Vim (`adopted`) the rename also claims the option for the
 #     follower (see s:note_user_readonly): whatever readonly the renamed
 #     buffer carried belonged to the file it held before, never to this one.
@@ -767,7 +770,7 @@ function! s:rename(token, folds, in_new_tab, adopted) abort
       let b:vaf_user_ma = 1
       let b:vaf_ro_ours = 2
     endif
-    setlocal buftype= modifiable noreadonly
+    setlocal buftype= bufhidden= buflisted modifiable noreadonly
     noautocmd silent! edit!
     silent! %d _
   endif

@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 from test_integration_goto_file_escaping import _landing
+from test_integration_relock_autocmd import follower, state, vim_pane
 from test_integration_tab_eviction import _start_follower
 
 from vim_ai_follower import cli
@@ -67,3 +68,32 @@ def test_show_fresh_names_the_buffer_exactly_and_edit_reuses_it(
         "the Edit could not find show_fresh's buffer by name and opened a duplicate tab "
         f"(tabs {tabs} -> {tabs_again}); buffers: {buffers_again}"
     )
+
+
+def test_show_fresh_over_a_start_screen_makes_a_listed_buffer_that_survives_leaving_it(
+    tmux_session: str, tmp_path: Path, wait_until: Callable[..., bool]
+) -> None:
+    """A dedicated follower's first file is renamed onto its current buffer,
+    which can be a plugin's start screen (startify sets buftype=nofile,
+    bufhidden=wipe, nobuflisted, nomodifiable). The rename kept bufhidden and
+    nobuflisted: the file's buffer was missing from `:ls`, and leaving its
+    window wiped it."""
+    pane = vim_pane(
+        tmux_session,
+        tmp_path,
+        wait_until,
+        "setlocal buftype=nofile bufhidden=wipe nobuflisted nomodifiable",
+    )
+    target = tmp_path / "t.py"
+    target.write_text("x = 1\n")
+
+    assert follower(pane, adopted=False).show_fresh(str(target), "x = 1\n").outcome == "completed"
+
+    number = state(pane, tmp_path, wait_until, "bufnr('%')")[2]
+    after = state(
+        pane,
+        tmp_path,
+        wait_until,
+        f"execute('enew') . bufexists({number}) . buflisted({number})",
+    )
+    assert after[2] == "11", after
