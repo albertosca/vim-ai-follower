@@ -666,7 +666,14 @@ endfunction
 #     nothing for a swap to protect, and 'swapfile' is buffer-local: every
 #     other buffer keeps its check. Unlike s:goto's SwapExists answer, this
 #     path reads no file, so there is no ATTENTION dialog to answer, only the
-#     check to skip.
+#     check to skip. Renaming first and turning swap off after brings E325
+#     back (re-measured 2026-10-06: the ATTENTION block paged at `-- More --`
+#     at 49 columns), so the order stays, and the rename must then prove it
+#     stayed on the buffer whose swap it turned off: a user autocommand that
+#     jumps on BufFilePre (`tabfirst`) makes Vim refuse the rename and leaves
+#     another buffer current. Then that buffer gets its 'swapfile' back and
+#     nothing lands (final review of backlog-sweep-3;
+#     tests/test_integration_show_fresh_escaping.py).
 #   - The path goes through fnameescape(), same as s:goto: raw, `#`, `%` and
 #     a space rename the buffer onto the wrong name (measured 2026-09-24: a
 #     space alone left the buffer unnamed), and the by-number lookup that a
@@ -754,6 +761,8 @@ function! s:rename(token, folds, in_new_tab, adopted) abort
       return
     endif
   endif
+  let current = bufnr('%')
+  let swapfile = &l:swapfile
   setlocal noswapfile
   let fileignorecase = &fileignorecase
   let &fileignorecase = 0
@@ -762,6 +771,10 @@ function! s:rename(token, folds, in_new_tab, adopted) abort
   finally
     let &fileignorecase = fileignorecase
   endtry
+  if bufnr('%') != current
+    call setbufvar(current, '&swapfile', swapfile)
+    return
+  endif
   call s:land_if_target(a:folds)
   if exists('g:vaf_landed')
     let b:vaf_created = 1

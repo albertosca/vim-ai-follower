@@ -23,10 +23,11 @@ from pathlib import Path
 
 import pytest
 from test_integration_goto_file_escaping import _landing
-from test_integration_relock_autocmd import follower, state, vim_pane
+from test_integration_relock_autocmd import _keys, follower, state, vim_pane
 from test_integration_tab_eviction import _start_follower
 
 from vim_ai_follower import cli
+from vim_ai_follower.backends import NavigationFailed
 
 pytestmark = pytest.mark.integration
 
@@ -97,3 +98,32 @@ def test_show_fresh_over_a_start_screen_makes_a_listed_buffer_that_survives_leav
         f"execute('enew') . bufexists({number}) . buflisted({number})",
     )
     assert after[2] == "11", after
+
+
+def test_a_rename_in_place_that_does_not_land_leaves_every_buffers_swap_alone(
+    tmux_session: str, tmp_path: Path, wait_until: Callable[..., bool]
+) -> None:
+    """A dedicated follower's first file renames its current buffer in
+    place, and swap goes off BEFORE the rename (a swap-enabled buffer renamed
+    onto a swap-held name raises E325). A user autocommand that jumps on
+    BufFilePre makes Vim refuse the rename and leaves another buffer
+    current: nothing lands, and the buffer whose swap went off must get it
+    back, as must the one the jump landed on keep its own."""
+    user_file = tmp_path / "a.txt"
+    user_file.write_text("user\n")
+    pane = vim_pane(tmux_session, tmp_path, wait_until, f"edit {user_file}")
+    _keys(pane, ":tabnew")
+    _keys(pane, ":autocmd BufFilePre * tabfirst")
+    target = tmp_path / "t.py"
+    target.write_text("x = 1\n")
+
+    with pytest.raises(NavigationFailed):
+        follower(pane, adopted=False).show_fresh(str(target), "x = 1\n")
+
+    swaps = state(
+        pane,
+        tmp_path,
+        wait_until,
+        "join(map(range(1, bufnr('$')), 'getbufvar(v:val, \"&swapfile\")'), '')",
+    )
+    assert swaps[2] == "11", swaps
