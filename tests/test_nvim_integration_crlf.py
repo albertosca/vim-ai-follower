@@ -13,7 +13,14 @@ import pytest
 
 pynvim = pytest.importorskip("pynvim")
 
-from test_integration_crlf import AFTER, BEFORE, _spy  # noqa: E402
+from test_integration_crlf import (  # noqa: E402
+    AFTER,
+    BEFORE,
+    FORMAT_CHANGES,
+    MIXED,
+    MIXED_AFTER,
+    _spy,
+)
 from test_integration_edit_no_reload import _MARK, _last_state, _states  # noqa: E402
 from test_nvim_integration_edit_base_mismatch import (  # noqa: E402
     _ENV,
@@ -86,3 +93,106 @@ def test_an_edit_of_a_crlf_file_is_one_typed_insert(
         str(copy),
     )
     assert copy.read_bytes() == AFTER
+
+
+def _saved(nvim: Any, buffer: Any, copy: Path) -> bytes:
+    """What a `:w!` of `buffer` writes, to the scratch file `copy`."""
+    nvim.exec_lua(
+        "local buf, path = ...; vim.api.nvim_buf_call(buf, function()"
+        " vim.cmd.write({ args = { path }, bang = true, mods = { silent = true } }) end)",
+        buffer.number,
+        str(copy),
+    )
+    return copy.read_bytes()
+
+
+@pytest.mark.parametrize("change", list(FORMAT_CHANGES))
+@pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
+def test_a_save_after_an_edit_writes_the_line_endings_claude_wrote(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, adopted: bool, change: str
+) -> None:
+    """Task 12 fix round 1: 'fileformat' follows the file Claude wrote, the
+    way 'bomb' does (_format_from_disk). At f9d35d1 the buffer kept its
+    pre-edit format, so this save wrote the OLD line endings."""
+    before, after = FORMAT_CHANGES[change]
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    FollowerState.set(_WINDOW, "nvim", headless_nvim, origin="", shown_any=False, adopted=adopted)
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    target = (tmp_path / "a.py").resolve()
+    if adopted:
+        target.write_bytes(before)
+        nvim.command(f"edit {target}")
+    else:
+        assert hooks.cmd_hook_pre(_ENV, _payload("Write", target)) == 0
+        target.write_bytes(before)
+        assert hooks.cmd_hook_post(_ENV, _payload("Write", target)) == 0
+    assert _buffer(nvim, "a.py")[:] == ["a", "b"]
+    assert _saved(nvim, _buffer(nvim, "a.py"), tmp_path / "first.py") == before
+
+    assert hooks.cmd_hook_pre(_ENV, _payload("Edit", target)) == 0
+    target.write_bytes(after)
+    assert hooks.cmd_hook_post(_ENV, _payload("Edit", target)) == 0
+
+    buffer = _buffer(nvim, "a.py")
+    assert buffer[:] == after.decode().splitlines()
+    assert _saved(nvim, buffer, tmp_path / "saved.py") == after
+
+
+@pytest.mark.parametrize("change", ["lf-to-crlf", "crlf-to-lf"])
+def test_a_read_reload_takes_the_line_endings_of_the_file_on_disk(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    """A Read re-reads a clean buffer (`_reload_if_clean`'s `edit!`), and
+    nvim's own load detects 'fileformat' again."""
+    before, after = FORMAT_CHANGES[change]
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    FollowerState.set(_WINDOW, "nvim", headless_nvim, origin="", shown_any=False)
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    target = (tmp_path / "a.py").resolve()
+    assert hooks.cmd_hook_pre(_ENV, _payload("Write", target)) == 0
+    target.write_bytes(before)
+    assert hooks.cmd_hook_post(_ENV, _payload("Write", target)) == 0
+    target.write_bytes(after)  # rewritten outside Claude (a formatter, `sed -i`)
+
+    assert hooks.cmd_hook_post(_ENV, _payload("Read", target)) == 0
+
+    buffer = _buffer(nvim, "a.py")
+    assert buffer[:] == after.decode().splitlines()
+    assert _saved(nvim, buffer, tmp_path / "saved.py") == after
+
+
+@pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
+def test_a_mixed_ending_file_holds_its_base(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, adopted: bool
+) -> None:
+    """Task 12 fix round 1. nvim loads a file mixing CRLF and LF with
+    fileformat=unix and keeps each CR in its line, so an adopted buffer holds
+    ["a\\r", "b"]. A dedicated follower's own retype splits lines with
+    splitlines() and holds ["a", "b"]: buffer_forms accepts that form too,
+    or every Edit of the file would wipe and retype it."""
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    FollowerState.set(_WINDOW, "nvim", headless_nvim, origin="", shown_any=False, adopted=adopted)
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    target = (tmp_path / "a.py").resolve()
+    if adopted:
+        target.write_bytes(MIXED)
+        nvim.command(f"edit {target}")
+        loaded = ["a\r", "b"]
+    else:
+        assert hooks.cmd_hook_pre(_ENV, _payload("Write", target)) == 0
+        target.write_bytes(MIXED)
+        assert hooks.cmd_hook_post(_ENV, _payload("Write", target)) == 0
+        loaded = ["a", "b"]
+    assert _buffer(nvim, "a.py")[:] == loaded
+    assert _buffer(nvim, "a.py").options["fileformat"] == "unix"
+    handle = _buffer(nvim, "a.py").number
+
+    probes, scripts = _spy(monkeypatch)
+    assert hooks.cmd_hook_pre(_ENV, _payload("Edit", target)) == 0
+    target.write_bytes(MIXED_AFTER)
+    assert hooks.cmd_hook_post(_ENV, _payload("Edit", target)) == 0
+
+    assert probes == ["holds"]
+    assert scripts == [[EditOp(kind="insert", start_line=2, end_line=1, new_lines=("X",))]]
+    assert _buffer(nvim, "a.py").number == handle  # a diff, not a retype
+    assert target.read_bytes() == MIXED_AFTER

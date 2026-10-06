@@ -70,12 +70,12 @@ def vim_confirms_landing(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
 
 
 @pytest.fixture(autouse=True)
-def bomb_reads_under_tmp_path(
+def format_reads_under_tmp_path(
     request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Unit tests drive the nvim backend with a mock nvim and fake paths
-    (`/tmp/f.py`), and a completed animation reads the file's first bytes for
-    'bomb' (_bomb_from_disk). Re-root that read under this test's tmp_path,
+    (`/tmp/f.py`), and a completed animation reads the file for 'bomb' and
+    'fileformat' (_format_from_disk). Re-root that read under this test's tmp_path,
     where the fake path does not exist, so no unit test depends on what the
     machine's real /tmp holds. Integration tests read their real files.
     Without pynvim (the optional `nvim` extra) there is no nvim backend to
@@ -87,12 +87,12 @@ def bomb_reads_under_tmp_path(
     except ImportError:
         return
 
-    real = nvim_backend._bomb_from_disk
+    real = nvim_backend._format_from_disk
 
     def under_tmp_path(nvim: Any, buf: int, file_path: str) -> None:
         real(nvim, buf, str(tmp_path / "disk" / file_path.lstrip("/")))
 
-    monkeypatch.setattr(nvim_backend, "_bomb_from_disk", under_tmp_path)
+    monkeypatch.setattr(nvim_backend, "_format_from_disk", under_tmp_path)
 
 
 @pytest.fixture(autouse=True)

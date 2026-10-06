@@ -14,7 +14,8 @@ from vim_ai_follower.backends.nvim import (
     _READ_THEN_CLEAR_LUA,
     NvimFollower,
     _animate_lines,
-    _bomb_from_disk,
+    _fileformat_of,
+    _format_from_disk,
 )
 from vim_ai_follower.diff import EditOp, compute_edit_script
 from vim_ai_follower.state import FollowerState
@@ -824,17 +825,57 @@ def test_get_follower_rejects_unknown_backend() -> None:
 @pytest.mark.parametrize(
     ("content", "bomb"), [(b"\xef\xbb\xbfx = 1\n", True), (b"x = 1\n", False), (b"", False)]
 )
-def test_bomb_from_disk_follows_the_files_first_bytes(
+def test_format_from_disk_takes_bomb_from_the_files_first_bytes(
     tmp_path: Path, content: bytes, bomb: bool
 ) -> None:
     target = tmp_path / "a.py"
     target.write_bytes(content)
     nvim = MagicMock()
-    _bomb_from_disk(nvim, 7, str(target))
+    nvim.api.buf_get_option.return_value = "unix"
+    _format_from_disk(nvim, 7, str(target))
     nvim.api.buf_set_option.assert_called_once_with(7, "bomb", bomb)
 
 
-def test_bomb_from_disk_leaves_bomb_alone_when_the_file_cannot_be_read(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("content", "fileformat"),
+    [
+        (b"a\r\nb\r\n", "dos"),
+        (b"a\r\nb", "dos"),
+        (b"\xef\xbb\xbfa\r\n", "dos"),
+        (b"a\nb\n", "unix"),
+        (b"a\rb\n", "unix"),
+        (b"a\r\nb\n", None),
+        (b"a", None),
+        (b"", None),
+    ],
+)
+def test_fileformat_of(content: bytes, fileformat: str | None) -> None:
+    assert _fileformat_of(content) == fileformat
+
+
+@pytest.mark.parametrize("current", ["unix", "dos"])
+def test_format_from_disk_sets_fileformat_only_when_it_changes(
+    tmp_path: Path, current: str
+) -> None:
+    target = tmp_path / "a.py"
+    target.write_bytes(b"a\r\nb\r\n")
     nvim = MagicMock()
-    _bomb_from_disk(nvim, 7, str(tmp_path / "gone.py"))
+    nvim.api.buf_get_option.return_value = current
+    _format_from_disk(nvim, 7, str(target))
+    calls = [call.args for call in nvim.api.buf_set_option.call_args_list]
+    assert ((7, "fileformat", "dos") in calls) is (current == "unix")
+    assert (7, "bomb", False) in calls
+
+
+def test_format_from_disk_leaves_a_mixed_files_fileformat_alone(tmp_path: Path) -> None:
+    target = tmp_path / "a.py"
+    target.write_bytes(b"a\r\nb\n")
+    nvim = MagicMock()
+    _format_from_disk(nvim, 7, str(target))
+    nvim.api.buf_set_option.assert_called_once_with(7, "bomb", False)
+
+
+def test_format_from_disk_leaves_both_alone_when_the_file_cannot_be_read(tmp_path: Path) -> None:
+    nvim = MagicMock()
+    _format_from_disk(nvim, 7, str(tmp_path / "gone.py"))
     nvim.api.buf_set_option.assert_not_called()

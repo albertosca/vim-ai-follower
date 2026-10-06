@@ -151,9 +151,13 @@ def buffer_forms(content: str) -> list[list[str]]:
 
     One trailing newline is the last line's terminator, not an extra empty
     line (an editor's buffer of "a\nb\n" is ["a", "b"]), and an empty file is
-    a single empty line. A file whose every line ends in CR is also accepted
-    without them, because Vim and nvim load it with fileformat=dos and strip
-    the CRs from the buffer. A file starting with a UTF-8 BOM (U+FEFF) is
+    a single empty line. A file whose lines end in CR is also accepted
+    without them: when every line does, because Vim and nvim load it with
+    fileformat=dos and strip the CRs from the buffer; when only some do
+    (mixed endings, loaded with fileformat=unix, each CR kept and shown as
+    ^M), because that is the buffer the follower's own retype leaves, which
+    splits the file with str.splitlines() (Task 12 fix round 1: a dedicated
+    nvim wiped and retyped every Edit of such a file). A file starting with a UTF-8 BOM (U+FEFF) is
     also accepted without it, because both editors load it into 'bomb' and
     leave it out of the buffer, while the hook's snapshot keeps it (final
     review of backlog-sweep-3, I2: every BOM file probed "differs"). Splits
@@ -162,8 +166,9 @@ def buffer_forms(content: str) -> list[list[str]]:
     text = content[:-1] if content.endswith("\n") else content
     lines = text.split("\n")
     forms = [lines]
-    if all(line.endswith("\r") for line in lines):
-        forms.append([line[:-1] for line in lines])
+    stripped = [line.removesuffix("\r") for line in lines]
+    if stripped != lines:
+        forms.append(stripped)
     if lines[0].startswith(BOM):
         forms += [[form[0].removeprefix(BOM), *form[1:]] for form in forms]
     return forms
@@ -174,21 +179,6 @@ def without_bom(content: str) -> str:
     which Vim and nvim keep in 'bomb' instead. What the follower TYPES, so it
     never types the BOM character into line 1 (see buffer_forms)."""
     return content.removeprefix(BOM)
-
-
-def as_typed(content: str) -> str:
-    """`content` as an editor's buffer shows it, which is what the follower
-    diffs and TYPES: without_bom, and, when every line ends in CR LF (the
-    file Vim and nvim load with fileformat=dos and show without the CRs, as
-    buffer_forms accepts), with LF endings. Mixed endings are returned
-    unchanged: the editors load such a file with fileformat=unix and show
-    each CR as ^M, a case the follower does not try to follow."""
-    text = without_bom(content)
-    body = text[:-1] if text.endswith("\n") else text
-    lines = body.split("\n")
-    if not all(line.endswith("\r") for line in lines):
-        return text
-    return "\n".join(line[:-1] for line in lines) + text[len(body) :]
 
 
 def classify_buffer(lines: list[str], content: str) -> BufferProbe:

@@ -51,9 +51,11 @@ def _dump(
             f":call writefile(['DUMP', getbufvar(bufnr('{target}'), '&fileformat')]"
             f" + getbufline(bufnr('{target}'), 1, '$'), '{dump}')",
         )
-        if wait_until(lambda: dump.exists() and dump.read_text().startswith("DUMP\n"), 5.0):
+        if wait_until(lambda: dump.exists() and dump.read_bytes().startswith(b"DUMP\n"), 5.0):
             break
-    lines = dump.read_text().splitlines()[1:]
+    # Bytes split on LF only: read_text() and splitlines() would both drop a
+    # CR the buffer line really holds.
+    lines = dump.read_bytes().decode().split("\n")[1:-1]
     return lines[0], lines[1:]
 
 
@@ -150,3 +152,122 @@ def test_a_save_of_the_dos_buffer_writes_the_crlf_bytes_back(
 
     assert wait_until(lambda: _mtime(target) not in (None, written), timeout=5.0)
     assert target.read_bytes() == AFTER
+
+
+# The line endings of the file Claude wrote, as a save of the buffer writes
+# them (Task 12 fix round 1): a buffer left on its pre-edit 'fileformat'
+# writes the OLD endings at the user's next `:w`, undoing that part of the
+# edit, and a hand-off save then reads as the user's own version.
+FORMAT_CHANGES = {
+    "lf-to-crlf": (b"a\nb\n", b"a\r\nX\r\nb\r\n"),
+    "crlf-to-lf": (b"a\r\nb\r\n", b"a\nX\nb\n"),
+    "endings-only": (b"a\nb\n", b"a\r\nb\r\n"),
+}
+
+
+@pytest.mark.parametrize("change", list(FORMAT_CHANGES))
+@pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
+def test_a_save_after_an_edit_writes_the_line_endings_claude_wrote(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+    adopted: bool,
+    change: str,
+) -> None:
+    before, after = FORMAT_CHANGES[change]
+    log, pane, window_id = _observed_follower(tmux_session, monkeypatch, tmp_path, wait_until)
+    target = tmp_path / "a.py"
+    if adopted:
+        FollowerState.update(window_id, adopted=True)
+        target.write_bytes(before)
+        _keys(pane, f":tabedit {target}")
+    else:
+        _hook(monkeypatch, "pre", "Write", target)
+        target.write_bytes(before)
+        _hook(monkeypatch, "post", "Write", target)
+    assert wait_until(lambda: _last_state(log, "a.py") == ["a", "b"], timeout=15.0)
+
+    _hook(monkeypatch, "pre", "Edit", target)
+    target.write_bytes(after)
+    _hook(monkeypatch, "post", "Edit", target)
+    lines = after.decode().splitlines()
+    assert wait_until(lambda: _last_state(log, "a.py") == lines, timeout=15.0)
+
+    copy = tmp_path / "saved.py"
+    for _attempt in range(3):  # a loaded machine can swallow the Escape pair
+        _keys(pane, f":silent write! {copy}")
+        if wait_until(lambda: copy.exists() and copy.read_bytes() == after, 5.0):
+            break
+    assert copy.read_bytes() == after
+
+
+@pytest.mark.parametrize("change", ["lf-to-crlf", "crlf-to-lf"])
+def test_a_read_reload_takes_the_line_endings_of_the_file_on_disk(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+    change: str,
+) -> None:
+    before, after = FORMAT_CHANGES[change]
+    log, pane, _ = _observed_follower(tmux_session, monkeypatch, tmp_path, wait_until)
+    target = tmp_path / "a.py"
+    _hook(monkeypatch, "pre", "Write", target)
+    target.write_bytes(before)
+    _hook(monkeypatch, "post", "Write", target)
+    assert wait_until(lambda: _last_state(log, "a.py") == ["a", "b"], timeout=15.0)
+    target.write_bytes(after)  # rewritten outside Claude (a formatter, `sed -i`)
+
+    _hook(monkeypatch, "post", "Read", target)
+    lines = after.decode().splitlines()
+    assert wait_until(lambda: _last_state(log, "a.py") == lines, timeout=15.0)
+
+    copy = tmp_path / "saved.py"
+    for _attempt in range(3):  # a loaded machine can swallow the Escape pair
+        _keys(pane, f":silent write! {copy}")
+        if wait_until(lambda: copy.exists() and copy.read_bytes() == after, 5.0):
+            break
+    assert copy.read_bytes() == after
+
+
+MIXED = b"a\r\nb\n"
+MIXED_AFTER = b"a\r\nX\r\nb\n"
+
+
+@pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
+def test_a_mixed_ending_file_holds_its_base(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+    adopted: bool,
+) -> None:
+    """Task 12 fix round 1: Vim loads a file that mixes CRLF and LF with
+    fileformat=unix and keeps each CR in its line (shown as ^M). The
+    snapshot now keeps those CRs too, so the probe says "holds" (at
+    bbc4668 the snapshot dropped them and an adopted Vim left every Edit of
+    such a file alone) and the Edit is the one insert."""
+    log, pane, window_id = _observed_follower(tmux_session, monkeypatch, tmp_path, wait_until)
+    target = tmp_path / "a.py"
+    if adopted:
+        FollowerState.update(window_id, adopted=True)
+        target.write_bytes(MIXED)
+        _keys(pane, f":tabedit {target}")
+        loaded = ["a\r", "b"]
+    else:
+        _hook(monkeypatch, "pre", "Write", target)
+        target.write_bytes(MIXED)
+        _hook(monkeypatch, "post", "Write", target)
+        loaded = ["a\r", "b"]  # the relock's `:e!` re-reads the file
+    assert wait_until(lambda: _last_state(log, "a.py") == loaded, timeout=15.0)
+    assert _dump(pane, target, tmp_path, wait_until) == ("unix", loaded)
+
+    probes, scripts = _spy(monkeypatch)
+    _hook(monkeypatch, "pre", "Edit", target)
+    target.write_bytes(MIXED_AFTER)
+    _hook(monkeypatch, "post", "Edit", target)
+
+    assert probes == ["holds"]
+    assert scripts == [[EditOp(kind="insert", start_line=2, end_line=1, new_lines=("X",))]]
+    assert target.read_bytes() == MIXED_AFTER

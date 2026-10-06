@@ -19,9 +19,9 @@ from vim_ai_follower.backends import (
     BufferProbe,
     Follower,
     NavigationFailed,
-    as_typed,
     get_follower,
     nvim_connect,
+    without_bom,
 )
 from vim_ai_follower.backends.nvim_connect import (
     StandaloneLaunchFailed,
@@ -1334,12 +1334,13 @@ def _animate_edit(
         return 0
 
     after = raw_after.decode("utf-8", errors="replace")
-    # What is TYPED (and what a partial is built from) is the buffer's form of
-    # the file: no leading UTF-8 BOM, which the editors keep in 'bomb', and LF
-    # endings for a CRLF file, which they load with fileformat=dos (see
-    # as_typed). The probe and the hand-off wait still compare the file's own
-    # text, `before` and `after`.
-    typed_after = as_typed(after)
+    # What is TYPED (and what a partial is built from) leaves out a leading
+    # UTF-8 BOM, which the editors keep in 'bomb' instead of the buffer; the
+    # hand-off wait still compares disk with `after` itself (see without_bom).
+    # A CRLF file's CRs need no stripping here: every consumer of the typed
+    # text splits it with str.splitlines(), which drops them (BACKLOG "CRLF
+    # files"; the editors keep them in 'fileformat').
+    typed_after = without_bom(after)
 
     # After the catch-up above, never before it: the replay is what brings
     # the buffer to this edit's base, and probing first would see its
@@ -1354,7 +1355,7 @@ def _animate_edit(
     # be retyped, and "holds" — including a stale file the user resynced with
     # `:e!` — is a diff onto the user's own buffer.
     before = load_snapshot(session.window_id, file_path)
-    typed_before = as_typed(before)
+    typed_before = without_bom(before)
     if not is_fresh or current.adopted:
         probe = _probe_base(follower, file_path, before)
         if probe == "holds":
