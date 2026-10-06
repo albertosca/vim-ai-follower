@@ -255,15 +255,23 @@ def test_no_answer_backs_the_pane_off_and_the_next_calls_send_nothing(
         "close_tab": lambda follower: follower.close_tab("/tmp/t.py"),
     }
     for name, call in calls.items():
+        started = time.monotonic()
         sent, error = _run(True, call)
+        assert time.monotonic() - started < 0.5, name
+        if name == "close_tab":
+            # Sent anyway, to give back what the follower holds (review of
+            # T6+T7, I1): the call alone, no define line, no verdict awaited.
+            assert error is None
+            assert len(sent) == 1 and "('evict','p2-" in sent[0], sent
+            continue
         assert sent == [], name
-        if name in ("probe_buffer", "close_tab"):
+        if name == "probe_buffer":
             assert error is None
         else:
             assert isinstance(error, NavigationFailed), name
             assert "did not answer 0 s ago; not retrying for another 30 s" in str(error)
     assert "did not ask the follower's Vim about /tmp/t.py: the follower's Vim" in caplog.text
-    assert "did not close the tab of /tmp/t.py: the follower's Vim" in caplog.text
+    assert "closing /tmp/t.py without waiting for its verdict: the follower's Vim" in caplog.text
 
 
 def test_no_answer_explained_by_a_home_distrust_does_not_back_off() -> None:
@@ -296,14 +304,48 @@ def test_a_landing_after_the_backoff_ends_it() -> None:
     assert not marker.exists()
 
 
-def test_a_backoff_from_the_future_lasts_no_longer_than_the_backoff() -> None:
-    """A clock set back: the mark's age is negative."""
+def _marker_at(offset_seconds: float, directory: bool = False) -> Path:
     marker = tmux_vim._unanswered_path("%2")
     marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.touch()
-    future = time.time() + 3600
-    os.utime(marker, (future, future))
-    assert tmux_vim._backoff("%2") == (0.0, tmux_vim._UNANSWERED_BACKOFF_SECONDS)
+    if directory:
+        # A mark that cannot be unlinked (a directory in its place).
+        marker.mkdir()
+        (marker / "inside").touch()
+    else:
+        marker.touch()
+    stamp = time.time() + offset_seconds
+    os.utime(marker, (stamp, stamp))
+    return marker
+
+
+def test_a_backoff_mark_from_the_future_is_no_backoff() -> None:
+    """A clock set back (review of T6+T7, I2): a mark an hour ahead held
+    the pane for an hour. It is removed, and the next navigation goes to
+    Vim and lands."""
+    marker = _marker_at(3600)
+    sent, error = _run(True, ACTING["goto_file"])
+    assert error is None
+    assert sent != []
+    assert not marker.exists()
+
+
+def test_a_mark_within_the_clock_skew_still_backs_off() -> None:
+    marker = _marker_at(1.0)
+    sent, error = _run(True, ACTING["goto_file"])
+    assert isinstance(error, NavigationFailed)
+    assert sent == []
+    assert marker.exists()
+
+
+def test_a_backoff_mark_that_cannot_be_removed_never_breaks_a_navigation(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _marker_at(3600, directory=True)
+    sent, error = _run(True, ACTING["goto_file"])
+    assert error is None
+    assert sent != []
+    removals = [record for record in caplog.records if "could not remove" in record.message]
+    assert len(removals) == 1  # the backoff check; the landing's unlink is silent
 
 
 @pytest.mark.parametrize(("verdict", "lands"), [("landed", True), ("elsewhere", False)])

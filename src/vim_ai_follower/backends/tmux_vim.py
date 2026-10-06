@@ -1071,6 +1071,9 @@ _LANDING_TIMEOUT_SECONDS = 10.0
 # one running `:!make`, never answers: every hook waited the whole landing
 # timeout, one after another (final M3).
 _UNANSWERED_BACKOFF_SECONDS = 30.0
+# How far in the future a backoff mark may be (clocks of two processes, a
+# filesystem's timestamps) and still count as just written.
+_BACKOFF_CLOCK_SKEW_SECONDS = 2.0
 
 logger = logging.getLogger("vim_ai_follower")
 
@@ -1086,11 +1089,21 @@ def _unanswered_path(pane_id: str) -> Path:
 def _backoff(pane_id: str) -> tuple[float, float] | None:
     """(seconds since this pane's Vim left a landing unanswered, seconds of
     backoff left), or None when the pane is not backing off."""
+    marker = _unanswered_path(pane_id)
     try:
-        age = time.time() - _unanswered_path(pane_id).stat().st_mtime
+        age = time.time() - marker.stat().st_mtime
     except OSError:
         return None
-    remaining = min(_UNANSWERED_BACKOFF_SECONDS - age, _UNANSWERED_BACKOFF_SECONDS)
+    if age < -_BACKOFF_CLOCK_SKEW_SECONDS:
+        # A mark from the future (the clock was set back) would hold until
+        # the clock caught up, an hour for an hour's step (review of T6+T7,
+        # I2): it is no evidence of a recent silence, so it goes.
+        try:
+            marker.unlink(missing_ok=True)
+        except OSError as error:
+            logger.warning("could not remove the backoff mark %s: %s", marker, error)
+        return None
+    remaining = _UNANSWERED_BACKOFF_SECONDS - max(age, 0.0)
     if remaining <= 0:
         return None
     return max(age, 0.0), remaining
@@ -1472,7 +1485,9 @@ def _await_landing(pane_id: str, answer: Path, nonce: str, file_path: str, handl
         # says which. Silenced in Vim (no prompt), so said here.
         logger.warning("navigating to %s, the follower's Vim raised: %s", file_path, lines[1])
     if lines is not None and lines[:1] == ["landed"]:
-        _unanswered_path(pane_id).unlink(missing_ok=True)
+        # Never let a mark that cannot be removed fail a landing.
+        with contextlib.suppress(OSError):
+            _unanswered_path(pane_id).unlink(missing_ok=True)
         return
     verdict = lines[0] if lines else None
     reason = _NOT_LANDED.get(verdict, "an unexpected answer")
@@ -1698,15 +1713,18 @@ class TmuxVimFollower:
         preceded it, that pair is how the tab count climbed past max_tabs
         while the follower's own bookkeeping stayed pinned at the limit.
 
-        While the pane backs off (see _await_landing) nothing is sent and
-        the tab stays, with one hook.log line."""
-        reason = _backoff_reason(self.pane_id)
-        if reason is not None:
-            logger.warning("did not close the tab of %s: %s", file_path, reason)
-            return
+        While the pane backs off (see _await_landing) the call is still sent,
+        with no define line (it may ask the HOME question and wait) and no
+        wait for a verdict: never blocking, and a no-op in a Vim without the
+        functions. Skipping it left an adopted Vim's own buffer locked for
+        good after `claude-follow stop`, which clears the state right after,
+        and each dedicated eviction left a tab no bookkeeping knew (review of
+        T6+T7, I1 and m4). A blocked Vim runs it once it is free."""
+        backoff = _backoff_reason(self.pane_id)
         pane = TmuxPane(pane_id=self.pane_id)
         self._normal_mode(pane)
-        self._define(pane)
+        if backoff is None:
+            self._define(pane)
         if self._is_dedicated():
             self._send_wipe(pane, file_path)
             return
@@ -1722,6 +1740,9 @@ class TmuxVimFollower:
         handle = _path_handle(self.pane_id, file_path)
         pane.send_text(_call_line("evict", handle.name, _case_folds(file_path)))
         pane.send_key("Enter")
+        if backoff is not None:
+            logger.warning("closing %s without waiting for its verdict: %s", file_path, backoff)
+            return
         lines = _await_answer(answer, handle.name, _PROBE_TIMEOUT_SECONDS)
         answer.unlink(missing_ok=True)
         if lines is None and _distrust_home(self.pane_id):
