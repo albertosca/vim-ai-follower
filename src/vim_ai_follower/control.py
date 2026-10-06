@@ -464,10 +464,30 @@ def load_pending_animation(
 ) -> PendingApplyEdit | PendingShowFresh | None:
     path = _pending_path(window_id, base_dir)
     try:
+        # A ValueError here is a file that is not UTF-8 or not JSON.
         data = json.loads(path.read_text())
     except FileNotFoundError:
         return None
+    except ValueError as error:
+        _drop_unreadable_pending(path, error)
+        return None
     path.unlink(missing_ok=True)
+    try:
+        return _parse_pending(data)
+    except (ValueError, KeyError, TypeError, AttributeError) as error:
+        _drop_unreadable_pending(path, error)
+        return None
+
+
+def _drop_unreadable_pending(path: Path, error: Exception) -> None:
+    """The writes are atomic, so this is a file damaged or written by
+    something else. Raising on it failed every P and every hook until the file
+    was deleted by hand: it is removed and logged once instead."""
+    path.unlink(missing_ok=True)
+    logger.warning("dropped an unreadable pending animation (%s): %r", path.name, error)
+
+
+def _parse_pending(data: Any) -> PendingApplyEdit | PendingShowFresh:
     if data["kind"] == "apply_edit":
         ops = [
             EditOp(

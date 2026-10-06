@@ -583,3 +583,30 @@ def test_a_signal_for_another_owner_is_dropped_without_a_warning(
     with caplog.at_level("WARNING", logger="vim_ai_follower"):
         assert control.check_signal("@1", base_dir=tmp_path) is None
     assert caplog.records == []
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"{not json",
+        b"[]",
+        b'{"kind": "apply_edit"}',
+        b'{"kind": "show_fresh", "remaining_lines": 5, "pace_seconds": 0.1}',
+        b'{"kind": "apply_edit", "remaining_ops": [{"kind": "insert"}], "pace_seconds": 0}',
+        b"\xff\xfe\x00",
+    ],
+    ids=["garbage", "list", "missing-keys", "wrong-type", "op-missing-keys", "not-utf8"],
+)
+def test_a_corrupt_pending_file_is_dropped_once_with_a_log(
+    content: bytes, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # PF round-2 minor: it raised on every P and every hook until deleted.
+    pending = tmp_path / "@1.pending_animation.json"
+    pending.write_bytes(content)
+    with caplog.at_level("WARNING", logger="vim_ai_follower"):
+        assert control.load_pending_animation("@1", tmp_path) is None
+        assert control.load_pending_animation("@1", tmp_path) is None
+    assert not pending.exists()
+    warnings = [record for record in caplog.records if record.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "unreadable pending animation" in warnings[0].getMessage()
