@@ -401,13 +401,16 @@ def test_interrupt_with_pending_discards_it_and_hands_the_buffer_over() -> None:
     control.save_pending_show_fresh("@1", ("leftover",), 0.15, continuation=True)
 
     with (
+        patch("vim_ai_follower.control.request_pause") as request_pause,
+        patch("vim_ai_follower.control.request_interrupt") as request_interrupt,
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
         patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
     ):
         assert commands.cmd_interrupt({"TMUX_PANE": "%1"}) == 0
 
     assert control.has_pending_animation("@1") is False
-    assert control.check_signal("@1") is None  # no orphan signal file left behind
+    request_pause.assert_not_called()
+    request_interrupt.assert_not_called()
     sends = [
         c.args[0][6]
         for c in run.call_args_list
@@ -426,12 +429,15 @@ def test_interrupt_with_pending_but_dead_follower_still_discards_it(
     # buffer to hand over, but the stale pending state must still die
     control.save_pending_show_fresh("@1", ("leftover",), 0.15, continuation=True)
     with (
+        patch("vim_ai_follower.control.request_pause") as request_pause,
+        patch("vim_ai_follower.control.request_interrupt") as request_interrupt,
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
     ):
         assert commands.cmd_interrupt({"TMUX_PANE": "%1"}) == 0
     assert control.has_pending_animation("@1") is False
-    assert control.check_signal("@1") is None
+    request_pause.assert_not_called()
+    request_interrupt.assert_not_called()
     assert _popup_calls(popen) == []  # no follower pane to show it on
     assert "discarded" in capsys.readouterr().out
 
@@ -469,11 +475,14 @@ def test_pause_is_a_quiet_noop_when_nothing_is_running(
     # no pending state — a pause press must not pretend something happened
     _register_fake_follower("@1", "%2")
     with (
+        patch("vim_ai_follower.control.request_pause") as request_pause,
+        patch("vim_ai_follower.control.request_interrupt") as request_interrupt,
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
     ):
         assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 0
-    assert control.check_signal("@1") is None  # no orphan signal file
+    request_pause.assert_not_called()
+    request_interrupt.assert_not_called()
     assert _popup_calls(popen) == []  # and no lying popup
     assert "nothing to pause" in capsys.readouterr().out
 
@@ -483,11 +492,14 @@ def test_interrupt_is_a_quiet_noop_when_nothing_is_running(
 ) -> None:
     _register_fake_follower("@1", "%2")
     with (
+        patch("vim_ai_follower.control.request_pause") as request_pause,
+        patch("vim_ai_follower.control.request_interrupt") as request_interrupt,
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
     ):
         assert commands.cmd_interrupt({"TMUX_PANE": "%1"}) == 0
-    assert control.check_signal("@1") is None
+    request_pause.assert_not_called()
+    request_interrupt.assert_not_called()
     assert _popup_calls(popen) == []
     assert "nothing to interrupt" in capsys.readouterr().out
 
