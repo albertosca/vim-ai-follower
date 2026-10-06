@@ -24,11 +24,13 @@ import pytest
 pynvim = pytest.importorskip("pynvim")
 
 from vim_ai_follower.backends.nvim import NvimFollower  # noqa: E402
+from vim_ai_follower.diff import compute_edit_script  # noqa: E402
 from vim_ai_follower.state import FollowerState  # noqa: E402
 
 pytestmark = pytest.mark.integration
 
 CONTENT = "x = 1\n"
+AFTER = "x = 1\ny = 2\n"
 
 
 def _tmux(*args: str) -> str:
@@ -275,3 +277,57 @@ def test_a_wrong_case_path_keeps_its_full_name_and_is_found_again(
     follower.close_tab(str(target))
     assert _names(sock)[0] == tabs - 1
     assert follower.probe_buffer(str(target), CONTENT) == "absent"
+
+
+def _command(sock: str, command: str) -> None:
+    nvim: Any = pynvim.attach("socket", path=sock)
+    try:
+        nvim.command(command)
+    finally:
+        nvim.close()
+
+
+def _buffers_named(sock: str, target: Path) -> int:
+    """How many buffers nvim holds whose full name is `target`."""
+    nvim: Any = pynvim.attach("socket", path=sock)
+    try:
+        return sum(1 for buffer in nvim.api.list_bufs() if buffer.name == str(target))
+    finally:
+        nvim.close()
+
+
+@pytest.mark.parametrize("directory_command", ["lcd", "tcd"])
+@pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
+def test_a_window_local_directory_keeps_a_relative_name_found(
+    nvim_pane: tuple[str, str], project: tuple[Path, Path], adopted: bool, directory_command: str
+) -> None:
+    """The tmux twin's case: a buffer named `sub/a.py`, then a window- or
+    tab-local directory in its window (nvim re-bases the name there to
+    `a.py`), then an Edit sent from the first tab, whose directory is the
+    global one. It lands on the same buffer (no second buffer, no new tab).
+    Unmeasured until 2026-10-06."""
+    pane, sock = nvim_pane
+    real, _ = project
+    target = real / "sub" / "a.py"
+    target.write_text(CONTENT)
+    follower = _follower(pane, sock, adopted)
+
+    follower.show_fresh(str(target), CONTENT, in_new_tab=True)
+    tabs, _, name, _ = _names(sock)
+    assert name == "sub/a.py"
+    _command(sock, f"{directory_command} sub")
+    assert _names(sock) == (tabs, str(real / "sub"), "a.py", str(target))
+    _command(sock, "tabfirst")
+    assert _names(sock)[1] == str(real)
+
+    target.write_text(AFTER)
+    assert follower.probe_buffer(str(target), CONTENT) == "holds"
+    follower.apply_edit(str(target), compute_edit_script(CONTENT, AFTER), CONTENT)
+    assert _names(sock) == (tabs, str(real / "sub"), "a.py", str(target))
+    assert _buffers_named(sock, target) == 1
+
+    if adopted:
+        return
+    follower.show_fresh(str(target), AFTER, in_new_tab=True)
+    assert _names(sock)[0] == tabs
+    assert _buffers_named(sock, target) == 1

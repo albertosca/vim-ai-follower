@@ -30,11 +30,13 @@ from pathlib import Path
 import pytest
 
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
+from vim_ai_follower.diff import compute_edit_script
 from vim_ai_follower.state import FollowerState
 
 pytestmark = pytest.mark.integration
 
 CONTENT = "x = 1\n"
+AFTER = "x = 1\ny = 2\n"
 
 
 def _tmux(*args: str) -> str:
@@ -291,3 +293,77 @@ def test_a_wrong_case_path_keeps_its_full_name_and_is_found_again(
     assert after == tabs - 1
     assert name != str(target)
     assert follower.probe_buffer(str(target), CONTENT) == "absent"
+
+
+@pytest.mark.parametrize("directory_command", ["lcd", "tcd"])
+@pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
+def test_a_window_local_directory_keeps_a_relative_name_found(
+    vim_pane: str,
+    project: tuple[Path, Path],
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+    adopted: bool,
+    directory_command: str,
+) -> None:
+    """A buffer named relative (`sub/a.py`), then a window- or tab-local
+    directory in its window: Vim re-bases the name there (`a.py`) while the
+    first tab keeps the global one. The next Edit, sent from that first tab,
+    still lands on the same buffer by number (no second buffer, no new
+    tab), and a retype finds it to wipe. Unmeasured until 2026-10-06."""
+    real, _ = project
+    target = real / "sub" / "a.py"
+    target.write_text(CONTENT)
+    follower = _follower(vim_pane, adopted)
+    out = tmp_path / "names.txt"
+
+    follower.show_fresh(str(target), CONTENT, in_new_tab=True)
+    tabs, _, name, _ = _names(vim_pane, out, wait_until)
+    assert name == "sub/a.py"
+    subprocess.run(["tmux", "send-keys", "-t", vim_pane, "Escape", "Escape"], check=True)
+    subprocess.run(
+        ["tmux", "send-keys", "-t", vim_pane, "-l", "--", f":{directory_command} sub"],
+        check=True,
+    )
+    subprocess.run(["tmux", "send-keys", "-t", vim_pane, "Enter"], check=True)
+    local_tabs, cwd, name, full = _names(vim_pane, out, wait_until)
+    assert (local_tabs, cwd, name, full) == (tabs, str(real / "sub"), "a.py", str(target))
+    subprocess.run(["tmux", "send-keys", "-t", vim_pane, "-l", "--", ":tabfirst"], check=True)
+    subprocess.run(["tmux", "send-keys", "-t", vim_pane, "Enter"], check=True)
+    assert _names(vim_pane, out, wait_until)[1] == str(real)
+
+    target.write_text(AFTER)
+    assert follower.probe_buffer(str(target), CONTENT) == "holds"
+    follower.apply_edit(str(target), compute_edit_script(CONTENT, AFTER), CONTENT)
+    edited_tabs, cwd, name, full = _names(vim_pane, out, wait_until)
+    assert (edited_tabs, cwd, name, full) == (tabs, str(real / "sub"), "a.py", str(target))
+    assert _buffers_named(vim_pane, tmp_path / "count.txt", wait_until, target) == 1
+
+    if adopted:
+        return
+    follower.show_fresh(str(target), AFTER, in_new_tab=True)
+    assert _names(vim_pane, out, wait_until)[0] == tabs
+    assert _buffers_named(vim_pane, tmp_path / "count.txt", wait_until, target) == 1
+
+
+def _buffers_named(pane: str, out: Path, wait_until: Callable[..., bool], target: Path) -> int:
+    """How many buffers Vim holds whose full name is `target`."""
+
+    def answered() -> bool:
+        try:
+            return out.read_text().startswith("COUNT=")
+        except OSError:
+            return False
+
+    out.unlink(missing_ok=True)
+    subprocess.run(["tmux", "send-keys", "-t", pane, "Escape", "Escape"], check=True)
+    subprocess.run(
+        [
+            "tmux", "send-keys", "-t", pane, "-l", "--",
+            ":call writefile(['COUNT=' . len(filter(range(1, bufnr('$')), 'bufexists(v:val)"
+            f" && fnamemodify(bufname(v:val), \":p\") ==# \"{target}\"'))], '{out}')",
+        ],
+        check=True,
+    )  # fmt: skip
+    subprocess.run(["tmux", "send-keys", "-t", pane, "Enter"], check=True)
+    assert wait_until(answered, timeout=10.0), _tmux("capture-pane", "-p", "-t", pane)
+    return int(out.read_text().strip().removeprefix("COUNT="))

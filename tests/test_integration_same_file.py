@@ -16,12 +16,13 @@ import os
 import shutil
 import subprocess
 import time
+import unicodedata
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
 
-from vim_ai_follower import cache
+from vim_ai_follower import cache, hooks
 from vim_ai_follower.backends import NavigationFailed
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.diff import compute_edit_script
@@ -240,6 +241,81 @@ def test_a_case_variant_is_the_same_file_and_leaves_no_stray_tab(
     files = str(retyped["FILES"]).split(",")
     assert [name for name in files if name.lower() == str(lower).lower()] != [], files
     assert len([name for name in files if name.lower() == str(lower).lower()]) == 1, files
+
+
+def _folded(name: str) -> str:
+    return unicodedata.normalize("NFD", name).casefold()
+
+
+@pytest.mark.parametrize("directory_command", ["cd", "lcd", "tcd"])
+@pytest.mark.parametrize("spelling", ["case", "nfc-hook-nfd-disk", "nfd-hook-nfc-disk"])
+def test_a_hook_path_spelled_unlike_the_disk_is_found_after_a_cd(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+    spelling: str,
+    directory_command: str,
+) -> None:
+    """NAMES re-review, 2026-09-29 (real Vim): a hook path in another letter
+    case than the disk's was found only until the first `:cd`/`:lcd`/`:tcd`
+    — Vim re-bases the buffer's name to the on-disk case, and every `:p
+    ==#` lookup missed: probe "absent", a stacked tab, an eviction that
+    evicted nothing. The lookups' filesystem case folding (s:same_file,
+    _case_folds) holds it: forcing folds to 0 turns the three case runs red
+    (measured 2026-10-06). Unicode normalization never diverges this way:
+    Vim keeps the bytes it was given and normalizes nothing (resolve() and
+    `:p` of an NFD name are NFD, measured), so the buffer the follower
+    opened keeps the hook's spelling across a `:cd` — pinned here too."""
+    root = Path(os.path.realpath(tmp_path))
+    (root / "Proj").mkdir()
+    if not (root / "proj").exists():
+        pytest.skip("needs a case-insensitive filesystem")
+    (root / "elsewhere").mkdir()
+    if spelling == "case":
+        on_disk = root / "Proj" / "a.py"
+        spelled = root / "proj" / "a.py"
+    else:
+        composed = unicodedata.normalize("NFC", "Café.py")
+        decomposed = unicodedata.normalize("NFD", "Café.py")
+        on_disk = root / "Proj" / (decomposed if spelling == "nfc-hook-nfd-disk" else composed)
+        spelled = root / "Proj" / (composed if spelling == "nfc-hook-nfd-disk" else decomposed)
+    on_disk.write_text(BEFORE)
+    assert [entry.name for entry in on_disk.parent.iterdir()] == [on_disk.name]
+    assert spelled.exists()
+    (root / "other.txt").write_text("other\n")
+    pane = _user_vim(tmux_session, monkeypatch, root, "other.txt")
+    follower = TmuxVimFollower(pane_id=pane, pace_seconds=0.0)
+    file_path = hooks._file_path({"tool_name": "Read", "tool_input": {"file_path": str(spelled)}})
+    assert file_path is not None
+
+    _quick(lambda: follower.ensure_showing(file_path))  # tab 2
+    _keys(pane, "Escape", "Escape")
+    _keys(pane, "-l", "--", f":{directory_command} {root / 'elsewhere'}")
+    _keys(pane, "Enter")
+    shown = _state(pane, tmp_path / "s1.txt", wait_until)
+    assert shown["TABS"] == "2", shown
+    if spelling == "case":  # the re-base happened: Vim's name is not the hook's
+        assert shown["BUF"] == str(on_disk) != file_path, shown
+
+    on_disk.write_text(AFTER)
+    assert _quick(lambda: follower.probe_buffer(file_path, BEFORE)) == "holds"
+    _quick(lambda: follower.apply_edit(file_path, compute_edit_script(BEFORE, AFTER), BEFORE))
+    edited = _state(pane, tmp_path / "s2.txt", wait_until)
+    assert edited["LINES"] == AFTER.splitlines(), edited
+    assert edited["TABS"] == "2", edited  # no stacked tab
+    _quick(lambda: follower.show_fresh(file_path, AFTER, in_new_tab=True))
+    retyped = _state(pane, tmp_path / "s3.txt", wait_until)
+    assert retyped["TABS"] == "2", retyped
+    files = [
+        name for name in str(retyped["FILES"]).split(",") if _folded(name) == _folded(str(on_disk))
+    ]
+    assert len(files) == 1, retyped
+
+    _quick(lambda: follower.close_tab(file_path))  # the eviction finds it
+    evicted = _state(pane, tmp_path / "s4.txt", wait_until)
+    assert evicted["TABS"] == "1", evicted
+    assert _quick(lambda: follower.probe_buffer(file_path, AFTER)) == "absent"
 
 
 # Two DIFFERENT files whose names differ only in case, on a case-sensitive
