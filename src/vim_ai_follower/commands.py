@@ -522,18 +522,33 @@ def cmd_interrupt(env: dict[str, str]) -> int:
         print("claude-follow: nothing to interrupt — the animation is finishing")
         return 0
 
-    pending = control.load_pending_animation(session.window_id)
-    if pending is not None:
-        # A crash-orphaned remainder (its hook died): nothing to signal —
-        # discard it and hand the buffer to the user, like a live interrupt.
+    if not control.has_pending_animation(session.window_id):
+        print("claude-follow: nothing to interrupt")
+        return 0
+    # A crash-orphaned remainder (its hook died): nothing to signal — discard
+    # it and hand the buffer to the user, like a live interrupt. The hand-over
+    # sends keys, so it holds the window's slot like a hook — taken BEFORE the
+    # remainder is loaded (a hook holding the slot consumes the same file as
+    # its catch-up), "finishing" so a P or S meanwhile has nothing to act on.
+    if not control.try_acquire_animating(session.window_id, state="finishing"):
+        print(
+            "claude-follow: another animation owns this window — press S again to interrupt it",
+            file=sys.stderr,
+        )
+        # The keybinding runs through run-shell, which discards stderr.
+        _show_popup(current, "Busy", session.in_tmux)
+        return 1
+    try:
+        if control.load_pending_animation(session.window_id) is None:
+            print("claude-follow: nothing to interrupt")  # a hook's catch-up took it
+            return 0
         if current is not None and current.backend == "tmux":
             TmuxVimFollower(pane_id=current.target, window_id=session.window_id).hand_over()
         FollowerState.update_current_file(session.window_id, None)
-        print("claude-follow: paused animation discarded, buffer handed over")
-        _show_popup(current, "Interrupted", session.in_tmux)
-        return 0
-
-    print("claude-follow: nothing to interrupt")
+    finally:
+        control.clear_animating(session.window_id)
+    print("claude-follow: paused animation discarded, buffer handed over")
+    _show_popup(current, "Interrupted", session.in_tmux)
     return 0
 
 
