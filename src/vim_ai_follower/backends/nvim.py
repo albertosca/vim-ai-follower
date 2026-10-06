@@ -25,6 +25,7 @@ from vim_ai_follower.backends import (
     NavigationFailed,
     classify_buffer,
     log_adopted_close,
+    log_state_gone,
 )
 from vim_ai_follower.backends.nvim_prompt import dismiss_prompt, exec_logged, prompt_guard
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
@@ -433,21 +434,18 @@ class NvimFollower:
             return self.pace_seconds
         return config.pace_seconds_for(state.speed)
 
-    def _is_adopted(self) -> bool:
-        """An adopted nvim is the user's own editor and is never relocked
-        after an animation — locking the user out of their own buffer would be
-        hostile. A launched, dedicated follower does relock (see _drive). The
-        adopted flag is persisted in FollowerState by start/auto-open."""
-        state = FollowerState.read(self.window_id)
-        return state is not None and state.adopted
-
     def _is_dedicated(self) -> bool:
         """Positively a launched, dedicated follower: its FollowerState exists
-        and says not adopted. The prompt guard asks THIS, not `not
-        _is_adopted()`, because it presses keys: with the state gone (a
-        concurrent `claude-follow stop` between two entry points of one hook,
-        or no window id) nothing proves the nvim isn't the user's own editor,
-        so it fails closed."""
+        and says not adopted (the flag start/auto-open persist). Every choice
+        between the dedicated and the adopted behavior asks THIS, never "is it
+        adopted?": with the state gone (a concurrent `claude-follow stop`
+        between two entry points of one hook, or no window id) nothing proves
+        the nvim isn't the user's own editor, so each fails closed onto the
+        user's side: no lock (_locks_buffers), no key pressed (_guarded), no
+        message captured (_exec), swap back on, the readonly asked about, and
+        the eviction rules instead of a wipe (close_tab; review of sweep-4
+        T4+T5, C1). An adopted nvim is never locked: locking the user out of
+        their own buffer would be hostile."""
         state = FollowerState.read(self.window_id)
         return state is not None and not state.adopted
 
@@ -494,11 +492,11 @@ class NvimFollower:
         logged instead, and the buffer is left swap-off: the state the
         follower already chose before the re-enable, and the safe side.
 
-        Asks _is_adopted, not _is_dedicated, on purpose: with the state gone
-        it skips the re-enable, and turning swap back on is the safe side
-        either way (a dedicated follower's buffer with swap on only costs a
-        swap file; an adopted one's with it off is what this restores)."""
-        if not self._is_adopted():
+        Skipped only when the state PROVES a dedicated follower
+        (_is_dedicated): with the state gone, turning swap back on is the safe
+        side (a dedicated follower's buffer with swap on only costs a swap
+        file; the user's buffer with it off loses crash recovery)."""
+        if self._is_dedicated():
             return
         try:
             nvim.api.exec2(_SWAP_BACK_ON, {"output": True})
@@ -1264,10 +1262,16 @@ class NvimFollower:
         #
         # An ADOPTED nvim is the user's own editor: _EVICT_LUA decides, and
         # nothing navigates first (goto_file would create a buffer for a
-        # file no buffer holds, only to wipe it again).
+        # file no buffer holds, only to wipe it again). So does an nvim whose
+        # state is GONE (a `claude-follow stop` racing a Read: the hook read
+        # the state before its eviction, this re-reads it): only a state that
+        # proves a dedicated follower gets the wipe (review of sweep-4 T4+T5,
+        # C1: the fail-open check wiped the user's unsaved buffer).
         nvim = self._connect()
         with self._guarded(nvim, "close_tab"):
-            if self._is_adopted():
+            if not self._is_dedicated():
+                if FollowerState.read(self.window_id) is None:
+                    log_state_gone(self.window_id, file_path)
                 bufnr = _buffer_number(nvim, file_path)
                 if bufnr != -1:
                     log_adopted_close(file_path, nvim.exec_lua(_EVICT_LUA, bufnr))
@@ -1280,9 +1284,11 @@ class NvimFollower:
     def user_readonly(self, file_path: str) -> bool:
         """See Follower.user_readonly. This backend never sets 'readonly'
         itself, so in an adopted nvim a readonly buffer is the user's. A
-        dedicated follower's never is (and it never asks), and a lookup that
-        fails is False, the plain cue."""
-        if not self._is_adopted():
+        follower its state proves dedicated never asks (its readonly is never
+        the user's); an unknown state asks, since the plain cue's `:w` fails
+        with E45 on the user's readonly. A lookup that fails is False, the
+        plain cue."""
+        if self._is_dedicated():
             return False
         try:
             nvim = self._connect()

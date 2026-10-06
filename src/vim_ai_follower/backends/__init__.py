@@ -58,6 +58,18 @@ def log_adopted_close(file_path: str, verdict: str | None) -> None:
         logger.info(message, file_path)
 
 
+def log_state_gone(window_id: str, file_path: str) -> None:
+    """One hook.log line for a tab close that found no follower state (a
+    `claude-follow stop` racing the hook): it runs the adopted editor's
+    eviction rules, because nothing proves the editor is not the user's."""
+    logger.warning(
+        "closing %s: the follower state is gone for %s, so it is closed as in the "
+        "user's own editor (nothing unsaved or not the follower's is wiped)",
+        file_path,
+        window_id or "this window",
+    )
+
+
 class NavigationFailed(RuntimeError):
     """The editor did not confirm landing on the file a call had to act on,
     so the call stopped before sending anything that acts on the current

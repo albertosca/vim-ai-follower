@@ -222,7 +222,9 @@ def test_close_tab_wipes_a_bracketed_path_instead_of_silently_missing_it(
     and the total must go DOWN by exactly one — never up."""
     follower_pane = _start_follower(tmux_session, monkeypatch, wait_until)
     dump = tmp_path / "dump.txt"
-    follower = TmuxVimFollower(pane_id=follower_pane)
+    # Proven dedicated: an unknown state takes the adopted eviction rules.
+    FollowerState.set("@evict", backend="tmux", target=follower_pane, adopted=False)
+    follower = TmuxVimFollower(pane_id=follower_pane, window_id="@evict")
 
     victim = tmp_path / "routes" / "[id]" / "handler.ts"
     keepers = [tmp_path / "routes" / f"keep{i}.ts" for i in range(2)]

@@ -194,3 +194,33 @@ def test_stop_keeps_the_users_buffers_and_closes_the_followers_own(
     assert buffer[:] == ["mine = 1", UNSAVED]
     assert _buffer(nvim, first) is None
     assert FollowerState.read(_WINDOW) is None
+
+
+def test_a_stop_racing_a_read_never_wipes_the_users_modified_buffer(
+    headless_nvim: str, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Review of sweep-4 T4+T5, C1: `claude-follow stop` lands while a Read
+    navigates, so the state the hook read is gone when its eviction runs.
+    close_tab re-reads it, and an unknown state used to mean "dedicated":
+    goto_file + bwipeout! of the user's unsaved buffer."""
+    root = Path(os.path.realpath(tmp_path))
+    mine = root / "mine.py"
+    mine.write_text("mine = 1\n")
+    other = root / "other.py"
+    other.write_text("o = 1\n")
+    nvim, follower = _adopted(headless_nvim)
+    nvim.command(f"edit {mine}")
+    nvim.current.buffer.append(UNSAVED)
+    FollowerState.update(_WINDOW, open_files=(str(mine),))
+
+    caplog.set_level(logging.INFO, logger="vim_ai_follower")
+    hooks._ensure_buffer(_WINDOW, follower, str(other))
+    current = FollowerState.read(_WINDOW)
+    assert current is not None
+    FollowerState.clear(_WINDOW)  # the racing stop
+    hooks._touch_and_evict(_WINDOW, follower, current, str(other), 1)
+
+    buffer = _buffer(nvim, mine)
+    assert buffer is not None, "the user's buffer was wiped"
+    assert buffer[:] == ["mine = 1", UNSAVED]
+    assert any("follower state is gone" in record.getMessage() for record in caplog.records)

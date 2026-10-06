@@ -17,6 +17,7 @@ from vim_ai_follower import cache
 from vim_ai_follower.backends import NavigationFailed, tmux_vim
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.diff import compute_edit_script
+from vim_ai_follower.state import FollowerState
 from vim_ai_follower.tmux import TmuxPane
 
 pytestmark = pytest.mark.real_landing
@@ -189,10 +190,29 @@ def test_an_unanswered_readonly_question_forgets_a_yes() -> None:
     with (
         patch.object(tmux_vim, "_PROBE_TIMEOUT_SECONDS", 0.05),
         patch.object(tmux_vim, "_LANDING_TIMEOUT_SECONDS", 0.05),
-        patch.object(TmuxVimFollower, "_is_adopted", return_value=True),
+        patch.object(TmuxVimFollower, "_is_dedicated", return_value=False),
     ):
         assert TmuxVimFollower(pane_id="%2").user_readonly("/tmp/t.py") is False
     assert not record.exists()
+
+
+def test_a_vim_whose_state_is_gone_is_still_asked_about_readonly() -> None:
+    # Fail closed: unknown is not dedicated, so the user's readonly gets
+    # the `:w!` cue instead of a plain one that ends in E45.
+    FollowerState.set("@9", backend="tmux", target="%2", adopted=True)
+    FollowerState.clear("@9")
+    answer = cache.CACHE_DIR / "readonly-2.txt"
+    answer.parent.mkdir(parents=True, exist_ok=True)
+    answer.write_text("1\n")
+    assert TmuxVimFollower(pane_id="%2", window_id="@9").user_readonly("/tmp/t.py") is True
+
+
+def test_a_dedicated_vim_is_never_asked_about_readonly() -> None:
+    FollowerState.set("@9", backend="tmux", target="%2", adopted=False)
+    answer = cache.CACHE_DIR / "readonly-2.txt"
+    answer.parent.mkdir(parents=True, exist_ok=True)
+    answer.write_text("1\n")
+    assert TmuxVimFollower(pane_id="%2", window_id="@9").user_readonly("/tmp/t.py") is False
 
 
 def test_distrust_without_a_record_or_with_a_garbled_one_does_nothing() -> None:

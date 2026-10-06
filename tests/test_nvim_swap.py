@@ -234,6 +234,24 @@ def test_show_fresh_turns_swap_back_on_after_naming_only_when_adopted(
         assert back_on not in calls
 
 
+def test_show_fresh_turns_swap_back_on_when_the_state_is_gone(tmp_path: Path) -> None:
+    # Unknown is not dedicated: the buffer may be the user's, and swap off
+    # would cost them crash recovery (review of sweep-4 T4+T5, M2).
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
+    nvim = MagicMock()
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
+    fresh_buffer(nvim)
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+    ):
+        state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=False)
+        state.FollowerState.clear("@1")
+        follower.show_fresh("/tmp/f.py", "a\n")
+    assert call.exec2(_SWAP_BACK_ON, {"output": True}) in nvim.api.mock_calls
+
+
 @pytest.mark.parametrize("adopted", [True, False], ids=["adopted", "dedicated"])
 @pytest.mark.parametrize("existing", [-1, 5], ids=["created", "unloaded"])
 def test_goto_file_turns_swap_back_on_after_loading_only_when_adopted(

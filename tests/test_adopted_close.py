@@ -53,9 +53,13 @@ def test_a_close_that_left_nothing_behind_logs_nothing(
     assert caplog.records == []
 
 
-def _tmux_close(adopted: bool, answer: str | None) -> list[str]:
+def _tmux_close(adopted: bool | None, answer: str | None) -> list[str]:
+    """adopted=None: the state was written and is gone again (a
+    `claude-follow stop` racing the hook)."""
     window_id = "@5"
-    FollowerState.set(window_id, backend="tmux", target="%3", adopted=adopted)
+    FollowerState.set(window_id, backend="tmux", target="%3", adopted=bool(adopted))
+    if adopted is None:
+        FollowerState.clear(window_id)
     sent: list[str] = []
 
     def _record(self: object, text: str) -> None:
@@ -114,8 +118,10 @@ def test_an_adopted_vim_that_never_answers_keeps_a_home_it_never_had(
     assert "could not confirm" in caplog.text
 
 
-def _nvim_close(adopted: bool, found: int, verdict: str = "kept") -> MagicMock:
-    FollowerState.set("@6", backend="nvim", target="/tmp/s.sock", adopted=adopted)
+def _nvim_close(adopted: bool | None, found: int, verdict: str = "kept") -> MagicMock:
+    FollowerState.set("@6", backend="nvim", target="/tmp/s.sock", adopted=bool(adopted))
+    if adopted is None:
+        FollowerState.clear("@6")
     nvim = MagicMock()
 
     def answer(code: str, *args: object) -> object:
@@ -141,3 +147,31 @@ def test_an_adopted_nvim_with_no_buffer_for_the_file_does_nothing() -> None:
     nvim = _nvim_close(adopted=True, found=-1)
     assert all(call.args[0] != _EVICT_LUA for call in nvim.exec_lua.call_args_list)
     nvim.command.assert_not_called()
+
+
+# Fail closed (review of sweep-4 T4+T5, C1): with the state gone mid-hook, a
+# `claude-follow stop` racing a Read, nothing proves the editor is a
+# dedicated follower, so the eviction takes the adopted rules, never the
+# dedicated wipe, and says why in hook.log.
+
+
+def test_a_tmux_close_with_the_state_gone_never_wipes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="vim_ai_follower")
+    sent = _tmux_close(adopted=None, answer="kept")
+    assert sent[-1] == evict_spelled("/w/f.py")
+    assert not any("'wipe'" in line for line in sent)
+    assert "follower state is gone" in caplog.text
+    assert "unsaved changes" in caplog.text
+
+
+def test_an_nvim_close_with_the_state_gone_never_wipes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="vim_ai_follower")
+    nvim = _nvim_close(adopted=None, found=4, verdict="kept")
+    nvim.exec_lua.assert_any_call(_EVICT_LUA, 4)
+    nvim.command.assert_not_called()
+    assert "follower state is gone" in caplog.text
+    assert "unsaved changes" in caplog.text

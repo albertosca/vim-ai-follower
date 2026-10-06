@@ -677,7 +677,8 @@ def test_close_tab_wipes_by_buffer_number_and_never_double_closes() -> None:
     And the 2026-07-15 rule still stands: never `:tabclose` after the wipe —
     focus lands on a neighbour and the "safety" close eats an innocent tab.
     """
-    follower = TmuxVimFollower(pane_id="%2")
+    state.FollowerState.set("@1", "tmux", "%2", adopted=False)  # proven dedicated
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.close_tab("/tmp/old.py")
     commands = _sent_commands(run)
@@ -705,7 +706,8 @@ def test_close_tab_never_sends_the_path_as_a_bwipeout_pattern() -> None:
     load-bearing half: it must reach Vim only inside a string literal, where
     no character is special."""
     path = "/tmp/app/[slug]/page.tsx"
-    follower = TmuxVimFollower(pane_id="%2")
+    state.FollowerState.set("@1", "tmux", "%2", adopted=False)  # proven dedicated
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.close_tab(path)
     texts = [text for text, literal in _sent_commands(run) if literal]
@@ -718,7 +720,8 @@ def test_close_tab_hands_an_apostrophe_in_the_path_over_intact() -> None:
     on the line: an apostrophe (which a literal would have to double, or
     terminate early) is not on the command line at all, and the handle
     holds it verbatim."""
-    follower = TmuxVimFollower(pane_id="%2")
+    state.FollowerState.set("@1", "tmux", "%2", adopted=False)  # proven dedicated
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.close_tab("/tmp/it's/a.py")
     texts = [text for text, literal in _sent_commands(run) if literal]

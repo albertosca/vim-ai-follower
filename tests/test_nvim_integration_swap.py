@@ -108,6 +108,7 @@ def test_ensure_showing_opens_a_file_a_live_nvim_holds_the_swap_for(
 
     follower_sock = swap_aware_nvim()
     follower = NvimFollower(socket_path=follower_sock, window_id="@1", pace_seconds=0.0)
+    state.FollowerState.set("@1", "nvim", follower.socket_path, adopted=False)  # proven dedicated
     follower.ensure_showing(str(target))
 
     nvim = pynvim.attach("socket", path=follower_sock)
@@ -128,6 +129,7 @@ def test_apply_edits_vanished_buffer_branch_opens_a_swap_held_file(
 
     follower_sock = swap_aware_nvim()
     follower = NvimFollower(socket_path=follower_sock, window_id="@1", pace_seconds=0.0)
+    state.FollowerState.set("@1", "nvim", follower.socket_path, adopted=False)  # proven dedicated
     nvim = pynvim.attach("socket", path=follower_sock)
     assert nvim.funcs.bufnr(str(target)) == -1
 
@@ -155,6 +157,7 @@ def test_show_fresh_retypes_a_file_a_live_nvim_holds_the_swap_for(
 
     follower_sock = swap_aware_nvim()
     follower = NvimFollower(socket_path=follower_sock, window_id="@1", pace_seconds=0.0)
+    state.FollowerState.set("@1", "nvim", follower.socket_path, adopted=False)  # proven dedicated
     result = follower.show_fresh(str(target), "before = 1\nafter = 2\n", in_new_tab=in_new_tab)
 
     assert result == AnimationResult("completed", 2)
@@ -177,6 +180,7 @@ def test_goto_file_creates_the_buffer_of_a_file_a_live_nvim_holds_the_swap_for(
 
     follower_sock = swap_aware_nvim()
     follower = NvimFollower(socket_path=follower_sock, window_id="@1", pace_seconds=0.0)
+    state.FollowerState.set("@1", "nvim", follower.socket_path, adopted=False)  # proven dedicated
     follower.goto_file(str(target))
 
     nvim = pynvim.attach("socket", path=follower_sock)
@@ -210,8 +214,7 @@ def test_a_listed_unloaded_buffer_of_a_swap_held_file_is_shown_without_e325(
     assert nvim.api.buf_is_loaded(bufnr) is False
     assert nvim.api.buf_get_option(bufnr, "swapfile") is True
 
-    if adopted:
-        state.FollowerState.set("@1", "nvim", follower_sock, adopted=True)
+    state.FollowerState.set("@1", "nvim", follower_sock, adopted=adopted)
     follower = NvimFollower(socket_path=follower_sock, window_id="@1", pace_seconds=0.0)
     getattr(follower, entry)(str(target))
 
@@ -257,6 +260,8 @@ def test_the_other_editor_still_writes_the_file_afterwards(
     owner = _owner_holding(swap_aware_nvim(), target)
 
     follower = NvimFollower(socket_path=swap_aware_nvim(), window_id="@1", pace_seconds=0.0)
+
+    state.FollowerState.set("@1", "nvim", follower.socket_path, adopted=False)  # proven dedicated
     follower.ensure_showing(str(target))
 
     owner.api.buf_set_lines(owner.funcs.bufnr(str(target)), 0, -1, True, ["after"])

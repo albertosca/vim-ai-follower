@@ -99,13 +99,16 @@ def test_an_interrupted_animation_leaves_no_stamp() -> None:
 # ---- Follower.user_readonly (the hand-off cue's `:w!` variant)
 
 
-def _user_readonly(nvim: MagicMock, tmp_path: Path, *, adopted: bool) -> bool:
+def _user_readonly(nvim: MagicMock, tmp_path: Path, *, adopted: bool | None) -> bool:
+    """adopted=None: the state was written and is gone again."""
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
     ):
-        state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=adopted)
+        state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=bool(adopted))
+        if adopted is None:
+            state.FollowerState.clear("@1")
         return follower.user_readonly("/tmp/f.py")
 
 
@@ -114,6 +117,16 @@ def test_an_adopted_nvims_readonly_buffer_is_the_users(tmp_path: Path) -> None:
     nvim.exec_lua.return_value = 9
     nvim.api.buf_get_option.return_value = True
     assert _user_readonly(nvim, tmp_path, adopted=True) is True
+    nvim.api.buf_get_option.assert_called_once_with(9, "readonly")
+
+
+def test_an_nvim_whose_state_is_gone_still_asks(tmp_path: Path) -> None:
+    # Unknown is not dedicated: the readonly may be the user's, and the plain
+    # cue would send them into E45.
+    nvim = MagicMock()
+    nvim.exec_lua.return_value = 9
+    nvim.api.buf_get_option.return_value = True
+    assert _user_readonly(nvim, tmp_path, adopted=None) is True
     nvim.api.buf_get_option.assert_called_once_with(9, "readonly")
 
 

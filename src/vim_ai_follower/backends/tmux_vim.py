@@ -18,6 +18,7 @@ from vim_ai_follower.backends import (
     NavigationFailed,
     classify_buffer,
     log_adopted_close,
+    log_state_gone,
 )
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
 from vim_ai_follower.diff import EditOp
@@ -1357,6 +1358,17 @@ class TmuxVimFollower:
         state = FollowerState.read(self.window_id)
         return state is not None and state.adopted
 
+    def _is_dedicated(self) -> bool:
+        """Positively a dedicated follower: its FollowerState exists and says
+        not adopted. What a destructive or user-facing choice asks (close_tab's
+        wipe, user_readonly), failing CLOSED: with the state gone mid-hook (a
+        `claude-follow stop` racing it) or no window id, nothing proves the
+        Vim is not the user's own (review of sweep-4 T4+T5, C1)."""
+        if not self.window_id:
+            return False
+        state = FollowerState.read(self.window_id)
+        return state is not None and not state.adopted
+
     def _normal_mode(self, pane: TmuxPane) -> None:
         # Two Escapes return to Normal mode from any mode. Never Ctrl-\
         # Ctrl-N here: with a plugin-loaded Vim (vim-visual-multi + CoC)
@@ -1480,11 +1492,15 @@ class TmuxVimFollower:
         pane = TmuxPane(pane_id=self.pane_id)
         self._normal_mode(pane)
         self._define(pane)
-        if not self._is_adopted():
+        if self._is_dedicated():
             self._send_wipe(pane, file_path)
             return
-        # The user's own Vim: never wipe their work (s:evict), and wait for
-        # the verdict so hook.log says what was left where.
+        # The user's own Vim, or one whose state is gone (a racing `stop`:
+        # nothing proves it is not the user's): never wipe their work
+        # (s:evict), and wait for the verdict so hook.log says what was left
+        # where.
+        if not self.window_id or FollowerState.read(self.window_id) is None:
+            log_state_gone(self.window_id, file_path)
         answer = _evict_answer_path(self.pane_id)
         answer.parent.mkdir(parents=True, exist_ok=True)
         answer.unlink(missing_ok=True)
@@ -1548,8 +1564,9 @@ class TmuxVimFollower:
         readonly restore left (s:restore_readonly), waited for up to
         _PROBE_TIMEOUT_SECONDS; every hand-off follows one (an interrupt's, or
         hand_over's), which deletes the old answer before it is sent. No
-        answer is False, the plain cue."""
-        if not self._is_adopted():
+        answer is False, the plain cue. An unknown state (gone, or no window
+        id) asks too: only a proven dedicated follower skips the question."""
+        if self._is_dedicated():
             return False
         answer = _readonly_answer_path(self.pane_id)
         deadline = time.monotonic() + _PROBE_TIMEOUT_SECONDS

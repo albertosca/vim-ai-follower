@@ -5,7 +5,7 @@ branches) and by `apply_edit`'s vanished-buffer branch (which also goes
 through `_open_from_disk`) — the exact `buf_set_option(buf, "modifiable",
 False)` call `_drive`'s completion relock uses. An ADOPTED nvim is the
 user's own editor and is never locked by this backend, navigation included
-(same `_is_adopted` guard `_drive` uses) — unlike the tmux backend, which
+(the same fail-closed `_locks_buffers` guard `_drive` uses) — unlike the tmux backend, which
 locks an adopted Vim's tab the same as a dedicated one. A prior controller
 ruling (2026-09-16) made this lock unconditional to match tmux exactly;
 that ruling was reversed, so this file covers both the launched case (lock

@@ -252,3 +252,37 @@ def test_stop_keeps_the_users_buffers_and_closes_the_followers_own(
     assert report["LINES"] == ["mine = 1", UNSAVED], report
     assert _buffer(pane, tmp_path / "b1.txt", "x.py", wait_until)["EXISTS"] == "0"
     assert FollowerState.read(window_id) is None
+
+
+def test_a_stop_racing_a_read_never_wipes_the_users_modified_buffer(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Review of sweep-4 T4+T5, C1, tmux twin: the state the Read's hook
+    read is gone (a racing `claude-follow stop`) when its eviction runs, and
+    an unknown state used to take the dedicated s:wipe (`bwipeout!`)."""
+    root = Path(os.path.realpath(tmp_path))
+    mine = root / "mine.py"
+    mine.write_text("mine = 1\n")
+    other = root / "other.py"
+    other.write_text("o = 1\n")
+    pane, window_id, follower = _adopted(tmux_session, monkeypatch, root, "mine.py")
+    _keys(pane, "-l", "Go" + UNSAVED)
+    _keys(pane, "Escape")
+    FollowerState.update(window_id, open_files=(str(mine),))
+
+    caplog.set_level(logging.INFO, logger="vim_ai_follower")
+    hooks._ensure_buffer(window_id, follower, str(other))
+    current = FollowerState.read(window_id)
+    assert current is not None
+    FollowerState.clear(window_id)  # the racing stop
+    hooks._touch_and_evict(window_id, follower, current, str(other), 1)
+
+    report = _buffer(pane, tmp_path / "b.txt", "mine.py", wait_until)
+    assert report["EXISTS"] == "1", report
+    assert report["LINES"] == ["mine = 1", UNSAVED], report
+    assert mine.read_text() == "mine = 1\n"
+    assert any("follower state is gone" in record.getMessage() for record in caplog.records)

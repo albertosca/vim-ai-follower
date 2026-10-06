@@ -677,7 +677,8 @@ def test_goto_line_sets_cursor() -> None:
 
 
 def test_close_tab_wipes_the_buffer_found_by_the_buffer_list_walk() -> None:
-    follower = NvimFollower(socket_path="/tmp/x.sock")
+    FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=False)  # proven dedicated
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
     nvim.exec_lua.return_value = 9
     with (
@@ -691,7 +692,8 @@ def test_close_tab_wipes_the_buffer_found_by_the_buffer_list_walk() -> None:
 
 
 def test_close_tab_skips_the_wipe_when_no_buffer_holds_the_file() -> None:
-    follower = NvimFollower(socket_path="/tmp/x.sock")
+    FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=False)  # proven dedicated
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
     nvim.exec_lua.return_value = -1
     with (
