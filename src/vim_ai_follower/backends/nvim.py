@@ -251,6 +251,29 @@ local buf = ...
 if not vim.bo[buf].modified then return true end
 return vim.b[buf].{_SYNCED_TICK} == vim.api.nvim_buf_get_changedtick(buf)
 """
+# The completion stamp, in ONE request: nvim serves one request at a time, so
+# no keystroke of the user's can land between the compare and the stamp. The
+# tick is stamped only when the buffer holds exactly the lines the follower
+# meant to leave there (_drive's `expected`); a buffer that also holds the
+# user's typing (typed while the animation finished, C5 of the 2026-09-28
+# review) stays unstamped, so a later Read never re-reads it away.
+_STAMP_IF_EXPECTED_LUA = f"""
+local buf, expected = ...
+local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, true)
+if #lines ~= #expected then return false end
+for index = 1, #lines do
+  if lines[index] ~= expected[index] then return false end
+end
+vim.b[buf].{_SYNCED_TICK} = vim.api.nvim_buf_get_changedtick(buf)
+return true
+"""
+
+
+def _buffer_lines(content: str) -> list[str]:
+    """The lines a buffer holding `content` shows, as the follower types it
+    (splitlines, like show_fresh and apply_ops); an empty content is the one
+    empty line nvim never goes below."""
+    return content.splitlines() or [""]
 
 
 # The marks an ADOPTED nvim's eviction and `claude-follow stop` go by (see the
@@ -463,6 +486,7 @@ class NvimFollower:
         nvim: pynvim.Nvim,
         buf: int,
         run: Callable[[], AnimationResult],
+        expected: Sequence[str] | None,
     ) -> AnimationResult:
         """Shared envelope for every animation: unlock the buffer, mark the
         window "running" (a state change only: the hook that acquired the
@@ -472,6 +496,12 @@ class NvimFollower:
         never relocked. An interrupt hands the buffer to the user, so it is
         deliberately left modifiable regardless.
 
+        A completed run stamps the buffer clean (_IS_CLEAN_LUA) only when it
+        holds exactly `expected`, the lines the run was meant to leave
+        (_STAMP_IF_EXPECTED_LUA); None (a caller that cannot say) never
+        stamps, so the buffer reads "not clean", the side that never
+        discards typing.
+
         Signals are NOT cleared here: one pressed since the hook claimed the
         slot is addressed to this process and must survive to the first check;
         a stale one is addressed elsewhere and is dropped there (see
@@ -480,8 +510,9 @@ class NvimFollower:
         control.mark_animating(self.window_id)
         result = run()
         if result.outcome != "interrupted":
-            # The buffer now holds exactly what Claude wrote: see _IS_CLEAN_LUA.
-            nvim.api.buf_set_var(buf, _SYNCED_TICK, nvim.api.buf_get_changedtick(buf))
+            # Clean only if it holds exactly what Claude wrote: see _IS_CLEAN_LUA.
+            if expected is not None:
+                nvim.exec_lua(_STAMP_IF_EXPECTED_LUA, buf, list(expected))
             if self._locks_buffers():
                 nvim.api.buf_set_option(buf, "modifiable", False)
         return result
@@ -551,7 +582,7 @@ class NvimFollower:
                     nvim.api.buf_set_lines(buf, len(lines), len(lines) + 1, True, [])
                 return result
 
-            return self._drive(nvim, buf, run)
+            return self._drive(nvim, buf, run, list(lines) or [""])
 
     def _fresh_buffer(self, nvim: pynvim.Nvim, file_path: str, in_new_tab: bool) -> int:
         """A new buffer named file_path, shown in a new tab (in_new_tab) or
@@ -729,11 +760,12 @@ class NvimFollower:
         old range (instant, via nvim_buf_set_lines) and animates its new lines
         in, checking for a signal at every op and line boundary.
 
-        `before` is part of the Follower protocol for the tmux backend, which
-        sends keystrokes and can never read the buffer back, so it must be told
-        the base its crash-fallback `partial` is computed from. _run_ops reads
-        this buffer directly at run start (the one honest reading of what was
-        on screen), so the argument is redundant here — ignored.
+        `before` is the content the ops were computed against (the hook's
+        snapshot, as the buffer holds it). The tmux backend needs it for its
+        crash-fallback `partial`; _run_ops reads this buffer directly at run
+        start instead. Here it says what a completed run leaves:
+        apply_ops(before, ops), the only content _drive stamps clean. Without
+        it (None) the buffer is left unstamped.
 
         The ops were computed against a SNAPSHOT of that buffer, so they are
         meaningless without it. When the buffer is gone (an adopted nvim
@@ -751,7 +783,6 @@ class NvimFollower:
         leaves the buffer locked on both backends, and this is the one path
         that returns "completed" without going through the machinery that
         normally guarantees it."""
-        del before
         nvim = self._connect()
         with self._guarded(nvim, "apply_edit"):
             if _buffer_number(nvim, file_path) == -1:
@@ -764,6 +795,7 @@ class NvimFollower:
                 nvim,
                 buf,
                 lambda: self._run_ops(nvim, buf, ns, ops, self._pace_provider, file_path),
+                None if before is None else _buffer_lines(apply_ops(before, ops)),
             )
 
     def reload_and_relock(self, file_path: str) -> None:
@@ -915,11 +947,16 @@ class NvimFollower:
                 self.goto_file(pending.file_path)
             buf = nvim.api.get_current_buf().handle
             provider = (lambda: 0.0) if pending.pace_seconds == 0.0 else self._pace_provider
+            # What a completed replay leaves, from the remainder's own partial;
+            # a legacy remainder without one (None) is never stamped clean.
             if isinstance(pending, PendingApplyEdit):
                 return self._drive(
                     nvim,
                     buf,
                     lambda: self._run_ops(nvim, buf, ns, pending.ops, provider, pending.file_path),
+                    None
+                    if pending.partial is None
+                    else _buffer_lines(apply_ops(pending.partial, pending.ops)),
                 )
             return self._drive(
                 nvim,
@@ -927,6 +964,9 @@ class NvimFollower:
                 lambda: self._resume_fresh(
                     nvim, buf, ns, pending.lines, provider, pending.file_path, seeded
                 ),
+                None
+                if pending.partial is None
+                else _buffer_lines(pending.partial + _terminated(pending.lines)),
             )
 
     def hand_over(self) -> None:

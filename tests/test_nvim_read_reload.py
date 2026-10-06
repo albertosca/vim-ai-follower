@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, call, patch
 
 from vim_ai_follower import state
 from vim_ai_follower.animate import AnimationResult
-from vim_ai_follower.backends.nvim import _IS_CLEAN_LUA, NvimFollower
+from vim_ai_follower.backends.nvim import _IS_CLEAN_LUA, _STAMP_IF_EXPECTED_LUA, NvimFollower
 
 
 def _nvim(*, clean: bool, swap: bool) -> MagicMock:
@@ -62,26 +62,37 @@ def test_an_adopted_nvim_re_reads_plainly_and_keeps_its_swap(tmp_path: Path) -> 
     assert "swapfile" not in [c.args[1] for c in nvim.api.buf_set_option.call_args_list]
 
 
-def _drive(outcome: str) -> MagicMock:
+def _drive(outcome: str, expected: list[str] | None = None) -> MagicMock:
     nvim = MagicMock()
-    nvim.api.buf_get_changedtick.return_value = 42
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     with (
         patch("vim_ai_follower.control.mark_animating"),
         patch("vim_ai_follower.control.clear_animating"),
     ):
-        follower._drive(nvim, 7, lambda: AnimationResult(outcome, 1))  # type: ignore[arg-type]
+        follower._drive(
+            nvim,
+            7,
+            lambda: AnimationResult(outcome, 1),  # type: ignore[arg-type]
+            expected,
+        )
     return nvim
 
 
-def test_a_completed_animation_stamps_the_changedtick() -> None:
-    nvim = _drive("completed")
-    assert call(7, "vaf_synced_tick", 42) in nvim.api.buf_set_var.call_args_list
+def test_a_completed_animation_stamps_what_it_was_meant_to_leave() -> None:
+    nvim = _drive("completed", ["a", "b"])
+    nvim.exec_lua.assert_called_once_with(_STAMP_IF_EXPECTED_LUA, 7, ["a", "b"])
+
+
+def test_a_completed_animation_with_no_expected_content_leaves_no_stamp() -> None:
+    nvim = _drive("completed", None)
+    nvim.exec_lua.assert_not_called()
+    nvim.api.buf_set_var.assert_not_called()
 
 
 def test_an_interrupted_animation_leaves_no_stamp() -> None:
     """The handed-over buffer is the user's: a Read must not re-read it."""
-    nvim = _drive("interrupted")
+    nvim = _drive("interrupted", ["a"])
+    nvim.exec_lua.assert_not_called()
     nvim.api.buf_set_var.assert_not_called()
 
 

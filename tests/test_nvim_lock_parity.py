@@ -267,6 +267,6 @@ def test_a_completed_drive_with_the_state_gone_leaves_the_buffer_modifiable(
     nvim = MagicMock()
     with patch("vim_ai_follower.cache.CACHE_DIR", tmp_path):
         _state_gone(tmp_path)
-        result = follower._drive(nvim, 9, lambda: AnimationResult("completed", 1))
+        result = follower._drive(nvim, 9, lambda: AnimationResult("completed", 1), ["x"])
     assert result == AnimationResult("completed", 1)
     assert nvim.api.buf_set_option.call_args_list == [call(9, "modifiable", True)]

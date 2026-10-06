@@ -97,10 +97,20 @@ def route_exec_lua(nvim: MagicMock, *, buffer: int, display_name: str) -> None:
     (_FIND_BUFFER_LUA) gets `buffer`, the naming (_DISPLAY_NAME_LUA) gets
     `display_name`. One return_value for both would hand the buffer number
     to buf_set_name/bufadd as the name, and a test asserting the name would
-    then pin whatever the mock happened to return."""
-    from vim_ai_follower.backends.nvim import _DISPLAY_NAME_LUA, _FIND_BUFFER_LUA
+    then pin whatever the mock happened to return. A completion's stamp
+    (_STAMP_IF_EXPECTED_LUA) answers True, as for a buffer that holds what
+    the run typed."""
+    from vim_ai_follower.backends.nvim import (
+        _DISPLAY_NAME_LUA,
+        _FIND_BUFFER_LUA,
+        _STAMP_IF_EXPECTED_LUA,
+    )
 
-    answers: dict[str, object] = {_FIND_BUFFER_LUA: buffer, _DISPLAY_NAME_LUA: display_name}
+    answers: dict[str, object] = {
+        _FIND_BUFFER_LUA: buffer,
+        _DISPLAY_NAME_LUA: display_name,
+        _STAMP_IF_EXPECTED_LUA: True,
+    }
 
     def answer(code: str, *args: object) -> object:
         return answers[code]

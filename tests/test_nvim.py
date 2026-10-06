@@ -481,7 +481,7 @@ def test_drive_keeps_a_pause_pressed_after_the_hook_announced() -> None:
         seen.append(control.check_signal("@1"))  # what the driver's first check sees
         return AnimationResult("completed", 1)
 
-    follower._drive(nvim, 7, run)
+    follower._drive(nvim, 7, run, None)
     assert seen == ["pause"]
 
 

@@ -17,6 +17,7 @@ lives in tests/test_e2e_adopted_swap.py.
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -28,7 +29,11 @@ pynvim = pytest.importorskip("pynvim")
 from test_nvim_integration_swap import _owner_holding, swap_aware_nvim  # noqa: E402
 
 from vim_ai_follower import cache, state  # noqa: E402
+from vim_ai_follower.animate import AnimationResult  # noqa: E402
+from vim_ai_follower.backends import nvim as nvim_backend  # noqa: E402
 from vim_ai_follower.backends.nvim import NvimFollower  # noqa: E402
+from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh  # noqa: E402
+from vim_ai_follower.diff import EditOp, compute_edit_script  # noqa: E402
 
 pytestmark = pytest.mark.integration
 
@@ -97,6 +102,97 @@ def test_a_read_never_reloads_a_buffer_the_user_typed_into(
     nvim.api.buf_set_option(bufnr, "modifiable", True)
     nvim.api.buf_set_lines(bufnr, 0, 0, True, ["# mine"])
     typed = ["# mine", *WRITTEN.splitlines()]
+
+    target.write_text(FORMATTED)
+    follower.ensure_showing(str(target))
+
+    assert _buffer(nvim, target) == typed
+
+
+EDITED = WRITTEN + "z = 1\n"
+
+
+def test_a_read_reloads_a_buffer_a_completed_edit_left_clean(
+    dedicated: tuple[NvimFollower, Any], tmp_path: Path
+) -> None:
+    # The stamp an apply_edit leaves must match what it typed, or every Read
+    # after an Edit would leave a formatter's rewrite off screen.
+    follower, nvim = dedicated
+    target = tmp_path / "f.py"
+    target.write_text(WRITTEN)
+    assert follower.show_fresh(str(target), WRITTEN).outcome == "completed"
+    target.write_text(EDITED)
+    ops = compute_edit_script(WRITTEN, EDITED)
+    assert follower.apply_edit(str(target), ops, before=WRITTEN).outcome == "completed"
+    assert _buffer(nvim, target) == EDITED.splitlines()
+
+    target.write_text(FORMATTED)
+    follower.ensure_showing(str(target))
+
+    assert _buffer(nvim, target) == FORMATTED.splitlines()
+
+
+@pytest.mark.parametrize(
+    "pending",
+    [
+        PendingApplyEdit(
+            ops=[EditOp(kind="insert", start_line=3, end_line=2, new_lines=("z = 1",))],
+            pace_seconds=0.0,
+            partial=WRITTEN,
+        ),
+        PendingShowFresh(lines=("z = 1",), pace_seconds=0.0, continuation=True, partial=WRITTEN),
+    ],
+    ids=["apply_edit", "show_fresh"],
+)
+def test_a_read_reloads_a_buffer_a_completed_resume_left_clean(
+    dedicated: tuple[NvimFollower, Any],
+    tmp_path: Path,
+    pending: PendingApplyEdit | PendingShowFresh,
+) -> None:
+    follower, nvim = dedicated
+    target = tmp_path / "f.py"
+    target.write_text(WRITTEN)
+    assert follower.show_fresh(str(target), WRITTEN).outcome == "completed"
+    assert follower.rewrite_buffer(str(target), WRITTEN).outcome == "completed"
+    resumed = dataclasses.replace(pending, file_path=str(target))
+    assert follower.resume(resumed).outcome == "completed"
+    assert _buffer(nvim, target) == EDITED.splitlines()
+
+    target.write_text(FORMATTED)
+    follower.ensure_showing(str(target))
+
+    assert _buffer(nvim, target) == FORMATTED.splitlines()
+
+
+def test_a_read_never_reloads_typing_that_landed_as_an_edit_completed(
+    dedicated: tuple[NvimFollower, Any],
+    tmp_path: Path,
+    headless_nvim: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # C5: the user types into the buffer after the follower's last write and
+    # before the completion stamps it. The stamp must not call that typing
+    # the follower's, or the next Read after an outside rewrite drops it.
+    follower, nvim = dedicated
+    target = tmp_path / "f.py"
+    target.write_text(WRITTEN)
+    assert follower.show_fresh(str(target), WRITTEN).outcome == "completed"
+    target.write_text(EDITED)
+    user = pynvim.attach("socket", path=headless_nvim)
+    real_animate = nvim_backend._animate_lines
+
+    def animate_then_user_types(*args: Any, **kwargs: Any) -> AnimationResult:
+        result = real_animate(*args, **kwargs)
+        bufnr = user.funcs.bufnr(str(target))
+        user.api.buf_set_lines(bufnr, 0, 0, True, ["user typed"])
+        return result
+
+    monkeypatch.setattr(nvim_backend, "_animate_lines", animate_then_user_types)
+    ops = compute_edit_script(WRITTEN, EDITED)
+    assert follower.apply_edit(str(target), ops, before=WRITTEN).outcome == "completed"
+    monkeypatch.setattr(nvim_backend, "_animate_lines", real_animate)
+    typed = ["user typed", *EDITED.splitlines()]
+    assert _buffer(nvim, target) == typed
 
     target.write_text(FORMATTED)
     follower.ensure_showing(str(target))
