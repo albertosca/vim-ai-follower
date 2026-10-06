@@ -41,7 +41,7 @@ echo "prefix P to pause, then prefix P again to resume (or let it finish)."
 echo "Then inspect the FINAL buffer content line by line — it must match"
 echo "$FIX/pause-trigger.py exactly, with no stray 'u' or 'banu'-style smear."
 echo
-echo "Hermetic proof of the same fix (no popup timing luck needed):"
+echo "By-hand reproduction of the Escape half (prints PASS; no automated job runs it):"
 echo "  zsh $HERE/repro-stray-u.sh"
 echo
 echo "Cleanup when done:  rm -f $F"

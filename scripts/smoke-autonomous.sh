@@ -4,7 +4,7 @@
 # touches your tmux and never prompts the keychain. Exercises: start opens a
 # pane, the color cue tints on the 2nd writer, stop restores the border,
 # and two windows stay isolated. (The Escape+undo fix under REAL CoC popups
-# still needs a manual run — its hermetic proof is scripts/repro-stray-u.sh.)
+# still needs a manual run — scripts/repro-stray-u.sh reproduces the Escape half by hand and prints PASS; no automated job runs it.)
 #
 # Everything targets tmux by PANE ID, never window index, so a base-index in
 # ~/.tmux.conf can't throw it off.

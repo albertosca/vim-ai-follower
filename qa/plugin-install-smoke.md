@@ -14,7 +14,8 @@ after any change to `.claude-plugin/`, `hooks/hooks.json`, `bin/claude-follow`,
 cd the repo root
 claude plugin validate .                                   # expect: ✔ Validation passed
 CLAUDE_PLUGIN_ROOT="$PWD" PYTHONPATH="$PWD/src" python3 -m vim_ai_follower.cli status </dev/null
-#   expect: "claude-follow: not running inside tmux" (the bundled CLI runs, no install)
+#   expect: "claude-follow: no follower for <window id> (tmux)" (the bundled CLI runs, no install);
+#   with a TMUX_PANE tmux cannot resolve it prints "claude-follow: tmux could not resolve TMUX_PANE=%N — …" instead
 ./bin/claude-follow status </dev/null                      # same output via the wrapper
 ```
 
