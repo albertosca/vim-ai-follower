@@ -175,3 +175,61 @@ def test_an_nvim_close_with_the_state_gone_never_wipes(
     nvim.command.assert_not_called()
     assert "follower state is gone" in caplog.text
     assert "unsaved changes" in caplog.text
+
+
+# _is_dedicated decides every wipe and lock, so it is TRUE only for a state
+# that is readable, says dedicated (a real false, not null or 0), and names
+# THIS follower: its backend and its target (re-review of sweep-4 T4+T5, N1:
+# a racing stop+start left a dedicated state for ANOTHER follower, and the
+# adopted editor's eviction wiped the user's unsaved buffer). Anything else
+# is "not mine", never an exception.
+_OWN = {"nvim": "/tmp/s.sock", "tmux": "%3"}
+
+
+@pytest.mark.parametrize("backend", ["nvim", "tmux"])
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ('{{"backend": "{backend}", "target": "{target}", "adopted": false}}', True),
+        ('{{"backend": "{backend}", "target": "/other", "adopted": false}}', False),
+        ('{{"backend": "{other}", "target": "{target}", "adopted": false}}', False),
+        ('{{"backend": "{backend}", "target": "{target}", "adopted": true}}', False),
+        ('{{"backend": "{backend}", "target": "{target}", "adopted": null}}', False),
+        ('{{"backend": "{backend}", "target": "{target}", "adopted": 0}}', False),
+        ('{{"backend": "{backend}", "target": "{target}"}}', False),
+        ('{{"backend": "{backend}", "adopted": false}}', False),
+        ("{{not json", False),
+        ("", False),
+        ("[]", False),
+        (None, False),
+    ],
+    ids=[
+        "own-dedicated",
+        "other-target",
+        "other-backend",
+        "adopted",
+        "adopted-null",
+        "adopted-zero",
+        "adopted-missing",
+        "target-missing",
+        "malformed",
+        "empty",
+        "not-an-object",
+        "no-file",
+    ],
+)
+def test_only_a_readable_dedicated_state_naming_this_follower_is_dedicated(
+    backend: str, raw: str | None, expected: bool
+) -> None:
+    window_id = "@7"
+    if raw is not None:
+        path = cache.CACHE_DIR / f"{window_id}.pane"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        other = "tmux" if backend == "nvim" else "nvim"
+        path.write_text(raw.format(backend=backend, target=_OWN[backend], other=other))
+    follower: NvimFollower | TmuxVimFollower = (
+        NvimFollower(socket_path=_OWN["nvim"], window_id=window_id)
+        if backend == "nvim"
+        else TmuxVimFollower(pane_id=_OWN["tmux"], window_id=window_id)
+    )
+    assert follower._is_dedicated() is expected

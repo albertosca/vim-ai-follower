@@ -224,3 +224,32 @@ def test_a_stop_racing_a_read_never_wipes_the_users_modified_buffer(
     assert buffer is not None, "the user's buffer was wiped"
     assert buffer[:] == ["mine = 1", UNSAVED]
     assert any("follower state is gone" in record.getMessage() for record in caplog.records)
+
+
+def test_a_stop_then_start_racing_a_read_never_wipes_the_users_modified_buffer(
+    headless_nvim: str, tmp_path: Path
+) -> None:
+    """Re-review of sweep-4 T4+T5, N1: a `stop` and then a `start` of a
+    DEDICATED follower land while a Read navigates in the adopted nvim. The
+    new state says dedicated, but for another socket: it is not this
+    follower's, so the eviction must not wipe."""
+    root = Path(os.path.realpath(tmp_path))
+    mine = root / "mine.py"
+    mine.write_text("mine = 1\n")
+    other = root / "other.py"
+    other.write_text("o = 1\n")
+    nvim, follower = _adopted(headless_nvim)
+    nvim.command(f"edit {mine}")
+    nvim.current.buffer.append(UNSAVED)
+    FollowerState.update(_WINDOW, open_files=(str(mine),))
+
+    hooks._ensure_buffer(_WINDOW, follower, str(other))
+    current = FollowerState.read(_WINDOW)
+    assert current is not None
+    FollowerState.clear(_WINDOW)  # the racing stop
+    FollowerState.set(_WINDOW, "nvim", "/elsewhere/new.sock", adopted=False)  # and start
+    hooks._touch_and_evict(_WINDOW, follower, current, str(other), 1)
+
+    buffer = _buffer(nvim, mine)
+    assert buffer is not None, "the user's buffer was wiped"
+    assert buffer[:] == ["mine = 1", UNSAVED]

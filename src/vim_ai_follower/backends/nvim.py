@@ -30,7 +30,7 @@ from vim_ai_follower.backends import (
 from vim_ai_follower.backends.nvim_prompt import dismiss_prompt, exec_logged, prompt_guard
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
 from vim_ai_follower.diff import EditOp, apply_ops
-from vim_ai_follower.state import FollowerState
+from vim_ai_follower.state import FollowerState, owned_state
 
 logger = logging.getLogger("vim_ai_follower")
 
@@ -444,10 +444,12 @@ class NvimFollower:
         user's side: no lock (_locks_buffers), no key pressed (_guarded), no
         message captured (_exec), swap back on, the readonly asked about, and
         the eviction rules instead of a wipe (close_tab; review of sweep-4
-        T4+T5, C1). An adopted nvim is never locked: locking the user out of
-        their own buffer would be hostile."""
-        state = FollowerState.read(self.window_id)
-        return state is not None and not state.adopted
+        T4+T5, C1). The state must also be readable and name THIS socket
+        (owned_state): a racing `stop` + `start` writes a dedicated state for
+        ANOTHER follower (N1). An adopted nvim is never locked: locking the
+        user out of their own buffer would be hostile."""
+        state = owned_state(self.window_id, "nvim", self.socket_path)
+        return state is not None and state.adopted is False
 
     def _locks_buffers(self) -> bool:
         """Whether this follower may lock a buffer (nomodifiable): only a
@@ -1270,7 +1272,7 @@ class NvimFollower:
         nvim = self._connect()
         with self._guarded(nvim, "close_tab"):
             if not self._is_dedicated():
-                if FollowerState.read(self.window_id) is None:
+                if owned_state(self.window_id, "nvim", self.socket_path) is None:
                     log_state_gone(self.window_id, file_path)
                 bufnr = _buffer_number(nvim, file_path)
                 if bufnr != -1:

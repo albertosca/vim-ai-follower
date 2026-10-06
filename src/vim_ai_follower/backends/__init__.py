@@ -59,12 +59,14 @@ def log_adopted_close(file_path: str, verdict: str | None) -> None:
 
 
 def log_state_gone(window_id: str, file_path: str) -> None:
-    """One hook.log line for a tab close that found no follower state (a
-    `claude-follow stop` racing the hook): it runs the adopted editor's
-    eviction rules, because nothing proves the editor is not the user's."""
+    """One hook.log line for a tab close that found no follower state of its
+    own (a `claude-follow stop` racing the hook, or a `start` that followed it
+    for another follower): it runs the adopted editor's eviction rules,
+    because nothing proves the editor is not the user's."""
     logger.warning(
-        "closing %s: the follower state is gone for %s, so it is closed as in the "
-        "user's own editor (nothing unsaved or not the follower's is wiped)",
+        "closing %s: the follower state is gone for %s (or names another "
+        "follower), so it is closed as in the user's own editor (nothing "
+        "unsaved or not the follower's is wiped)",
         file_path,
         window_id or "this window",
     )

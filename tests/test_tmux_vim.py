@@ -875,6 +875,10 @@ def test_an_adopted_hand_over_restores_the_readonly() -> None:
 
 
 def test_a_dedicated_follower_never_asks_whose_readonly_it_is() -> None:
+    _register_fake_follower("@1", "%2")
+    state.FollowerState.update("@1", adopted=False)
+    (cache.CACHE_DIR / "readonly-2.asked").touch()  # even with a request on disk
+    (cache.CACHE_DIR / "readonly-2.txt").write_text("1\n")  # and a "yes" answer
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         assert follower.user_readonly("/tmp/f.txt") is False
@@ -884,18 +888,33 @@ def test_a_dedicated_follower_never_asks_whose_readonly_it_is() -> None:
 @pytest.mark.parametrize(("answer", "expected"), [("1\n", True), ("0\n", False)])
 def test_an_adopted_vim_answers_from_the_restore_it_just_ran(answer: str, expected: bool) -> None:
     follower = _adopted_follower()
+    (cache.CACHE_DIR / "readonly-2.asked").touch()  # the restore requested it
     (cache.CACHE_DIR / "readonly-2.txt").write_text(answer)
     assert follower.user_readonly("/tmp/f.txt") is expected
 
 
 def test_no_answer_from_the_restore_is_the_plain_cue(caplog: pytest.LogCaptureFixture) -> None:
     follower = _adopted_follower()
+    (cache.CACHE_DIR / "readonly-2.asked").touch()  # the restore requested it
     with (
         patch("vim_ai_follower.backends.tmux_vim._PROBE_TIMEOUT_SECONDS", 0.05),
         patch("vim_ai_follower.backends.tmux_vim.time.sleep"),
     ):
         assert follower.user_readonly("/tmp/f.txt") is False
     assert "no readonly answer" in caplog.text
+
+
+def test_the_restore_requests_the_answer_user_readonly_then_consumes() -> None:
+    follower = _adopted_follower()
+    request = cache.CACHE_DIR / "readonly-2.asked"
+    with patch("vim_ai_follower.tmux.subprocess.run"):
+        follower.hand_over()
+    assert request.exists()
+    (cache.CACHE_DIR / "readonly-2.txt").write_text("1\n")
+    assert follower.user_readonly("/tmp/f.txt") is True
+    assert not request.exists()
+    # Asked once per hand-off: the same answer is never read twice.
+    assert follower.user_readonly("/tmp/f.txt") is False
 
 
 def test_the_restore_clears_the_last_answer_before_it_is_sent() -> None:

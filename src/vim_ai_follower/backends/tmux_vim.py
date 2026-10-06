@@ -22,7 +22,7 @@ from vim_ai_follower.backends import (
 )
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
 from vim_ai_follower.diff import EditOp
-from vim_ai_follower.state import FollowerState
+from vim_ai_follower.state import FollowerState, owned_state
 from vim_ai_follower.tmux import TmuxPane
 
 # This backend drives Vim by TYPING Ex commands (`tmux send-keys`), and Vim
@@ -963,6 +963,13 @@ def _readonly_answer_path(pane_id: str) -> Path:
     return cache.CACHE_DIR / f"readonly-{pane_id.lstrip('%')}.txt"
 
 
+def _readonly_request_path(pane_id: str) -> Path:
+    """Marks that a readonly restore was sent for this pane and its answer is
+    still to be read: user_readonly waits only for an answer requested this
+    hand-off cycle, and consumes the mark."""
+    return cache.CACHE_DIR / f"readonly-{pane_id.lstrip('%')}.asked"
+
+
 def _read_probe(probe: Path, nonce: str) -> list[str] | None:
     """The buffer lines the probe reported, or None while the file is not
     (yet) this probe's complete answer."""
@@ -1359,15 +1366,17 @@ class TmuxVimFollower:
         return state is not None and state.adopted
 
     def _is_dedicated(self) -> bool:
-        """Positively a dedicated follower: its FollowerState exists and says
-        not adopted. What a destructive or user-facing choice asks (close_tab's
-        wipe, user_readonly), failing CLOSED: with the state gone mid-hook (a
-        `claude-follow stop` racing it) or no window id, nothing proves the
-        Vim is not the user's own (review of sweep-4 T4+T5, C1)."""
+        """Positively a dedicated follower: a readable FollowerState that names
+        THIS pane (owned_state) and says not adopted. What a destructive or
+        user-facing choice asks (close_tab's wipe, user_readonly), failing
+        CLOSED: with the state gone mid-hook (a `claude-follow stop` racing
+        it), written for another follower by a racing `start`, unreadable, or
+        no window id, nothing proves the Vim is not the user's own (review of
+        sweep-4 T4+T5, C1 and N1)."""
         if not self.window_id:
             return False
-        state = FollowerState.read(self.window_id)
-        return state is not None and not state.adopted
+        state = owned_state(self.window_id, "tmux", self.pane_id)
+        return state is not None and state.adopted is False
 
     def _normal_mode(self, pane: TmuxPane) -> None:
         # Two Escapes return to Normal mode from any mode. Never Ctrl-\
@@ -1499,7 +1508,7 @@ class TmuxVimFollower:
         # nothing proves it is not the user's): never wipe their work
         # (s:evict), and wait for the verdict so hook.log says what was left
         # where.
-        if not self.window_id or FollowerState.read(self.window_id) is None:
+        if not self.window_id or owned_state(self.window_id, "tmux", self.pane_id) is None:
             log_state_gone(self.window_id, file_path)
         answer = _evict_answer_path(self.pane_id)
         answer.parent.mkdir(parents=True, exist_ok=True)
@@ -1565,9 +1574,25 @@ class TmuxVimFollower:
         _PROBE_TIMEOUT_SECONDS; every hand-off follows one (an interrupt's, or
         hand_over's), which deletes the old answer before it is sent. No
         answer is False, the plain cue. An unknown state (gone, or no window
-        id) asks too: only a proven dedicated follower skips the question."""
+        id) asks too: only a proven dedicated follower skips the question.
+
+        Only an answer a restore REQUESTED is waited for (the mark
+        _send_restore_readonly leaves), and the mark is consumed here: with
+        the state gone the hand-off sends no restore, so nothing would answer
+        and the answer on disk would be an earlier hand-off's (re-review of
+        sweep-4 T4+T5, N3). The buffer is then the plain cue's: the unlock
+        cleared its readonly."""
         if self._is_dedicated():
             return False
+        request = _readonly_request_path(self.pane_id)
+        if not request.exists():
+            return False
+        try:
+            return self._await_readonly_answer(file_path)
+        finally:
+            request.unlink(missing_ok=True)
+
+    def _await_readonly_answer(self, file_path: str) -> bool:
         answer = _readonly_answer_path(self.pane_id)
         deadline = time.monotonic() + _PROBE_TIMEOUT_SECONDS
         while True:
@@ -1590,6 +1615,7 @@ class TmuxVimFollower:
         answer = _readonly_answer_path(self.pane_id)
         answer.parent.mkdir(parents=True, exist_ok=True)
         answer.unlink(missing_ok=True)
+        _readonly_request_path(self.pane_id).touch()
         pane.send_text(_call_line("restore_readonly", int(self.pane_id.lstrip("%"))))
         pane.send_key("Enter")
 

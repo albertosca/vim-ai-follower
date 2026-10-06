@@ -256,6 +256,24 @@ class FollowerState:
         _state_path(window_id, base_dir).unlink(missing_ok=True)
 
 
+def owned_state(
+    window_id: str, backend: str, target: str, base_dir: Path | None = None
+) -> FollowerState | None:
+    """The window's FollowerState if it is readable AND names this follower
+    (its backend and target), else None. What a follower asks before it acts
+    as a dedicated one: a state that is gone, unreadable, malformed, or that
+    a racing `stop` + `start` wrote for ANOTHER follower (re-review of
+    sweep-4 T4+T5, N1: the adopted editor's eviction wiped the user's
+    unsaved buffer on such a state) proves nothing about this one."""
+    try:
+        state = FollowerState.read(window_id, base_dir)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    if state is None or state.backend != backend or state.target != target:
+        return None
+    return state
+
+
 def touch_open_files(
     open_files: tuple[str, ...], file_path: str, max_tabs: int
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:

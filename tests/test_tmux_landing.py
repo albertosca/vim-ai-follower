@@ -187,6 +187,7 @@ def test_an_unanswered_probe_forgets_a_yes() -> None:
 
 def test_an_unanswered_readonly_question_forgets_a_yes() -> None:
     record, _marker = _record(True)
+    (cache.CACHE_DIR / "readonly-2.asked").touch()  # a restore requested it
     with (
         patch.object(tmux_vim, "_PROBE_TIMEOUT_SECONDS", 0.05),
         patch.object(tmux_vim, "_LANDING_TIMEOUT_SECONDS", 0.05),
@@ -204,6 +205,7 @@ def test_a_vim_whose_state_is_gone_is_still_asked_about_readonly() -> None:
     answer = cache.CACHE_DIR / "readonly-2.txt"
     answer.parent.mkdir(parents=True, exist_ok=True)
     answer.write_text("1\n")
+    (cache.CACHE_DIR / "readonly-2.asked").touch()  # a restore requested it
     assert TmuxVimFollower(pane_id="%2", window_id="@9").user_readonly("/tmp/t.py") is True
 
 
@@ -213,6 +215,24 @@ def test_a_dedicated_vim_is_never_asked_about_readonly() -> None:
     answer.parent.mkdir(parents=True, exist_ok=True)
     answer.write_text("1\n")
     assert TmuxVimFollower(pane_id="%2", window_id="@9").user_readonly("/tmp/t.py") is False
+
+
+def test_an_unrequested_readonly_answer_is_never_waited_for_or_read(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Re-review of sweep-4 T4+T5, N3: with the state gone, the hand-off sends
+    # no readonly restore, so nothing will answer and an answer on disk is an
+    # EARLIER hand-off's. Only a restore this cycle requested is waited for.
+    FollowerState.set("@9", backend="tmux", target="%2", adopted=True)
+    FollowerState.clear("@9")
+    stale = cache.CACHE_DIR / "readonly-2.txt"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_text("1\n")
+    with patch(
+        "vim_ai_follower.backends.tmux_vim.time.sleep", side_effect=AssertionError("waited")
+    ):
+        assert TmuxVimFollower(pane_id="%2", window_id="@9").user_readonly("/tmp/t.py") is False
+    assert "no readonly answer" not in caplog.text
 
 
 def test_distrust_without_a_record_or_with_a_garbled_one_does_nothing() -> None:
