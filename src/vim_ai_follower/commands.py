@@ -397,13 +397,16 @@ def cmd_pause(env: dict[str, str]) -> int:
     current = FollowerState.get(session.window_id)
 
     state = control.animating_state(session.window_id)
+    if state in ("running", "paused") and not control.request_pause(session.window_id):
+        # Its owner died after the state was read: nothing was written, so
+        # this press is one with no live animation (D1 residual).
+        state = None
     if state == "running":
-        control.request_pause(session.window_id)
         print("claude-follow: pause requested")
         _pause_feedback(current, session.in_tmux, paused=True)
         return 0
     if state == "paused":
-        control.request_pause(session.window_id)  # the toggle: resumes the waiting hook
+        # The toggle: the waiting hook consumes the same signal as a resume.
         print("claude-follow: resume requested")
         _pause_feedback(current, session.in_tmux, paused=False)
         return 0
@@ -494,15 +497,19 @@ def cmd_interrupt(env: dict[str, str]) -> int:
     current = FollowerState.get(session.window_id)
 
     state = control.animating_state(session.window_id)
+    if state in ("running", "paused", "handoff") and not control.request_interrupt(
+        session.window_id
+    ):
+        # Its owner died after the state was read: nothing was written, so
+        # this press is one with no live animation (D1 residual).
+        state = None
     if state in ("running", "paused"):
-        control.request_interrupt(session.window_id)
         print("claude-follow: interrupt requested")
         _show_popup(current, "Interrupted", session.in_tmux)
         return 0
     if state == "handoff":
         # the des-interrupt: discard the user's unsaved typing and release
         # Claude as if the interrupt had not happened
-        control.request_interrupt(session.window_id)
         print("claude-follow: hand-off cancelled, unsaved changes discarded")
         _show_popup(current, "Discarded", session.in_tmux)
         return 0

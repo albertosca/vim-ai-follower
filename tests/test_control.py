@@ -498,3 +498,13 @@ def test_a_signal_is_addressed_to_the_owner_the_key_press_saw(tmp_path: Path) ->
     control.request_interrupt("@1", base_dir=tmp_path)
     assert (tmp_path / "@1.interrupt").read_text() == str(os.getpid())
     assert not list(tmp_path.glob("*.tmp"))  # written atomically, no half file left
+
+
+def test_a_request_says_whether_it_reached_a_live_owner(tmp_path: Path) -> None:
+    # The CLI reads "running" first and writes the signal after; an owner that
+    # died in between gets nothing written, and the caller must know it.
+    assert control.request_pause("@1", base_dir=tmp_path) is False
+    assert control.request_interrupt("@1", base_dir=tmp_path) is False
+    control.mark_animating("@1", base_dir=tmp_path)
+    assert control.request_pause("@1", base_dir=tmp_path) is True
+    assert control.request_interrupt("@1", base_dir=tmp_path) is True

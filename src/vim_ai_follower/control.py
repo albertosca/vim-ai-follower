@@ -68,7 +68,7 @@ def clear_signals(window_id: str, base_dir: Path | None = None) -> None:
     _interrupt_path(window_id, base_dir).unlink(missing_ok=True)
 
 
-def _request(path: Path, window_id: str, base_dir: Path | None) -> None:
+def _request(path: Path, window_id: str, base_dir: Path | None) -> bool:
     """Address a signal to the animation live at this instant: the file holds
     its owner's PID, and only that process obeys it (_consume).
 
@@ -83,22 +83,27 @@ def _request(path: Path, window_id: str, base_dir: Path | None) -> None:
 
     Signals sent to a hook reach every animation that one hook process runs
     (a catch-up, the edit, a des-interrupt replay): that is one "Writing..."
-    the user saw, so a P aimed at it is still meant for it."""
+    the user saw, so a P aimed at it is still meant for it.
+
+    True when the signal was written to a live owner. The caller read the
+    marker's state before calling, and the owner can die in between: then
+    nothing is written and False tells the caller not to claim it worked."""
     owner = _live_owner(window_id, base_dir)
     if owner is None:
-        return
+        return False
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(str(owner))
-    tmp.replace(path)  # atomic: a consumer never claims an empty half-file
+    staged = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    staged.write_text(str(owner))
+    staged.replace(path)  # atomic: a consumer never claims an empty half-file
+    return True
 
 
-def request_pause(window_id: str, base_dir: Path | None = None) -> None:
-    _request(_pause_path(window_id, base_dir), window_id, base_dir)
+def request_pause(window_id: str, base_dir: Path | None = None) -> bool:
+    return _request(_pause_path(window_id, base_dir), window_id, base_dir)
 
 
-def request_interrupt(window_id: str, base_dir: Path | None = None) -> None:
-    _request(_interrupt_path(window_id, base_dir), window_id, base_dir)
+def request_interrupt(window_id: str, base_dir: Path | None = None) -> bool:
+    return _request(_interrupt_path(window_id, base_dir), window_id, base_dir)
 
 
 def has_pending_animation(window_id: str, base_dir: Path | None = None) -> bool:

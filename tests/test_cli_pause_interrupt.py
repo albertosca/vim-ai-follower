@@ -627,3 +627,31 @@ def test_a_resume_cut_short_by_a_stop_does_not_resave_the_remainder() -> None:
         assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 1
 
     assert control.has_pending_animation("@1") is False
+
+
+@pytest.mark.parametrize(
+    ("command", "seen_state", "message"),
+    [
+        (commands.cmd_pause, "running", "claude-follow: nothing to pause\n"),
+        (commands.cmd_pause, "paused", "claude-follow: nothing to pause\n"),
+        (commands.cmd_interrupt, "running", "claude-follow: nothing to interrupt\n"),
+        (commands.cmd_interrupt, "paused", "claude-follow: nothing to interrupt\n"),
+        (commands.cmd_interrupt, "handoff", "claude-follow: nothing to interrupt\n"),
+    ],
+)
+def test_a_press_whose_owner_died_before_the_signal_claims_nothing(
+    command: object, seen_state: str, message: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # D1 residual: the marker read `seen_state`, then its owner died before the
+    # signal was written. Nothing was written, so nothing may claim success:
+    # no "pause requested", no Paused/Interrupted popup.
+    _register_fake_follower("@1", "%2")
+    with (
+        patch("vim_ai_follower.commands.control.animating_state", return_value=seen_state),
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
+    ):
+        assert command({"TMUX_PANE": "%1"}) == 0  # type: ignore[operator]
+    assert capsys.readouterr().out == message
+    assert _popup_calls(popen) == []
+    assert control.check_signal("@1") is None
