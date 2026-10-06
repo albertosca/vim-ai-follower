@@ -13,7 +13,13 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 from helpers import make_mock_tmux_run
-from test_hooks_base_mismatch import _follower, _run_hook, _setup
+from test_hooks_base_mismatch import (
+    _caught_up_follower,
+    _follower,
+    _pending_apply_edit,
+    _run_hook,
+    _setup,
+)
 
 from vim_ai_follower import control, hooks, state, tmux
 from vim_ai_follower.animate import AnimationResult
@@ -309,4 +315,22 @@ def test_every_press_no_driver_consumed_is_drained(
     assert call.retire_state("Paused") in retired
     if "interrupt" in presses:
         assert call.retire_state("Interrupted") in retired
+    _no_signal_left(tmp_path)
+
+
+def test_a_pause_pressed_during_a_grounding_reload_is_drained(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review of T11, m4: the grounding exit (a completed catch-up whose
+    buffer is not the edit's base is reloaded from disk) runs no driver
+    after the catch-up, so a P pressed during the reload is the drain's."""
+    target, resolved = _setup(tmp_path)
+    _pending_apply_edit(resolved, "a\nb\nc\n")
+    follower = _caught_up_follower(False, "differs")
+    follower.reload_from_disk.side_effect = _press("pause")
+    surface = _run_hook(target, follower, monkeypatch)
+
+    assert follower.reload_from_disk.call_args_list != []
+    assert follower.apply_edit.call_args_list == []
+    assert call.retire_state("Paused") in surface.method_calls
     _no_signal_left(tmp_path)
