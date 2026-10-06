@@ -15,6 +15,7 @@ from helpers import fresh_buffer, route_exec_lua, tabnew_adds_a_tab
 
 from vim_ai_follower.backends import NavigationFailed
 from vim_ai_follower.backends.nvim import NvimFollower
+from vim_ai_follower.state import FollowerState
 
 
 def _follower() -> NvimFollower:
@@ -131,57 +132,89 @@ def test_a_read_that_does_not_land_wipes_the_buffer_it_loaded() -> None:
     nvim.command.assert_any_call("silent! bwipeout! 42")
 
 
-def _hijacked(window_valid: bool, now_name: str) -> tuple[MagicMock, MagicMock]:
-    """A tabnew under a TabNew jump: the user's window 1000 showed buffer 1
-    and now shows buffer 3 (named `now_name`); the added tab's window shows
-    buffer 1 (the split copy)."""
+def _after_tabnew(
+    now: dict[int, MagicMock], valid_windows: set[int], valid_buffers: set[int]
+) -> MagicMock:
+    """A mock nvim after an early-jumping `:tabnew`: window handle -> the
+    buffer it shows NOW; only the named handles are valid. A buffer named
+    "" is the tabnew's empty scratch, any other name is a user's buffer."""
     nvim = MagicMock()
-    user_buffer, now = MagicMock(handle=1), MagicMock(handle=3)
-    user_window, added = MagicMock(handle=1000), MagicMock(handle=1001)
-    nvim.api.list_wins.return_value = [user_window]
-    nvim.api.win_is_valid.return_value = window_valid
-    nvim.api.buf_get_name.side_effect = lambda buffer: now_name if buffer is now else "x"
+    nvim.api.win_is_valid.side_effect = lambda handle: handle in valid_windows
+    nvim.api.buf_is_valid.side_effect = lambda handle: handle in valid_buffers
+    nvim.api.win_get_buf.side_effect = lambda handle: now[handle]
+    nvim.api.buf_get_name.side_effect = lambda buffer: buffer.name_for_test
     nvim.api.buf_get_option.return_value = False
     nvim.api.buf_is_loaded.return_value = True
     nvim.api.buf_line_count.return_value = 1
     nvim.api.buf_get_lines.return_value = [""]
     nvim.funcs.win_findbuf.return_value = []
-    shown = {1000: user_buffer, 1001: user_buffer}
-    calls = {"count": 0}
-
-    def win_get_buf(window: object) -> MagicMock:
-        handle = getattr(window, "handle", window)
-        calls["count"] += 1
-        # The first read is the snapshot before the tabnew.
-        if handle == 1000 and calls["count"] > 1:
-            return now
-        return shown[handle]  # type: ignore[index]
-
-    nvim.api.win_get_buf.side_effect = win_get_buf
-    return nvim, added
+    return nvim
 
 
-def test_a_window_an_early_jump_hijacked_gets_the_users_buffer_back() -> None:
+def _buffer(handle: int, name: str) -> MagicMock:
+    buffer = MagicMock(handle=handle)
+    buffer.name_for_test = name
+    return buffer
+
+
+def test_every_window_an_early_jump_hijacked_gets_its_buffer_back_in_any_tab() -> None:
+    """Review of sweep-4 T8, I2: the user sat in tab 2 (window 2000, buffer
+    2) and `TabNew * tabfirst` dropped the scratch (buffer 9) into tab 1's
+    window 1000, which showed buffer 1. Window 3000 was not touched."""
     from vim_ai_follower.backends.nvim import _give_back_hijacked_windows
 
-    nvim, added = _hijacked(window_valid=True, now_name="")
-    _give_back_hijacked_windows(nvim, {1000: 1}, added)
+    scratch = _buffer(9, "")
+    nvim = _after_tabnew(
+        {1000: scratch, 2000: _buffer(2, "b.txt"), 3000: _buffer(3, "c.txt")},
+        valid_windows={1000, 2000, 3000},
+        valid_buffers={1, 2, 3, 9},
+    )
+    _give_back_hijacked_windows(nvim, {1000: 1, 2000: 2, 3000: 3})
     nvim.api.win_set_buf.assert_called_once_with(1000, 1)
-    nvim.command.assert_called_once_with("silent! bwipeout 3")
+    nvim.command.assert_called_once_with("silent! bwipeout 9")
 
 
 @pytest.mark.parametrize(
-    ("window_valid", "now_name"),
-    [(False, ""), (True, "/tmp/theirs.py")],
-    ids=["window-gone", "not-a-scratch"],
+    ("valid_windows", "valid_buffers", "now_name"),
+    [({2000}, {1, 9}, ""), ({1000}, {9}, ""), ({1000}, {1, 9}, "/tmp/theirs.py")],
+    ids=["window-gone", "buffer-gone", "not-a-scratch"],
 )
-def test_a_window_that_was_not_hijacked_is_left_alone(window_valid: bool, now_name: str) -> None:
+def test_a_window_that_was_not_hijacked_is_left_alone(
+    valid_windows: set[int], valid_buffers: set[int], now_name: str
+) -> None:
     from vim_ai_follower.backends.nvim import _give_back_hijacked_windows
 
-    nvim, added = _hijacked(window_valid, now_name)
-    _give_back_hijacked_windows(nvim, {1000: 1}, added)
+    nvim = _after_tabnew({1000: _buffer(9, now_name)}, valid_windows, valid_buffers)
+    _give_back_hijacked_windows(nvim, {1000: 1})
     nvim.api.win_set_buf.assert_not_called()
     nvim.command.assert_not_called()
+
+
+def test_a_window_still_showing_its_own_empty_buffer_is_left_alone() -> None:
+    """The user's window showed their own empty [No Name] (buffer 1) and
+    still does: nothing to give back, nothing to wipe."""
+    from vim_ai_follower.backends.nvim import _give_back_hijacked_windows
+
+    nvim = _after_tabnew({1000: _buffer(1, "")}, {1000}, {1})
+    _give_back_hijacked_windows(nvim, {1000: 1})
+    nvim.api.win_set_buf.assert_not_called()
+    nvim.command.assert_not_called()
+
+
+def test_an_unloaded_unnamed_buffer_is_a_scratch() -> None:
+    """Under 'nohidden' the replaced scratch is unloaded, and an unloaded
+    buffer has no lines (buf_line_count 0): it still counts as empty."""
+    from vim_ai_follower.backends.nvim import _is_scratch
+
+    nvim = MagicMock()
+    nvim.api.buf_get_name.return_value = ""
+    nvim.api.buf_get_option.return_value = False
+    nvim.api.buf_is_loaded.return_value = False
+    nvim.api.buf_line_count.return_value = 0
+    nvim.api.buf_get_lines.return_value = []
+    assert _is_scratch(nvim, MagicMock(handle=9)) is True
+    nvim.api.buf_is_loaded.return_value = True
+    assert _is_scratch(nvim, MagicMock(handle=9)) is False
 
 
 def test_a_give_back_nvim_refuses_is_navigation_failed() -> None:
@@ -192,3 +225,25 @@ def test_a_give_back_nvim_refuses_is_navigation_failed() -> None:
     with pytest.raises(NavigationFailed, match="Invalid window id"):
         _follower()._fresh_buffer(nvim, "/tmp/f.py", True)
     nvim.command.assert_any_call(f"silent! bwipeout! {buffer.handle}")
+
+
+@pytest.mark.parametrize(
+    ("state", "opens_a_tab"),
+    [("dedicated", False), ("adopted", True), ("gone", True)],
+)
+def test_only_a_proven_dedicated_follower_types_a_first_file_in_place(
+    state: str, opens_a_tab: bool
+) -> None:
+    """Review of sweep-4 T8, I1: the hook asks for the current window
+    (in_new_tab=shown_any=False) on an adopted nvim's first Write; the
+    window there is the user's, so show_fresh opens a tab anyway, and so
+    does an nvim whose state is gone (fail closed)."""
+    if state != "gone":
+        FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=state == "adopted")
+    nvim, _buffer = _mock()
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+    ):
+        _follower().show_fresh("/tmp/f.py", "a\n", in_new_tab=False)
+    assert (call("tabnew") in nvim.command.call_args_list) is opens_a_tab

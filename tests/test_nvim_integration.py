@@ -110,6 +110,8 @@ def test_multiple_fresh_files_open_as_separate_tabs(
     from vim_ai_follower import cache
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    # A dedicated follower: only it types its first file in the current window.
+    FollowerState.set("@1", "nvim", headless_nvim, adopted=False)
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
 
     follower.show_fresh("/tmp/a.py", "a = 1\n")
@@ -131,6 +133,8 @@ def test_editing_an_earlier_file_switches_back_to_its_tab(
     from vim_ai_follower import cache
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    # A dedicated follower: only it types its first file in the current window.
+    FollowerState.set("@1", "nvim", headless_nvim, adopted=False)
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
 
     follower.show_fresh("/tmp/a.py", "a = 1\nb = 1\n")
@@ -152,6 +156,8 @@ def test_close_tab_removes_the_tab_not_just_the_buffer(
     from vim_ai_follower import cache
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    # A dedicated follower: only it types its first file in the current window.
+    FollowerState.set("@1", "nvim", headless_nvim, adopted=False)
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
 
     follower.show_fresh("/tmp/a.py", "a = 1\n")

@@ -183,17 +183,18 @@ def test_show_fresh_under_an_early_jump_gives_the_user_their_window_back(
     assert [buffer.number for buffer in nvim.buffers if buffer.name == ""] == []
 
 
-def test_under_nohidden_a_refused_switch_is_navigation_failed_not_a_raw_error(
+def test_a_dedicated_followers_refused_switch_is_navigation_failed_not_a_raw_error(
     headless_nvim: str, tmp_path: Path
 ) -> None:
-    """An adopted follower's first Write types in the CURRENT window
-    (in_new_tab=False). Under 'nohidden', with the user's buffer there
-    modified, nvim refuses the switch (E37): that used to escape as a raw
-    NvimError and leave the follower's named, empty buffer behind."""
+    """A DEDICATED follower's first Write still types in the current window
+    (in_new_tab=False). Under 'nohidden', with the buffer there modified,
+    nvim refuses the switch (E37): that used to escape as a raw NvimError
+    and leave the follower's named, empty buffer behind."""
     root = Path(os.path.realpath(tmp_path))
     target = root / "first.py"
     target.write_text("first = 1\n")
     nvim, user_buffer = _adopted_with_jump(headless_nvim, root, hidden=False)
+    FollowerState.set("@77", backend="nvim", target=headless_nvim, adopted=False, speed="instant")
     user_window = nvim.current.window
 
     with pytest.raises(NavigationFailed):
@@ -202,3 +203,119 @@ def test_under_nohidden_a_refused_switch_is_navigation_failed_not_a_raw_error(
     assert nvim.api.win_get_buf(user_window) == user_buffer
     assert user_buffer[:] == ["user line", "USER UNSAVED"]
     assert [buffer.number for buffer in nvim.buffers if buffer.number != user_buffer.number] == []
+
+
+def _adopted_as_started(headless_nvim: str) -> NvimFollower:
+    """The state `claude-follow start` writes for an adopted nvim (no
+    shown_any), and the follower the hook builds from it."""
+    FollowerState.set("@77", backend="nvim", target=headless_nvim, adopted=True, speed="instant")
+    return _follower(headless_nvim)
+
+
+def _first_write(follower: NvimFollower, target: Path) -> None:
+    """The hook's first Write: show_fresh with in_new_tab=state.shown_any."""
+    state = FollowerState.read("@77")
+    assert state is not None
+    assert state.shown_any is False
+    result = follower.show_fresh(str(target), "first = 1\n", in_new_tab=state.shown_any)
+    assert result.outcome == "completed"
+
+
+@pytest.mark.parametrize("hidden", [True, False], ids=["hidden", "nohidden"])
+def test_an_adopted_nvims_first_write_opens_its_own_tab(
+    headless_nvim: str, tmp_path: Path, hidden: bool
+) -> None:
+    """Review of sweep-4 T8, I1: an adopted nvim's state has no shown_any,
+    so the first Write was typed IN PLACE: the user's window showed
+    Claude's file and their buffer was hidden."""
+    root = Path(os.path.realpath(tmp_path))
+    target = root / "first.py"
+    target.write_text("first = 1\n")
+    user = root / "user.txt"
+    user.write_text("user line\n")
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    nvim.command(f"edit {user}")
+    nvim.current.buffer.append("USER UNSAVED")
+    if not hidden:
+        nvim.command("set nohidden")
+    user_buffer, user_window = nvim.current.buffer, nvim.current.window
+
+    _first_write(_adopted_as_started(headless_nvim), target)
+
+    _assert_new_tab_shows(nvim, user_buffer, user_window, target)
+    assert nvim.current.buffer[:] == ["first = 1"]
+
+
+def test_an_adopted_nvims_first_write_keeps_the_users_nofile_scratch(
+    headless_nvim: str, tmp_path: Path
+) -> None:
+    """Under 'nohidden', switching a window away from an unnamed
+    `buftype=nofile` scratch unloads it, text and all: the in-place first
+    Write lost the user's notes (review of sweep-4 T8, I1)."""
+    root = Path(os.path.realpath(tmp_path))
+    target = root / "first.py"
+    target.write_text("first = 1\n")
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    nvim.command("set nohidden")
+    nvim.command("setlocal buftype=nofile")
+    nvim.current.buffer[:] = ["my notes"]
+    scratch, scratch_window = nvim.current.buffer, nvim.current.window
+
+    _first_write(_adopted_as_started(headless_nvim), target)
+
+    assert nvim.api.win_get_buf(scratch_window) == scratch
+    assert scratch[:] == ["my notes"]
+    assert len(nvim.api.list_tabpages()) == 2
+    assert os.path.realpath(nvim.current.buffer.name) == str(target)
+
+
+# The jumps the review's matrix found the single-window give-back missed: an
+# early jump to a tab other than the one the tabnew was made from (review of
+# sweep-4 T8, I2).
+_OTHER_TAB_JUMPS = [
+    ("autocmd TabNew * tabfirst", 2),
+    ("autocmd BufNew * tabfirst", 2),
+    ("autocmd WinNew * tabfirst", 2),
+    ("autocmd BufAdd * tabfirst", 2),
+    ("autocmd TabNew * tablast", 1),
+    ("autocmd TabNew * tabnext", 1),
+]
+
+
+@pytest.mark.parametrize("entry", ["read", "goto_missing", "show_fresh"])
+@pytest.mark.parametrize("hidden", [True, False], ids=["hidden", "nohidden"])
+@pytest.mark.parametrize(("jump", "on_tab"), _OTHER_TAB_JUMPS, ids=lambda value: str(value))
+def test_a_jump_to_another_tab_gives_every_user_window_its_buffer_back(
+    headless_nvim: str, tmp_path: Path, jump: str, on_tab: int, hidden: bool, entry: str
+) -> None:
+    root = Path(os.path.realpath(tmp_path))
+    target = root / "target.py"
+    target.write_text("target = 1\n")
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    texts = {}
+    for name in ("a", "b"):
+        path = root / f"{name}.txt"
+        path.write_text(f"{name} line\n")
+        nvim.command(f"{'edit' if name == 'a' else 'tabnew'} {path}")
+        nvim.current.buffer.append(f"{name.upper()} UNSAVED")
+        texts[nvim.current.buffer.number] = [f"{name} line", f"{name.upper()} UNSAVED"]
+    nvim.command(f"{on_tab}tabnext")
+    if not hidden:
+        nvim.command("set nohidden")
+    nvim.command(jump)
+    windows = {window.handle: window.buffer.number for window in nvim.windows}
+    follower = _adopted_as_started(headless_nvim)
+
+    if entry == "read":
+        follower.ensure_showing(str(target))
+    elif entry == "goto_missing":
+        follower.goto_file(str(target))
+    else:
+        follower.show_fresh(str(target), "target = 1\n", in_new_tab=True)
+
+    shown = {handle: nvim.api.win_get_buf(handle).number for handle in windows}
+    assert shown == windows
+    assert {number: nvim.buffers[number][:] for number in texts} == texts
+    assert len(nvim.api.list_tabpages()) == 3
+    assert os.path.realpath(nvim.current.buffer.name) == str(target)
+    assert [buffer.number for buffer in nvim.buffers if buffer.name == ""] == []

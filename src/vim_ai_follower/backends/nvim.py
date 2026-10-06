@@ -457,24 +457,24 @@ def _wipe_if_scratch(nvim: pynvim.Nvim, scratch: pynvim.api.Buffer, kept: int) -
         nvim.command(f"silent! bwipeout {scratch.handle}")
 
 
-def _give_back_hijacked_windows(
-    nvim: pynvim.Nvim, shown_before: dict[int, int], added: pynvim.api.Window
-) -> None:
-    """Undo what a user autocommand that jumps on TabNew or BufNew (`autocmd
-    TabNew * tabfirst`) makes nvim's own `:tabnew` do: the jump runs before
-    the tabnew's empty buffer is entered, so that buffer lands in the window
-    the cursor jumped to, the USER's, while the added tab's window keeps
-    the split copy of what the old current window showed. Every window that
-    showed buffer B before the tabnew (`shown_before`: window handle ->
-    buffer handle) and now shows an empty scratch, while `added` shows B,
-    gets B back, and the scratch is wiped once shown nowhere. Measured
-    (2026-10-06, headless nvim 0.12): without this a Read hid the user's
-    buffer under 'hidden' and failed with E37 under 'nohidden' (final review
-    of backlog-sweep-3, N2). B stays displayed in `added` while it is given
-    back, so no abandon check runs on it."""
-    copied = nvim.api.win_get_buf(added).handle
+def _give_back_hijacked_windows(nvim: pynvim.Nvim, shown_before: dict[int, int]) -> None:
+    """Undo what a user autocommand that jumps on TabNew, BufNew, WinNew or
+    BufAdd (`autocmd TabNew * tabfirst`) makes nvim's own `:tabnew` do: the
+    jump runs before the tabnew's empty buffer is entered, so that buffer
+    lands in whichever window the cursor jumped to, a USER's window in any
+    tab. `shown_before` is every window of every tab before the tabnew
+    (window handle -> buffer handle): each of them that now shows an empty
+    scratch (_is_scratch) instead gets its own buffer back, by handle, and
+    the scratch is wiped once shown nowhere. A window the follower created is
+    never in that record, so it is never touched; a buffer that is gone is
+    left gone. Measured (2026-10-06, headless nvim 0.12): without this a
+    Read hid the user's buffer, under 'nohidden' too, and an early version
+    that looked only at the window the tabnew was made from missed every
+    jump to another tab (review of sweep-4 T8, I2: 92 of 896 matrix runs).
+    The scratch is unmodified, so giving the window back runs no abandon
+    check on it."""
     for window_handle, buffer_handle in shown_before.items():
-        if buffer_handle != copied or not nvim.api.win_is_valid(window_handle):
+        if not nvim.api.win_is_valid(window_handle) or not nvim.api.buf_is_valid(buffer_handle):
             continue
         now = nvim.api.win_get_buf(window_handle)
         if now.handle != buffer_handle and _is_scratch(nvim, now):
@@ -638,8 +638,19 @@ class NvimFollower:
         retype. The buffer is wiped and renamed in place, seeded with a single
         blank line, then each content line is animated in. in_new_tab opens a
         fresh tab first (:tabnew, no disk read) instead of reusing the
-        current window — real multi-file parity with the tmux backend."""
+        current window — real multi-file parity with the tmux backend.
+
+        Only a follower its state PROVES dedicated (_is_dedicated) may reuse
+        the current window: in an adopted nvim, or one whose state is gone,
+        that window is the user's, so every file opens in a tab of its own
+        whatever the caller asked. The hook passes the state's `shown_any`,
+        which an adopted nvim's state never set: its first Write took over
+        the user's window and hid their buffer, and under 'nohidden' an
+        unnamed nofile scratch there lost its text (review of sweep-4 T8,
+        I1). Decided here, from ownership, not from a state field that can
+        be missing."""
         nvim = self._connect()
+        in_new_tab = in_new_tab or not self._is_dedicated()
         with self._guarded(nvim, "show_fresh"):
             ns = nvim.api.create_namespace(_NAMESPACE)
             # Wipe by NUMBER and name via the API: the Ex forms take the path as a
@@ -750,7 +761,7 @@ class NvimFollower:
             raise NavigationFailed(f"the follower's nvim did not open a tab for {file_path}")
         window: pynvim.api.Window = nvim.api.tabpage_get_win(added[0])
         try:
-            _give_back_hijacked_windows(nvim, shown_before, window)
+            _give_back_hijacked_windows(nvim, shown_before)
         except pynvim.NvimError as error:
             raise NavigationFailed(
                 f"the follower's nvim could not open a tab for {file_path}: {error}"
