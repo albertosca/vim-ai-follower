@@ -6,6 +6,11 @@ into it; every state is read back with writefile(), never capture-pane, and
 the read is sent with NO Escape before it, so a prompt the follower left
 behind eats it and the test says so.
 
+- An interrupt hands the buffer over with no relock, and the relock was the
+  only thing that turned the follower's 'paste' off again. 'paste' is GLOBAL:
+  left on, it disables every insert-mode mapping and abbreviation and all
+  auto-indenting for the user, in every buffer. The hand-off gives back the
+  value the user had (in an adopted Vim, possibly on).
 - A user autocommand that THROWS on the completion relock's `:e!` (s:relock):
   the `:e!` sat in a `try … finally` with no `catch`, so the exception ran the
   `finally` and then aborted the function before its `setlocal`, leaving the
@@ -19,11 +24,15 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+from vim_ai_follower import control
+from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.diff import compute_edit_script
 from vim_ai_follower.state import FollowerState
@@ -68,8 +77,8 @@ def vim_pane(tmux_session: str, tmp_path: Path, wait_until: Callable[..., bool],
     return pane
 
 
-def follower(pane: str, *, adopted: bool) -> TmuxVimFollower:
-    FollowerState.set("@1", "tmux", pane, adopted=adopted, speed="instant")
+def follower(pane: str, *, adopted: bool, speed: str = "instant") -> TmuxVimFollower:
+    FollowerState.set("@1", "tmux", pane, adopted=adopted, speed=speed)
     return TmuxVimFollower(pane_id=pane, pace_seconds=0.0, window_id="@1")
 
 
@@ -120,3 +129,58 @@ def test_the_relock_locks_whatever_a_user_autocommand_does_on_its_reload(
     assert dedicated.apply_edit(str(target), ops, before=BEFORE).outcome == "completed"
 
     assert state(pane, tmp_path, wait_until) == ["0", "0", "", *expected]
+
+
+LONG = "".join(f"line_{number} = {number}\n" for number in range(40))
+
+
+def interrupted_edit(follower: TmuxVimFollower, target: Path) -> AnimationResult:
+    """An apply_edit, interrupted as a keyboard interrupt would: once its
+    driver has marked itself running (in this process, so the signal is
+    addressed to it)."""
+    target.write_text(LONG)
+    results: list[AnimationResult] = []
+    ops = compute_edit_script(BEFORE, LONG)
+    thread = threading.Thread(
+        target=lambda: results.append(follower.apply_edit(str(target), ops, before=BEFORE))
+    )
+    thread.start()
+    try:
+        deadline = time.monotonic() + 15.0
+        while control.animating_state("@1") != "running" and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert control.animating_state("@1") == "running"
+        control.request_interrupt("@1")
+    finally:
+        thread.join(timeout=30.0)
+    assert not thread.is_alive()
+    return results[0]
+
+
+@pytest.mark.parametrize(
+    ("adopted", "users_paste"),
+    [(False, "0"), (True, "0"), (True, "1")],
+    ids=["dedicated", "adopted-nopaste", "adopted-paste"],
+)
+def test_an_interrupt_gives_the_users_paste_back(
+    adopted: bool,
+    users_paste: str,
+    tmux_session: str,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    pane = vim_pane(tmux_session, tmp_path, wait_until, "")
+    target = tmp_path / "t.py"
+    target.write_text(BEFORE)
+    shown = follower(pane, adopted=adopted)
+    assert shown.show_fresh(str(target), BEFORE).outcome == "completed"
+    # Set after show_fresh: its completion relock turns 'paste' off (not this
+    # test's question; the relock always has).
+    _keys(pane, f":set {'' if users_paste == '1' else 'no'}paste")
+    paced = follower(pane, adopted=adopted, speed="lento")
+
+    result = interrupted_edit(paced, target)
+
+    assert result.outcome == "interrupted"
+    modifiable, paste, *_ = state(pane, tmp_path, wait_until)
+    assert (modifiable, paste) == ("1", users_paste)

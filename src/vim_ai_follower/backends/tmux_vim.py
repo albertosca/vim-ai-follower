@@ -111,10 +111,24 @@ from vim_ai_follower.tmux import TmuxPane
 # follower's own value, and the follower's claim wins. The claim can therefore
 # outlive a later user `:view` of the same loaded buffer: the restore hands
 # back the value recorded before the follower's lock, not the one `:view` set.
+#
+# 'paste' is GLOBAL, and the unlock turns it on (see _with_unlocked). The
+# completion relocks turn it off, but an interrupt hands the buffer over with
+# no relock, and the user was left with 'paste' on in every buffer: no
+# insert-mode mappings or abbreviations, no auto-indent (C2-C5 report,
+# 2026-09-28). So every unlock records the user's value in `g:vaf_user_paste`
+# (a global, as the option is) unless an earlier unlock of the same run holds
+# it already (rewrite_buffer's, then resume's, where 'paste' is already the
+# follower's), and every hand-off puts it back (_RESTORE_PASTE, hand_over).
+# The completion relocks forget the record, so the next run takes a fresh one.
 _LOCK_READONLY = ":setlocal readonly nomodifiable"
-_UNLOCK_FOR_ANIMATION = ":setlocal noreadonly modifiable paste"
-_RELOCK = ":setlocal nomodifiable nopaste"
-_RELOCK_READONLY = ":setlocal readonly nomodifiable nopaste"
+_RECORD_USER_PASTE = "let g:vaf_user_paste = get(g:, 'vaf_user_paste', &paste)"
+_FORGET_USER_PASTE = "unlet! g:vaf_user_paste"
+_UNLOCK_FOR_ANIMATION = f":{_RECORD_USER_PASTE}|setlocal noreadonly modifiable paste"
+_RELOCK = f":setlocal nomodifiable nopaste|{_FORGET_USER_PASTE}"
+_RELOCK_READONLY = f":setlocal readonly nomodifiable nopaste|{_FORGET_USER_PASTE}"
+_GIVE_BACK_PASTE = f"let &paste = get(g:, 'vaf_user_paste', 0)|{_FORGET_USER_PASTE}"
+_RESTORE_PASTE = f":{_GIVE_BACK_PASTE}"
 _ADOPTED_LOCK_READONLY = _LOCK_READONLY + " | let b:vaf_ro_ours = 1"
 _OUR_READONLY_CLAIM = " | let b:vaf_ro_ours = 1"
 # The restore also leaves its answer for user_readonly (the hand-off cue) in
@@ -133,6 +147,7 @@ endfunction
 
 function! s:unlock() abort
   call s:note_user_readonly()
+  let g:vaf_user_paste = get(g:, 'vaf_user_paste', &paste)
   setlocal noreadonly modifiable paste
   let b:vaf_ro_ours = 2
 endfunction
@@ -334,6 +349,7 @@ function! s:relock(readonly, claim) abort
   else
     setlocal nomodifiable nopaste
   endif
+  unlet! g:vaf_user_paste
   if a:claim
     let b:vaf_ro_ours = 1
   endif
@@ -1636,7 +1652,8 @@ class TmuxVimFollower:
         without it, each Enter in insert mode auto-inserts indentation that
         then stacks with the leading whitespace already in our own lines.
         An interrupted animation hands the buffer to the user — it stays
-        modifiable. A pause never reaches here: it loops inside run_ops/
+        modifiable, and 'paste', which is global, goes back to the user's
+        value (_RESTORE_PASTE). A pause never reaches here: it loops inside run_ops/
         run_lines and only returns once the run has actually completed or
         been interrupted, so 'relock' only ever fires on a genuinely
         completed outcome. Callers own the relock, whose synced form
@@ -1654,6 +1671,10 @@ class TmuxVimFollower:
         result = run(pane)
         if result.outcome != "interrupted":
             pane.send_text(relock.line(adopted))
+            pane.send_key("Enter")
+        else:
+            # No relock to turn 'paste' off: give the user's back.
+            pane.send_text(_RESTORE_PASTE)
             pane.send_key("Enter")
         if adopted:
             # After the relock, whose `:e!` resets 'readonly' (and on an
@@ -1829,7 +1850,7 @@ class TmuxVimFollower:
         pane = TmuxPane(pane_id=self.pane_id)
         pane.send_text(_COC_ENABLE)
         pane.send_key("Enter")
-        pane.send_text(":setlocal modifiable nopaste")
+        pane.send_text(f":setlocal modifiable|{_GIVE_BACK_PASTE}")
         pane.send_key("Enter")
         # A hand-off after rewrite_buffer's unlock (a replay interrupted
         # mid-rebuild), or of a crash-orphaned remainder, gives an adopted

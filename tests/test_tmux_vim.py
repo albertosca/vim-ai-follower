@@ -41,8 +41,16 @@ _RELOAD_DISCARDING = call_spelled("reload", 1, 0)
 # (E)dit-anyway answer.
 _RELOCK_SYNCED = call_spelled("relock", 0, 0)
 _RELOCK_READONLY_SYNCED = call_spelled("relock", 1, 0)
-# The animation unlock, spelled out for the same reason as _goto.
-_UNLOCK_FOR_ANIMATION = ":setlocal noreadonly modifiable paste"
+# The animation unlock, spelled out for the same reason as _goto. 'paste' is
+# GLOBAL, so the unlock records the user's value first, unless an earlier
+# unlock of the same run already holds it (rewrite_buffer, then resume).
+_UNLOCK_FOR_ANIMATION = (
+    ":let g:vaf_user_paste = get(g:, 'vaf_user_paste', &paste)|setlocal noreadonly modifiable paste"
+)
+# What every exit that hands the buffer to the user sends: the user's 'paste'.
+_RESTORE_PASTE = ":let &paste = get(g:, 'vaf_user_paste', 0)|unlet! g:vaf_user_paste"
+# hand_over's unlock, which gives it back the same way.
+_HAND_OVER = ":setlocal modifiable" + _RESTORE_PASTE.replace(":", "|", 1)
 # An ADOPTED Vim's readonly bookkeeping (s:note_user_readonly): the unlock
 # that notes the user's readonly and claims the option, the lock's claim, and
 # the restore every animation exit sends (its answer for pane %2).
@@ -145,6 +153,20 @@ def test_apply_edit_skips_relock_when_interrupted(tmp_path: Path) -> None:
     assert (_RELOCK_SYNCED, True) not in commands
     # A dedicated follower's readonly is never the user's: no bookkeeping.
     assert not any("b:vaf_" in text for text, _ in commands)
+    # But 'paste' is global, and the hand-off gives the user's back.
+    assert commands[-2:] == [(_RESTORE_PASTE, True), ("Enter", False)]
+
+
+def test_a_completed_animation_never_sends_the_paste_restore(tmp_path: Path) -> None:
+    """The relock turns 'paste' off and forgets the record itself."""
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+    ):
+        follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
+    assert (_RESTORE_PASTE, True) not in _sent_commands(run)
 
 
 def test_apply_edit_relocks_after_pause_and_resume(tmp_path: Path) -> None:
@@ -373,7 +395,8 @@ def test_show_fresh_skips_relock_when_interrupted(tmp_path: Path) -> None:
         result = follower.show_fresh("/tmp/f.txt", "a\nb\n")
     commands = _sent_commands(run)
     assert result.outcome == "interrupted"
-    assert not any(text == ":setlocal readonly nomodifiable nopaste" for text, _ in commands)
+    # No relock of any form (the synced call or a plain line).
+    assert not any("nomodifiable" in text or "'relock'" in text for text, _ in commands)
 
 
 def test_live_pace_reads_current_state_speed() -> None:
@@ -464,11 +487,11 @@ def test_resume_show_fresh_replays_remaining_lines_and_relocks_with_readonly(
                 ops=[EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))],
                 pace_seconds=0.0,
             ),
-            ":setlocal nomodifiable nopaste",
+            ":setlocal nomodifiable nopaste|unlet! g:vaf_user_paste",
         ),
         (
             control.PendingShowFresh(lines=("b", "c"), pace_seconds=0.0),
-            ":setlocal readonly nomodifiable nopaste",
+            ":setlocal readonly nomodifiable nopaste|unlet! g:vaf_user_paste",
         ),
     ],
     ids=["apply_edit", "show_fresh"],
@@ -543,7 +566,8 @@ def test_resume_skips_relock_when_interrupted_again(tmp_path: Path) -> None:
         result = follower.resume(pending)
     commands = _sent_commands(run)
     assert result.outcome == "interrupted"
-    assert not any(text == ":setlocal nomodifiable nopaste" for text, _ in commands)
+    # No relock of any form (the synced call or a plain line).
+    assert not any("nomodifiable" in text or "'relock'" in text for text, _ in commands)
 
 
 def test_hand_over_unlocks_the_buffer() -> None:
@@ -553,7 +577,7 @@ def test_hand_over_unlocks_the_buffer() -> None:
     assert _sent_commands(run) == [
         (":silent! CocEnable", True),
         ("Enter", False),
-        (":setlocal modifiable nopaste", True),
+        (_HAND_OVER, True),
         ("Enter", False),
     ]
 
@@ -828,7 +852,7 @@ def test_an_adopted_animation_notes_claims_and_restores_the_readonly(outcome: st
         assert commands[-4:] == [(_RELOCK_SYNCED, True), ("Enter", False), *tail]
     else:
         assert (_RELOCK_SYNCED, True) not in commands
-        assert commands[-2:] == tail
+        assert commands[-4:] == [(_RESTORE_PASTE, True), ("Enter", False), *tail]
 
 
 def test_an_adopted_show_fresh_relock_claims_its_own_readonly() -> None:

@@ -416,7 +416,11 @@ def test_interrupt_with_pending_discards_it_and_hands_the_buffer_over() -> None:
         for c in run.call_args_list
         if c.args[0][:4] == ["tmux", "send-keys", "-t", "%2"] and "-l" in c.args[0]
     ]
-    assert ":setlocal modifiable nopaste" in sends  # buffer unlocked for the user
+    # buffer unlocked for the user, 'paste' given back
+    assert (
+        ":setlocal modifiable|let &paste = get(g:, 'vaf_user_paste', 0)|unlet! g:vaf_user_paste"
+        in sends
+    )
     popups = _popup_calls(popen)
     assert len(popups) == 1
     assert any("Interrupted" in arg for arg in popups[0])

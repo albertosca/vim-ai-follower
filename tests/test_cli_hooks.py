@@ -54,6 +54,10 @@ _READONLY_RELOCK = call_spelled("relock", 1, 0)
 # The discarding reload (reload_and_relock's / reload_from_disk's `silent
 # edit!`, s:reload) of a dedicated follower.
 _RELOAD_DISCARDING = call_spelled("reload", 1, 0)
+# hand_over's unlock, giving the user's global 'paste' back.
+_HAND_OVER = (
+    ":setlocal modifiable|let &paste = get(g:, 'vaf_user_paste', 0)|unlet! g:vaf_user_paste"
+)
 
 
 def _goto(path: object) -> str:
@@ -762,7 +766,8 @@ def test_hook_post_edit_interrupted_prints_notification_and_leaves_buffer_unlock
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = _literal_sends(run)
-    assert not any(text == ":setlocal nomodifiable nopaste" for text in sends)
+    # No relock of any form (the synced call or a plain line).
+    assert not any("nomodifiable" in text or "'relock'" in text for text in sends)
     out = json.loads(capsys.readouterr().out)
     context = out["hookSpecificOutput"]["additionalContext"]
     assert str(target) in context
@@ -1426,7 +1431,7 @@ def test_hook_post_replay_interrupted_again_hands_over_and_waits_again(
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = _literal_sends(run)
-    assert ":setlocal modifiable nopaste" in sends  # handed over, unlocked
+    assert _HAND_OVER in sends  # handed over, unlocked
     refreshed = state.FollowerState.read("@1")
     assert refreshed is not None
     assert refreshed.current_file is None  # tracking dropped until resync
