@@ -597,6 +597,10 @@ def _poll_until_interrupt(
         if polls % _HANDOFF_REMINDER_POLLS == 0 and session.in_tmux:
             show_popup(current.target, cue)
         if control.check_signal(session.window_id) == "interrupt":
+            # The replay starts now, so a second S interrupts IT — "running"
+            # before anything else, or one pressed within milliseconds of the
+            # first read "handoff" and was told its typing was discarded.
+            control.mark_animating(session.window_id, state="running")
             return True
         try:
             if Path(file_path).read_text() != after:

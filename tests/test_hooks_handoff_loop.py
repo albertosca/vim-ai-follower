@@ -20,7 +20,7 @@ import pytest
 from helpers import make_mock_tmux_run as _mock_tmux_run
 from helpers import register_fake_follower as _register_fake_follower
 
-from vim_ai_follower import control, hooks, state
+from vim_ai_follower import commands, control, hooks, state
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.diff import EditOp
 from vim_ai_follower.session import Session
@@ -347,3 +347,26 @@ def test_two_replay_cycles_land_at_the_exact_content_in_a_real_nvim(
     refreshed = state.FollowerState.read("@1")
     assert refreshed is not None
     assert refreshed.current_file == file_a
+
+
+def test_the_s_that_ends_a_wait_marks_the_replay_running_before_it_starts(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """D1 residual: the wait consumed the first S and returned, but the marker
+    kept "handoff" until the replay's driver started — a second S within
+    those milliseconds was told "hand-off cancelled, unsaved changes
+    discarded" though it interrupts the replay."""
+    current, target = _handoff_state(tmp_path, "a\n")
+    control.mark_animating("@1", state="handoff")
+    assert control.request_interrupt("@1") is True  # the first S
+    with patch("vim_ai_follower.hooks.time.sleep"):
+        assert hooks._poll_until_interrupt(current, _SESSION, target, "a\n", "", None) is True
+    assert control.animating_state("@1") == "running"
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()),
+    ):
+        assert commands.cmd_interrupt({"TMUX_PANE": "%1"}) == 0  # the second S
+    assert capsys.readouterr().out == "claude-follow: interrupt requested\n"
+    assert control.check_signal("@1") == "interrupt"  # addressed to the replay
