@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -894,3 +895,92 @@ def test_a_real_vim_on_another_home_sources_the_unguarded_line_on_every_call(
         env={**os.environ, "HOME": str(tmp_path)},
     )
     assert out.read_text().splitlines() == ["/tmp/first.py", "/tmp/second.py", ""]
+
+
+_VIM_TINY_IMAGE = "vaf-vim-tiny:test"
+_VIM_TINY_DOCKERFILE = "\n".join(
+    [
+        "FROM ubuntu:24.04",
+        "RUN apt-get update && apt-get install -y --no-install-recommends vim-tiny",
+        "",
+    ]
+)
+
+
+def _vim_tiny_image() -> str:
+    """A local image with Ubuntu's vim-tiny, a Vim built WITHOUT +eval; built
+    once, then cached by Docker. Skips when Docker is not running."""
+    if shutil.which("docker") is None:
+        pytest.skip("docker not installed")
+    if subprocess.run(["docker", "info"], capture_output=True, timeout=60).returncode != 0:
+        pytest.skip("docker not running")
+    if (
+        subprocess.run(
+            ["docker", "image", "inspect", _VIM_TINY_IMAGE], capture_output=True, timeout=60
+        ).returncode
+        != 0
+    ):
+        subprocess.run(
+            ["docker", "build", "-q", "-t", _VIM_TINY_IMAGE, "-"],
+            input=_VIM_TINY_DOCKERFILE.encode(),
+            capture_output=True,
+            timeout=600,
+            check=True,
+        )
+    return _VIM_TINY_IMAGE
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("length", [48, 70, 89])
+def test_a_vim_without_eval_runs_nothing_from_the_define_line(
+    short_root: Path, monkeypatch: pytest.MonkeyPatch, length: int
+) -> None:
+    """A Vim built without +eval has no `:function`: sourcing the script runs
+    every helper's body as top-level Ex commands (`edit!`, `%d _` among them)
+    and empties the user's buffer, unsaved text included (review of T9, I1,
+    reproduced on Ubuntu's vim-tiny). Such a Vim never answers the HOME
+    question, so it gets the absolute define line: guarded (48), unguarded
+    (70) or guarded again (89). Whatever the line, its buffer must survive."""
+    image = _vim_tiny_image()
+    monkeypatch.setattr(cache, "CACHE_DIR", _cache_with_script_path_of_length(short_root, length))
+    with patch.object(tmux_vim, "_home_relative", return_value=None):
+        define = tmux_vim._define_line("%3")
+    hash_part = tmux_vim._vim_functions()[0].removeprefix("VafFollower_")
+    script = cache.CACHE_DIR / f"vaf-{hash_part}.vim"
+    # No bind mount (Docker Desktop shares neither the Mac's /tmp nor
+    # /private/tmp by default): the script goes in on stdin, at the path the
+    # define line types, and the user's buffer comes back on stdout.
+    vim = shlex.join(
+        [
+            "vim.tiny",
+            "-u",
+            "NONE",
+            "-i",
+            "NONE",
+            "-N",
+            "-es",
+            "-c",
+            "normal! Gounsaved user typing",
+            "-c",
+            define.removeprefix(":"),
+            "-c",
+            "w! /work/dump.txt",
+            "-c",
+            "qa!",
+            "/work/user.txt",
+        ]
+    )
+    shell = (
+        f"mkdir -p {shlex.quote(str(cache.CACHE_DIR))} /work"
+        f" && cat > {shlex.quote(str(script))}"
+        " && printf 'user line 1\\nuser line 2\\n' > /work/user.txt"
+        f" && {vim}; cat /work/dump.txt"
+    )
+    result = subprocess.run(
+        ["docker", "run", "--rm", "-i", image, "sh", "-c", shell],
+        input=script.read_bytes(),
+        capture_output=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.stdout.decode() == "user line 1\nuser line 2\nunsaved user typing\n", result

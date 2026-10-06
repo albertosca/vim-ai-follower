@@ -1023,10 +1023,23 @@ endfunction
 # dispatcher with no "Last set from" file (pasted by hand) is never deleted:
 # by then it is the user's code. No variable records the names, so nothing
 # new is left in the user's namespace.
+#
+# Everything after `scriptencoding` is inside `if 1` … `endif`. A Vim built
+# without +eval (Ubuntu's vim-tiny) has no `:function`, so sourcing the
+# script ran every helper's BODY as top-level Ex commands (`edit!`, `%d _`)
+# and emptied the user's buffer, unsaved text included; such a Vim skips
+# everything between `:if` and its `:endif` (`:h no-eval-feature`), nested
+# ones counted (review of T9, I1, measured in Docker on vim-tiny 9.1). It
+# never answers the HOME question, so it is typed the absolute define line,
+# which is unguarded past 97 characters (_define_line). A multi-line
+# `if !has('eval') / finish / endif` does NOT protect it (measured: the
+# `finish` is skipped with the rest of the `:if`).
 _VIM_SCRIPT = (
     "\" vim-ai-follower's tmux backend: written to its cache directory and\n"
     '" sourced once per Vim (see backends/tmux_vim.py). Do not edit.\n'
     "scriptencoding utf-8\n"
+    # A Vim without +eval skips everything up to the matching endif.
+    "if 1\n"
     "let s:cpo_save = &cpo\n"
     "set cpo&vim\n"
     "let s:dir = @DIR@\n"
@@ -1062,6 +1075,7 @@ endfor
 unlet! s:name s:origin s:ours
 let &cpo = s:cpo_save
 unlet s:cpo_save
+endif
 """
 )
 
