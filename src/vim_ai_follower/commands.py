@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import subprocess
 import sys
+import time
 from typing import Literal
 
 from vim_ai_follower import cache, config, control, hooks, keybindings, snapshot, tmux
@@ -349,6 +350,24 @@ def _show_popup(current: FollowerState | None, message: str, in_tmux: bool) -> N
     tmux.show_popup(current.target, message)
 
 
+def _show_busy(current: FollowerState | None, in_tmux: bool) -> None:
+    """Feedback for a press refused because another animation owns the
+    window: its stderr line is discarded by the keybinding's run-shell, so
+    it must be SEEN. tmux: a popup. nvim has no pane to target: "Busy" on the
+    status float for as long as a popup would stay, then taken down — unless
+    something else replaced it meanwhile. That wait holds this process, which
+    the keybinding runs in the background (run-shell -b)."""
+    if current is None:
+        return
+    if current.backend == "nvim":
+        surface = status_surface_for(current)
+        surface.set_state("Busy")
+        time.sleep(tmux.POPUP_SECONDS)
+        surface.retire_state("Busy")
+        return
+    _show_popup(current, "Busy", in_tmux)
+
+
 def _pause_feedback(current: FollowerState | None, in_tmux: bool, *, paused: bool) -> None:
     """Feedback for a pause/resume keypress. tmux flashes a popup on the
     follower pane; nvim has no pane to target (its target is an RPC socket),
@@ -440,8 +459,7 @@ def cmd_pause(env: dict[str, str]) -> int:
             "claude-follow: another animation owns this window — resume it after that one ends",
             file=sys.stderr,
         )
-        # The keybinding runs through run-shell, which discards stderr.
-        _show_popup(current, "Busy", session.in_tmux)
+        _show_busy(current, session.in_tmux)
         return 1
     try:
         pending = control.load_pending_animation(session.window_id)
@@ -535,8 +553,7 @@ def cmd_interrupt(env: dict[str, str]) -> int:
             "claude-follow: another animation owns this window — press S again to interrupt it",
             file=sys.stderr,
         )
-        # The keybinding runs through run-shell, which discards stderr.
-        _show_popup(current, "Busy", session.in_tmux)
+        _show_busy(current, session.in_tmux)
         return 1
     try:
         if control.load_pending_animation(session.window_id) is None:

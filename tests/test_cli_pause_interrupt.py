@@ -793,3 +793,30 @@ def test_interrupting_a_remainder_a_hook_consumed_before_the_acquire_releases_th
     assert capsys.readouterr().out == "claude-follow: nothing to interrupt\n"
     assert not [entry for entry in run.call_args_list if entry.args[0][:2] == ["tmux", "send-keys"]]
     assert control.is_animating("@1") is False
+
+
+@pytest.mark.parametrize("command", [commands.cmd_pause, commands.cmd_interrupt])
+def test_on_nvim_a_busy_refusal_shows_on_the_float_for_a_moment(
+    command: object, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """PF round-2 minor: the Busy refusal was a tmux popup only, and the
+    keybinding's run-shell discards stderr — on nvim it was invisible."""
+    _nvim_follower()
+    control.save_pending_show_fresh("@1", ("leftover",), 0.15, continuation=True)
+    events: list[object] = []
+    surface = MagicMock()
+    surface.set_state.side_effect = lambda text: events.append(("set", text))
+    surface.retire_state.side_effect = lambda *texts: events.append(("retire", texts))
+    with (
+        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.commands.status_surface_for", return_value=surface),
+        patch("vim_ai_follower.commands.time.sleep", side_effect=events.append),
+        patch("vim_ai_follower.commands.control.try_acquire_animating", return_value=False),
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
+    ):
+        assert command({"TMUX_PANE": "%1"}) == 1  # type: ignore[operator]
+    assert events == [("set", "Busy"), tmux.POPUP_SECONDS, ("retire", ("Busy",))]
+    assert _popup_calls(popen) == []
+    assert "another animation owns this window" in capsys.readouterr().err
+    assert control.has_pending_animation("@1") is True
