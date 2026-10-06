@@ -129,7 +129,7 @@ def test_the_drain_marks_finishing_before_it_reads_the_signal(
 
     monkeypatch.setattr(control, "check_signal", check)
     _run_hook(target, follower, monkeypatch)
-    assert seen == ["finishing"]
+    assert seen and set(seen) == {"finishing"}
 
 
 @pytest.mark.parametrize(
@@ -276,3 +276,37 @@ def test_an_interrupted_replay_reads_handoff_before_its_remainder_is_saved(
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()):
         hooks._rearm_handoff(follower, "@1", pending, "l0\n", 0)
     assert seen == ["handoff"]
+
+
+@pytest.mark.parametrize(
+    "presses",
+    [("pause", "interrupt"), ("interrupt", "pause"), ("pause", "pause")],
+    ids=["P-then-S", "S-then-P", "P-twice"],
+)
+def test_every_press_no_driver_consumed_is_drained(
+    presses: tuple[str, str], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review I1: one check_signal returns at the first file it consumes
+    (interrupt before pause), so a P left next to an S stayed on disk with
+    "Paused" on the float."""
+    target, _resolved = _setup(tmp_path)
+    follower = _follower("holds")
+
+    def both(*_args: object, **_kwargs: object) -> None:
+        for signal in presses:
+            requested = (
+                control.request_pause("@1")
+                if signal == "pause"
+                else control.request_interrupt("@1")
+            )
+            assert requested is True
+        raise NavigationFailed("did not land")
+
+    follower.apply_edit.side_effect = both
+    surface = _run_hook(target, follower, monkeypatch)
+
+    retired = [entry for entry in surface.method_calls if entry[0] == "retire_state"]
+    assert call.retire_state("Paused") in retired
+    if "interrupt" in presses:
+        assert call.retire_state("Interrupted") in retired
+    _no_signal_left(tmp_path)

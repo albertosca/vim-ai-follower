@@ -1196,6 +1196,9 @@ def retract_signal_feedback(
         show_popup(current.target, message, after_seconds=POPUP_SECONDS + 0.1)
 
 
+_MAXIMUM_DRAINED_SIGNALS = 8
+
+
 def _drain_unconsumed_signals(window_id: str, current: FollowerState | None, in_tmux: bool) -> None:
     """At the hook's exit, BEFORE it releases the slot: a P or S addressed to
     this hook that no driver consumed — pressed while it held the slot as
@@ -1210,11 +1213,22 @@ def _drain_unconsumed_signals(window_id: str, current: FollowerState | None, in_
     it back itself when this drain ran before that feedback appeared."""
     try:
         control.mark_animating(window_id, state="finishing")
-        signal = control.check_signal(window_id)
-        if signal is None:
-            return
-        logger.info("a %s press reached this hook after its last animation: none obeyed", signal)
-        retract_signal_feedback(current, in_tmux, signal)
+        # Every one: check_signal returns at the first file it consumes
+        # (interrupt before pause), and a P next to an S left "Paused" up.
+        # Bounded — a signal can only be written to this process while it
+        # holds the slot, and from "finishing" on no press writes one.
+        drained: list[Literal["pause", "interrupt"]] = []
+        for _ in range(_MAXIMUM_DRAINED_SIGNALS):
+            signal = control.check_signal(window_id)
+            if signal is None:
+                break
+            drained.append(signal)
+        # Retracted after every file is gone, once per kind.
+        for signal in dict.fromkeys(drained):
+            logger.info(
+                "a %s press reached this hook after its last animation: none obeyed", signal
+            )
+            retract_signal_feedback(current, in_tmux, signal)
     except Exception:
         logger.exception("could not drain the signals left for this hook")
 
