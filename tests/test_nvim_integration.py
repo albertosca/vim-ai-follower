@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+import contextlib
+import os
+import shutil
+import signal
+import subprocess
+import tempfile
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -13,6 +20,7 @@ from vim_ai_follower.animate import AnimationResult  # noqa: E402
 from vim_ai_follower.backends.nvim import NvimFollower  # noqa: E402
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh  # noqa: E402
 from vim_ai_follower.diff import apply_ops, compute_edit_script  # noqa: E402
+from vim_ai_follower.hooks import HANDOFF_CUE, HANDOFF_CUE_READONLY  # noqa: E402
 from vim_ai_follower.state import FollowerState  # noqa: E402
 from vim_ai_follower.status_surface import NvimStatusSurface  # noqa: E402
 
@@ -914,3 +922,55 @@ def test_show_freshs_read_then_clear_leaves_no_undo_step(
     nvim.command("silent! undo 0")
 
     assert nvim.current.buffer[:] == [""]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("cue", [HANDOFF_CUE, HANDOFF_CUE_READONLY], ids=["w", "w-bang"])
+def test_a_hand_off_cue_renders_on_one_row_of_a_49_column_nvim(
+    tmux_session: str, monkeypatch: pytest.MonkeyPatch, cue: str
+) -> None:
+    # The float was a fixed 32 columns, so both cues (41/42) wrapped inside it.
+    # A real UI nvim at the follower pane's real width, read off the screen.
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    work = Path(tempfile.mkdtemp(prefix="cf-cue-"))
+    sock = str(work / "n.sock")
+    session = f"{tmux_session}-cue"
+    subprocess.run(
+        [
+            "tmux", "new-session", "-d", "-s", session, "-x", "49", "-y", "20",
+            f"nvim -u NONE -n -i NONE --listen {sock}",
+        ],
+        check=True,
+    )  # fmt: skip
+    pane_pid = int(
+        subprocess.run(
+            ["tmux", "display", "-p", "-t", session, "#{pane_pid}"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    )
+    try:
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and not Path(sock).exists():
+            time.sleep(0.05)
+        assert Path(sock).exists(), "nvim never opened its socket"
+        NvimStatusSurface(socket_path=sock, adopted=True).set_state(cue)
+
+        screen = ""
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            screen = subprocess.run(
+                ["tmux", "capture-pane", "-p", "-t", session],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+            if cue in screen:
+                break
+            time.sleep(0.1)
+        assert any(cue in row for row in screen.splitlines()), screen
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pane_pid, signal.SIGKILL)
+        shutil.rmtree(work, ignore_errors=True)

@@ -23,7 +23,8 @@ _STATUS_BUFFER_NAME = "vaf-status"
 _STATUS_NAMESPACE = "vaf-status"
 _CURSOR_NAMESPACE = "vaf-status-cursor"
 _HIGHLIGHT_GROUP = "VafWriterCue"
-_WINDOW_WIDTH = 32
+# The float's narrowest width; a longer body line widens it (_window_width).
+_MIN_WIDTH = 32
 _WINDOW_HEIGHT = 3
 _DEFAULT_TITLE = " claude-follow "
 _XTERM_CUBE = (0, 95, 135, 175, 215, 255)
@@ -42,11 +43,22 @@ def _cterm_to_hex(number: int) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
-def _centered_box(lines: list[str]) -> list[str]:
-    """Pad `lines` (each centered horizontally) with blank rows top and bottom
-    so the content sits vertically centered in a _WINDOW_HEIGHT-tall box."""
+def _window_width(columns: int, lines: list[str]) -> int:
+    """The float's width for a body of `lines`: _MIN_WIDTH, or wider by the
+    longest line plus a cell each side, so both hand-off cues (41/42 cells)
+    sit on one row instead of wrapping inside a fixed 32; never more than
+    the editor's `columns` minus the rounded border's two cells, and never
+    under one cell."""
+    longest = max((len(line) for line in lines), default=0)
+    return max(1, min(max(_MIN_WIDTH, longest + 2), columns - 2))
+
+
+def _centered_box(lines: list[str], width: int = _MIN_WIDTH) -> list[str]:
+    """Pad `lines` (each centered horizontally in `width`) with blank rows top
+    and bottom so the content sits vertically centered in a
+    _WINDOW_HEIGHT-tall box."""
     top = (_WINDOW_HEIGHT - len(lines)) // 2
-    out = [""] * top + [line.center(_WINDOW_WIDTH) for line in lines]
+    out = [""] * top + [line.center(width) for line in lines]
     out += [""] * (_WINDOW_HEIGHT - len(out))
     return out[:_WINDOW_HEIGHT]
 
@@ -138,9 +150,10 @@ class TmuxStatusSurface:
 # every TabEnter, a status float living in another tab is re-opened here on
 # the same buffer with its title and border colour — whoever switched the tab
 # (the backend, a Read's goto_file, the user in an adopted nvim). Same
-# geometry as _open_window; `{clear = true}` makes re-registering idempotent.
+# geometry as _open_window, at the float's own current size (set_state
+# resizes it per cue); `{clear = true}` makes re-registering idempotent.
 _FOLLOW_TABS_LUA = """
-local name, width, height = ...
+local name = ...
 local group = vim.api.nvim_create_augroup('vaf_status_follows_tabs', {clear = true})
 vim.api.nvim_create_autocmd('TabEnter', {group = group, callback = function()
   local here = vim.api.nvim_get_current_tabpage()
@@ -150,6 +163,7 @@ vim.api.nvim_create_autocmd('TabEnter', {group = group, callback = function()
     if cfg.relative ~= '' and vim.api.nvim_win_get_tabpage(win) ~= here
         and vim.api.nvim_buf_get_name(buf):sub(-#name) == name then
       local highlight = vim.wo[win].winhighlight
+      local width, height = cfg.width, cfg.height
       local moved = vim.api.nvim_open_win(buf, false, {
         relative = 'editor', width = width, height = height, row = 1,
         col = math.max(0, vim.o.columns - width - 2), style = 'minimal',
@@ -216,21 +230,19 @@ class NvimStatusSurface:
                 return win
         return None
 
-    def _open_window(self, nvim: pynvim.Nvim, buf: Any) -> Any:
+    def _open_window(self, nvim: pynvim.Nvim, buf: Any, width: int, col: int) -> Any:
         # Anchor to the TOP-RIGHT, not the top-left (0,0): a fresh retype types
         # its content and parks the cursor + the virtual-text writer label at
         # the top-left, so a status window there sits directly on top of the
         # animation and hides it (confirmed in the 2026-07-20 live smoke).
         # Placing it flush against the right edge keeps it clear of where the
-        # text is being typed.
-        columns = int(nvim.api.get_option_value("columns", {}))
+        # text is being typed (`col`, see _ensure_window).
         opts = {
             "relative": "editor",
-            "width": _WINDOW_WIDTH,
+            "width": width,
             "height": _WINDOW_HEIGHT,
             "row": 1,
-            # -2 leaves room for the rounded border against the right edge.
-            "col": max(0, columns - _WINDOW_WIDTH - 2),
+            "col": col,
             "style": "minimal",
             "border": "rounded",
             "title": _DEFAULT_TITLE,
@@ -238,18 +250,26 @@ class NvimStatusSurface:
             "focusable": False,
             "noautocmd": True,
         }
-        nvim.exec_lua(_FOLLOW_TABS_LUA, _STATUS_BUFFER_NAME, _WINDOW_WIDTH, _WINDOW_HEIGHT)
+        nvim.exec_lua(_FOLLOW_TABS_LUA, _STATUS_BUFFER_NAME)
         return nvim.api.open_win(buf, False, opts)
 
-    def _ensure_window(self, nvim: pynvim.Nvim) -> tuple[Any, Any]:
-        """Returns (window, buffer), reusing an existing floating status
-        window or creating a fresh scratch buffer + window when there is
-        none yet."""
+    def _ensure_window(self, nvim: pynvim.Nvim, body: list[str]) -> tuple[Any, Any, int]:
+        """Returns (window, buffer, width), reusing an existing floating
+        status window or creating a fresh scratch buffer + window when there
+        is none yet; either way sized for `body` (_window_width), computed
+        per call from the editor's current width."""
+        columns = int(nvim.api.get_option_value("columns", {}))
+        width = _window_width(columns, body)
+        # -2 leaves room for the rounded border against the right edge.
+        col = max(0, columns - width - 2)
         win = self._find_window(nvim)
         if win is not None:
             # Already on the current tab: the TabEnter autocmd registered by
             # _open_window carries it along on every tab switch, in nvim.
-            return win, nvim.api.win_get_buf(win)
+            nvim.api.win_set_config(
+                win, {"relative": "editor", "row": 1, "col": col, "width": width}
+            )
+            return win, nvim.api.win_get_buf(win), width
         # A buffer already carrying the name makes buf_set_name raise E95,
         # which the callers' suppress() swallows — and the cue then never
         # shows again for the life of that nvim. Only an older version of
@@ -264,8 +284,8 @@ class NvimStatusSurface:
         # under the name and strand the next cue exactly as above.
         nvim.api.buf_set_option(buf, "bufhidden", "wipe")
         nvim.api.buf_set_name(buf, _STATUS_BUFFER_NAME)
-        win = self._open_window(nvim, buf)
-        return win, buf
+        win = self._open_window(nvim, buf, width, col)
+        return win, buf, width
 
     def _mark_cursor(self, nvim: pynvim.Nvim, label: str, color: str | None) -> None:
         """The "at the edit point" cue: a SUBTLE virtual-text extmark near the
@@ -295,7 +315,7 @@ class NvimStatusSurface:
         set_state's job. The identity color is set for both cterm and gui
         (guifg), so it shows under termguicolors too."""
         with contextlib.suppress(Exception), self._guarded() as nvim:
-            win, buf = self._ensure_window(nvim)
+            win, buf, width = self._ensure_window(nvim, [])
             title_hl = "Title"
             if color is not None:
                 number = int(color.removeprefix("colour"))
@@ -310,7 +330,7 @@ class NvimStatusSurface:
                 win, {"title": [[f" {label} ", title_hl]], "title_pos": "center"}
             )
             # Identity lives in the title; the body stays blank (docstring).
-            nvim.api.buf_set_lines(buf, 0, -1, True, _centered_box([]))
+            nvim.api.buf_set_lines(buf, 0, -1, True, _centered_box([], width))
             ns = nvim.api.create_namespace(_STATUS_NAMESPACE)
             nvim.api.buf_clear_namespace(buf, ns, 0, -1)
             self._mark_cursor(nvim, label, color)
@@ -322,8 +342,8 @@ class NvimStatusSurface:
             self.clear()
             return
         with contextlib.suppress(Exception), self._guarded() as nvim:
-            _, buf = self._ensure_window(nvim)
-            nvim.api.buf_set_lines(buf, 0, -1, True, _centered_box([text]))
+            _, buf, width = self._ensure_window(nvim, [text])
+            nvim.api.buf_set_lines(buf, 0, -1, True, _centered_box([text], width))
 
     def retire_state(self, *texts: str) -> None:
         """Nothing to do: the float saves and restores nothing, so the next

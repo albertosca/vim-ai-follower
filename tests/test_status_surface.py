@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, call, patch
 
 from helpers import make_mock_tmux_run
 
+from vim_ai_follower.hooks import HANDOFF_CUE_READONLY
 from vim_ai_follower.state import FollowerState
 from vim_ai_follower.status_surface import (
     NvimStatusSurface,
@@ -223,6 +224,7 @@ def test_set_writer_reuses_an_existing_floating_window_and_clears_the_color_when
 
 def test_set_state_centers_the_text_and_opens_a_window_if_needed() -> None:
     nvim = MagicMock()
+    nvim.api.get_option_value.return_value = 80  # columns
     nvim.api.list_wins.return_value = []
     nvim.api.create_buf.return_value = 7
     nvim.api.open_win.return_value = 3
@@ -237,6 +239,7 @@ def test_set_state_centers_the_text_and_opens_a_window_if_needed() -> None:
 
 def test_set_state_reuses_an_existing_window_without_recreating_it() -> None:
     nvim = MagicMock()
+    nvim.api.get_option_value.return_value = 80  # columns
     nvim.api.list_wins.return_value = [3]
     nvim.api.win_get_config.return_value = {"relative": "editor"}
     nvim.api.win_get_buf.return_value = 7
@@ -395,3 +398,64 @@ def test_a_surface_built_without_the_adopted_flag_never_answers_prompts() -> Non
     nvim.api.get_mode.assert_not_called()
     nvim.api.input.assert_not_called()
     assert attach.call_count == 1
+
+
+def _float_opts(nvim: MagicMock) -> dict[str, object]:
+    opts: dict[str, object] = nvim.api.open_win.call_args.args[2]
+    return opts
+
+
+def _no_window_nvim(columns: int) -> MagicMock:
+    nvim = MagicMock()
+    nvim.api.list_wins.return_value = []
+    nvim.api.create_buf.return_value = 7
+    nvim.api.open_win.return_value = 3
+    nvim.api.get_option_value.side_effect = lambda name, opts: columns
+    return nvim
+
+
+def test_the_float_widens_to_fit_the_hand_off_cue_on_one_row() -> None:
+    nvim = _no_window_nvim(49)
+    with patch("pynvim.attach", return_value=nvim):
+        NvimStatusSurface(socket_path="/tmp/x.sock").set_state(HANDOFF_CUE_READONLY)
+    opts = _float_opts(nvim)
+    assert isinstance(opts["width"], int) and isinstance(opts["col"], int)
+    assert opts["width"] >= len(HANDOFF_CUE_READONLY)
+    assert opts["col"] >= 0
+    assert opts["col"] + opts["width"] + 2 <= 49  # the border fits on screen
+    body = nvim.api.buf_set_lines.call_args.args[4]
+    assert HANDOFF_CUE_READONLY in [line.strip() for line in body]
+
+
+def test_the_float_never_outgrows_a_narrow_editor() -> None:
+    nvim = _no_window_nvim(30)
+    with patch("pynvim.attach", return_value=nvim):
+        NvimStatusSurface(socket_path="/tmp/x.sock").set_state(HANDOFF_CUE_READONLY)
+    opts = _float_opts(nvim)
+    assert isinstance(opts["width"], int)
+    assert opts["width"] <= 28
+    assert opts["col"] == 0
+
+
+def test_a_short_cue_keeps_the_minimum_width() -> None:
+    nvim = _no_window_nvim(80)
+    with patch("pynvim.attach", return_value=nvim):
+        NvimStatusSurface(socket_path="/tmp/x.sock").set_state("Paused")
+    assert _float_opts(nvim)["width"] == 32
+    assert _float_opts(nvim)["col"] == 80 - 32 - 2
+
+
+def test_an_existing_float_is_resized_for_a_longer_cue() -> None:
+    nvim = MagicMock()
+    nvim.api.list_wins.return_value = [3]
+    nvim.api.win_get_config.return_value = {"relative": "editor"}
+    nvim.api.win_get_buf.return_value = 7
+    nvim.api.buf_get_name.return_value = "vaf-status"
+    nvim.api.get_option_value.side_effect = lambda name, opts: 49
+    with patch("pynvim.attach", return_value=nvim):
+        NvimStatusSurface(socket_path="/tmp/x.sock").set_state(HANDOFF_CUE_READONLY)
+    nvim.api.open_win.assert_not_called()
+    width = len(HANDOFF_CUE_READONLY) + 2
+    nvim.api.win_set_config.assert_any_call(
+        3, {"relative": "editor", "row": 1, "col": 49 - width - 2, "width": width}
+    )
