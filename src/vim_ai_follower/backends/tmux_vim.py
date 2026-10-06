@@ -1268,15 +1268,19 @@ def _script_file(name: str, text: str) -> Path:
 _SCRIPT_MAX_AGE_SECONDS = 86400.0
 _SCRIPT_NAME = re.compile(r"vaf-[0-9a-f]{6}\.vim")
 _SCRIPT_TEMPORARY_NAME = re.compile(r"\.vaf-[0-9a-f]{6}\.vim\.[0-9a-f]{8}")
+# _log_long_define_line's "logged already" notes, one per pane id.
+_DEFINE_ROWS_NAME = re.compile(r"define-rows-[0-9]+")
 
 
 def _sweep_scripts(current: Path) -> None:
     """Delete, from `current`'s directory and nowhere else, the scripts
-    (`vaf-<6 hex>.vim`) unused for _SCRIPT_MAX_AGE_SECONDS and the temporaries
-    (`.vaf-<6 hex>.vim.<8 hex>`) older than _PATH_HANDLE_MAX_AGE_SECONDS that
-    _script_file leaves when a write is cut off before its rename. `current`
-    always stays. Nothing else is touched, and a missing or unwritable
-    directory, or a file another hook swept first, is no error.
+    (`vaf-<6 hex>.vim`) and the long-define-line notes (`define-rows-<pane>`,
+    _log_long_define_line) unused for _SCRIPT_MAX_AGE_SECONDS, and the
+    temporaries (`.vaf-<6 hex>.vim.<8 hex>`) older than
+    _PATH_HANDLE_MAX_AGE_SECONDS that _script_file leaves when a write is cut
+    off before its rename. `current` always stays. Nothing else is touched,
+    and a missing or unwritable directory, or a file another hook swept
+    first, is no error.
 
     No Vim needs a script it already sourced: its functions live in memory,
     and the new script's cleanup loop finds an older dispatcher by the
@@ -1297,7 +1301,7 @@ def _sweep_scripts(current: Path) -> None:
     for entry in entries:
         if entry.name == current.name:
             continue
-        if _SCRIPT_NAME.fullmatch(entry.name):
+        if _SCRIPT_NAME.fullmatch(entry.name) or _DEFINE_ROWS_NAME.fullmatch(entry.name):
             maximum_age = _SCRIPT_MAX_AGE_SECONDS
         elif _SCRIPT_TEMPORARY_NAME.fullmatch(entry.name):
             maximum_age = _PATH_HANDLE_MAX_AGE_SECONDS
@@ -1371,10 +1375,18 @@ _FOLLOWER_COLUMNS = 49
 
 def _log_long_define_line(pane_id: str, line: str) -> None:
     """Log, once per pane (`define-rows-<pane>` in the cache directory), that
-    its define line takes more than two rows."""
+    its define line takes more than two rows. The note is marked used on
+    every such line, and _sweep_scripts removes one unused for a day: it is
+    keyed by pane id only, so a pane id that a restarted tmux server reuses
+    logs again once the old note has aged out. Only that sweep deletes it;
+    deleting a live one would only log once more."""
     marker = cache.CACHE_DIR / f"define-rows-{pane_id.lstrip('%')}"
     try:
         marker.touch(exist_ok=False)
+    except FileExistsError:
+        with contextlib.suppress(OSError):
+            os.utime(marker)
+        return
     except OSError:
         return
     rows = len(line) // _FOLLOWER_COLUMNS + 1

@@ -445,6 +445,49 @@ def test_a_too_long_script_path_keeps_the_guard_and_says_so_once_per_pane(
     ]
 
 
+def test_a_long_define_line_marker_lives_while_used_and_is_swept_a_day_after(
+    short_root: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """`define-rows-<pane>` is only a "logged already" note, keyed by pane id
+    (review of T9, m4): each long define line marks it used, and the cache
+    sweep removes one unused for a day, so a pane id reused after a tmux
+    restart logs again within a day and the notes do not pile up."""
+    caplog.set_level(logging.INFO, logger="vim_ai_follower")
+    monkeypatch.setattr(cache, "CACHE_DIR", _cache_with_script_path_of_length(short_root, 89))
+    cache.CACHE_DIR.mkdir(parents=True)
+    now = time.time()
+
+    def aged(name: str, seconds: float) -> Path:
+        path = cache.CACHE_DIR / name
+        path.write_text("")
+        os.utime(path, (now - seconds, now - seconds))
+        return path
+
+    in_use = aged("define-rows-3", 3600)
+    stale = aged("define-rows-4", 2 * 86400)
+    look_alikes = [aged(name, 2 * 86400) for name in ("define-rows-x", "define-rows-4.bak")]
+    with patch.object(tmux_vim, "_home_relative", return_value=None):
+        tmux_vim._define_line("%3")
+    assert caplog.records == []  # %3 had logged already
+    assert time.time() - in_use.stat().st_mtime < 60  # and is marked used
+    assert not stale.exists()
+    assert all(path.exists() for path in look_alikes)
+    with patch.object(tmux_vim, "_home_relative", return_value=None):
+        tmux_vim._define_line("%4")
+    assert [record.getMessage() for record in caplog.records] == [
+        "pane %4: the define line needs 3 rows (cache path too long)"
+    ]
+
+
+def test_a_long_define_line_note_that_cannot_be_written_is_no_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="vim_ai_follower")
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "missing")
+    tmux_vim._log_long_define_line("%3", ":" + "x" * 120)
+    assert caplog.records == []
+
+
 def test_a_long_path_with_unsafe_characters_drops_the_guard_too(
     short_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
