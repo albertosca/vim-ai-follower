@@ -19,7 +19,7 @@ Se o processo do hook for morto (por exemplo, um timeout de hook) enquanto pausa
 **Interromper** (`S`) entrega o buffer pra você: edite e salve a sua versão, e o Claude é avisado de que você assumiu (ele relê a sua versão do disco em vez de restaurar a dele).
 
 1. Enquanto uma edição está animando, aperte `prefix` `S`. O follower entrega o buffer pra você.
-2. Edite, depois salve a sua versão pra devolver o controle (um `:w` simples basta, mesmo para um arquivo que o Claude acabou de criar; o cue da entrega avisa quando um readonly seu pede `:w!`). Depois de um Edit interrompido, o Vim avisa que o arquivo mudou desde que foi lido, porque o Claude o gravou depois que o buffer foi carregado: responda `y` pra gravar a sua versão. O Claude é avisado de que você assumiu, e relê a sua versão do disco.
+2. Edite, depois salve a sua versão pra devolver o controle (um `:w` simples basta, mesmo para um arquivo que o Claude acabou de criar; o cue da entrega avisa quando um readonly seu pede `:w!`). Depois de um Edit interrompido (ou de um Write interrompido sobre um arquivo que o follower já tinha aberto), o Vim avisa que o arquivo mudou desde que foi lido, porque o Claude o gravou depois que o buffer foi carregado: responda `y` pra gravar a sua versão. O Claude é avisado de que você assumiu, e relê a sua versão do disco.
 3. Mudou de ideia? Apertar `S` de novo durante a entrega descarta suas edições não salvas e retoma o acompanhamento do arquivo que o Claude escreveu.
 
 ## Como acelerar ou desacelerar a animação

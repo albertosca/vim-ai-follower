@@ -26,7 +26,7 @@ Built by Alberto Cavalcanti · [Connect on LinkedIn](https://www.linkedin.com/in
 - Claude Code's `Edit` or `Write` lands on disk first; a `PreToolUse` hook has already snapshotted the old content.
 - A `PostToolUse` hook diffs old against new and replays the change into your Vim (tmux `send-keys`) or Neovim (RPC).
 - On a `Read`, the follower navigates to that file and line.
-- You stay in control: `prefix` `P` pauses, `prefix` `S` takes the keyboard, and saving your version hands it back (a plain `:w` is enough; the hand-off cue says when your own readonly needs `:w!`).
+- You stay in control: `prefix` `P` pauses, `prefix` `S` takes the keyboard, and saving your version hands it back (a plain `:w` is enough; answer `y` if Vim warns the file changed since it was read, and the hand-off cue says when your own readonly needs `:w!`).
 
 ## What it won't do
 
