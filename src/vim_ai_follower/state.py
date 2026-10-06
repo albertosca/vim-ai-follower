@@ -25,7 +25,7 @@ def _state_path(window_id: str, base_dir: Path | None) -> Path:
 
 def nvim_socket_path(window_id: str, base_dir: Path | None = None) -> Path:
     """Deterministic per-window RPC socket path. The Neovim side must call
-    vim.fn.serverstart() at this exact path (see integração no README).
+    vim.fn.serverstart() at this exact path (the README documents no such integration).
     Colons in window_id (present in iTerm's TERM_SESSION_ID, shaped like
     "term-w0t0p0:UUID") are replaced with underscores: nvim's --listen
     parses ANY address containing a colon as a TCP host:port via

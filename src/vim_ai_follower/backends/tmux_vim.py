@@ -107,7 +107,9 @@ from vim_ai_follower.tmux import TmuxPane
 # user changing 'readonly' while the follower's own lock is on (a bare
 # `:setlocal readonly`, or `:view` of a file the follower has locked): with
 # no autocommand in the user's Vim, that is indistinguishable from the
-# follower's own value, and the follower's claim wins.
+# follower's own value, and the follower's claim wins. The claim can therefore
+# outlive a later user `:view` of the same loaded buffer: the restore hands
+# back the value recorded before the follower's lock, not the one `:view` set.
 _LOCK_READONLY = ":setlocal readonly nomodifiable"
 _UNLOCK_FOR_ANIMATION = ":setlocal noreadonly modifiable paste"
 _RELOCK = ":setlocal nomodifiable nopaste"

@@ -235,6 +235,8 @@ def _reclaim_lock(path: Path, *, wait: bool) -> Iterator[bool]:
     """The lock every removal of someone else's (dead) marker happens under.
     Yields False when not waiting and another process holds it. The kernel
     drops it with its holder, so a crash under it cannot wedge the slot."""
+    # The .lock file is never deleted, by design: removing a flock file lets a
+    # second process lock a new inode while the first still holds the old one.
     fd = os.open(path.with_name(f"{path.name}.lock"), os.O_CREAT | os.O_WRONLY, 0o644)
     try:
         try:
