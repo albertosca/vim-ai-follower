@@ -1316,7 +1316,18 @@ def _define_line(pane_id: str) -> str:
     _home_relative) is no error, no prompt; the calls then do nothing and the
     navigation fails safe. A `~/…` name or a path of safe characters is typed
     as is (`:source` expands `~` itself, and 'wildignore' does not apply,
-    measured 2026-10-05); any other path goes through fnameescape()."""
+    measured 2026-10-05); any other path goes through fnameescape().
+
+    The `exists()` guard costs 40 characters, and a Vim on another HOME is
+    typed the absolute path: 117 characters, three rows at 49 columns, on
+    every call (SHRINK review). When the guarded line passes two rows
+    (_MAXIMUM_TYPED_LINE), the guard goes: the script is then sourced on
+    every call, which redefines the same functions (the script keeps no
+    state of its own) and runs the cleanup loop: 0.19 ms a source (200 in
+    38 ms, measured 2026-10-06 on Vim 9.2 in a 49-column tmux pane, no
+    vimrc, load 9). When even that passes two
+    rows, the guard stays, so at least only a Vim that lacks the functions
+    reads the file, and the pane's first such line says so in the log."""
     name, text = _vim_functions()
     path = _script_file(name, text)
     target = _home_relative(pane_id, path)
@@ -1326,7 +1337,31 @@ def _define_line(pane_id: str) -> str:
         source = f"exe 'sil! so ' . fnameescape({_vim_string(str(path))})"
     else:
         source = f"sil! so {target}"
-    return f":if !exists('*{name}')|{source}|endif"
+    guarded = f":if !exists('*{name}')|{source}|endif"
+    if len(guarded) <= _MAXIMUM_TYPED_LINE:
+        return guarded
+    if len(f":{source}") <= _MAXIMUM_TYPED_LINE:
+        return f":{source}"
+    _log_long_define_line(pane_id, guarded)
+    return guarded
+
+
+# The longest typed line that fits two screen rows at the follower pane's 49
+# columns, the `:` included (see _call_line; measured 2026-10-05, Vim 9.2).
+_MAXIMUM_TYPED_LINE = 97
+_FOLLOWER_COLUMNS = 49
+
+
+def _log_long_define_line(pane_id: str, line: str) -> None:
+    """Log, once per pane (`define-rows-<pane>` in the cache directory), that
+    its define line takes more than two rows."""
+    marker = cache.CACHE_DIR / f"define-rows-{pane_id.lstrip('%')}"
+    try:
+        marker.touch(exist_ok=False)
+    except OSError:
+        return
+    rows = len(line) // _FOLLOWER_COLUMNS + 1
+    logger.info("pane %s: the define line needs %d rows (cache path too long)", pane_id, rows)
 
 
 # How long a path handle (see _path_handle) is kept before a later call sweeps

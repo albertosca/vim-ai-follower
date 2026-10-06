@@ -12,10 +12,14 @@ without either being spelled on the typed command line, which Vim echoes
 
 from __future__ import annotations
 
+import logging
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -246,10 +250,13 @@ def test_a_call_line_does_nothing_in_a_vim_without_the_functions() -> None:
 
 
 @pytest.mark.parametrize("pane", ["%3", "%999", "%1000", "%9999", "%99999", "%999999"])
-def test_every_typed_call_fits_two_screen_rows(pane: str) -> None:
+def test_every_typed_call_fits_two_screen_rows(
+    pane: str, short_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Up to a six-digit pane id (a long-lived tmux server's), the longest
     call (show_fresh's rename, whose handle carries the pane id) and the
-    define line, HOME-relative, stay within two rows at 49 columns."""
+    define line, HOME-relative or (another HOME) absolute up to an
+    88-character script path, stay within two rows at 49 columns."""
     number = int(pane.lstrip("%"))
     handle = f"p{number}-abcdef"
     lines = [
@@ -268,6 +275,12 @@ def test_every_typed_call_fits_two_screen_rows(pane: str) -> None:
     with patch.object(
         tmux_vim, "_home_relative", return_value="~/.cache/claude-vim-follower/vaf-abcdef.vim"
     ):
+        lines.append(tmux_vim._define_line(pane))
+    with (
+        patch.object(tmux_vim, "_home_relative", return_value=None),
+        monkeypatch.context() as context,
+    ):
+        context.setattr(cache, "CACHE_DIR", _cache_with_script_path_of_length(short_root, 88))
         lines.append(tmux_vim._define_line(pane))
     # And the plain lines typed whole, with no call.
     lines += [
@@ -364,6 +377,83 @@ def test_an_absolute_path_with_unsafe_characters_goes_through_fnameescape(
     name = tmux_vim._vim_functions()[0].removeprefix("VafFollower_")
     escaped = str(cache.CACHE_DIR / f"vaf-{name}.vim").replace("'", "''")
     assert sourced == f"exe 'sil! so ' . fnameescape('{escaped}')"
+
+
+@pytest.fixture
+def short_root() -> Iterator[Path]:
+    """A directory with a short absolute name (pytest's tmp_path is already
+    longer than a define line can carry), padded by each test to the length
+    it needs."""
+    root = Path(tempfile.mkdtemp(prefix="vaf-", dir="/tmp"))
+    yield root
+    shutil.rmtree(root)
+
+
+def _cache_with_script_path_of_length(root: Path, length: int) -> Path:
+    """A cache directory under `root` whose script path is `length` long."""
+    script_name = len("/vaf-abcdef.vim")
+    padding = length - script_name - len(str(root)) - 1
+    assert padding > 0
+    return root / ("c" * padding)
+
+
+@pytest.mark.parametrize("length", [60, 88])
+def test_a_long_absolute_script_path_drops_the_guard_to_stay_within_two_rows(
+    short_root: Path, monkeypatch: pytest.MonkeyPatch, length: int
+) -> None:
+    """A Vim on another HOME is typed the absolute path: 117 characters, three
+    rows, with the guard. Without it, the script is sourced on every call
+    (a file read and the cleanup loop), and the line fits up to an 88-character
+    path."""
+    monkeypatch.setattr(cache, "CACHE_DIR", _cache_with_script_path_of_length(short_root, length))
+    with patch.object(tmux_vim, "_home_relative", return_value=None):
+        line = tmux_vim._define_line("%3")
+    name = tmux_vim._vim_functions()[0].removeprefix("VafFollower_")
+    script = cache.CACHE_DIR / f"vaf-{name}.vim"
+    assert len(str(script)) == length
+    assert line == f":sil! so {script}"
+    assert len(line) <= MAXIMUM_LINE_LENGTH
+
+
+def test_a_short_absolute_script_path_keeps_the_guard(
+    short_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cache, "CACHE_DIR", _cache_with_script_path_of_length(short_root, 48))
+    with patch.object(tmux_vim, "_home_relative", return_value=None):
+        line = tmux_vim._define_line("%3")
+    assert line.startswith(":if !exists('*VafFollower_")
+    assert len(line) == MAXIMUM_LINE_LENGTH
+
+
+def test_a_too_long_script_path_keeps_the_guard_and_says_so_once_per_pane(
+    short_root: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Past 88 characters even the bare `:sil! so` takes a third row; the
+    guard then at least keeps the source to a Vim that lacks the functions."""
+    caplog.set_level(logging.INFO, logger="vim_ai_follower")
+    monkeypatch.setattr(cache, "CACHE_DIR", _cache_with_script_path_of_length(short_root, 89))
+    with patch.object(tmux_vim, "_home_relative", return_value=None):
+        line = tmux_vim._define_line("%3")
+        assert tmux_vim._define_line("%3") == line
+        tmux_vim._define_line("%4")
+    assert line.startswith(":if !exists('*VafFollower_")
+    assert len(line) == 89 + 49
+    assert [record.getMessage() for record in caplog.records] == [
+        "pane %3: the define line needs 3 rows (cache path too long)",
+        "pane %4: the define line needs 3 rows (cache path too long)",
+    ]
+
+
+def test_a_long_path_with_unsafe_characters_drops_the_guard_too(
+    short_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cache, "CACHE_DIR", short_root / "a $b" / ("c" * 15))
+    with patch.object(tmux_vim, "_home_relative", return_value=None):
+        line = tmux_vim._define_line("%3")
+    name = tmux_vim._vim_functions()[0].removeprefix("VafFollower_")
+    script = str(cache.CACHE_DIR / f"vaf-{name}.vim")
+    assert line == f":exe 'sil! so ' . fnameescape('{script}')"
+    assert len(line) <= MAXIMUM_LINE_LENGTH
 
 
 def test_an_answer_that_lands_after_the_wait_is_picked_up_later(home_cache: Path) -> None:
@@ -761,3 +851,46 @@ def test_a_real_vim_drops_an_older_dispatcher_whose_script_was_swept(tmp_path: P
         stdin=subprocess.DEVNULL,
     )
     assert out.read_text().splitlines() == ["1", "0", "0", "1"]
+
+
+@pytest.mark.integration
+def test_a_real_vim_on_another_home_sources_the_unguarded_line_on_every_call(
+    short_root: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The unguarded define line re-sources the script into a Vim that already
+    has it: no error, and the calls keep working."""
+    monkeypatch.setattr(cache, "CACHE_DIR", _cache_with_script_path_of_length(short_root, 80))
+    with patch.object(tmux_vim, "_home_relative", return_value=None):
+        define = tmux_vim._define_line("%3")
+    assert define.startswith(":sil! so /")
+    first = tmux_vim._path_handle("%3", "/tmp/first.py")
+    second = tmux_vim._path_handle("%3", "/tmp/second.py")
+    name = tmux_vim._vim_functions()[0]
+    out = tmp_path / "out.txt"
+    subprocess.run(
+        [
+            "vim",
+            "-Nu",
+            "NONE",
+            "-i",
+            "NONE",
+            "-es",
+            "-c",
+            define.removeprefix(":"),
+            "-c",
+            f"let g:first = {name}('read', '{first.name}')",
+            "-c",
+            define.removeprefix(":"),
+            "-c",
+            f"let g:second = {name}('read', '{second.name}')",
+            "-c",
+            "call writefile([g:first, g:second, v:errmsg], '" + str(out) + "')",
+            "-c",
+            "qa!",
+        ],
+        check=True,
+        timeout=30,
+        stdin=subprocess.DEVNULL,
+        env={**os.environ, "HOME": str(tmp_path)},
+    )
+    assert out.read_text().splitlines() == ["/tmp/first.py", "/tmp/second.py", ""]
