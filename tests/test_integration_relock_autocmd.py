@@ -263,3 +263,28 @@ def test_a_goto_that_fails_after_a_pause_gives_the_animated_buffer_its_readonly_
     )
     _modifiable, paste, answer, *_ = state(pane, tmp_path, wait_until, expression)
     assert (answer, paste) == ("10000", "0")
+
+
+@pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
+def test_a_read_lands_even_when_a_user_bufreadpost_errors(
+    adopted: bool,
+    tmux_session: str,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A user BufReadPost autocommand that errors on the file a Read opens
+    (`:tab drop` of a file no buffer holds): s:goto is an `abort`
+    function, so the error was said to stop it before the landing was
+    recorded, and every Read of such a file answered "elsewhere"."""
+    pane = vim_pane(tmux_session, tmp_path, wait_until, "autocmd BufReadPost *.py echoerr 'x'")
+    target = tmp_path / "t.py"
+    target.write_text(BEFORE)
+
+    follower(pane, adopted=adopted).ensure_showing(str(target))
+
+    modifiable, _paste, name, *lines = state(pane, tmp_path, wait_until, "expand('%:t')")
+    assert (name, lines) == ("t.py", BEFORE.splitlines())
+    assert modifiable == "0"  # the Read's lock ran: no prompt ate it
+    # The error was silenced in Vim, so the hook log says it.
+    assert "the follower's Vim raised: Vim(echoerr):x" in caplog.text

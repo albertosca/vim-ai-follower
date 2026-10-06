@@ -521,7 +521,7 @@ function! s:pane(token) abort
 endfunction
 
 function! s:acting_start(token) abort
-  unlet! g:vaf_p g:vaf_landed
+  unlet! g:vaf_p g:vaf_landed g:vaf_nav_error
   let g:vaf_k = a:token
   let g:vaf_p = s:read(a:token)
 endfunction
@@ -540,11 +540,13 @@ function! s:landed(token) abort
   else
     let verdict = 'elsewhere'
   endif
+  let error = get(g:, 'vaf_nav_error', '')
   try
-    call writefile([verdict, a:token], s:dir . 'landed-' . s:pane(a:token) . '.txt')
+    call writefile([verdict] + (error ==# '' ? [] : [error]) + [a:token],
+          \ s:dir . 'landed-' . s:pane(a:token) . '.txt')
   catch
   endtry
-  unlet! g:vaf_p g:vaf_k g:vaf_landed
+  unlet! g:vaf_p g:vaf_k g:vaf_landed g:vaf_nav_error
 endfunction
 """
 
@@ -556,8 +558,13 @@ endfunction
 # case-sensitive volume; with it off both are right there, and on a
 # case-insensitive volume Vim still finds a case variant by inode. E37 comes
 # from the drop's trailing `:rewind`, after it landed, and falls through to
-# the landing check; any other error aborts the function there, so the
-# landing is never recorded.
+# the landing check. So does any other error, which is kept in
+# `g:vaf_nav_error` for s:landed to report: a user BufReadPost autocommand
+# that errors (`echoerr`) on the file the drop reads aborted this `abort`
+# function before its landing was recorded, although Vim had landed, and
+# every Read of a file no buffer held answered "elsewhere" (measured
+# 2026-10-06; tests/test_integration_relock_autocmd.py). Whether it landed is
+# the landing check's to say, never the error's.
 _VIM_GOTO = r"""
 function! s:goto(token, folds) abort
   call s:acting_start(a:token)
@@ -582,6 +589,8 @@ function! s:goto(token, folds) abort
       endif
     endif
   catch /^Vim\%((\a\+)\)\=:E37:/
+  catch
+    let g:vaf_nav_error = v:exception
   finally
     let &fileignorecase = fileignorecase
     call s:swap_answer_close()
@@ -1445,7 +1454,12 @@ def _await_landing(pane_id: str, answer: Path, nonce: str, file_path: str, handl
     after another (final M3). A confirmed landing ends it."""
     lines = _await_answer(answer, nonce, _LANDING_TIMEOUT_SECONDS)
     answer.unlink(missing_ok=True)
-    if lines == ["landed"]:
+    if lines is not None and lines[1:]:
+        # An error the navigation caught (s:goto): a user autocommand's,
+        # most likely. Vim still landed on the file, or not; the verdict
+        # says which. Silenced in Vim (no prompt), so said here.
+        logger.warning("navigating to %s, the follower's Vim raised: %s", file_path, lines[1])
+    if lines is not None and lines[:1] == ["landed"]:
         _unanswered_path(pane_id).unlink(missing_ok=True)
         return
     verdict = lines[0] if lines else None

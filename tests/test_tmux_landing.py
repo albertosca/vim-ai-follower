@@ -306,6 +306,37 @@ def test_a_backoff_from_the_future_lasts_no_longer_than_the_backoff() -> None:
     assert tmux_vim._backoff("%2") == (0.0, tmux_vim._UNANSWERED_BACKOFF_SECONDS)
 
 
+@pytest.mark.parametrize(("verdict", "lands"), [("landed", True), ("elsewhere", False)])
+def test_an_error_the_navigation_caught_is_logged_and_the_verdict_decides(
+    verdict: str, lands: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    """s:goto catches any error (a user BufReadPost autocommand's) and
+    s:landed writes it between the verdict and the token."""
+    sent: list[str] = []
+    landed = _vim(None, sent)
+
+    def send_text(self: object, text: str) -> None:
+        landed(self, text)  # type: ignore[operator]
+        match = _LANDED.search(text)
+        if match:
+            answer = cache.CACHE_DIR / f"landed-{match.group(2)}.txt"
+            answer.write_text(f"{verdict}\nVim(echoerr):x\n{match.group(1)}\n")
+
+    with (
+        patch.object(TmuxPane, "send_text", send_text),
+        patch.object(TmuxPane, "send_key"),
+        patch.object(TmuxPane, "pane_pid", return_value=None),
+        patch.object(tmux_vim, "_LANDING_TIMEOUT_SECONDS", 0.5),
+    ):
+        follower = TmuxVimFollower(pane_id="%2")
+        if lands:
+            follower.goto_file("/tmp/t.py")
+        else:
+            with pytest.raises(NavigationFailed, match="it landed on another buffer"):
+                follower.goto_file("/tmp/t.py")
+    assert "navigating to /tmp/t.py, the follower's Vim raised: Vim(echoerr):x" in caplog.text
+
+
 def test_distrust_without_a_record_or_with_a_garbled_one_does_nothing() -> None:
     assert tmux_vim._distrust_home("%2") is False
     record = cache.CACHE_DIR / "home-2"

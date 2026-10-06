@@ -135,9 +135,12 @@ def test_the_guard_catches_e37_only_and_hands_the_path_to_fnameescape() -> None:
     """Two properties of the navigation that the call-site tests above
     would not notice on their own.
 
-    The catch pattern is Vim's documented `Vim(cmd):E37:` exception form,
-    anchored — a looser one could swallow an unrelated failure; `:exe`
-    keeps it matching (the error still reads `Vim(drop):E37:`). And the
+    The E37 catch is Vim's documented `Vim(cmd):E37:` exception form,
+    anchored, and silent; `:exe` keeps it matching (the error still reads
+    `Vim(drop):E37:`). Any other error is caught too, but kept for s:landed
+    to report (a user BufReadPost autocommand's `echoerr` made every Read
+    answer "elsewhere"): swallowing it is safe because whether the call
+    landed is decided after the try, by the landing check. And the
     path never reaches `tab drop` bare: as a raw argument `#`/`%`/`$` were
     expanded, a space split it in two and a glob opened a sibling
     (tests/test_integration_goto_file_escaping.py). It is not on the typed
@@ -161,7 +164,11 @@ def test_the_guard_catches_e37_only_and_hands_the_path_to_fnameescape() -> None:
     assert goto.count("call s:acting_start(a:token)") == 1
     assert "let g:vaf_p = s:read(a:token)" in vim_function("acting_start")
     assert "exe 'silent tab drop ' . fnameescape(s:display(g:vaf_p))" in goto
-    assert "\n  catch /^Vim\\%((\\a\\+)\\)\\=:E37:/\n  finally\n" in goto
+    assert (
+        "\n  catch /^Vim\\%((\\a\\+)\\)\\=:E37:/\n  catch\n"
+        "    let g:vaf_nav_error = v:exception\n  finally\n"
+    ) in goto
+    assert goto.endswith("  endtry\n  call s:land_if_target(a:folds)\nendfunction")
 
 
 def test_ensure_showing_navigates_through_the_guard() -> None:
