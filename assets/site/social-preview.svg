@@ -1,8 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-label="vim-ai-follower: Watch Claude Code type into your own Vim. 1100+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim">
   <title>vim-ai-follower: Watch Claude Code type into your own Vim. 1100+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim</title>
-  <!-- The proof line below is an image, so scripts/check_readme_facts.py cannot read it.
-       Keep the same NUMBERS as the facts blocks (the wording is shorter on purpose)
-       and update it in the same commit whenever those numbers change. -->
+  <!-- scripts/check_readme_facts.py reads this SVG's proof line and fails when its numbers
+       drift from the facts blocks (the wording is shorter on purpose). It does NOT read
+       social-preview.png, which is rendered from this file by hand: re-render and
+       re-upload the PNG whenever the numbers here change. -->
   <rect width="1280" height="640" fill="#282828"/>
   <g font-family="system-ui, -apple-system, Segoe UI, sans-serif" fill="#EBDBB2">
     <text x="96" y="130" font-size="28" fill="#928374">vim-ai-follower</text>
