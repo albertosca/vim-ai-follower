@@ -30,7 +30,9 @@ from pathlib import Path
 import pytest
 
 from vim_ai_follower import cache
-from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
+from vim_ai_follower.animate import AnimationResult
+from vim_ai_follower.backends import NavigationFailed
+from vim_ai_follower.backends.tmux_vim import _RELOCK_SYNCED, TmuxVimFollower
 from vim_ai_follower.diff import compute_edit_script
 from vim_ai_follower.state import FollowerState
 
@@ -213,6 +215,20 @@ def test_no_absolute_path_ever_reaches_the_command_line(
     follower.goto_file(str(outside))
     assert follower.probe_buffer(str(outside), AFTER) == "holds"
     assert follower.probe_buffer(str(read_only), BEFORE) == "holds"
+    # The hand-off lines (review of T6+T7, m6): hand_over's unlock and, in
+    # an adopted Vim, its token restore; an interrupted animation's paste
+    # restore; a post-pause goto that failed, whose give-back names the
+    # hazard-laden file by handle.
+    follower.hand_over()
+    follower._with_unlocked(
+        _RELOCK_SYNCED, str(outside), lambda _pane: AnimationResult("interrupted", 0)
+    )
+
+    def goto_failed(_pane: object) -> AnimationResult:
+        raise NavigationFailed("the post-pause goto did not land")
+
+    with pytest.raises(NavigationFailed):
+        follower._with_unlocked(_RELOCK_SYNCED, str(outside), goto_failed)
     follower.close_tab(str(under))
     assert follower.probe_buffer(str(under), AFTER) == "absent"
 
@@ -222,6 +238,14 @@ def test_no_absolute_path_ever_reaches_the_command_line(
     # would pass the absence checks below).
     assert typed.count("ENTER") >= 20, typed
     assert any("setlocal" in line for line in typed), typed
+    hand_off = [
+        "setlocal modifiable|let &paste = get(g:, 'vaf_user_paste', 0)",
+        "let &paste = get(g:, 'vaf_user_paste', 0)|unlet! g:vaf_user_paste",
+    ]
+    if adopted:
+        hand_off += ["'restore_readonly',", "'give_back','p"]
+    for fragment in hand_off:
+        assert any(fragment in line for line in typed), (fragment, typed)
     # No absolute spelling of the targets' directories, ever.
     for base in {root, tmp_path}:
         for directory in (base / "proj", base / "outside"):
