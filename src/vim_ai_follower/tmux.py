@@ -203,7 +203,15 @@ def show_popup(pane_id: str, message: str, after_seconds: float = 0.0) -> None:
     ]
     if after_seconds > 0:
         command = ["sh", "-c", f"sleep {after_seconds}; exec {shlex.join(command)}"]
-    subprocess.Popen(command)
+    # Detached: the child lives as long as the popup (plus any delay), and a
+    # hook's caller waiting for end-of-output must not wait for it too.
+    subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
 
 
 def show_status(pane_id: str, message: str) -> None:

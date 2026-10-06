@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from vim_ai_follower import tmux
 from vim_ai_follower.tmux import TmuxPane, TmuxWindow, adopt_target
 
 
@@ -230,3 +238,43 @@ def test_set_border_color_none_unsets_both_styles() -> None:
     calls = [c.args[0] for c in run.call_args_list]
     assert ["tmux", "set-option", "-pu", "-t", "%2", "pane-border-style"] in calls
     assert ["tmux", "set-option", "-pu", "-t", "%2", "pane-active-border-style"] in calls
+
+
+@pytest.mark.parametrize("after_seconds", [0.0, 1.6])
+def test_a_popup_is_spawned_detached_from_the_callers_output(after_seconds: float) -> None:
+    """Review of T11, m1: display-popup -E (and the delayed shell before it)
+    lives as long as the popup, and inherited the hook's stdout/stderr — a
+    reader waiting for end-of-output waited for the popup too."""
+    with patch("vim_ai_follower.tmux.subprocess.Popen") as popen:
+        tmux.show_popup("%2", "Paused", after_seconds=after_seconds)
+    kwargs = popen.call_args.kwargs
+    assert kwargs["stdin"] is subprocess.DEVNULL
+    assert kwargs["stdout"] is subprocess.DEVNULL
+    assert kwargs["stderr"] is subprocess.DEVNULL
+    assert kwargs["start_new_session"] is True
+
+
+def test_a_delayed_popup_does_not_hold_the_callers_pipe(tmp_path: Path) -> None:
+    """The real thing: a process that asks for the delayed correction popup
+    and exits must reach end-of-output at once, not when the popup would
+    close. No tmux server is needed (the client fails on its own); the
+    private TMUX_TMPDIR and no TMUX keep it off the user's server."""
+    environment = {
+        key: value for key, value in os.environ.items() if key not in ("TMUX", "TMUX_PANE")
+    }
+    environment["TMUX_TMPDIR"] = str(tmp_path)
+    script = (
+        "from vim_ai_follower import tmux; "
+        "tmux.show_popup('%2', 'Nothing to pause', after_seconds=2.5)"
+    )
+    started = time.monotonic()
+    child = subprocess.run(
+        [sys.executable, "-c", script],
+        env=environment,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    elapsed = time.monotonic() - started
+    assert child.returncode == 0, child.stderr
+    assert elapsed < 2.0, f"end-of-output came {elapsed:.2f} s after the start"
