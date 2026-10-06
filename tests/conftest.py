@@ -8,6 +8,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -63,6 +64,27 @@ def vim_confirms_landing(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
     ):
         return
     monkeypatch.setattr(tmux_vim, "_await_landing", lambda *_args: None)
+
+
+@pytest.fixture(autouse=True)
+def bomb_reads_under_tmp_path(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unit tests drive the nvim backend with a mock nvim and fake paths
+    (`/tmp/f.py`), and a completed animation reads the file's first bytes for
+    'bomb' (_bomb_from_disk). Re-root that read under this test's tmp_path,
+    where the fake path does not exist, so no unit test depends on what the
+    machine's real /tmp holds. Integration tests read their real files."""
+    if "integration" in request.keywords:
+        return
+    from vim_ai_follower.backends import nvim as nvim_backend
+
+    real = nvim_backend._bomb_from_disk
+
+    def under_tmp_path(nvim: Any, buf: int, file_path: str) -> None:
+        real(nvim, buf, str(tmp_path / "disk" / file_path.lstrip("/")))
+
+    monkeypatch.setattr(nvim_backend, "_bomb_from_disk", under_tmp_path)
 
 
 @pytest.fixture(autouse=True)

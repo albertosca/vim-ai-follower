@@ -300,7 +300,30 @@ def test_a_non_utf8_socket_path_does_not_raise(tmp_path: Any) -> None:
 
 
 def test_the_log_once_set_is_guarded() -> None:
-    assert isinstance(nvim_prompt._lock_errors_guard, type(threading.Lock()))
+    # The check-then-add on the log-once set runs INSIDE the guard: the
+    # recording lock sees the socket absent on entry and present on exit.
+    # A guard that exists but is not used records nothing.
+    seen: list[tuple[str, bool]] = []
+    logged: set[str] = set()
+
+    class RecordingLock:
+        def __enter__(self) -> None:
+            seen.append(("enter", "/guarded" in logged))
+
+        def __exit__(self, *exc_info: object) -> None:
+            seen.append(("exit", "/guarded" in logged))
+
+    with (
+        patch.object(nvim_prompt, "_lock_errors_guard", RecordingLock()),
+        patch.object(nvim_prompt, "_lock_errors_logged", logged),
+        patch(
+            "vim_ai_follower.backends.nvim_prompt.os.open",
+            side_effect=OSError(errno.EACCES, "Permission denied"),
+        ),
+        nvim_prompt._answer_lock("/guarded") as held,
+    ):
+        assert held is True
+    assert seen == [("enter", False), ("exit", True)]
 
 
 # --- prompt_guard -------------------------------------------------------------
