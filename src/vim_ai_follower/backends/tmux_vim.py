@@ -310,6 +310,14 @@ endfunction
 # `setlocal` never ran and the follower's next keys answered the dialog
 # (measured 2026-09-28 at 49 columns, tests/test_integration_swap_reload.py).
 # `silent!` stays on the edit itself: the relock never showed an error before.
+# `silent!` does not stop an exception, though: a user autocommand that
+# `throw`s on the reload (BufReadPost, BufReadPre) ran the `finally` and then
+# aborted the function before its `setlocal`, leaving the buffer modifiable
+# with 'paste' on, or empty and modifiable (from the swap follow-up's
+# re-review, 2026-09-28; tests/test_integration_relock_autocmd.py). The empty
+# `catch` ends the exception there, so the lock always runs; a BufReadPre
+# throw still leaves the buffer empty (`:e!` cleared it before the read), but
+# locked.
 # The relocks that set the follower's own readonly in an adopted Vim also
 # mark the follower's claim on it (`claim`, see s:note_user_readonly).
 _VIM_RELOCK = r"""
@@ -317,6 +325,7 @@ function! s:relock(readonly, claim) abort
   call s:swap_answer_open()
   try
     silent! edit!
+  catch
   finally
     call s:swap_answer_close()
   endtry
