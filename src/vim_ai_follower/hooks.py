@@ -32,7 +32,7 @@ from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.session import Session, other_live_followers, resolve_session
 from vim_ai_follower.snapshot import load as load_snapshot
 from vim_ai_follower.snapshot import save as save_snapshot
-from vim_ai_follower.state import FollowerState, touch_open_files
+from vim_ai_follower.state import FollowerState, owned_state, touch_open_files
 from vim_ai_follower.status_surface import StatusSurface, status_surface_for
 from vim_ai_follower.tmux import POPUP_SECONDS, adopt_target, show_popup
 
@@ -1074,8 +1074,9 @@ def _consume_pending_catchup(
     holds the new edit, so a relock that re-reads it (tmux's `:e!`) would
     show the finished file and make the base probe below answer "differs".
 
-    True means the catch-up ran to the end, so the buffer now holds only
-    follower text (_animate_edit may then reload it from disk)."""
+    True means the catch-up ran to the end, so the buffer holds only follower
+    text, unless the user typed into an adopted editor while it ran
+    (_caught_up_buffer_held asks before _animate_edit reloads it from disk)."""
     rebuilt = True
     if pending.partial is not None:
         rebuilt = follower.rewrite_buffer(file_path, pending.partial).outcome == "completed"
@@ -1149,15 +1150,18 @@ def _ground_caught_up_buffer(
     2026-09-25).
 
     Safe in an adopted editor, unlike _leave_adopted_buffer_alone's case: the
-    partial probe said "holds" and the follower then typed the rest, so the
-    buffer holds only follower text. Left alone it would stay modified while
-    disk moved on — the next `:checktime` (FocusGained with 'autoread') raises
-    the blocking W12 dialog, and a `:w` writes that stale text over Claude's
+    partial probe said "holds", the follower then typed the rest, and a
+    second probe (_caught_up_buffer_held) found the buffer still holding
+    exactly what the catch-up typed — only follower text, nothing the user
+    typed while it ran. Left alone it would stay modified while disk moved
+    on — the next `:checktime` (FocusGained with 'autoread') raises the
+    blocking W12 dialog, and a `:w` writes that stale text over Claude's
     and the formatter's edits (reproduced 2026-09-25).
 
-    "unknown" (the editor did not answer the probe) is grounded in an adopted
-    editor by the same reasoning: the buffer holds nothing of the user's, and
-    leaving it alone would leave it modified, the W12 hazard above. A
+    "unknown" (the editor did not answer the base probe) is grounded in an
+    adopted editor by the same reasoning once that second probe answers: the
+    buffer holds nothing of the user's, and leaving it alone would leave it
+    modified, the W12 hazard above. A
     dedicated follower keeps retyping on "unknown", as for any buffer it
     cannot check: show_fresh's own relock ends in the same disk sync, so it is
     grounded either way, and the edit stays visible."""
@@ -1184,6 +1188,59 @@ _WHY = {
     "differs": "it holds other content than the edit's base",
     "unknown": "the editor did not answer the buffer probe",
 }
+
+_WHY_AFTER_CATCH_UP: dict[BufferProbe, str] = {
+    "differs": "it no longer holds what the catch-up typed: the user typed during the catch-up",
+    "unknown": "the editor did not answer whether it still holds what the catch-up typed",
+    "absent": "its buffer went away during the catch-up",
+}
+
+
+def _catch_up_end(pending: control.PendingApplyEdit | control.PendingShowFresh) -> str | None:
+    """What the buffer holds once a catch-up of `pending` ran to the end: its
+    partial (which _consume_pending_catchup rebuilds first) with the
+    remainder typed on top, in the terminated form every partial uses. None
+    when no partial was recorded: that catch-up starts from the live buffer,
+    whose shape nothing here knows."""
+    if pending.partial is None:
+        return None
+    if isinstance(pending, control.PendingApplyEdit):
+        return diff_module.apply_ops(pending.partial, list(pending.ops))
+    return pending.partial + _terminated(pending.lines)
+
+
+def _caught_up_buffer_held(
+    window_id: str,
+    follower: Follower,
+    current: FollowerState,
+    file_path: str,
+    pending: control.PendingApplyEdit | control.PendingShowFresh,
+) -> BufferProbe:
+    """Whether the buffer a catch-up just completed still holds nothing but
+    the follower's text — what permits _ground_caught_up_buffer's `:e!`.
+
+    A follower its state PROVES dedicated (state.owned_state: readable, names
+    this follower, not adopted) is "holds" without asking: its buffer is
+    never the user's. Anything else fails closed onto the user's side and is
+    asked, against the catch-up's own end (_catch_up_end): in an adopted
+    editor the user can type into the buffer while the catch-up runs, which
+    takes seconds for a long partial (one tmux batch per line even at pace
+    0; BACKLOG "text typed DURING a catch-up is dropped by the grounding
+    reload"), and the reload would discard that typing. No recorded partial
+    is "unknown": nothing to compare with (an adopted catch-up always has
+    one; only a legacy remainder replayed by a follower whose state stopped
+    proving it dedicated mid-hook gets here without).
+
+    What remains: typing that lands between this probe's answer and the
+    reload's `:e!`, a few milliseconds (one more round trip on tmux, one RPC
+    request on nvim)."""
+    proven = owned_state(window_id, current.backend, current.target)
+    if proven is not None and not proven.adopted:
+        return "holds"
+    end = _catch_up_end(pending)
+    if end is None:
+        return "unknown"
+    return _probe_base(follower, file_path, end)
 
 
 def _mark_finishing(window_id: str) -> None:
@@ -1379,8 +1436,20 @@ def _animate_edit(
             if file_path in current.stale_files:
                 FollowerState.clear_stale(session.window_id, file_path)
             is_fresh = False
-        elif caught_up and (probe == "differs" or (probe == "unknown" and current.adopted)):
-            _ground_caught_up_buffer(session.window_id, follower, current, file_path, probe, cfg)
+        elif (
+            caught_up
+            and pending is not None
+            and (probe == "differs" or (probe == "unknown" and current.adopted))
+        ):
+            held = _caught_up_buffer_held(session.window_id, follower, current, file_path, pending)
+            if held == "holds":
+                _ground_caught_up_buffer(
+                    session.window_id, follower, current, file_path, probe, cfg
+                )
+            else:
+                _leave_adopted_buffer_alone(
+                    current, session.window_id, file_path, held, _WHY_AFTER_CATCH_UP[held]
+                )
             return 0
         elif current.adopted and probe != "absent":
             _leave_adopted_buffer_alone(current, session.window_id, file_path, probe, _WHY[probe])

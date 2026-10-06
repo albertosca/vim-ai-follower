@@ -25,6 +25,7 @@ tests/test_integration_adopted_base_mismatch.py and their nvim twins.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
@@ -398,11 +399,19 @@ def test_both_cues_fit_the_follower_pane() -> None:
 # --- after a completed catch-up: ground, don't leave alone ----------------
 
 
-def _caught_up_follower(adopted: bool, base_answer: object) -> MagicMock:
+# Where the catch-up of _pending_apply_edit("a\nb\nc\n") ends: its partial
+# with its remainder applied.
+CAUGHT_UP = "a\nX\nc\n"
+
+
+def _caught_up_follower(
+    adopted: bool, base_answer: object, end_answer: object = "holds"
+) -> MagicMock:
     """An adopted catch-up asks about the partial first ("holds"); both then
-    ask about the new edit's base."""
+    ask about the new edit's base. An adopted one that is not the base is then
+    asked about the catch-up's own end (end_answer) before it is grounded."""
     follower = _follower("holds")
-    answers: list[object] = ["holds", base_answer] if adopted else [base_answer]
+    answers: list[object] = ["holds", base_answer, end_answer] if adopted else [base_answer]
     follower.probe_buffer.side_effect = answers
     return follower
 
@@ -420,12 +429,20 @@ def test_a_completed_catch_up_that_is_not_the_base_is_reloaded_from_disk(
     formatter, `sed -i`) makes it "differs": reload it from disk, with no
     animation, no cue and no stale mark. Left alone it stays modified while
     disk moved on, and `:checktime` raises W12 (controller ruling,
-    2026-09-25). An adopted "unknown" is grounded by the same reasoning."""
+    2026-09-25). An adopted "unknown" is grounded by the same reasoning.
+
+    In an adopted editor only once the buffer is shown to still hold exactly
+    what the catch-up typed (a second probe, against the catch-up's end):
+    the user can type into it while the catch-up runs. A dedicated follower's
+    buffer is never the user's, so it is grounded without asking."""
     target, resolved = _setup(tmp_path, adopted=adopted)
     _pending_apply_edit(resolved, "a\nb\nc\n")
     follower = _caught_up_follower(adopted, answer)
     surface = _run_hook(target, follower, monkeypatch)
 
+    partial, base, end = (call(resolved, text) for text in ("a\nb\nc\n", BEFORE, CAUGHT_UP))
+    expected = [partial, base, end] if adopted else [base]
+    assert follower.probe_buffer.call_args_list == expected
     assert follower.resume.call_args_list != []
     assert follower.reload_from_disk.call_args_list == [call(resolved)]
     assert follower.apply_edit.call_args_list == []
@@ -441,6 +458,94 @@ def test_a_completed_catch_up_that_is_not_the_base_is_reloaded_from_disk(
     assert resolved not in fs.stale_files
     assert fs.current_file == resolved
     assert "reloaded" in hooks.LOG_PATH.read_text()
+
+
+@pytest.mark.parametrize("base_answer", ["differs", "unknown"])
+@pytest.mark.parametrize(
+    ("end_answer", "cue"),
+    [
+        ("differs", "BASE_DIFFERS_CUE"),
+        ("unknown", "PROBE_UNKNOWN_CUE"),
+        (OSError("gone"), "PROBE_UNKNOWN_CUE"),
+        ("absent", "BASE_DIFFERS_CUE"),
+    ],
+)
+def test_an_adopted_catch_up_the_user_typed_into_is_left_alone(
+    base_answer: str,
+    end_answer: object,
+    cue: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The catch-up ran to the end, but the buffer no longer holds just what
+    it typed: in an adopted editor the user can type into it while the
+    catch-up runs (seconds for a long partial). Grounding would discard that
+    typing with `:e!`; it is left alone instead, with the cue, like any
+    adopted buffer that is not the base (BACKLOG "text typed DURING a
+    catch-up is dropped by the grounding reload")."""
+    target, resolved = _setup(tmp_path, adopted=True)
+    _pending_apply_edit(resolved, "a\nb\nc\n")
+    follower = _caught_up_follower(True, base_answer, end_answer)
+    surface = _run_hook(target, follower, monkeypatch)
+
+    assert follower.resume.call_args_list != []
+    assert follower.probe_buffer.call_args_list[-1] == call(resolved, CAUGHT_UP)
+    assert follower.reload_from_disk.call_args_list == []
+    assert follower.apply_edit.call_args_list == []
+    assert follower.show_fresh.call_args_list == []
+    assert surface.method_calls[-1] == call.set_state(getattr(hooks, cue))
+    fs = state.FollowerState.read("@1")
+    assert fs is not None
+    assert fs.stale_files == (resolved,)
+    assert re.search(r"left the buffer .* alone .*catch-up", hooks.LOG_PATH.read_text())
+
+
+def test_a_catch_up_whose_state_stops_proving_a_dedicated_follower_asks_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fails closed: grounding without the second probe needs a state that
+    still PROVES this follower dedicated (state.owned_state). Here a racing
+    `stop` + `start` wrote another follower's state while the catch-up ran,
+    so the buffer is asked about first, as an adopted one would be."""
+    target, resolved = _setup(tmp_path)
+    _pending_apply_edit(resolved, "a\nb\nc\n")
+    follower = _follower("holds")
+    follower.probe_buffer.side_effect = ["differs", "differs"]
+
+    def _replaced(*args: object, **kwargs: object) -> AnimationResult:
+        state.FollowerState.set("@1", "nvim", "/tmp/other.sock", shown_any=True)
+        return AnimationResult("completed", 1)
+
+    follower.resume.side_effect = _replaced
+    _run_hook(target, follower, monkeypatch)
+
+    assert follower.probe_buffer.call_args_list == [
+        call(resolved, BEFORE),
+        call(resolved, CAUGHT_UP),
+    ]
+    assert follower.reload_from_disk.call_args_list == []
+
+
+def test_a_catch_up_with_no_recorded_partial_and_no_proof_of_dedication_is_left_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A legacy remainder (no partial) has no end to compare the buffer with,
+    so a follower whose state stopped proving it dedicated mid-hook cannot
+    show the buffer is only follower text: it is not grounded."""
+    target, resolved = _setup(tmp_path)
+    _pending_apply_edit(resolved, None)
+    follower = _follower("differs")
+
+    def _replaced(*args: object, **kwargs: object) -> AnimationResult:
+        state.FollowerState.clear("@1")
+        return AnimationResult("completed", 1)
+
+    follower.resume.side_effect = _replaced
+    surface = _run_hook(target, follower, monkeypatch)
+
+    assert follower.probe_buffer.call_args_list == [call(resolved, BEFORE)]
+    assert follower.reload_from_disk.call_args_list == []
+    assert surface.method_calls[-1] == call.set_state(hooks.PROBE_UNKNOWN_CUE)
 
 
 def test_a_dedicated_catch_up_whose_base_probe_goes_unanswered_still_retypes(

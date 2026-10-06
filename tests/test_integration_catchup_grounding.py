@@ -15,7 +15,9 @@ re-reviewer).
 Ruling (controller, 2026-09-25): the buffer the catch-up just produced holds
 only follower text, so it is reloaded from disk — Claude's finished file is
 shown, with no animation, no cue and no stale mark — in adopted and
-dedicated mode alike.
+dedicated mode alike. In an adopted editor only once a second probe finds the
+buffer still holding exactly what the catch-up typed: the user may have typed
+into it meanwhile (test_typing_during_an_adopted_catch_up_survives).
 """
 
 from __future__ import annotations
@@ -149,3 +151,72 @@ def test_a_caught_up_buffer_an_outside_change_left_behind_is_grounded_on_disk(
     assert state is not None
     assert str(target) not in state.stale_files
     assert control.load_pending_animation(window_id) is None
+
+
+# A catch-up long enough that typing can land in the middle of it.
+LONG_WRITTEN = "".join(f"row_{number} = {number}\n" for number in range(40))
+LONG_KILLED = LONG_WRITTEN + "tail = 1\n"
+LONG_FORMATTED = LONG_KILLED + "# fmt\n"
+LONG_FINISHED = LONG_FORMATTED + "z = 4\n"
+# The partial line the user's typing lands after (mid catch-up).
+TYPED_AFTER = "row_20 = 20"
+USER_TEXT = " user text"
+
+
+def test_typing_during_an_adopted_catch_up_survives(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    """BACKLOG "text typed DURING a catch-up is dropped by the grounding
+    reload": the catch-up rebuilds a long partial line by line (seconds, at
+    load), and the user types into their own Vim meanwhile. The base probe
+    then says "differs" (the file also changed outside Claude), but the
+    buffer is no longer just follower text, so it must not be grounded with
+    `:e!` — it is left alone with the cue, the user's text intact.
+
+    The interleaving is deterministic, not a sleep race: the user's keys are
+    sent to the pane right after the follower sends TYPED_AFTER, so tmux
+    queues them between that line's text and its Escapes."""
+    log, pane, window_id = _observed_follower(tmux_session, monkeypatch, tmp_path, wait_until)
+    assert _width(pane) == 49
+    target = tmp_path / "a.py"
+    FollowerState.update(window_id, speed="instant")
+    _write(monkeypatch, log, wait_until, target, LONG_WRITTEN)
+    FollowerState.update(window_id, adopted=True)
+    target.write_text(LONG_KILLED)
+    control.save_pending_apply_edit(
+        window_id,
+        compute_edit_script(LONG_WRITTEN, LONG_KILLED),
+        0.0,
+        file_path=str(target),
+        partial=LONG_WRITTEN,
+    )
+    target.write_text(LONG_FORMATTED)  # outside Claude
+
+    typed: list[str] = []
+    send_text = TmuxPane.send_text
+
+    def _user_types_mid_catch_up(self: TmuxPane, text: str) -> None:
+        send_text(self, text)
+        if text == TYPED_AFTER and not typed:
+            typed.append(text)
+            subprocess.run(["tmux", "send-keys", "-t", pane, "-l", "--", USER_TEXT], check=True)
+
+    monkeypatch.setattr(TmuxPane, "send_text", _user_types_mid_catch_up)
+    _hook(monkeypatch, "pre", "Edit", target)
+    target.write_text(LONG_FINISHED)
+    _hook(monkeypatch, "post", "Edit", target)
+    monkeypatch.setattr(TmuxPane, "send_text", send_text)
+
+    assert typed == [TYPED_AFTER], "the catch-up never typed the partial"
+    expected = LONG_KILLED.replace(TYPED_AFTER + "\n", TYPED_AFTER + USER_TEXT + "\n")
+    # The catch-up ran to its end around the user's text, and nothing
+    # reloaded it from disk afterwards.
+    assert _dump(pane, target, tmp_path, wait_until) == ("1", expected.splitlines())
+    title = TmuxPane(pane_id=pane).title()
+    assert title == BASE_DIFFERS_CUE, title
+    state = FollowerState.read(window_id)
+    assert state is not None
+    assert str(target) in state.stale_files

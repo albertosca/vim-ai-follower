@@ -121,6 +121,38 @@ def test_catchup_reports_whether_it_ran_to_the_end(
     assert hooks._consume_pending_catchup(follower, "/tmp/f.py", pending) is expected
 
 
+# --- _catch_up_end ---------------------------------------------------------
+
+
+def test_the_end_of_an_apply_edit_catch_up_is_its_ops_applied_to_the_partial() -> None:
+    pending = control.PendingApplyEdit(
+        ops=[_OP], pace_seconds=0.0, file_path="/tmp/f.py", partial="a\nb\nc\n"
+    )
+    assert hooks._catch_up_end(pending) == "a\nB\nc\n"
+
+
+def test_the_end_of_a_show_fresh_catch_up_is_the_partial_plus_its_lines() -> None:
+    """Terminated, like every partial: a trailing blank line survives."""
+    pending = control.PendingShowFresh(
+        lines=("y", ""), pace_seconds=0.0, continuation=True, file_path="/tmp/f.py", partial="x\n"
+    )
+    assert hooks._catch_up_end(pending) == "x\ny\n\n"
+
+
+@pytest.mark.parametrize(
+    "pending",
+    [
+        control.PendingApplyEdit(ops=[_OP], pace_seconds=0.0, file_path="/tmp/f.py"),
+        control.PendingShowFresh(lines=("y",), pace_seconds=0.0, file_path="/tmp/f.py"),
+    ],
+    ids=["apply-edit", "show-fresh"],
+)
+def test_a_catch_up_without_a_recorded_partial_has_no_known_end(
+    pending: control.PendingApplyEdit | control.PendingShowFresh,
+) -> None:
+    assert hooks._catch_up_end(pending) is None
+
+
 def test_a_pending_file_written_without_the_partial_key_loads_as_none(tmp_path: Path) -> None:
     # The on-disk half of the same guarantee, against a literal legacy file:
     # a missing key must mean "not recorded", never a crash.

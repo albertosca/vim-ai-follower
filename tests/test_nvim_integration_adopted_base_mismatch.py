@@ -260,3 +260,51 @@ def test_a_pause_that_outlived_its_hook_reaches_the_same_guard(
 
     _assert_left_alone(nvim, tmp_path, target, [USER_LINE, "x = 1", "y = 2"])
     assert control.load_pending_animation(_WINDOW) is None
+
+
+def test_typing_during_an_adopted_catch_up_survives(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The nvim twin of tests/test_integration_catchup_grounding.py's
+    test_typing_during_an_adopted_catch_up_survives, on a show-fresh
+    remainder (a retype paused and its hook killed): the catch-up types the
+    remainder line by line, and the user types into their own buffer
+    meanwhile (through a second RPC connection, at the catch-up's 5th signal
+    check — deterministic, no sleep). The file also changed outside Claude,
+    so the base probe says "differs"; grounding would reload it from disk and
+    drop the user's text, so it is left alone with the cue."""
+    _, nvim = _adopted_nvim(headless_nvim, tmp_path, monkeypatch)
+    FollowerState.update(_WINDOW, speed="instant")
+    target = (tmp_path / "a.py").resolve()
+    rows = [f"row_{number} = {number}" for number in range(40)]
+    partial = "".join(row + "\n" for row in rows[:20])
+    target.write_text(partial)
+    assert hooks.cmd_hook_post(_ENV, _payload("Write", target)) == 0
+    assert _buffer(nvim, "a.py")[:] == rows[:20]
+    target.write_text("".join(row + "\n" for row in rows))  # the killed retype's file
+    control.save_pending_show_fresh(
+        _WINDOW, tuple(rows[20:]), 0.0, continuation=True, file_path=str(target), partial=partial
+    )
+    target.write_text("".join(row + "\n" for row in [*rows, "# fmt"]))  # outside Claude
+
+    user = pynvim.attach("socket", path=headless_nvim)
+    handle = _buffer(user, "a.py").handle
+    checks: list[int] = []
+    check_signal = control.check_signal
+
+    def _user_types_mid_catch_up(*args: Any, **kwargs: Any) -> str | None:
+        checks.append(len(checks) + 1)
+        if len(checks) == 5:
+            end = len(rows[0])
+            user.api.buf_set_text(handle, 0, end, 0, end, [" user text"])
+        return check_signal(*args, **kwargs)
+
+    monkeypatch.setattr(control, "check_signal", _user_types_mid_catch_up)
+    _edit(target, "".join(row + "\n" for row in [*rows, "# fmt", "z = 4"]))
+    monkeypatch.setattr(control, "check_signal", check_signal)
+
+    # The 5th check came before the remainder's 5th line: mid catch-up.
+    assert len(checks) >= 5
+    expected = [rows[0] + " user text", *rows[1:]]
+    _assert_left_alone(nvim, tmp_path, target, expected)
+    assert nvim.api.buf_get_option(_buffer(nvim, "a.py").handle, "modified") is True
