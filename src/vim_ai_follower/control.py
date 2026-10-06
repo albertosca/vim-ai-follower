@@ -7,6 +7,7 @@ from __future__ import annotations
 import fcntl
 import glob
 import json
+import logging
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -16,6 +17,8 @@ from typing import Any, Literal
 
 from vim_ai_follower import cache
 from vim_ai_follower.diff import EditOp
+
+logger = logging.getLogger("vim_ai_follower")
 
 
 def _control_dir(base_dir: Path | None) -> Path:
@@ -51,6 +54,15 @@ def _consume(path: Path) -> bool:
         return False
     addressee = claimed.read_text().strip()
     claimed.unlink()
+    if addressee == "":
+        # Every request since 8ce0d92 names its owner. An empty one comes from
+        # an older claude-follow still bound to the keys (another installation
+        # of a different version): dropped like any stale signal, but said.
+        logger.warning(
+            "dropped an empty %s signal: an older claude-follow (before PID-addressed "
+            "signals) is likely bound to the keys — update or remove that installation",
+            path.suffix.lstrip("."),
+        )
     return addressee == str(os.getpid())
 
 

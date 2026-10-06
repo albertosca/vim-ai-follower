@@ -556,3 +556,30 @@ def test_the_leftover_sweep_reads_a_window_id_literally(tmp_path: Path) -> None:
     lookalike.write_text("1")
     control.sweep_signal_leftovers("term-[ab]", base_dir=tmp_path)
     assert [path.name for path in tmp_path.iterdir()] == [lookalike.name]
+
+
+@pytest.mark.usefixtures("animating")
+def test_an_empty_signal_is_dropped_with_one_warning_about_version_skew(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # A claude-follow from before PID-addressed signals (8ce0d92), still bound
+    # to the keys by another installation, writes an empty file. It is never
+    # obeyed (it names no owner), but the drop must not be silent.
+    (tmp_path / "@1.pause").write_text("")
+    with caplog.at_level("WARNING", logger="vim_ai_follower"):
+        assert control.check_signal("@1", base_dir=tmp_path) is None
+    warnings = [record for record in caplog.records if record.levelname == "WARNING"]
+    assert len(warnings) == 1
+    assert "empty pause signal" in warnings[0].getMessage()
+    assert "older claude-follow" in warnings[0].getMessage()
+    assert not (tmp_path / "@1.pause").exists()
+
+
+@pytest.mark.usefixtures("animating")
+def test_a_signal_for_another_owner_is_dropped_without_a_warning(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    (tmp_path / "@1.interrupt").write_text("1")
+    with caplog.at_level("WARNING", logger="vim_ai_follower"):
+        assert control.check_signal("@1", base_dir=tmp_path) is None
+    assert caplog.records == []
