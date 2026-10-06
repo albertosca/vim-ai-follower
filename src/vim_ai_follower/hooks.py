@@ -19,9 +19,9 @@ from vim_ai_follower.backends import (
     BufferProbe,
     Follower,
     NavigationFailed,
+    as_typed,
     get_follower,
     nvim_connect,
-    without_bom,
 )
 from vim_ai_follower.backends.nvim_connect import (
     StandaloneLaunchFailed,
@@ -579,6 +579,14 @@ def _handoff_cue(follower: Follower, file_path: str) -> str:
     return HANDOFF_CUE_READONLY if readonly else HANDOFF_CUE
 
 
+def _file_text(file_path: str) -> str:
+    """file_path's content as the hooks hold it: its bytes decoded like the
+    post hook's `after`, line endings kept. Never read_text(), whose
+    universal newlines turn every CRLF into LF, so a CRLF file read that way
+    never equals the `after` its own bytes decode to (BACKLOG "CRLF files")."""
+    return Path(file_path).read_bytes().decode("utf-8", errors="replace")
+
+
 def _poll_until_interrupt(
     current: FollowerState,
     session: Session,
@@ -603,7 +611,7 @@ def _poll_until_interrupt(
             control.mark_animating(session.window_id, state="running")
             return True
         try:
-            if Path(file_path).read_text() != after:
+            if _file_text(file_path) != after:
                 control.discard_pending_animation(session.window_id)
                 _print_interrupt_notification(file_path, partial_content)
                 return False
@@ -832,8 +840,8 @@ def cmd_hook_pre(env: dict[str, str], payload: dict[str, Any]) -> int:
     if not _passes_policy(config.load(), file_path):
         return 0
     try:
-        before = Path(file_path).read_text()
-    except (OSError, UnicodeDecodeError):
+        before = _file_text(file_path)
+    except OSError:
         before = ""
     save_snapshot(session.window_id, file_path, before)
     # Until this edit's post hook runs, a Read of the file must not re-read
@@ -1326,10 +1334,12 @@ def _animate_edit(
         return 0
 
     after = raw_after.decode("utf-8", errors="replace")
-    # What is TYPED (and what a partial is built from) leaves out a leading
-    # UTF-8 BOM, which the editors keep in 'bomb' instead of the buffer; the
-    # hand-off wait still compares disk with `after` itself (see without_bom).
-    typed_after = without_bom(after)
+    # What is TYPED (and what a partial is built from) is the buffer's form of
+    # the file: no leading UTF-8 BOM, which the editors keep in 'bomb', and LF
+    # endings for a CRLF file, which they load with fileformat=dos (see
+    # as_typed). The probe and the hand-off wait still compare the file's own
+    # text, `before` and `after`.
+    typed_after = as_typed(after)
 
     # After the catch-up above, never before it: the replay is what brings
     # the buffer to this edit's base, and probing first would see its
@@ -1344,7 +1354,7 @@ def _animate_edit(
     # be retyped, and "holds" — including a stale file the user resynced with
     # `:e!` — is a diff onto the user's own buffer.
     before = load_snapshot(session.window_id, file_path)
-    typed_before = without_bom(before)
+    typed_before = as_typed(before)
     if not is_fresh or current.adopted:
         probe = _probe_base(follower, file_path, before)
         if probe == "holds":
@@ -1498,12 +1508,15 @@ def _edit_in_flight(window_id: str, file_path: str, reader: str | None) -> bool:
         )
         return False
     try:
-        on_disk = Path(file_path).read_text()
-    except (OSError, UnicodeDecodeError):
+        on_disk = Path(file_path).read_bytes()
+    except OSError:
         # The pre hook snapshots an unreadable file as "", and the Read tool
         # just read it, so it exists: it is not the snapshot any more.
         return True
-    return on_disk != load_snapshot(window_id, file_path)
+    # Byte for byte: a CRLF file must not equal its LF snapshot (an Edit that
+    # only changed line endings wrote), and an undecodable file, whose
+    # snapshot holds replacement characters, never equals its snapshot.
+    return on_disk != load_snapshot(window_id, file_path).encode("utf-8")
 
 
 def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:

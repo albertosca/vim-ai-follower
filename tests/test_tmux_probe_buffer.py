@@ -18,7 +18,7 @@ import pytest
 from helpers import define_line, probe_spelled, resolve_typed_paths, vim_function
 
 from vim_ai_follower import cache
-from vim_ai_follower.backends import buffer_forms, tmux_vim
+from vim_ai_follower.backends import as_typed, buffer_forms, tmux_vim
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 
 # The random part of the probe's handle name, which is also its nonce.
@@ -178,3 +178,26 @@ def test_the_probe_file_is_removed_after_reading() -> None:
 )
 def test_buffer_forms(content: str, forms: list[list[str]]) -> None:
     assert buffer_forms(content) == forms
+
+
+@pytest.mark.parametrize(
+    ("content", "typed"),
+    [
+        ("", ""),
+        ("a\n", "a\n"),
+        ("a\r\nb\r\n", "a\nb\n"),
+        ("a\r\nb\r", "a\nb"),
+        ("\r\n", "\n"),
+        # Mixed endings: the editors load these with fileformat=unix and show
+        # each CR as ^M, so the text is what the buffer holds as it is.
+        ("a\r\nb\n", "a\r\nb\n"),
+        ("a\r\nb", "a\r\nb"),
+        ("\ufeffa\r\nb\r\n", "a\nb\n"),
+        ("\ufeffa\n", "a\n"),
+    ],
+)
+def test_as_typed(content: str, typed: str) -> None:
+    """What the follower types and diffs is a form the probe accepts."""
+    assert as_typed(content) == typed
+    text = typed[:-1] if typed.endswith("\n") else typed
+    assert text.split("\n") in buffer_forms(content)

@@ -17,14 +17,16 @@ def _snapshot_path(window_id: str, file_path: str, base_dir: Path | None) -> Pat
 def save(window_id: str, file_path: str, content: str, base_dir: Path | None = None) -> None:
     path = _snapshot_path(window_id, file_path, base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
+    path.write_bytes(content.encode("utf-8"))
 
 
 def load(window_id: str, file_path: str, base_dir: Path | None = None) -> str:
     path = _snapshot_path(window_id, file_path, base_dir)
     if not path.exists():
         return ""
-    return path.read_text()
+    # Bytes, not read_text(): its universal newlines would turn a CRLF
+    # file's snapshot into LF, and it would never equal the file again.
+    return path.read_bytes().decode("utf-8")
 
 
 # How long an Edit's in-flight mark holds a Read of its file back. A post hook

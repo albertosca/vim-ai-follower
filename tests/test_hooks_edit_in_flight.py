@@ -132,7 +132,8 @@ def test_a_mark_just_inside_its_ttl_still_holds(tmp_path: Path) -> None:
 def test_a_read_whose_file_cannot_be_decoded_is_held_back_while_in_flight(
     tmp_path: Path,
 ) -> None:
-    """The pre hook snapshots an undecodable file as "" — so undecodable disk
+    """The pre hook snapshots an undecodable file with replacement
+    characters, and the in-flight check compares bytes — so undecodable disk
     content is never that snapshot: the edit wrote, and the Read waits."""
     target = tmp_path / "a.bin"
     target.write_bytes(b"\xff\xfe\x00")
@@ -511,3 +512,36 @@ def test_a_reader_with_an_identity_is_not_told_of_another_writer_for_an_unknown_
     log = hooks.LOG_PATH.read_text()
     assert "an Edit/Write of it is in flight or failed (writer unknown" in log
     assert "another writer" not in log
+
+
+def test_the_pre_hook_snapshots_a_crlf_file_with_its_carriage_returns(tmp_path: Path) -> None:
+    """Task 12 (CRLF files): the snapshot is the file's bytes decoded like
+    the post hook's `after`, never read_text()'s universal newlines."""
+    target = tmp_path / "a.py"
+    target.write_bytes(b"a\r\nb\r\n")
+    _pre(target)
+    assert snapshot.load("@1", _real(target)) == "a\r\nb\r\n"
+
+
+def test_a_read_of_an_unwritten_crlf_file_navigates_as_usual(tmp_path: Path) -> None:
+    """The in-flight check compares the file with its snapshot byte for
+    byte, so a CRLF file the Edit has not written yet is still the base."""
+    target = tmp_path / "a.py"
+    target.write_bytes(b"a\r\nb\r\n")
+    _register_fake_follower("@1", "%2", shown_any=True)
+    _pre(target)
+
+    assert _read(target) != []
+    assert _open_files() == (_real(target),)
+
+
+def test_a_read_of_a_crlf_file_whose_edit_only_changed_line_endings_is_held_back(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "a.py"
+    target.write_bytes(b"a\nb\n")
+    _register_fake_follower("@1", "%2", shown_any=True)
+    _pre(target)
+    target.write_bytes(b"a\r\nb\r\n")  # the Edit wrote; its post has not run
+
+    assert _read(target) == []

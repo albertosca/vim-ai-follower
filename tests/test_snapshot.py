@@ -43,3 +43,10 @@ def test_clear_removes_window_snapshot_dir(tmp_path: Path) -> None:
 
 def test_clear_missing_dir_is_a_noop(tmp_path: Path) -> None:
     snapshot.clear("@9", base_dir=tmp_path)  # must not raise
+
+
+def test_a_crlf_snapshot_keeps_its_carriage_returns(tmp_path: Path) -> None:
+    """Task 12 (CRLF files): read_text()'s universal newlines turned every
+    CRLF into LF, so the base never matched the file Claude wrote."""
+    snapshot.save("@1", "/tmp/a.txt", "a\r\nb\r\n", base_dir=tmp_path)
+    assert snapshot.load("@1", "/tmp/a.txt", base_dir=tmp_path) == "a\r\nb\r\n"

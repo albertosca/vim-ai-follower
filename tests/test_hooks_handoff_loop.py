@@ -413,3 +413,54 @@ def _scripted_poll(answers: list[bool]) -> Callable[..., bool]:
         return answers.pop(0)
 
     return poll
+
+
+def _signal_on_poll(nth: int) -> Callable[..., str | None]:
+    """check_signal double: "interrupt" on the nth poll, None before it."""
+    polls = {"count": 0}
+
+    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
+        polls["count"] += 1
+        return "interrupt" if polls["count"] == nth else None
+
+    return _check
+
+
+def test_a_crlf_handoff_waits_for_a_real_save(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Task 12 (CRLF files): the wait compared `read_text()` — universal
+    newlines, every CR dropped — with `after`, decoded from the raw bytes
+    with its CRs kept. A CRLF file then "differed" at the first poll, and
+    the hook released Claude saying the user had saved their own version
+    although nobody had saved anything."""
+    after = "a\r\nX\r\nb\r\n"
+    current, target = _handoff_state(tmp_path, "")
+    Path(target).write_bytes(after.encode())
+    initial_mtime = Path(target).stat().st_mtime_ns
+
+    with (
+        patch("vim_ai_follower.control.check_signal", _signal_on_poll(5)),
+        patch("vim_ai_follower.hooks.time.sleep") as sleep,
+    ):
+        assert (
+            hooks._poll_until_interrupt(current, _SESSION, target, after, "a\n", initial_mtime)
+            is True
+        )
+    assert sleep.call_count == 4  # it kept polling until the S
+    assert capsys.readouterr().out == ""  # and printed no release
+
+
+def test_a_crlf_handoff_still_releases_on_a_save_of_other_content(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    after = "a\r\nX\r\nb\r\n"
+    current, target = _handoff_state(tmp_path, "")
+    Path(target).write_bytes(b"a\r\nUSER\r\nb\r\n")
+
+    with (
+        patch("vim_ai_follower.control.check_signal", _signal_on_poll(5)),
+        patch("vim_ai_follower.hooks.time.sleep"),
+    ):
+        assert hooks._poll_until_interrupt(current, _SESSION, target, after, "a\n", None) is False
+    assert "SAVED their own version" in capsys.readouterr().out

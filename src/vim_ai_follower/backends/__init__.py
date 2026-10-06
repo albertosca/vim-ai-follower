@@ -176,6 +176,21 @@ def without_bom(content: str) -> str:
     return content.removeprefix(BOM)
 
 
+def as_typed(content: str) -> str:
+    """`content` as an editor's buffer shows it, which is what the follower
+    diffs and TYPES: without_bom, and, when every line ends in CR LF (the
+    file Vim and nvim load with fileformat=dos and show without the CRs, as
+    buffer_forms accepts), with LF endings. Mixed endings are returned
+    unchanged: the editors load such a file with fileformat=unix and show
+    each CR as ^M, a case the follower does not try to follow."""
+    text = without_bom(content)
+    body = text[:-1] if text.endswith("\n") else text
+    lines = body.split("\n")
+    if not all(line.endswith("\r") for line in lines):
+        return text
+    return "\n".join(line[:-1] for line in lines) + text[len(body) :]
+
+
 def classify_buffer(lines: list[str], content: str) -> BufferProbe:
     """What a buffer showing `lines` holds relative to the file `content`. An
     empty list is "absent": a loaded buffer always has at least one line, so
