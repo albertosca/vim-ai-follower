@@ -375,3 +375,52 @@ def test_navigating_to_a_dirty_buffer_raises_no_e37_prompt(world: E2EFollower) -
     assert FRESH.encode().startswith(dump) and dump != FRESH.encode(), (
         f"the navigation replaced the interrupted buffer instead of leaving it: {dump!r}"
     )
+
+
+# ------------------------------------------------- a P that nothing obeys
+
+
+def _status_float_body(world: E2EFollower, sock: str) -> list[str] | None:
+    """The nvim status float's non-blank body lines, or None with no float."""
+    nvim = world._nvim(sock)
+    for window in nvim.api.list_wins():
+        if nvim.api.win_get_config(window)["relative"] == "":
+            continue
+        buffer = nvim.api.win_get_buf(window)
+        if nvim.api.buf_get_name(buffer).endswith("vaf-status"):
+            lines = nvim.api.buf_get_lines(buffer, 0, -1, True)
+            return [line.strip() for line in lines if line.strip()]
+    return None
+
+
+def test_nvim_a_pause_on_a_write_that_never_animates_is_taken_back(
+    world: E2EFollower,
+) -> None:
+    """Final M6 — guards the hook's exit drain.
+
+    A binary Write never reaches a driver: the hook holds the slot as
+    "running" while it navigates, so `claude-follow pause` there says "pause
+    requested" and puts "Paused" on the float, and nothing ever pauses. The
+    hook's exit consumes the signal and takes "Paused" down. A BufReadPre
+    `:sleep` in the follower's nvim holds the hook inside its navigation, so
+    the press lands while it holds the slot, not by luck of timing."""
+    world.start("nvim", "lento")
+    sock = world.follower_target()
+    world._nvim(sock).command("autocmd BufReadPre *.bin sleep 6")
+    path = world.workdir / "blob.bin"
+    world.cli("hook", "pre", stdin=payload("Write", path))
+    path.write_bytes(b"\x00\x01\x02 binary\n")
+    proc = world.cli_background("hook", "post", stdin=payload("Write", path))
+    world.wait_for_animating("running")
+
+    pressed = world.cli("pause")
+    assert pressed.stdout == "claude-follow: pause requested\n"
+    # The feedback the drain has to take back really went up — without it the
+    # check below would pass with nothing to retract.
+    assert _status_float_body(world, sock) == ["Paused"]
+
+    world.wait_for_hook_exit(proc)
+    assert _status_float_body(world, sock) in (None, []), "a 'Paused' outlived the hook"
+    leftovers = sorted(entry.name for entry in world.cache_dir.iterdir() if ".pause" in entry.name)
+    assert leftovers == [], f"a signal was left behind: {leftovers}"
+    assert world.animating_state() is None

@@ -176,24 +176,34 @@ class TmuxWindow:
         return cls(window_id=window_id)
 
 
-def show_popup(pane_id: str, message: str) -> None:
+# How long a popup stays up.
+POPUP_SECONDS = 1.5
+
+
+def show_popup(pane_id: str, message: str, after_seconds: float = 0.0) -> None:
     """Brief, self-dismissing popup over a pane. Fire-and-forget via Popen:
     display-popup -E only exits when the popup closes, and callers must not
-    stall (nor delay a resume replay) waiting for it."""
-    subprocess.Popen(
-        [
-            "tmux",
-            "display-popup",
-            "-t",
-            pane_id,
-            "-E",
-            "-w",
-            "30",
-            "-h",
-            "3",
-            f"echo {shlex.quote(message)}; sleep 1.5",
-        ]
-    )
+    stall (nor delay a resume replay) waiting for it.
+
+    after_seconds > 0 opens it that much later, from a detached shell. tmux
+    shows one popup per client and drops a second one silently, with exit 0
+    (measured on tmux 3.7c): a popup that must follow another one still up —
+    a correction of a "Paused" just shown — has to wait for it to close."""
+    command = [
+        "tmux",
+        "display-popup",
+        "-t",
+        pane_id,
+        "-E",
+        "-w",
+        "30",
+        "-h",
+        "3",
+        f"echo {shlex.quote(message)}; sleep {POPUP_SECONDS}",
+    ]
+    if after_seconds > 0:
+        command = ["sh", "-c", f"sleep {after_seconds}; exec {shlex.join(command)}"]
+    subprocess.Popen(command)
 
 
 def show_status(pane_id: str, message: str) -> None:

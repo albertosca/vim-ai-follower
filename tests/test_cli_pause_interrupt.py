@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from helpers import make_mock_tmux_run as _mock_tmux_run
 from helpers import register_fake_follower as _register_fake_follower
 
-from vim_ai_follower import cli, commands, control, session, state
+from vim_ai_follower import cli, commands, control, session, state, tmux
 from vim_ai_follower.backends import NavigationFailed
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.diff import EditOp
@@ -655,3 +655,75 @@ def test_a_press_whose_owner_died_before_the_signal_claims_nothing(
     assert capsys.readouterr().out == message
     assert _popup_calls(popen) == []
     assert control.check_signal("@1") is None
+
+
+def _nvim_follower() -> None:
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="@1\n"),
+    ):
+        state.FollowerState.set("@1", "nvim", "/tmp/x.sock")
+
+
+def test_a_pause_whose_hook_finished_before_its_cue_appeared_takes_the_cue_back() -> None:
+    """The hook's exit drain consumed the P and retired "Paused" — before this
+    press had put "Paused" up. Nothing would ever take it down, so the press
+    re-reads the state after its feedback and retracts it itself."""
+    _nvim_follower()
+    control.mark_animating("@1")
+    surface = MagicMock()
+
+    def hook_drains_meanwhile(text: str) -> None:
+        assert text == "Paused"
+        control.mark_animating("@1", state="finishing")
+        assert control.check_signal("@1") == "pause"
+
+    surface.set_state.side_effect = hook_drains_meanwhile
+    with (
+        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.commands.status_surface_for", return_value=surface),
+        patch("vim_ai_follower.hooks.status_surface_for", return_value=surface),
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()),
+    ):
+        assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 0
+    assert surface.method_calls == [call.set_state("Paused"), call.retire_state("Paused")]
+
+
+def test_a_pause_whose_hook_is_still_running_leaves_its_cue_up() -> None:
+    _nvim_follower()
+    control.mark_animating("@1")
+    surface = MagicMock()
+    with (
+        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.commands.status_surface_for", return_value=surface),
+        patch("vim_ai_follower.hooks.status_surface_for", return_value=surface),
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()),
+    ):
+        assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 0
+    assert surface.method_calls == [call.set_state("Paused")]
+
+
+def test_on_tmux_a_pause_whose_hook_finished_meanwhile_is_answered_after_its_popup() -> None:
+    _register_fake_follower("@1", "%2")
+    control.mark_animating("@1")
+
+    def popen(command: list[str], **_kwargs: object) -> MagicMock:
+        if command[:2] == ["tmux", "display-popup"]:
+            control.clear_animating("@1")  # the hook exited while "Paused" opened
+        return MagicMock()
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", side_effect=popen) as spawned,
+    ):
+        assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 0
+    commands_run = [entry.args[0] for entry in spawned.call_args_list]
+    assert len(commands_run) == 2
+    assert "Paused" in commands_run[0][-1]
+    assert commands_run[1][:2] == ["sh", "-c"]
+    assert commands_run[1][2].startswith(
+        f"sleep {tmux.POPUP_SECONDS + 0.1}; exec tmux display-popup"
+    )
+    assert "Nothing to pause" in commands_run[1][2]

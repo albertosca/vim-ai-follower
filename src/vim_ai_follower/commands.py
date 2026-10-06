@@ -404,6 +404,11 @@ def cmd_pause(env: dict[str, str]) -> int:
     if state == "running":
         print("claude-follow: pause requested")
         _pause_feedback(current, session.in_tmux, paused=True)
+        if control.animating_state(session.window_id) not in ("running", "paused"):
+            # The hook's last animation returned meanwhile: its exit drain
+            # consumes this P and takes "Paused" back — possibly before this
+            # press put it up, leaving it for nobody to take down.
+            hooks.retract_signal_feedback(current, session.in_tmux, "pause")
         return 0
     if state == "paused":
         # The toggle: the waiting hook consumes the same signal as a resume.

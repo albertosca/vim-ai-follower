@@ -11,7 +11,7 @@ import subprocess
 import time
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from vim_ai_follower import binding, cache, config, control, keybindings, snapshot, writer_cue
 from vim_ai_follower import diff as diff_module
@@ -34,7 +34,7 @@ from vim_ai_follower.snapshot import load as load_snapshot
 from vim_ai_follower.snapshot import save as save_snapshot
 from vim_ai_follower.state import FollowerState, touch_open_files
 from vim_ai_follower.status_surface import StatusSurface, status_surface_for
-from vim_ai_follower.tmux import adopt_target, show_popup
+from vim_ai_follower.tmux import POPUP_SECONDS, adopt_target, show_popup
 
 LOG_PATH = cache.CACHE_DIR / "hook.log"
 
@@ -967,6 +967,9 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         _skip_unreachable_edit(session.window_id, file_path, payload, failure)
         return 0
     finally:
+        _drain_unconsumed_signals(
+            session.window_id, FollowerState.read(session.window_id), session.in_tmux
+        )
         # Release this window's animation slot on every path — including the
         # ones that never start an animation (no follower, unreadable/binary
         # file), which would otherwise hold the marker until the process
@@ -1154,6 +1157,55 @@ def _mark_finishing(window_id: str) -> None:
     "running" it drew a signal addressed to this hook that nothing would
     ever consume, and a popup claiming it had worked."""
     control.mark_animating(window_id, state="finishing")
+
+
+# What a press that nothing obeyed is answered with, per signal: the message a
+# tmux popup shows, and the cue the press put up that must come down.
+_NOTHING_TO = {
+    "pause": ("Nothing to pause", "Paused"),
+    "interrupt": ("Nothing to interrupt", "Interrupted"),
+}
+
+
+def retract_signal_feedback(
+    current: FollowerState | None, in_tmux: bool, signal: Literal["pause", "interrupt"]
+) -> None:
+    """Undo the feedback a P or S press gave for a hook that then exited
+    without obeying it (final M6, PF round 2). nvim: take its cue off the
+    status float — "Paused" otherwise stays until something overwrites it.
+    tmux: say so in a popup, once the press's own popup has closed (tmux
+    drops a popup opened while another is up). Best-effort, like any cue."""
+    if current is None:
+        return
+    message, cue = _NOTHING_TO[signal]
+    if current.backend == "nvim":
+        status_surface_for(current).retire_state(cue)
+        return
+    if in_tmux:
+        show_popup(current.target, message, after_seconds=POPUP_SECONDS + 0.1)
+
+
+def _drain_unconsumed_signals(window_id: str, current: FollowerState | None, in_tmux: bool) -> None:
+    """At the hook's exit, BEFORE it releases the slot: a P or S addressed to
+    this hook that no driver consumed — pressed while it held the slot as
+    "running" on a path that never animates (an adopted buffer left alone, a
+    grounding reload, a binary file, a navigation that failed), or between a
+    driver's last signal check and the "finishing" mark — is consumed here,
+    and the feedback it drew is taken back. Left on disk it was only dropped
+    as stale by the next hook, with "Paused" still on screen.
+
+    "finishing" first: a press from now on is told there is nothing to act
+    on, and cmd_pause, re-reading the state after showing its feedback, takes
+    it back itself when this drain ran before that feedback appeared."""
+    try:
+        control.mark_animating(window_id, state="finishing")
+        signal = control.check_signal(window_id)
+        if signal is None:
+            return
+        logger.info("a %s press reached this hook after its last animation: none obeyed", signal)
+        retract_signal_feedback(current, in_tmux, signal)
+    except Exception:
+        logger.exception("could not drain the signals left for this hook")
 
 
 def _animate_edit(
@@ -1456,6 +1508,9 @@ def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
     try:
         return _navigate_for_read(session, payload, file_path, cfg)
     finally:
+        _drain_unconsumed_signals(
+            session.window_id, FollowerState.read(session.window_id), session.in_tmux
+        )
         control.clear_animating(session.window_id)
 
 
