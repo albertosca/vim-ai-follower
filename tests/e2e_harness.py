@@ -40,7 +40,9 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
+import sys
 import time
 import uuid
 from collections.abc import Callable, Iterator
@@ -68,6 +70,10 @@ REAL_CONFIG_PATH = _REAL_HOME / ".config" / "claude-vim-follower" / "config.json
 # there — a child whose CACHE_DIR was the real one would drop a .pane file
 # beside the log, and the isolated-home token scan below reads every file.
 _LEAK_GLOBS = ("*.pane", "*.animating", "*.pending_animation.json", "nvim-*.sock")
+
+# Worlds built in this process; conftest's no_e2e_process_survives only asserts
+# when it is non-zero.
+worlds_started = 0
 
 PACE_LENTO = 0.15  # config.SPEED_PACE_SECONDS["lento"], seconds per character
 
@@ -184,6 +190,7 @@ class E2EFollower:
     window_id: str
     env: dict[str, str]
     _before: _RealHomeFingerprint
+    server_pid: int | None = None
     _background: list[subprocess.Popen[bytes]] = field(default_factory=list)
     _logs: list[IO[bytes]] = field(default_factory=list)
     _log_paths: dict[int, Path] = field(default_factory=dict)
@@ -216,7 +223,7 @@ class E2EFollower:
             "print(cache.CACHE_DIR);print(config.CONFIG_PATH)"
         )
         result = subprocess.run(
-            ["python3", "-c", probe],
+            [sys.executable, "-c", probe],
             env={**self.env, "PYTHONPATH": str(REPO_ROOT / "src")},
             capture_output=True,
             text=True,
@@ -558,8 +565,7 @@ class E2EFollower:
         # kill-server takes the whole private world with it: the origin pane,
         # the follower's vim/nvim split, and the server itself. Nothing here
         # can reach the developer's server — the socket lives in tmux_tmpdir.
-        self.tmux("kill-server", check=False)
-        self.wait_for_children_gone()
+        _reap_world(self.token, self.env, self.server_pid)
         shutil.rmtree(self.tmux_tmpdir, ignore_errors=True)
         shutil.rmtree(self.home, ignore_errors=True)
 
@@ -584,6 +590,45 @@ class E2EFollower:
                 return True
             time.sleep(0.05)
         return False
+
+
+def _token_pids(token: str) -> list[int]:
+    """Every process whose argv carries this world's token. It is a path
+    component of HOME, TMPDIR and the socket (see wait_for_children_gone), so
+    this names the world's server and every editor under it, and nothing the
+    test runner owns."""
+    found = subprocess.run(["pgrep", "-f", token], capture_output=True, text=True, check=False)
+    return [int(pid) for pid in found.stdout.split()]
+
+
+def _carries_token(pid: int, token: str) -> bool:
+    """A recorded pid may be recycled by an unrelated process before the
+    teardown runs, so it is killed only while its argv still names the world."""
+    command = subprocess.run(
+        ["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, check=False
+    ).stdout
+    return token in command
+
+
+def _reap_world(token: str, env: dict[str, str], server_pid: int | None) -> None:
+    """Kill a world's private tmux server by socket (TMUX_TMPDIR in `env`, no
+    $TMUX), give it and its panes' editors two seconds to leave on their own,
+    then SIGKILL whatever still carries the token plus the recorded server
+    pid. Shared by close() and by e2e_world's setup-failure path, where no
+    E2EFollower exists yet to own the teardown."""
+    subprocess.run(["tmux", "kill-server"], env=env, capture_output=True, check=False)
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline and _token_pids(token):
+        time.sleep(0.05)
+    survivors = set(_token_pids(token))
+    if server_pid is not None and _carries_token(server_pid, token):
+        survivors.add(server_pid)
+    for pid in survivors:
+        with suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+    deadline = time.monotonic() + 15.0
+    while time.monotonic() < deadline and _token_pids(token):
+        time.sleep(0.05)
 
 
 def _stable_size(path: Path) -> Callable[[], bool]:
@@ -635,6 +680,8 @@ def _checked(cmd: list[str], env: dict[str, str]) -> subprocess.CompletedProcess
 def e2e_world() -> Iterator[E2EFollower]:
     """Build the isolated world, hand it to the test, tear it down and only
     then check that the developer's own machine is as it was."""
+    global worlds_started
+    worlds_started += 1
     before = _fingerprint_real_home()
     token = f"vaf-e2e-{uuid.uuid4().hex[:8]}"
     root = _TEMP_ROOT / token
@@ -643,55 +690,65 @@ def e2e_world() -> Iterator[E2EFollower]:
     tmux_tmpdir = str(root / "s")
     for directory in (home / ".cache", home / ".config", workdir, Path(tmux_tmpdir)):
         directory.mkdir(parents=True)
-    _assert_socket_paths_fit(home, tmux_tmpdir)
 
     env = _child_env(home, workdir, tmux_tmpdir)
     session = f"{token}-s"
-    _checked(
-        [
-            "tmux",
-            "new-session",
-            "-d",
-            "-s",
-            session,
-            "-x",
-            "120",
-            "-y",
-            "40",
-            # Belt and braces over the env passed to this call: a pane the
-            # follower opens later (the vim/nvim split) inherits the SESSION
-            # environment, and these are the variables that keep it isolated
-            # and hermetic. No ~/.vimrc and no ~/.config/nvim exist under the
-            # throwaway HOME, so neither editor loads user config or plugins.
-            *_session_env_flags(env),
-            "sh",
-        ],
-        env,
-    )
-    origin_pane = _checked(
-        ["tmux", "list-panes", "-t", session, "-F", "#{pane_id}"], env
-    ).stdout.split()[0]
-    window_id = _checked(
-        ["tmux", "display-message", "-p", "-t", origin_pane, "#{window_id}"], env
-    ).stdout.strip()
-    env["TMUX_PANE"] = origin_pane
-
-    world = E2EFollower(
-        token=token,
-        home=home,
-        workdir=workdir,
-        tmux_tmpdir=tmux_tmpdir,
-        session=session,
-        origin_pane=origin_pane,
-        window_id=window_id,
-        env=env,
-        _before=before,
-    )
-    world.assert_isolated()
+    server_pid: int | None = None
+    world: E2EFollower | None = None
     try:
+        _assert_socket_paths_fit(home, tmux_tmpdir)
+        _checked(
+            [
+                "tmux",
+                "new-session",
+                "-d",
+                "-s",
+                session,
+                "-x",
+                "120",
+                "-y",
+                "40",
+                # Belt and braces over the env passed to this call: a pane the
+                # follower opens later (the vim/nvim split) inherits the SESSION
+                # environment, and these are the variables that keep it isolated
+                # and hermetic. No ~/.vimrc and no ~/.config/nvim exist under the
+                # throwaway HOME, so neither editor loads user config or plugins.
+                *_session_env_flags(env),
+                "sh",
+            ],
+            env,
+        )
+        server_pid = int(_checked(["tmux", "display-message", "-p", "#{pid}"], env).stdout.strip())
+        origin_pane = _checked(
+            ["tmux", "list-panes", "-t", session, "-F", "#{pane_id}"], env
+        ).stdout.split()[0]
+        window_id = _checked(
+            ["tmux", "display-message", "-p", "-t", origin_pane, "#{window_id}"], env
+        ).stdout.strip()
+        env["TMUX_PANE"] = origin_pane
+
+        world = E2EFollower(
+            token=token,
+            home=home,
+            workdir=workdir,
+            tmux_tmpdir=tmux_tmpdir,
+            session=session,
+            origin_pane=origin_pane,
+            window_id=window_id,
+            env=env,
+            _before=before,
+            server_pid=server_pid,
+        )
+        world.assert_isolated()
         yield world
     finally:
-        world.close()
+        # Also reached when the world could not be built (a setup error used
+        # to leave the private server behind, one per run): the reap needs only
+        # the token, the env and the pid, not an E2EFollower.
+        if world is not None:
+            world.close()
+        else:
+            _reap_world(token, env, server_pid)
         shutil.rmtree(root, ignore_errors=True)
     world.assert_real_home_untouched()
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -82,6 +83,23 @@ def no_pid_ancestry_walk(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
     if "pid_walk" in request.keywords:
         return
     monkeypatch.setattr(session, "_tmux_panes_by_pid", dict)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def no_e2e_process_survives() -> Iterator[None]:
+    """Once the session is over, no process of an e2e world may be alive: the
+    harness's teardown kills what it spawned, and this is what notices when
+    it does not (a setup error that skipped the teardown, an editor that
+    outlived `kill-server`). Only asserts when an e2e world was built, so a
+    run that touched none cannot trip over another suite's processes."""
+    yield
+    harness = sys.modules.get("e2e_harness")
+    if harness is None or not harness.worlds_started:
+        return
+    survivors = subprocess.run(
+        ["pgrep", "-fl", "vaf-e2e-"], capture_output=True, text=True, check=False
+    ).stdout.strip()
+    assert survivors == "", f"e2e processes outlived the suite:\n{survivors}"
 
 
 @pytest.fixture
