@@ -490,3 +490,24 @@ def test_the_post_hook_clears_the_mark_when_the_slot_acquire_raises(
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
         assert cli.main(["hook", "post"]) == 0
     assert not snapshot.in_flight("@1", _real(target))
+
+
+def test_a_reader_with_an_identity_is_not_told_of_another_writer_for_an_unknown_mark(
+    tmp_path: Path,
+) -> None:
+    """The mark's writer is unknown (its pre hook carried no identity), so
+    nothing proves the Read is from ANOTHER writer (review of T10, m3)."""
+    target = tmp_path / "a.py"
+    target.write_text("one\n")
+    _register_fake_follower("@1", "%2", shown_any=True)
+    _pre(target)  # no identity: the mark's writer is ""
+    target.write_text("one\ntwo\n")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert hooks.cmd_hook_post(_ENV, {**_payload("Read", target), "session_id": "sess-b"}) == 0
+    assert not [
+        c for c in (call.args[0] for call in run.call_args_list) if c[:2] == ["tmux", "send-keys"]
+    ]
+    assert snapshot.in_flight("@1", _real(target))
+    log = hooks.LOG_PATH.read_text()
+    assert "an Edit/Write of it is in flight or failed (writer unknown" in log
+    assert "another writer" not in log

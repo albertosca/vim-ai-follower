@@ -771,6 +771,64 @@ def test_a_real_vim_drops_the_dispatchers_of_other_versions_and_nothing_else(
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("vim_home", ["hooks", "another"])
+def test_a_real_vim_keeps_a_function_whose_path_only_contains_the_scripts(
+    home_cache: Path, tmp_path: Path, vim_home: str
+) -> None:
+    """The script's path must be the WHOLE path on the "Last set from" line:
+    whitespace before it, a space or the end after it (review of T9, m2). A
+    user function set from a directory that ends in the script's path as
+    Vim would show it (`x~/.cache/…`, or `y/` + the resolved path), or from
+    `vaf-<hash>.vim.bak` in the cache dir itself, stays."""
+    cache.CACHE_DIR.mkdir(parents=True)
+    name, text = tmux_vim._vim_functions()
+    resolved = Path(os.path.realpath(cache.CACHE_DIR))
+    users = {
+        # Contains `~/.cache/claude-vim-follower/vaf-0d0d0d.vim`, as Vim on
+        # the hook's HOME shows the script.
+        "VafFollower_0d0d0d": tmp_path / "x~" / ".cache" / cache.CACHE_DIR.name / "vaf-0d0d0d.vim",
+        # Contains the resolved path, as Vim on another HOME shows it.
+        "VafFollower_0e0e0e": tmp_path / "y" / resolved.relative_to("/") / "vaf-0e0e0e.vim",
+        # The script's path followed by more name.
+        "VafFollower_0f0f0f": cache.CACHE_DIR / "vaf-0f0f0f.vim.bak",
+    }
+    commands: list[str] = []
+    for function_name, path in users.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"function! {function_name}(op, ...) abort\nendfunction\n")
+        commands += ["-c", f"source {path}"]
+    out = tmp_path / "out.txt"
+    other_home = tmp_path / "other-home"
+    other_home.mkdir()
+    names = ", ".join(f"'{function_name}'" for function_name in users)
+    subprocess.run(
+        [
+            "vim",
+            "-Nu",
+            "NONE",
+            "-i",
+            "NONE",
+            "-es",
+            *commands,
+            "-c",
+            f"let g:before = map([{names}], {{_, function_name -> exists('*' . function_name)}})",
+            "-c",
+            f"source {tmux_vim._script_file(name, text)}",
+            "-c",
+            f"call writefile(g:before + map([{names}],"
+            f" {{_, function_name -> exists('*' . function_name)}}), '{out}')",
+            "-c",
+            "qa!",
+        ],
+        check=True,
+        timeout=30,
+        stdin=subprocess.DEVNULL,
+        env={**os.environ, "HOME": str(home_cache if vim_home == "hooks" else other_home)},
+    )
+    assert out.read_text().splitlines() == ["1"] * 6
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize(
     ("intact", "broken_into"),
     [
