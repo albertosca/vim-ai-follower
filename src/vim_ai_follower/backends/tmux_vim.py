@@ -1008,12 +1008,21 @@ endfunction
 # syntax) leaves no dispatcher, the calls do nothing and the navigation
 # fails safe (SHRINK review, M3). The loop after it deletes the dispatchers
 # of other versions: a `VafFollower_<6 hex>` only when Vim says it was set
-# from the follower's own script for that hash, `vaf-<6 hex>.vim`
-# (`:verbose function`'s "Last set from <path>" line, whose words are
-# translated but whose path is not; measured 2026-10-05 in C and pt_BR). A
-# user function of the same name shape, set anywhere else, stays (review of
-# 1e558d0: `VafFollower_123abc()` was deleted). No variable records the
-# names, so nothing new is left in the user's namespace.
+# from the follower's own script for that hash IN THIS CACHE DIRECTORY,
+# `s:dir . 'vaf-<6 hex>.vim'` (`:verbose function`'s "Last set from <path>"
+# line, whose words are translated but whose path is not, between spaces;
+# measured 2026-10-06 in C, pt_BR, de_DE and ja_JP). Vim records a script by
+# its symlink-resolved path and shows it `~/…` under its HOME, so the
+# expected path goes through resolve() and fnamemodify(':~') in that same
+# Vim, and is matched literally (`\V`); resolve() resolves the directory even
+# when the older script was swept since (_sweep_scripts). A user function of
+# the same name shape, set from anywhere else, stays — even from a file named
+# `vaf-<that hash>.vim` in another directory (review of 1e558d0:
+# `VafFollower_123abc()` was deleted; SHRINK review). So does a dispatcher of
+# another cache directory, which only a hook on that directory calls. A
+# dispatcher with no "Last set from" file (pasted by hand) is never deleted:
+# by then it is the user's code. No variable records the names, so nothing
+# new is left in the user's namespace.
 _VIM_SCRIPT = (
     "\" vim-ai-follower's tmux backend: written to its cache directory and\n"
     '" sourced once per Vim (see backends/tmux_vim.py). Do not edit.\n'
@@ -1045,11 +1054,12 @@ for s:name in getcompletion('VafFollower_', 'function')
     continue
   endif
   let s:origin = get(split(execute('verbose function ' . s:name), "\n"), 1, '')
-  if s:origin =~# '[/\\]vaf-' . s:name[12:] . '\.vim\>'
+  let s:ours = fnamemodify(resolve(s:dir . 'vaf-' . s:name[12:] . '.vim'), ':~')
+  if s:origin =~# '\V\s' . escape(s:ours, '\') . '\( \|\$\)'
     exe 'delfunction ' . s:name
   endif
 endfor
-unlet! s:name s:origin
+unlet! s:name s:origin s:ours
 let &cpo = s:cpo_save
 unlet s:cpo_save
 """

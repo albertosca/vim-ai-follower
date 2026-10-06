@@ -616,24 +616,35 @@ def test_a_real_vims_probe_gives_no_answer_when_its_handle_is_missing(tmp_path: 
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("vim_home", ["hooks", "another"])
 def test_a_real_vim_drops_the_dispatchers_of_other_versions_and_nothing_else(
-    tmp_path: Path,
+    home_cache: Path, tmp_path: Path, vim_home: str
 ) -> None:
     """A long-lived Vim that sourced an older version keeps only the
     current dispatcher. A user function stays, even one named exactly like
-    a dispatcher (`VafFollower_` + 6 hex): only a function set from the
-    follower's own script for that hash (`vaf-<hash>.vim`) is ours."""
-    name = tmux_vim._vim_functions()[0]
-    older = tmp_path / "old-cache" / "vaf-0a0b0c.vim"
-    older.parent.mkdir()
+    a dispatcher (`VafFollower_` + 6 hex) and set from a file named exactly
+    like a script (`vaf-<hash>.vim`) outside the cache directory: only a
+    function set from the follower's own script for that hash, in this
+    cache directory, is ours.
+
+    Vim names a script by its symlink-resolved path, shown `~/…` when under
+    its HOME (measured 2026-10-06, Vim 9.2): HOME here is a symlink, so with
+    the hook's HOME the "Last set from" line reads `~/.cache/…` for a cache
+    directory the script spells through the link, and with another HOME it
+    reads the resolved absolute path."""
+    cache.CACHE_DIR.mkdir(parents=True)
+    name, text = tmux_vim._vim_functions()
+    older = cache.CACHE_DIR / "vaf-0a0b0c.vim"
     older.write_text("function! VafFollower_0a0b0c(op, ...) abort\nendfunction\n")
+    elsewhere = tmp_path / "elsewhere" / "vaf-123abc.vim"
+    elsewhere.parent.mkdir()
+    # The exact shape of a dispatcher and of its script's name, but the user's.
+    elsewhere.write_text("function! VafFollower_123abc(op, ...) abort\nendfunction\n")
     user = tmp_path / "user.vim"
-    user.write_text(
-        "function! VafFollower_mine() abort\nendfunction\n"
-        # The exact shape of a dispatcher's name, but the user's own.
-        "function! VafFollower_123abc() abort\nendfunction\n"
-    )
+    user.write_text("function! VafFollower_mine() abort\nendfunction\n")
     out = tmp_path / "out.txt"
+    other_home = tmp_path / "other-home"
+    other_home.mkdir()
     subprocess.run(
         [
             "vim",
@@ -645,11 +656,16 @@ def test_a_real_vim_drops_the_dispatchers_of_other_versions_and_nothing_else(
             "-c",
             f"source {older}",
             "-c",
+            f"source {elsewhere}",
+            "-c",
             f"source {user}",
             "-c",
-            f"source {tmux_vim._script_file(name, tmux_vim._vim_functions()[1])}",
+            "let g:before = map(['VafFollower_0a0b0c', 'VafFollower_123abc', 'VafFollower_mine'],"
+            " {_, function_name -> exists('*' . function_name) . ''})",
             "-c",
-            "call writefile(map(['VafFollower_0a0b0c', 'VafFollower_mine',"
+            f"source {tmux_vim._script_file(name, text)}",
+            "-c",
+            "call writefile(g:before + map(['VafFollower_0a0b0c', 'VafFollower_mine',"
             f" 'VafFollower_123abc', '{name}'],"
             f" {{_, function_name -> exists('*' . function_name) . ''}}), '{out}')",
             "-c",
@@ -658,8 +674,9 @@ def test_a_real_vim_drops_the_dispatchers_of_other_versions_and_nothing_else(
         check=True,
         timeout=30,
         stdin=subprocess.DEVNULL,
+        env={**os.environ, "HOME": str(home_cache if vim_home == "hooks" else other_home)},
     )
-    assert out.read_text().splitlines() == ["0", "1", "1", "1"]
+    assert out.read_text().splitlines() == ["1", "1", "1", "0", "1", "1", "1"]
 
 
 @pytest.mark.integration
