@@ -222,3 +222,57 @@ def test_a_press_addressed_to_a_read_is_drained_too(
     assert follower.ensure_showing.call_args_list != []
     assert call.retire_state("Paused") in surface.method_calls
     _no_signal_left(tmp_path)
+
+
+# --- the marker between an interrupted driver and the hand-off wait ---------
+
+
+@pytest.mark.parametrize("animation", ["diff", "retype"])
+def test_an_interrupted_animation_reads_handoff_before_its_remainder_is_saved(
+    animation: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Slot residual: from the driver's return to the wait's first mark the
+    marker still said "running", so an S there was told "interrupt requested"
+    instead of being the des-interrupt it is."""
+    target, _resolved = _setup(tmp_path)
+    follower = _follower("absent" if animation == "retype" else "holds")
+    follower.apply_edit.return_value = AnimationResult("interrupted", 0)
+    follower.show_fresh.return_value = AnimationResult("interrupted", 1)
+    monkeypatch.setattr(hooks, "_await_user_handoff", lambda *args, **kwargs: None)
+    seen: list[str | None] = []
+    for name in ("save_pending_apply_edit", "save_pending_show_fresh"):
+        real = getattr(control, name)
+
+        def save(*args: object, _real: Callable[..., None] = real, **kwargs: object) -> None:
+            seen.append(control.animating_state("@1"))
+            _real(*args, **kwargs)
+
+        monkeypatch.setattr(control, name, save)
+    _run_hook(target, follower, monkeypatch)
+    assert seen == ["handoff"]
+
+
+def test_an_interrupted_replay_reads_handoff_before_its_remainder_is_saved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same window inside the hand-off loop: a replay interrupted by S
+    returns with the marker "running" (its driver's), and the re-arm saves
+    the shorter remainder and hands the buffer over before the wait marks."""
+    target = tmp_path / "f.txt"
+    target.write_text("l0\nl1\n")
+    control.save_pending_show_fresh("@1", ("l1",), 0.0, continuation=True, file_path=str(target))
+    control.mark_animating("@1")  # the replay's driver left it "running"
+    follower = MagicMock()
+    seen: list[str | None] = []
+    real = control.save_pending_show_fresh
+
+    def save(*args: object, **kwargs: object) -> None:
+        seen.append(control.animating_state("@1"))
+        real(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(control, "save_pending_show_fresh", save)
+    pending = control.load_pending_animation("@1")
+    assert pending is not None
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()):
+        hooks._rearm_handoff(follower, "@1", pending, "l0\n", 0)
+    assert seen == ["handoff"]

@@ -627,6 +627,9 @@ def _rearm_handoff(
     by whatever the replay did manage to show, and hand the buffer back to the
     user. Returns the new partial; the caller loops into another hand-off wait
     with it, so interrupt/des-interrupt can repeat as often as the user likes."""
+    # The replay's driver left "running"; from here on an S is the next
+    # des-interrupt, never an interrupt of a replay that already returned.
+    control.mark_animating(window_id, state="handoff")
     if isinstance(pending, control.PendingShowFresh):
         # A resumed show_fresh counts LINES of the remainder (both backends
         # index the `lines` tuple they were handed: animate.run_lines and
@@ -1355,6 +1358,8 @@ def _animate_edit(
     if is_fresh:
         result = follower.show_fresh(file_path, typed_after, in_new_tab=current.shown_any)
         if result.outcome == "interrupted":
+            # The driver returned: an S from here on is the des-interrupt.
+            control.mark_animating(session.window_id, state="handoff")
             # Clear the display-only pointer — the user owns the buffer now
             # and may change it under us. Freshness is keyed on open_files,
             # which the interrupt path never touches, so the next edit is
@@ -1396,6 +1401,8 @@ def _animate_edit(
     # replays the ops onto, so the two can never disagree.
     result = follower.apply_edit(file_path, ops, before=typed_before)
     if result.outcome == "interrupted":
+        # The driver returned: an S from here on is the des-interrupt.
+        control.mark_animating(session.window_id, state="handoff")
         FollowerState.update_current_file(session.window_id, None)
         # completed_count indexes the very ops list the animation walked —
         # computing the script once keeps this reconstruction truthful.
