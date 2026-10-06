@@ -740,6 +740,11 @@ endfunction
 #   - `silent!`: a file that cannot be read must not leave a prompt at 49
 #     columns; the buffer then just stays not edited, as before.
 #   - `%d _` into the black-hole register, leaving the user's registers alone.
+#   - 'undolevels' -1 around both, restored in `finally`: the clear was an
+#     undo step holding the whole file, so a huge file sat in the follower's
+#     memory (C3; nvim does the same, see its _READ_THEN_CLEAR_LUA). On Vim
+#     undoing it never showed the content (measured 2026-10-06), but the step
+#     was there (tests/test_integration_show_fresh_escaping.py).
 _VIM_RENAME = r"""
 function! s:drop_fresh(last) abort
   let fresh = bufnr('$')
@@ -784,8 +789,14 @@ function! s:rename(token, folds, in_new_tab, adopted) abort
       let b:vaf_ro_ours = 2
     endif
     setlocal buftype= bufhidden= buflisted modifiable noreadonly
-    noautocmd silent! edit!
-    silent! %d _
+    let undolevels = &l:undolevels
+    setlocal undolevels=-1
+    try
+      noautocmd silent! edit!
+      silent! %d _
+    finally
+      let &l:undolevels = undolevels
+    endtry
   endif
 endfunction
 """

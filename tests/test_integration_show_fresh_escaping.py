@@ -26,7 +26,7 @@ from test_integration_goto_file_escaping import _landing
 from test_integration_relock_autocmd import _keys, follower, state, vim_pane
 from test_integration_tab_eviction import _start_follower
 
-from vim_ai_follower import cli
+from vim_ai_follower import cli, control
 from vim_ai_follower.backends import NavigationFailed
 
 pytestmark = pytest.mark.integration
@@ -127,3 +127,41 @@ def test_a_rename_in_place_that_does_not_land_leaves_every_buffers_swap_alone(
         "join(map(range(1, bufnr('$')), 'getbufvar(v:val, \"&swapfile\")'), '')",
     )
     assert swaps[2] == "11", swaps
+
+
+def test_show_freshs_read_then_clear_leaves_no_undo_step(
+    tmux_session: str,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """show_fresh's rename READS the file into the buffer (to clear the "not
+    edited" mark) and clears it again in the same call, and the clear was an
+    undo step holding the whole file: a huge file sat on the undo stack (C3,
+    the tmux half of the nvim fix). Interrupted at once, as nvim's test
+    does, nothing is typed, so the buffer must have no undo step at all, and
+    no state the user's undo can reach may show the file it read.
+
+    Measured on Vim 9.2 (2026-10-06): unlike nvim, undoing that step never
+    brought the content back on screen (read and clear run in one call, and
+    the undo lands on the empty buffer before the read), but the step was
+    there (seq_last 1, the follower's Vim ~4 MB larger for a 21 MB file)."""
+    pane = vim_pane(tmux_session, tmp_path, wait_until, "")
+    target = tmp_path / "big.py"
+    content = "".join(f"line_{number} = {number}\n" for number in range(20000))
+    target.write_text(content)
+    monkeypatch.setattr(control, "check_signal", lambda *_args, **_kwargs: "interrupt")
+
+    shown = follower(pane, adopted=False).show_fresh(str(target), content)
+    assert shown.outcome == "interrupted"
+
+    undo = state(
+        pane,
+        tmp_path,
+        wait_until,
+        "undotree().seq_last . ' ' . max(map(range(0, undotree().seq_last),"
+        ' \'[execute("silent! undo " . v:val), line("$")][1]\'))',
+    )
+    steps, longest = undo[2].split()
+    assert steps == "0", undo[:3]
+    assert int(longest) < 20000, undo[:3]
