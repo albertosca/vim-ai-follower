@@ -370,3 +370,46 @@ def test_the_s_that_ends_a_wait_marks_the_replay_running_before_it_starts(
         assert commands.cmd_interrupt({"TMUX_PANE": "%1"}) == 0  # the second S
     assert capsys.readouterr().out == "claude-follow: interrupt requested\n"
     assert control.check_signal("@1") == "interrupt"  # addressed to the replay
+
+
+@pytest.mark.parametrize("ending", ["saved", "replay completed"])
+def test_a_hand_off_that_ends_reads_finishing_before_its_cue_comes_down(
+    ending: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """PF round-2 minor: after a save released the hand-off, the marker still
+    read "handoff" while the cue was taken down, so an S there printed
+    "hand-off cancelled, unsaved changes discarded" with nothing discarded."""
+    current, target = _handoff_state(tmp_path, "a\n")
+    fake = MagicMock()
+    fake.rewrite_buffer.return_value = AnimationResult("completed", 0)
+    fake.resume.return_value = AnimationResult("completed", 1)
+    monkeypatch.setattr(hooks, "get_follower", lambda *args, **kwargs: fake)
+    monkeypatch.setattr(hooks, "show_popup", lambda *args, **kwargs: None)
+    control.save_pending_show_fresh("@1", ("a",), 0.0, file_path=target, partial="")
+    control.mark_animating("@1")
+    if ending == "saved":
+        monkeypatch.setattr(hooks, "_poll_until_interrupt", lambda *args, **kwargs: False)
+    else:
+        monkeypatch.setattr(hooks, "_poll_until_interrupt", _scripted_poll([True]))
+    pressed: list[str] = []
+    surface = MagicMock()
+
+    def clear() -> None:
+        with (
+            patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+            patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()),
+        ):
+            assert commands.cmd_interrupt({"TMUX_PANE": "%1"}) == 0
+        pressed.append(capsys.readouterr().out)
+
+    surface.clear.side_effect = clear
+    hooks._await_user_handoff(current, _SESSION, target, "a\n", "", surface)
+    assert pressed == ["claude-follow: nothing to interrupt — the animation is finishing\n"]
+    assert control.check_signal("@1") is None
+
+
+def _scripted_poll(answers: list[bool]) -> Callable[..., bool]:
+    def poll(*_args: object, **_kwargs: object) -> bool:
+        return answers.pop(0)
+
+    return poll

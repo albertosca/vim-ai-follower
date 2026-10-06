@@ -771,6 +771,10 @@ def _await_user_handoff(
                 return
             partial_content = replayed
     finally:
+        # Over — released by a save, or the replay ran to the end: nothing
+        # is left to interrupt, and an S while the cue comes down must not
+        # read "handoff" (it would be told unsaved changes were discarded).
+        control.mark_animating(window_id, state="finishing")
         surface.clear()
 
 
