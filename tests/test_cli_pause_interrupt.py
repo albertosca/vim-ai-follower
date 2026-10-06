@@ -603,3 +603,27 @@ def test_a_resume_that_fails_after_a_pause_keeps_the_drivers_remainder() -> None
     assert control.load_pending_animation("@1") == control.PendingApplyEdit(
         [left], 0.0, file_path="/tmp/f.py", partial="typed\n"
     )
+
+
+def test_a_resume_cut_short_by_a_stop_does_not_resave_the_remainder() -> None:
+    """Review of T6+T7, m3: `claude-follow stop` ran while the replay's goto
+    waited (it clears the state and discards the pending), then the goto
+    failed. Re-saving the original would leave a remainder for a window
+    with no follower."""
+    _register_fake_follower("@1", "%2")
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
+    control.save_pending_apply_edit("@1", [op], 0.0, file_path="/tmp/f.py")
+
+    def stopped_then_failed(*_args: object, **_kwargs: object) -> None:
+        state.FollowerState.clear("@1")
+        control.discard_pending_animation("@1")
+        raise NavigationFailed("did not land (no answer)")
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()),
+        patch.object(TmuxVimFollower, "resume", side_effect=stopped_then_failed),
+    ):
+        assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 1
+
+    assert control.has_pending_animation("@1") is False

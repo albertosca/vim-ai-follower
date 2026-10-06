@@ -906,6 +906,40 @@ def test_a_failed_goto_after_a_pause_gives_paste_and_readonly_back(adopted: bool
     assert (_restore(), True) not in commands  # never the current buffer's
 
 
+def test_a_stop_during_the_post_pause_goto_leaves_no_remainder_behind() -> None:
+    """Review of T6+T7, m3: `claude-follow stop` runs while the post-pause
+    goto waits for its landing (it clears the state and discards the
+    pending), then the goto fails. animate._resume saved the remainder
+    again, for a window with no follower, and the next follower started
+    there replayed it as a catch-up."""
+    _register_fake_follower("@1", "%2")
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
+    checks = {"count": 0}
+
+    def pause_then_resume(window_id: str, base_dir: Path | None = None) -> str | None:
+        checks["count"] += 1
+        return "pause" if checks["count"] in (1, 2) else None
+
+    landings = {"count": 0}
+
+    def stopped_then_failed(*_args: object) -> None:
+        landings["count"] += 1
+        if landings["count"] == 1:
+            return  # the first goto lands
+        state.FollowerState.clear("@1")  # what cmd_stop does meanwhile
+        control.discard_pending_animation("@1")
+        raise NavigationFailed("did not land")
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run"),
+        patch("vim_ai_follower.control.check_signal", side_effect=pause_then_resume),
+        patch.object(tmux_vim, "_await_landing", side_effect=stopped_then_failed),
+        pytest.raises(NavigationFailed),
+    ):
+        follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"), "a\n")
+    assert control.has_pending_animation("@1") is False
+
+
 def test_an_adopted_show_fresh_relock_claims_its_own_readonly() -> None:
     follower = _adopted_follower()
     with (

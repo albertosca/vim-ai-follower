@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from vim_ai_follower import cache, config
+from vim_ai_follower import cache, config, control
 from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult, run_lines, run_ops
 from vim_ai_follower.backends import (
     BufferProbe,
@@ -1907,6 +1907,11 @@ class TmuxVimFollower:
                 handle = _path_handle(self.pane_id, file_path)
                 pane.send_text(_call_line("give_back", handle.name, _case_folds(file_path)))
                 pane.send_key("Enter")
+            if self.window_id and owned_state(self.window_id, "tmux", self.pane_id) is None:
+                # A `claude-follow stop` ran while the goto waited: the
+                # remainder animate._resume just saved belongs to no follower
+                # (review of T6+T7, m3).
+                control.discard_pending_animation(self.window_id)
             raise
         if result.outcome != "interrupted":
             pane.send_text(relock.line(adopted))

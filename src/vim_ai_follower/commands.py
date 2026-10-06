@@ -471,7 +471,10 @@ def cmd_pause(env: dict[str, str]) -> int:
             # inside the replay already saved what was left at that point
             # (animate._resume), and that one is kept: the original would
             # replay ops already typed (final M1).
-            if not control.has_pending_animation(session.window_id):
+            # Nor when a `claude-follow stop` ran meanwhile: the follower is
+            # gone, and so is anything to resume into (review of T6+T7, m3).
+            stopped = FollowerState.get(session.window_id) is None
+            if not stopped and not control.has_pending_animation(session.window_id):
                 _resave_pending(session.window_id, pending)
             print(f"claude-follow: could not resume: {failure}", file=sys.stderr)
             return 1
