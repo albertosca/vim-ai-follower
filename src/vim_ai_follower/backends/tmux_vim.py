@@ -694,6 +694,13 @@ endfunction
 #     another buffer current. Then that buffer gets its 'swapfile' back and
 #     nothing lands (final review of backlog-sweep-3;
 #     tests/test_integration_show_fresh_escaping.py).
+#   - A rename that fails after the proof (E95, a user BufFilePre autocommand
+#     that throws) is caught, and then whether it landed decides, as for a
+#     jump: if not, the buffer gets its 'swapfile' back, a new tab's empty
+#     buffer goes as when the proof fails (s:drop_fresh), and nothing more
+#     runs. Uncaught, it aborted the call and left one unnamed tab per Read
+#     (tests/test_integration_show_fresh_tab_jump.py). A throw AFTER the
+#     rename (BufFilePost) still lands: the buffer is the target.
 #   - The path goes through fnameescape(), same as s:goto: raw, `#`, `%` and
 #     a space rename the buffer onto the wrong name (measured 2026-09-24: a
 #     space alone left the buffer unnamed), and the by-number lookup that a
@@ -793,31 +800,35 @@ function! s:rename(token, folds, in_new_tab, adopted) abort
   let &fileignorecase = 0
   try
     silent exe 'file ' . fnameescape(s:display(g:vaf_p))
+  catch
   finally
     let &fileignorecase = fileignorecase
   endtry
-  if bufnr('%') != current
+  if bufnr('%') == current
+    call s:land_if_target(a:folds)
+  endif
+  if !exists('g:vaf_landed')
     call setbufvar(current, '&swapfile', swapfile)
+    if a:in_new_tab
+      call s:drop_fresh(last)
+    endif
     return
   endif
-  call s:land_if_target(a:folds)
-  if exists('g:vaf_landed')
-    let b:vaf_created = 1
-    if a:adopted
-      let b:vaf_user_ro = 0
-      let b:vaf_user_ma = 1
-      let b:vaf_ro_ours = 2
-    endif
-    setlocal buftype= bufhidden= buflisted modifiable noreadonly
-    let undolevels = &l:undolevels
-    setlocal undolevels=-1
-    try
-      noautocmd silent! edit!
-      silent! %d _
-    finally
-      let &l:undolevels = undolevels
-    endtry
+  let b:vaf_created = 1
+  if a:adopted
+    let b:vaf_user_ro = 0
+    let b:vaf_user_ma = 1
+    let b:vaf_ro_ours = 2
   endif
+  setlocal buftype= bufhidden= buflisted modifiable noreadonly
+  let undolevels = &l:undolevels
+  setlocal undolevels=-1
+  try
+    noautocmd silent! edit!
+    silent! %d _
+  finally
+    let &l:undolevels = undolevels
+  endtry
 endfunction
 """
 

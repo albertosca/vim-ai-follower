@@ -95,3 +95,61 @@ def test_a_tab_switch_on_tabenter_still_animates_into_the_new_tab(
     assert state["LINES"] == ["jump = 1"], state
     files = str(state["FILES"]).split(",")
     assert str(root / "user.txt") in files, state
+
+
+@pytest.mark.parametrize("in_new_tab", [True, False], ids=["new-tab", "in-place"])
+def test_a_rename_that_fails_after_the_proof_leaves_no_stray_tab(
+    in_new_tab: bool,
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    """The proof passed (the tabnew's own buffer), and then `:file` failed:
+    here a user BufFilePre autocommand throws (E95 and friends fail the same
+    way). The unnamed tab the tabnew made stayed open, one per Read. Now it
+    goes, exactly as when the proof fails; in place, the buffer whose swap
+    the rename turned off gets it back."""
+    root = Path(os.path.realpath(tmp_path))
+    target = root / "fails.py"
+    target.write_text("fails = 1\n")
+    pane, follower = _adopted_with_autocmd(
+        tmux_session, monkeypatch, root, "autocmd BufFilePre * throw 'no rename'"
+    )
+    before = _state(pane, tmp_path / "before.txt", wait_until)
+
+    with pytest.raises(NavigationFailed):
+        follower.show_fresh(str(target), "fails = 1\n", in_new_tab=in_new_tab)
+
+    state = _state(pane, tmp_path / "after.txt", wait_until)
+    assert state["TABS"] == before["TABS"] == "1", state
+    assert state["BUF"] == "user.txt", state
+    assert state["LINES"] == ["user line", "USER UNSAVED"], state
+    swap = tmp_path / "swap.txt"
+    _keys(pane, "-l", "--", f":call writefile(['S' . &l:swapfile], '{swap}')")
+    _keys(pane, "Enter")
+    assert wait_until(lambda: swap.exists() and swap.read_text().startswith("S"), timeout=10.0)
+    assert swap.read_text().strip() == "S1"
+
+
+def test_a_throw_after_the_rename_still_animates_into_the_new_tab(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    """BufFilePost throws once the buffer already has the target's name: it
+    IS the target, so the caught throw lands and the retype goes ahead."""
+    root = Path(os.path.realpath(tmp_path))
+    target = root / "post.py"
+    target.write_text("post = 1\n")
+    pane, follower = _adopted_with_autocmd(
+        tmux_session, monkeypatch, root, "autocmd BufFilePost * throw 'after'"
+    )
+
+    assert follower.show_fresh(str(target), "post = 1\n", in_new_tab=True).outcome == "completed"
+
+    state = _state(pane, tmp_path / "s.txt", wait_until)
+    assert state["BUF"] == "post.py", state
+    assert state["LINES"] == ["post = 1"], state
+    assert state["TABS"] == "2", state
