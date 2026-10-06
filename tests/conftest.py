@@ -74,10 +74,15 @@ def bomb_reads_under_tmp_path(
     (`/tmp/f.py`), and a completed animation reads the file's first bytes for
     'bomb' (_bomb_from_disk). Re-root that read under this test's tmp_path,
     where the fake path does not exist, so no unit test depends on what the
-    machine's real /tmp holds. Integration tests read their real files."""
+    machine's real /tmp holds. Integration tests read their real files.
+    Without pynvim (the optional `nvim` extra) there is no nvim backend to
+    re-root, and every other unit test must still run."""
     if "integration" in request.keywords:
         return
-    from vim_ai_follower.backends import nvim as nvim_backend
+    try:
+        from vim_ai_follower.backends import nvim as nvim_backend
+    except ImportError:
+        return
 
     real = nvim_backend._bomb_from_disk
 
