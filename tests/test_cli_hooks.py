@@ -23,6 +23,7 @@ from helpers import (
     landed_line,
     rename_spelled,
     resolve_typed_paths,
+    route_exec_lua,
     wipe_spelled,
 )
 from helpers import make_mock_tmux_run as _mock_tmux_run
@@ -498,7 +499,8 @@ def test_eviction_wipes_the_buffer_for_the_nvim_backend(
 
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(c)}}
     nvim = MagicMock()
-    nvim.exec_lua.return_value = 7  # the buffer number the lookup resolves str(a) to
+    # buffer 7 is what the lookup resolves str(a) to; the naming answers the path itself
+    route_exec_lua(nvim, buffer=7, display_name=str(c))
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("pynvim.attach", return_value=nvim),
@@ -999,6 +1001,8 @@ def test_auto_open_selects_nvim_backend_and_persists_launched(
     target = tmp_path / "f.py"
     target.write_text("print(1)\n")
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    nvim = MagicMock()
+    route_exec_lua(nvim, buffer=-1, display_name=str(target))
 
     with (
         patch(
@@ -1010,7 +1014,7 @@ def test_auto_open_selects_nvim_backend_and_persists_launched(
         ) as resolve,
         # The follower's own connection (show_fresh) is mocked out — this test
         # only asserts the backend selection and persisted state.
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 

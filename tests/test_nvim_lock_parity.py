@@ -16,6 +16,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
+from helpers import route_exec_lua
+
 from vim_ai_follower import state
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends.nvim import _IS_CLEAN_LUA, NvimFollower
@@ -90,7 +92,7 @@ def test_ensure_showing_leaves_an_adopted_followers_disk_loaded_buffer_modifiabl
     # adopted guard as the existing-buffer branch above.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
-    nvim.exec_lua.return_value = -1
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     nvim.funcs.bufadd.return_value = 42
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -113,7 +115,7 @@ def test_apply_edit_leaves_an_adopted_followers_disk_loaded_buffer_modifiable(
     # and must apply the same adopted guard.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
-    nvim.exec_lua.return_value = -1
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     nvim.funcs.bufadd.return_value = 42
     ops = [EditOp(kind="replace", start_line=3, end_line=3, new_lines=("C",))]
     with (
@@ -134,7 +136,7 @@ def test_apply_edit_leaves_an_adopted_followers_disk_loaded_buffer_modifiable(
 def test_ensure_showing_locks_a_disk_loaded_buffer_for_a_never_seen_file() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
-    nvim.exec_lua.return_value = -1
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     nvim.funcs.bufadd.return_value = 42
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -152,7 +154,7 @@ def test_ensure_showing_locks_a_disk_loaded_buffer_for_a_never_seen_file() -> No
 def test_apply_edit_locks_the_disk_loaded_buffer_when_the_original_vanished() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
-    nvim.exec_lua.return_value = -1
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     nvim.funcs.bufadd.return_value = 42
     ops = [EditOp(kind="replace", start_line=3, end_line=3, new_lines=("C",))]
     with (

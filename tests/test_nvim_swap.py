@@ -239,7 +239,7 @@ def test_goto_file_turns_swap_back_on_after_loading_only_when_adopted(
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=adopted)
     nvim = MagicMock()
-    nvim.exec_lua.return_value = existing
+    route_exec_lua(nvim, buffer=existing, display_name="/tmp/f.py")
     nvim.api.list_tabpages.return_value = []
     nvim.api.buf_is_loaded.return_value = False
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
@@ -273,7 +273,7 @@ def test_open_from_disk_turns_swap_back_on_after_loading_only_when_adopted(
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=adopted)
     nvim = MagicMock()
-    nvim.exec_lua.return_value = -1
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     nvim.funcs.bufadd.return_value = 42
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.ensure_showing("/tmp/f.py")
@@ -295,7 +295,7 @@ def test_a_swap_that_cannot_be_turned_back_on_is_logged_and_left_off(
 
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
-    nvim.exec_lua.return_value = -1
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     fresh_buffer(nvim)
 
     def exec2(command: str, opts: dict[str, bool]) -> dict[str, str]:

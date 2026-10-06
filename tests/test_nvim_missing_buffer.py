@@ -88,7 +88,7 @@ def test_apply_edit_shows_disk_content_instead_of_animating_into_nothing() -> No
     # wrong content or raises "Index out of bounds".
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
-    nvim.exec_lua.return_value = -1
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     nvim.funcs.bufadd.return_value = 42
     ops = [
         EditOp(kind="replace", start_line=5, end_line=5, new_lines=("E",)),

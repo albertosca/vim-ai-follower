@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from helpers import fresh_buffer
+from helpers import fresh_buffer, route_exec_lua
 
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends.nvim import NvimFollower
@@ -61,6 +61,7 @@ def _ops_partial_spy(saved: list[str | None]) -> object:
 def test_show_fresh_pause_records_the_fully_typed_prefix_as_the_partial(tmp_path: Path) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     fresh_buffer(nvim)
     saved: list[tuple[str | None, bool]] = []
 
@@ -86,6 +87,7 @@ def test_show_fresh_mid_char_pause_leaves_the_half_typed_line_out_of_the_partial
     # count is exactly what duplicated the line.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.05)
     nvim = MagicMock()
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     fresh_buffer(nvim)
     saved: list[tuple[str | None, bool]] = []
 

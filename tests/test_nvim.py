@@ -221,6 +221,7 @@ def test_is_alive_false_when_socket_missing() -> None:
 def test_show_fresh_never_edits_the_real_file_and_types_the_content(tmp_path: Path) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     fresh_buffer(nvim)
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -273,6 +274,7 @@ def test_show_fresh_marks_animating_and_leaves_the_slot_to_its_owner(tmp_path: P
     assert owner_control.try_acquire_animating("@1", tmp_path)
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     fresh_buffer(nvim)
     seen: list[bool] = []
 
@@ -297,6 +299,7 @@ def test_show_fresh_marks_animating_and_leaves_the_slot_to_its_owner(tmp_path: P
 def test_show_fresh_relocks_buffer_when_completed(tmp_path: Path) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     fresh_buffer(nvim)
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -315,6 +318,7 @@ def test_show_fresh_relocks_buffer_when_completed(tmp_path: Path) -> None:
 def test_show_fresh_leaves_buffer_modifiable_when_interrupted(tmp_path: Path) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     fresh_buffer(nvim)
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -332,6 +336,7 @@ def test_show_fresh_pause_saves_show_fresh_remainder_then_resumes(tmp_path: Path
 
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     fresh_buffer(nvim)
     saved: list[tuple[tuple[str, ...], bool, str]] = []
     real_save = control.save_pending_show_fresh
@@ -481,6 +486,7 @@ def test_drive_skips_relock_for_an_adopted_follower(tmp_path: Path) -> None:
 
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     fresh_buffer(nvim)
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -503,6 +509,7 @@ def test_drive_relocks_a_dedicated_follower_recorded_not_adopted(tmp_path: Path)
 
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
+    route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     fresh_buffer(nvim)
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
