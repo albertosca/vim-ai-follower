@@ -334,3 +334,22 @@ def test_a_pause_pressed_during_a_grounding_reload_is_drained(
     assert follower.apply_edit.call_args_list == []
     assert call.retire_state("Paused") in surface.method_calls
     _no_signal_left(tmp_path)
+
+
+@pytest.mark.parametrize("outcome", ["diff", "retype"])
+def test_an_interrupted_animation_hands_the_wait_the_bytes_claude_wrote(
+    outcome: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T12+T13 review M1: the hand-off wait compares the file's raw bytes with
+    these, never decoded text (two undecodable bytes decode alike)."""
+    target, _resolved = _setup(tmp_path)
+    target.write_bytes(b"caf\xe9\r\nX\r\n")
+    follower = _follower("absent" if outcome == "retype" else "holds")
+    follower.apply_edit.return_value = AnimationResult("interrupted", 0)
+    follower.show_fresh.return_value = AnimationResult("interrupted", 0)
+    handed: list[object] = []
+    monkeypatch.setattr(
+        hooks, "_await_user_handoff", lambda *a, **k: handed.append(k.get("raw_after"))
+    )
+    _run_hook(target, follower, monkeypatch)
+    assert handed == [b"caf\xe9\r\nX\r\n"]

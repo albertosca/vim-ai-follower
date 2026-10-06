@@ -271,3 +271,30 @@ def test_a_mixed_ending_file_holds_its_base(
     assert probes == ["holds"]
     assert scripts == [[EditOp(kind="insert", start_line=2, end_line=1, new_lines=("X",))]]
     assert target.read_bytes() == MIXED_AFTER
+
+
+def test_an_adopted_buffer_the_user_stripped_of_its_crs_is_left_alone(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    """T12+T13 review I1 (reproduced): the user loaded a mixed-ending file and
+    ran `:%s/\\r$//`, unsaved. Its lines equal the file's CR-stripped form,
+    which buffer_forms accepted for ANY buffer: the probe said "holds", the
+    insert was typed, and the relock's `:e!` threw the user's edit away."""
+    log, pane, window_id = _observed_follower(tmux_session, monkeypatch, tmp_path, wait_until)
+    FollowerState.update(window_id, adopted=True)
+    target = tmp_path / "a.py"
+    target.write_bytes(MIXED)
+    _keys(pane, f":tabedit {target}", ":silent %s/\\r$//")
+    assert wait_until(lambda: _last_state(log, "a.py") == ["a", "b"], timeout=15.0)
+
+    probes, scripts = _spy(monkeypatch)
+    _hook(monkeypatch, "pre", "Edit", target)
+    target.write_bytes(MIXED_AFTER)
+    _hook(monkeypatch, "post", "Edit", target)
+
+    assert probes == ["differs"]
+    assert scripts == []
+    assert _dump(pane, target, tmp_path, wait_until) == ("unix", ["a", "b"])

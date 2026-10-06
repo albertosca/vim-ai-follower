@@ -879,3 +879,23 @@ def test_format_from_disk_leaves_both_alone_when_the_file_cannot_be_read(tmp_pat
     nvim = MagicMock()
     _format_from_disk(nvim, 7, str(tmp_path / "gone.py"))
     nvim.api.buf_set_option.assert_not_called()
+
+
+@pytest.mark.parametrize(("lines", "restored"), [(["a", "b"], True), (["a", "OTHER"], False)])
+def test_format_from_disk_puts_back_unmodified_only_on_a_buffer_holding_the_file(
+    tmp_path: Path, lines: list[str], restored: bool
+) -> None:
+    """T12+T13 review M3: an untyped buffer whose format followed the file
+    is the file again; one whose lines are not stays modified."""
+    target = tmp_path / "a.py"
+    target.write_bytes(b"a\r\nb\r\n")
+    nvim = MagicMock()
+    nvim.api.buf_get_option.side_effect = lambda buf, name: {
+        "modified": False,
+        "fileformat": "unix",
+    }[name]
+    nvim.api.buf_get_lines.return_value = lines
+    _format_from_disk(nvim, 7, str(target))
+    calls = [call.args for call in nvim.api.buf_set_option.call_args_list]
+    assert (7, "fileformat", "dos") in calls
+    assert ((7, "modified", False) in calls) is restored

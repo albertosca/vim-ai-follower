@@ -196,3 +196,85 @@ def test_a_mixed_ending_file_holds_its_base(
     assert scripts == [[EditOp(kind="insert", start_line=2, end_line=1, new_lines=("X",))]]
     assert _buffer(nvim, "a.py").number == handle  # a diff, not a retype
     assert target.read_bytes() == MIXED_AFTER
+
+
+def test_an_adopted_buffer_the_user_stripped_of_its_crs_is_left_alone(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T12+T13 review I1: the CR-stripped form of a mixed-ending file is the
+    buffer only the follower's own retype leaves; a user's modified buffer
+    in that form is not the base, and an adopted editor leaves it alone."""
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    FollowerState.set(_WINDOW, "nvim", headless_nvim, origin="", shown_any=False, adopted=True)
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    target = (tmp_path / "a.py").resolve()
+    target.write_bytes(MIXED)
+    nvim.command(f"edit {target}")
+    nvim.command("silent %s/\\r$//")
+    assert _buffer(nvim, "a.py")[:] == ["a", "b"]
+    assert _buffer(nvim, "a.py").options["modified"]
+
+    probes, scripts = _spy(monkeypatch)
+    assert hooks.cmd_hook_pre(_ENV, _payload("Edit", target)) == 0
+    target.write_bytes(MIXED_AFTER)
+    assert hooks.cmd_hook_post(_ENV, _payload("Edit", target)) == 0
+
+    assert probes == ["differs"]
+    assert scripts == []
+    assert _buffer(nvim, "a.py")[:] == ["a", "b"]
+
+
+def test_an_adopted_buffer_the_follower_retyped_still_holds_its_base(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other side of I1: a mixed-ending file the follower itself typed
+    into an adopted nvim (nothing held it, so a Write retypes it) carries no
+    CR, and is stamped clean at the end of that animation; the next Edit is
+    a diff onto it, not a buffer left alone forever."""
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    FollowerState.set(_WINDOW, "nvim", headless_nvim, origin="", shown_any=False, adopted=True)
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    target = (tmp_path / "a.py").resolve()
+    assert hooks.cmd_hook_pre(_ENV, _payload("Write", target)) == 0
+    target.write_bytes(MIXED)
+    assert hooks.cmd_hook_post(_ENV, _payload("Write", target)) == 0
+    assert _buffer(nvim, "a.py")[:] == ["a", "b"]
+    handle = _buffer(nvim, "a.py").number
+
+    probes, scripts = _spy(monkeypatch)
+    assert hooks.cmd_hook_pre(_ENV, _payload("Edit", target)) == 0
+    target.write_bytes(MIXED_AFTER)
+    assert hooks.cmd_hook_post(_ENV, _payload("Edit", target)) == 0
+
+    assert probes == ["holds"]
+    assert scripts == [[EditOp(kind="insert", start_line=2, end_line=1, new_lines=("X",))]]
+    assert _buffer(nvim, "a.py").number == handle
+    assert _buffer(nvim, "a.py")[:] == ["a", "X", "b"]
+
+
+@pytest.mark.parametrize("change", ["endings-only", "lf-to-crlf"])
+def test_an_adopted_clean_buffer_stays_clean_when_only_its_format_followed(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    """T12+T13 review M3: setting 'fileformat' (or 'bomb') marks a buffer
+    modified. An endings-only Edit of a CLEAN adopted buffer types nothing,
+    so it left the buffer shown `[+]` (and `:q` refusing with E37) while its
+    lines and format equal the file. A buffer the animation typed into is
+    really modified and stays so."""
+    before, after = FORMAT_CHANGES[change]
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    FollowerState.set(_WINDOW, "nvim", headless_nvim, origin="", shown_any=False, adopted=True)
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    target = (tmp_path / "a.py").resolve()
+    target.write_bytes(before)
+    nvim.command(f"edit {target}")
+    assert not _buffer(nvim, "a.py").options["modified"]
+
+    assert hooks.cmd_hook_pre(_ENV, _payload("Edit", target)) == 0
+    target.write_bytes(after)
+    assert hooks.cmd_hook_post(_ENV, _payload("Edit", target)) == 0
+
+    buffer = _buffer(nvim, "a.py")
+    assert buffer.options["fileformat"] == "dos"
+    assert buffer.options["modified"] is (change != "endings-only")
+    assert _saved(nvim, buffer, tmp_path / "saved.py") == after

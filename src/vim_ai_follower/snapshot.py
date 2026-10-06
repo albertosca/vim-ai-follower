@@ -26,7 +26,10 @@ def load(window_id: str, file_path: str, base_dir: Path | None = None) -> str:
         return ""
     # Bytes, not read_text(): its universal newlines would turn a CRLF
     # file's snapshot into LF, and it would never equal the file again.
-    return path.read_bytes().decode("utf-8")
+    # Decoded like the pre hook reads the file: a snapshot the previous
+    # write_text() left under a non-UTF-8 locale must not raise (T12+T13
+    # review M2).
+    return path.read_bytes().decode("utf-8", errors="replace")
 
 
 # How long an Edit's in-flight mark holds a Read of its file back. A post hook

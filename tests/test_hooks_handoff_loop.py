@@ -11,6 +11,7 @@ partial.
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -463,4 +464,32 @@ def test_a_crlf_handoff_still_releases_on_a_save_of_other_content(
         patch("vim_ai_follower.hooks.time.sleep"),
     ):
         assert hooks._poll_until_interrupt(current, _SESSION, target, after, "a\n", None) is False
+    assert "SAVED their own version" in capsys.readouterr().out
+
+
+def test_a_save_that_changes_only_an_undecodable_byte_is_the_users_own_version(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """T12+T13 review M1: the wait compared decoded text, and two different
+    undecodable bytes both decode to U+FFFD, so a Latin-1 save that changed
+    only such a byte released as "saved it unchanged — your version stands".
+    It compares the file's raw bytes with the raw bytes Claude wrote."""
+    raw_after = b"caf\xe9\nX\n"
+    current, target = _handoff_state(tmp_path, "")
+    Path(target).write_bytes(raw_after)
+    initial_mtime = Path(target).stat().st_mtime_ns
+    after = raw_after.decode("utf-8", errors="replace")
+    Path(target).write_bytes(b"caf\xe8\nX\n")  # the user's save
+    os.utime(target, ns=(initial_mtime + 10**9, initial_mtime + 10**9))
+
+    with (
+        patch("vim_ai_follower.control.check_signal", _signal_on_poll(5)),
+        patch("vim_ai_follower.hooks.time.sleep"),
+    ):
+        assert (
+            hooks._poll_until_interrupt(
+                current, _SESSION, target, after, "caf�\n", initial_mtime, raw_after=raw_after
+            )
+            is False
+        )
     assert "SAVED their own version" in capsys.readouterr().out

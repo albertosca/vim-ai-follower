@@ -151,24 +151,23 @@ def buffer_forms(content: str) -> list[list[str]]:
 
     One trailing newline is the last line's terminator, not an extra empty
     line (an editor's buffer of "a\nb\n" is ["a", "b"]), and an empty file is
-    a single empty line. A file whose lines end in CR is also accepted
-    without them: when every line does, because Vim and nvim load it with
-    fileformat=dos and strip the CRs from the buffer; when only some do
-    (mixed endings, loaded with fileformat=unix, each CR kept and shown as
-    ^M), because that is the buffer the follower's own retype leaves, which
-    splits the file with str.splitlines() (Task 12 fix round 1: a dedicated
-    nvim wiped and retyped every Edit of such a file). A file starting with a UTF-8 BOM (U+FEFF) is
-    also accepted without it, because both editors load it into 'bomb' and
-    leave it out of the buffer, while the hook's snapshot keeps it (final
-    review of backlog-sweep-3, I2: every BOM file probed "differs"). Splits
-    on "\n" only, never str.splitlines(), which would also break on form
-    feeds and U+2028 that stay inside an editor's line."""
+    a single empty line. A file whose every line ends in CR is also accepted
+    without them, because Vim and nvim load it with fileformat=dos and strip
+    the CRs from the buffer. A file with MIXED endings is not: the editors
+    load it with fileformat=unix and keep each CR in its line, so a buffer
+    without them is one somebody changed (a user's `:%s/\\r$//`; T12+T13
+    review I1), or the follower's own splitlines() retype, which only the
+    nvim backend can tell apart (typed_form). A file starting with a UTF-8
+    BOM (U+FEFF) is also accepted without it, because both editors load it
+    into 'bomb' and leave it out of the buffer, while the hook's snapshot
+    keeps it (final review of backlog-sweep-3, I2: every BOM file probed
+    "differs"). Splits on "\n" only, never str.splitlines(), which would also
+    break on form feeds and U+2028 that stay inside an editor's line."""
     text = content[:-1] if content.endswith("\n") else content
     lines = text.split("\n")
     forms = [lines]
-    stripped = [line.removesuffix("\r") for line in lines]
-    if stripped != lines:
-        forms.append(stripped)
+    if all(line.endswith("\r") for line in lines):
+        forms.append([line[:-1] for line in lines])
     if lines[0].startswith(BOM):
         forms += [[form[0].removeprefix(BOM), *form[1:]] for form in forms]
     return forms
@@ -179,6 +178,18 @@ def without_bom(content: str) -> str:
     which Vim and nvim keep in 'bomb' instead. What the follower TYPES, so it
     never types the BOM character into line 1 (see buffer_forms)."""
     return content.removeprefix(BOM)
+
+
+def typed_form(content: str) -> list[str]:
+    """The lines the follower's own typing leaves for the file `content`:
+    without_bom, split with str.splitlines() like every driver and the diff
+    (an empty file is the one empty line). It differs from buffer_forms on a
+    file the editors load another way: MIXED line endings (each CR kept in
+    its line on a load, dropped by the follower), and form feeds or U+2028
+    inside a line. A buffer in this form is the base only when the follower
+    produced it, which backend state must tell (the nvim backend's
+    probe_buffer)."""
+    return without_bom(content).splitlines() or [""]
 
 
 def classify_buffer(lines: list[str], content: str) -> BufferProbe:

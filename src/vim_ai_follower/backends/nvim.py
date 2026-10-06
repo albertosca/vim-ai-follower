@@ -26,6 +26,7 @@ from vim_ai_follower.backends import (
     classify_buffer,
     log_adopted_close,
     log_state_gone,
+    typed_form,
 )
 from vim_ai_follower.backends.nvim_prompt import dismiss_prompt, exec_logged, prompt_guard
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
@@ -297,15 +298,28 @@ def _format_from_disk(nvim: pynvim.Nvim, buf: int, file_path: str) -> None:
     A file that cannot be read leaves both alone; mixed endings leave
     'fileformat' alone (_fileformat_of). 'fileformat' is set only when it
     changes, and before the caller's relock: nvim refuses it (E21) on a
-    nomodifiable buffer."""
+    nomodifiable buffer.
+
+    Setting either option marks the buffer modified. A buffer that was NOT
+    modified before (the animation typed nothing: an Edit that changed only
+    the line endings or the BOM of a clean adopted buffer) and whose lines
+    are the file's is put back to unmodified: it now writes exactly the
+    file on disk, and leaving it `[+]` made `:q` refuse with E37 for no
+    change (T12+T13 review M3). A buffer the animation typed into keeps its
+    'modified'."""
     try:
         data = Path(file_path).read_bytes()
     except OSError:
         return
+    was_modified = nvim.api.buf_get_option(buf, "modified")
     nvim.api.buf_set_option(buf, "bomb", data[:3] == b"\xef\xbb\xbf")
     fileformat = _fileformat_of(data)
     if fileformat is not None and nvim.api.buf_get_option(buf, "fileformat") != fileformat:
         nvim.api.buf_set_option(buf, "fileformat", fileformat)
+    if not was_modified:
+        lines = nvim.api.buf_get_lines(buf, 0, -1, False)
+        if classify_buffer(lines, data.decode("utf-8", errors="replace")) == "holds":
+            nvim.api.buf_set_option(buf, "modified", False)
 
 
 def _buffer_lines(content: str) -> list[str]:
@@ -1319,14 +1333,30 @@ class NvimFollower:
         it. Pure reads — no navigation, no lock change, adopted or not.
         buf_get_lines decodes with surrogateescape, so a buffer holding bytes
         that are not UTF-8 never equals the hook's decoded `content`: it
-        reads as "differs"."""
+        reads as "differs".
+
+        A buffer in the follower's own typed form (backends.typed_form) also
+        "holds" when the follower produced it: a dedicated follower's buffer,
+        or one still clean (_IS_CLEAN_LUA: unmodified, or stamped at a
+        completed animation and untouched since). That is what a retype of a
+        file with MIXED line endings leaves (every CR dropped), which nvim's
+        own load never shows. An adopted buffer the user changed into that
+        form (`:%s/\\r$//`) is not the base and stays "differs", so an
+        adopted editor leaves it alone (T12+T13 review I1)."""
         nvim = self._connect()
         with self._guarded(nvim, "probe_buffer"):
             bufnr = _buffer_number(nvim, file_path)
             if bufnr == -1:
                 return "absent"
             lines: list[str] = nvim.api.buf_get_lines(bufnr, 0, -1, False)
-            return classify_buffer(lines, content)
+            held = classify_buffer(lines, content)
+            if (
+                held == "differs"
+                and lines == typed_form(content)
+                and (self._is_dedicated() or nvim.exec_lua(_IS_CLEAN_LUA, bufnr))
+            ):
+                return "holds"
+            return held
 
     def ensure_showing(self, file_path: str) -> None:
         """Show file_path with its REAL on-disk content — the Read-navigation

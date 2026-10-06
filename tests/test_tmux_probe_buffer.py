@@ -18,7 +18,7 @@ import pytest
 from helpers import define_line, probe_spelled, resolve_typed_paths, vim_function
 
 from vim_ai_follower import cache
-from vim_ai_follower.backends import buffer_forms, tmux_vim
+from vim_ai_follower.backends import buffer_forms, tmux_vim, typed_form
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 
 # The random part of the probe's handle name, which is also its nonce.
@@ -167,9 +167,9 @@ def test_the_probe_file_is_removed_after_reading() -> None:
         ("a\n", [["a"]]),
         ("a\n\n", [["a", ""]]),
         ("a\r\nb\r\n", [["a\r", "b\r"], ["a", "b"]]),
-        # Mixed endings: the editors' own load keeps the CR (fileformat=unix),
-        # the follower's splitlines() retype drops it.
-        ("a\r\nb\n", [["a\r", "b"], ["a", "b"]]),
+        # Mixed endings: the editors' own load keeps the CR (fileformat=unix);
+        # a buffer without it is not the file's (T12+T13 review I1).
+        ("a\r\nb\n", [["a\r", "b"]]),
         ("\ufeffa\n", [["\ufeffa"], ["a"]]),
         (
             "\ufeffa\r\nb\r\n",
@@ -180,3 +180,17 @@ def test_the_probe_file_is_removed_after_reading() -> None:
 )
 def test_buffer_forms(content: str, forms: list[list[str]]) -> None:
     assert buffer_forms(content) == forms
+
+
+@pytest.mark.parametrize(
+    ("content", "lines"),
+    [
+        ("", [""]),
+        ("a\n", ["a"]),
+        ("a\r\nb\n", ["a", "b"]),
+        ("﻿a\r\nb\r\n", ["a", "b"]),
+        ("a\x0cb\n", ["a", "b"]),
+    ],
+)
+def test_typed_form(content: str, lines: list[str]) -> None:
+    assert typed_form(content) == lines

@@ -582,8 +582,8 @@ def _handoff_cue(follower: Follower, file_path: str) -> str:
 def _file_text(file_path: str) -> str:
     """file_path's content as the hooks hold it: its bytes decoded like the
     post hook's `after`, line endings kept. Never read_text(), whose
-    universal newlines turn every CRLF into LF, so a CRLF file read that way
-    never equals the `after` its own bytes decode to (BACKLOG "CRLF files")."""
+    universal newlines turn every CRLF into LF, so a CRLF snapshot read that
+    way never equals the file again (BACKLOG "CRLF files")."""
     return Path(file_path).read_bytes().decode("utf-8", errors="replace")
 
 
@@ -595,10 +595,19 @@ def _poll_until_interrupt(
     partial_content: str,
     initial_mtime: int | None,
     cue: str = HANDOFF_CUE,
+    raw_after: bytes | None = None,
 ) -> bool:
     """One hand-off wait. True when the user pressed S again (des-interrupt);
     False when they released the turn by saving, with the matching
-    notification already printed."""
+    notification already printed.
+
+    A save is told apart from Claude's file by the file's RAW bytes against
+    `raw_after`, the bytes Claude wrote (None: `after` encoded, for a caller
+    without them). Never decoded text: a CRLF file read with read_text()
+    "differed" at the first poll (BACKLOG "CRLF files"), and two different
+    undecodable bytes decode alike, so a Latin-1 save that changed only one
+    read as "saved it unchanged" (T12+T13 review M1)."""
+    expected = raw_after if raw_after is not None else after.encode("utf-8")
     polls = 0
     while True:
         polls += 1
@@ -611,7 +620,7 @@ def _poll_until_interrupt(
             control.mark_animating(session.window_id, state="running")
             return True
         try:
-            if _file_text(file_path) != after:
+            if Path(file_path).read_bytes() != expected:
                 control.discard_pending_animation(session.window_id)
                 _print_interrupt_notification(file_path, partial_content)
                 return False
@@ -724,6 +733,7 @@ def _await_user_handoff(
     after: str,
     partial_content: str,
     surface: StatusSurface | None = None,
+    raw_after: bytes | None = None,
 ) -> None:
     """The user interrupted and owns the buffer: hold Claude's turn until
     they save their version (release Claude with it, via the notification)
@@ -769,7 +779,14 @@ def _await_user_handoff(
             cue = _handoff_cue(follower, file_path)
             surface.set_state(cue)
             if not _poll_until_interrupt(
-                current, session, file_path, after, partial_content, initial_mtime, cue
+                current,
+                session,
+                file_path,
+                after,
+                partial_content,
+                initial_mtime,
+                cue,
+                raw_after=raw_after,
             ):
                 return
             # switch the cue from "waiting" to the replay before it runs
@@ -1416,7 +1433,9 @@ def _animate_edit(
                 file_path=file_path,
                 partial=partial,
             )
-            _await_user_handoff(current, session, file_path, after, partial, surface)
+            _await_user_handoff(
+                current, session, file_path, after, partial, surface, raw_after=raw_after
+            )
             _mark_finishing(session.window_id)
         else:
             _mark_finishing(session.window_id)
@@ -1447,7 +1466,9 @@ def _animate_edit(
             file_path=file_path,
             partial=partial,
         )
-        _await_user_handoff(current, session, file_path, after, partial, surface)
+        _await_user_handoff(
+            current, session, file_path, after, partial, surface, raw_after=raw_after
+        )
         _mark_finishing(session.window_id)
     else:
         _mark_finishing(session.window_id)
