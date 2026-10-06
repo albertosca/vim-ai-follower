@@ -269,6 +269,23 @@ return true
 """
 
 
+def _bomb_from_disk(nvim: pynvim.Nvim, buf: int, file_path: str) -> None:
+    """Set `buf`'s 'bomb' to whether file_path starts with a UTF-8 BOM.
+
+    Both editors keep a leading BOM in 'bomb', not in the buffer, and the
+    follower never types it (backends.without_bom). So an Edit that adds or
+    drops one changed nothing on screen and left 'bomb' at its pre-edit
+    value, and the user's next `:w` (or the hand-off's) undid that part of
+    Claude's change (final review of backlog-sweep-3, N1). Read from disk,
+    which holds Claude's finished file whenever a completed animation runs
+    from the post hook. A file that cannot be read leaves 'bomb' alone."""
+    try:
+        head = Path(file_path).read_bytes()[:3]
+    except OSError:
+        return
+    nvim.api.buf_set_option(buf, "bomb", head == b"\xef\xbb\xbf")
+
+
 def _buffer_lines(content: str) -> list[str]:
     """The lines a buffer holding `content` shows, as the follower types it
     (splitlines, like show_fresh and apply_ops); an empty content is the one
@@ -487,6 +504,7 @@ class NvimFollower:
         buf: int,
         run: Callable[[], AnimationResult],
         expected: Sequence[str] | None,
+        bomb_from: str | None = None,
     ) -> AnimationResult:
         """Shared envelope for every animation: unlock the buffer, mark the
         window "running" (a state change only: the hook that acquired the
@@ -502,6 +520,9 @@ class NvimFollower:
         stamps, so the buffer reads "not clean", the side that never
         discards typing.
 
+        A completed run also sets the buffer's 'bomb' from the file at
+        `bomb_from` (see _bomb_from_disk); None leaves it as it is.
+
         Signals are NOT cleared here: one pressed since the hook claimed the
         slot is addressed to this process and must survive to the first check;
         a stale one is addressed elsewhere and is dropped there (see
@@ -510,6 +531,8 @@ class NvimFollower:
         control.mark_animating(self.window_id)
         result = run()
         if result.outcome != "interrupted":
+            if bomb_from is not None:
+                _bomb_from_disk(nvim, buf, bomb_from)
             # Clean only if it holds exactly what Claude wrote: see _IS_CLEAN_LUA.
             if expected is not None:
                 nvim.exec_lua(_STAMP_IF_EXPECTED_LUA, buf, list(expected))
@@ -582,7 +605,7 @@ class NvimFollower:
                     nvim.api.buf_set_lines(buf, len(lines), len(lines) + 1, True, [])
                 return result
 
-            return self._drive(nvim, buf, run, list(lines) or [""])
+            return self._drive(nvim, buf, run, list(lines) or [""], bomb_from=file_path)
 
     def _fresh_buffer(self, nvim: pynvim.Nvim, file_path: str, in_new_tab: bool) -> int:
         """A new buffer named file_path, shown in a new tab (in_new_tab) or
@@ -796,6 +819,7 @@ class NvimFollower:
                 buf,
                 lambda: self._run_ops(nvim, buf, ns, ops, self._pace_provider, file_path),
                 None if before is None else _buffer_lines(apply_ops(before, ops)),
+                bomb_from=file_path,
             )
 
     def reload_and_relock(self, file_path: str) -> None:
@@ -933,10 +957,12 @@ class NvimFollower:
         and therefore recreates the buffer, and only resumes when that returned
         completed.
 
-        `reload` is part of the Follower protocol for the tmux backend, whose
-        relock re-reads disk unless told not to (see TmuxVimFollower.resume).
-        This relock never reads disk, so it is ignored."""
-        del reload
+        `reload` is part of the Follower protocol: False marks the pre-edit
+        catch-up, where disk already holds the NEXT edit (the tmux backend's
+        relock then skips its re-read, see TmuxVimFollower.resume). This
+        relock never re-reads the buffer; reload only decides whether a
+        completed replay takes 'bomb' from disk (_bomb_from_disk), which the
+        next edit's file must not set early."""
         nvim = self._connect()
         with self._guarded(nvim, "resume"):
             if pending.file_path and _buffer_number(nvim, pending.file_path) == -1:
@@ -947,6 +973,7 @@ class NvimFollower:
                 self.goto_file(pending.file_path)
             buf = nvim.api.get_current_buf().handle
             provider = (lambda: 0.0) if pending.pace_seconds == 0.0 else self._pace_provider
+            bomb_from = pending.file_path if reload and pending.file_path else None
             # What a completed replay leaves, from the remainder's own partial;
             # a legacy remainder without one (None) is never stamped clean.
             if isinstance(pending, PendingApplyEdit):
@@ -957,6 +984,7 @@ class NvimFollower:
                     None
                     if pending.partial is None
                     else _buffer_lines(apply_ops(pending.partial, pending.ops)),
+                    bomb_from=bomb_from,
                 )
             return self._drive(
                 nvim,
@@ -967,6 +995,7 @@ class NvimFollower:
                 None
                 if pending.partial is None
                 else _buffer_lines(pending.partial + _terminated(pending.lines)),
+                bomb_from=bomb_from,
             )
 
     def hand_over(self) -> None:
