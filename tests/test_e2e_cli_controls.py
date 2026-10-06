@@ -133,7 +133,7 @@ def test_nvim_interrupt_leaves_the_half_typed_line_uncounted(world: E2EFollower)
     world.wait_until(half_typed, f"line {cut_at} to be half typed", timeout=90.0)
     at_interrupt = world.nvim_buffer_lines(sock, path)[cut_at]
     world.cli("interrupt")
-    world.wait_for_animating("handoff")
+    world.wait_for_handoff()
 
     left = world.nvim_buffer_lines(sock, path)
     assert left[:cut_at] == lines[:cut_at], "the lines already typed were disturbed"
@@ -189,7 +189,7 @@ def test_nvim_interrupt_rolls_back_the_op_it_was_inside(world: E2EFollower) -> N
 
     world.wait_until(inside_the_op, "the op's first new line to be half typed", timeout=90.0)
     world.cli("interrupt")
-    world.wait_for_animating("handoff")
+    world.wait_for_handoff()
 
     assert world.nvim_buffer_bytes(sock, path) == OP_BEFORE.encode(), (
         "the interrupted op did not put its deleted line back"
@@ -224,7 +224,7 @@ def test_handoff_cycles_past_the_press_that_used_to_do_nothing(
 
     _wait_visible(world, backend, target, path, "ALPHA_MARK")
     world.cli("interrupt")  # 1st press
-    world.wait_for_animating("handoff")
+    world.wait_for_handoff()
 
     world.cli("interrupt")  # 2nd press: the des-interrupt
     world.wait_for_animating("running")
@@ -233,7 +233,7 @@ def test_handoff_cycles_past_the_press_that_used_to_do_nothing(
     _wait_visible(world, backend, target, path, "BRAVO_MARK")
 
     world.cli("interrupt")  # 3rd press: interrupt mid-replay
-    world.wait_for_animating("handoff")
+    world.wait_for_handoff()
 
     world.cli("interrupt")  # 4th press: the one that used to do nothing
     world.wait_for_animating("running")
@@ -330,7 +330,7 @@ def test_navigating_to_a_dirty_buffer_raises_no_e37_prompt(world: E2EFollower) -
 
     _wait_visible(world, "tmux", pane, path, "ALPHA_MARK")
     world.cli("interrupt")
-    world.wait_for_animating("handoff")
+    world.wait_for_handoff()
     # A real hook timeout: the buffer stays dirty and unlocked while the
     # window is freed for the next hook.
     proc.kill()

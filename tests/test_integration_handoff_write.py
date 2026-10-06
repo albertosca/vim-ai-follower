@@ -96,7 +96,15 @@ def _interrupted_write(
             timeout=15.0,
         )
         control.request_interrupt(window_id)
-        assert wait_until(lambda: control.animating_state(window_id) == "handoff", timeout=15.0)
+        # "handoff" is marked as the interrupted driver returns, before the
+        # remainder is saved: wait for both.
+        assert wait_until(
+            lambda: (
+                control.animating_state(window_id) == "handoff"
+                and control.has_pending_animation(window_id)
+            ),
+            timeout=15.0,
+        )
         # The read that fixes E13 must never put the finished file on screen.
         assert full not in _states(log, target.name)
         pending = control.load_pending_animation(window_id)

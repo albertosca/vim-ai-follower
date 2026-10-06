@@ -178,7 +178,15 @@ def _interrupt_mid_edit(
         assert wait_until(lambda: control.animating_state(window_id) == "running", timeout=10.0)
         assert wait_until(lambda: len(_states(log, target.name)) >= 2, timeout=15.0)
         control.request_interrupt(window_id)
-        assert wait_until(lambda: control.animating_state(window_id) == "handoff", timeout=15.0)
+        # "handoff" is marked as the interrupted driver returns, before the
+        # remainder is saved: wait for both.
+        assert wait_until(
+            lambda: (
+                control.animating_state(window_id) == "handoff"
+                and control.has_pending_animation(window_id)
+            ),
+            timeout=15.0,
+        )
         pending = control.load_pending_animation(window_id)
         assert pending is not None
         assert pending.partial is not None

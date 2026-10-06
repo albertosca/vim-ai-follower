@@ -399,7 +399,7 @@ def _interrupt_and_take_over(world: E2EFollower, sock: str, path: Path) -> Any:
     """`claude-follow interrupt` (prefix S), then prove the user really owns
     the buffer: it is the current one, and modifiable."""
     world.cli("interrupt")
-    world.wait_for_animating("handoff")
+    world.wait_for_handoff()
     nvim = world._nvim(sock)
     current = Path(nvim.api.buf_get_name(nvim.api.get_current_buf())).resolve()
     assert current == path.resolve(), f"the current buffer is {current}, not the file"

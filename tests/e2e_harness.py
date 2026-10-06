@@ -401,6 +401,18 @@ class E2EFollower:
             timeout,
         )
 
+    def wait_for_handoff(self, timeout: float = 20.0) -> None:
+        """The hook is in its hand-off: the marker reads "handoff" AND the
+        interrupted animation's remainder is on disk. The hook marks "handoff"
+        the moment the interrupted driver returns, BEFORE it saves the
+        remainder (so an S there is the des-interrupt), so the marker alone
+        does not say the remainder is readable yet."""
+        self.wait_until(
+            lambda: self.animating_state() == "handoff" and self.pending_path.exists(),
+            "the hand-off (marker 'handoff' with the remainder saved)",
+            timeout,
+        )
+
     def wait_for_hook_exit(self, proc: subprocess.Popen[bytes], timeout: float = 120.0) -> None:
         """A backgrounded hook must finish, and finish 0 — a hook that fails
         the tool call is a bug by design, so a non-zero exit is a finding."""
