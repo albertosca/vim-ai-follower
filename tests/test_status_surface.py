@@ -6,8 +6,11 @@ tests pin the surface's own command sequence directly."""
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock, call, patch
 
+import pynvim
+import pytest
 from helpers import make_mock_tmux_run
 
 from vim_ai_follower.hooks import HANDOFF_CUE_READONLY
@@ -331,12 +334,57 @@ def test_tmux_retire_state_leaves_any_other_title_alone() -> None:
     assert clear.call_args_list == []
 
 
-def test_nvim_retire_state_touches_nothing() -> None:
-    from vim_ai_follower.status_surface import NvimStatusSurface
+def _status_float(nvim: Any) -> tuple[Any, list[str], str] | None:
+    """The status float's window, its non-blank body lines and its title."""
+    for window in nvim.api.list_wins():
+        config = nvim.api.win_get_config(window)
+        if config["relative"] == "":
+            continue
+        buffer = nvim.api.win_get_buf(window)
+        if nvim.api.buf_get_name(buffer).endswith("vaf-status"):
+            body = [line.strip() for line in nvim.api.buf_get_lines(buffer, 0, -1, True)]
+            title = "".join(chunk[0] for chunk in config.get("title", []))
+            return window, [line for line in body if line], title
+    return None
 
-    with patch("pynvim.attach") as attach:
-        NvimStatusSurface(socket_path="/tmp/x").retire_state("other cue", "old cue")
-    assert attach.call_args_list == []
+
+@pytest.mark.integration
+def test_nvim_retire_state_closes_a_matching_cue_with_nothing_else_to_show(
+    headless_nvim: str,
+) -> None:
+    # A "Paused" left by a press nothing obeyed (final M6): the float saves and
+    # restores nothing, so before this it stayed until the next animation.
+    surface = NvimStatusSurface(socket_path=headless_nvim, adopted=False)
+    surface.set_state("Paused")
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    assert _status_float(nvim) is not None
+    surface.retire_state("Busy", "Paused")
+    assert _status_float(nvim) is None
+
+
+@pytest.mark.integration
+def test_nvim_retire_state_keeps_a_writers_title_with_a_blank_body(headless_nvim: str) -> None:
+    surface = NvimStatusSurface(socket_path=headless_nvim, adopted=False)
+    surface.set_writer("code-reviewer", "colour78")
+    surface.set_state("Paused")
+    surface.retire_state("Paused")
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    shown = _status_float(nvim)
+    assert shown is not None
+    assert shown[1:] == ([], " code-reviewer ")
+
+
+@pytest.mark.integration
+def test_nvim_retire_state_leaves_any_other_cue_alone(headless_nvim: str) -> None:
+    surface = NvimStatusSurface(socket_path=headless_nvim, adopted=False)
+    surface.retire_state("Paused")  # no float at all: nothing to do, no error
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    assert _status_float(nvim) is None
+    surface.set_state("Writing...")
+    surface.retire_state("Paused")
+    shown = _status_float(nvim)
+    assert shown is not None
+    assert shown[1] == ["Writing..."]
 
 
 # --- hit-enter prompt (nvim_prompt) ------------------------------------------

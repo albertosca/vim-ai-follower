@@ -346,26 +346,48 @@ class NvimStatusSurface:
             nvim.api.buf_set_lines(buf, 0, -1, True, _centered_box([text], width))
 
     def retire_state(self, *texts: str) -> None:
-        """Nothing to do: the float saves and restores nothing, so the next
-        set_state/set_writer simply overwrites its body and a completed
-        animation's refresh closes or redraws it."""
-        del texts
+        """Take down the body when it shows one of `texts`: the float saves
+        and restores nothing, so a cue left by a process that has exited (a
+        "Paused" no hook will ever clear, an earlier hook's leave-alone notice)
+        stays until something overwrites it. A float carrying a writer's title
+        keeps it, with a blank body, as set_writer leaves it; one with the
+        default title has nothing left to show and is closed, as clear()
+        would. Any other body is left alone."""
+        with contextlib.suppress(Exception), self._guarded() as nvim:
+            window = self._find_window(nvim)
+            if window is None:
+                return
+            buffer = nvim.api.win_get_buf(window)
+            showing = " ".join(
+                line.strip() for line in nvim.api.buf_get_lines(buffer, 0, -1, True) if line.strip()
+            )
+            if showing not in texts:
+                return
+            title = nvim.api.win_get_config(window).get("title", [])
+            if "".join(chunk[0] for chunk in title) == _DEFAULT_TITLE:
+                self._close(nvim)
+                return
+            width = int(nvim.api.win_get_width(window))
+            nvim.api.buf_set_lines(buffer, 0, -1, True, _centered_box([], width))
 
     def clear(self) -> None:
         with contextlib.suppress(Exception), self._guarded() as nvim:
-            win = self._find_window(nvim)
-            if win is not None:
-                buf = nvim.api.win_get_buf(win)
-                nvim.api.win_close(win, True)
-                # By NUMBER: a pynvim Buffer formats as "<Buffer(handle=N)>",
-                # which :bwipeout silently rejects. The scratch buffer is only
-                # hidden when its window closes, so the NEXT cue's
-                # buf_set_name("vaf-status") then hit E95 and — swallowed by
-                # suppress() — the float never came back (measured 2026-09-23).
-                nvim.command(f"silent! bwipeout! {buf.number}")
-            cur_buf = nvim.api.get_current_buf()
-            ns = nvim.api.create_namespace(_CURSOR_NAMESPACE)
-            nvim.api.buf_clear_namespace(cur_buf, ns, 0, -1)
+            self._close(nvim)
+
+    def _close(self, nvim: pynvim.Nvim) -> None:
+        window = self._find_window(nvim)
+        if window is not None:
+            buffer = nvim.api.win_get_buf(window)
+            nvim.api.win_close(window, True)
+            # By NUMBER: a pynvim Buffer formats as "<Buffer(handle=N)>",
+            # which :bwipeout silently rejects. The scratch buffer is only
+            # hidden when its window closes, so the NEXT cue's
+            # buf_set_name("vaf-status") then hit E95 and — swallowed by
+            # suppress() — the float never came back (measured 2026-09-23).
+            nvim.command(f"silent! bwipeout! {buffer.number}")
+        current_buffer = nvim.api.get_current_buf()
+        namespace = nvim.api.create_namespace(_CURSOR_NAMESPACE)
+        nvim.api.buf_clear_namespace(current_buffer, namespace, 0, -1)
 
 
 def status_surface_for(state: FollowerState, target: str | None = None) -> StatusSurface:
