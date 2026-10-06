@@ -164,6 +164,49 @@ def test_a_file_open_through_a_symlink_is_the_hooks_realpath(
     assert retyped["FILES"] == str(real), retyped
 
 
+@pytest.mark.parametrize("spelling", ["dir-symlink", "macos-private-var"])
+@pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
+def test_a_file_opened_through_a_symlinked_directory_is_the_hooks_realpath(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+    adopted: bool,
+    spelling: str,
+) -> None:
+    root = Path(os.path.realpath(tmp_path))
+    real_dir = root / "real"
+    real_dir.mkdir()
+    real = real_dir / "a.py"
+    real.write_text(BEFORE)
+    if spelling == "dir-symlink":
+        (root / "link").symlink_to(real_dir)
+        opened_as = "link/a.py"
+    else:
+        # macOS's own symlinked directory: /var -> /private/var, the spelling
+        # `$TMPDIR` (and so a user's `vim /var/folders/...`) uses.
+        if not str(root).startswith("/private/var/") or not Path("/var").is_symlink():
+            pytest.skip("this temp directory is not under the /var -> /private/var symlink")
+        opened_as = str(root)[len("/private") :] + "/real/a.py"
+        assert os.path.realpath(opened_as) == str(real)
+    pane = _user_vim(tmux_session, monkeypatch, root, opened_as)
+    window_id = ""
+    if adopted:
+        window_id = _tmux("display-message", "-p", "-t", pane, "#{window_id}")
+        FollowerState.set(window_id, backend="tmux", target=pane, adopted=True, speed="instant")
+    follower = TmuxVimFollower(pane_id=pane, pace_seconds=0.0, window_id=window_id)
+
+    # The hook names the realpath; Vim holds the buffer under the symlinked
+    # spelling. Not "absent" (which would wipe-and-retype into a new buffer).
+    assert _quick(lambda: follower.probe_buffer(str(real), BEFORE)) == "holds"
+    real.write_text(AFTER)
+    _quick(lambda: follower.apply_edit(str(real), compute_edit_script(BEFORE, AFTER), BEFORE))
+    edited = _state(pane, tmp_path / "s.txt", wait_until)
+    assert edited["LINES"] == AFTER.splitlines(), edited
+    assert edited["TABS"] == "1", edited  # typed into the user's buffer, no new tab
+    assert edited["FILES"] == str(real), edited  # one buffer for the file
+
+
 def test_a_case_variant_is_the_same_file_and_leaves_no_stray_tab(
     tmux_session: str,
     monkeypatch: pytest.MonkeyPatch,
