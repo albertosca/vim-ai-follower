@@ -32,6 +32,9 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[N
     # leak into tests (a live open_policy=always there silently flipped
     # auto-open tests). Point at a nonexistent per-test path: defaults.
     monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
+    # The readonly restores this process sent, by pane (tmux_vim): a token
+    # one test sent must never be awaited by the next.
+    monkeypatch.setattr(tmux_vim, "_SENT_READONLY_TOKENS", {}, raising=False)
     yield
     hooks.logger.handlers.clear()
 

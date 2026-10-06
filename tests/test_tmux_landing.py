@@ -188,6 +188,7 @@ def test_an_unanswered_probe_forgets_a_yes() -> None:
 def test_an_unanswered_readonly_question_forgets_a_yes() -> None:
     record, _marker = _record(True)
     (cache.CACHE_DIR / "readonly-2.asked").touch()  # a restore requested it
+    tmux_vim._SENT_READONLY_TOKENS["%2"] = 123456  # and this process sent it
     with (
         patch.object(tmux_vim, "_PROBE_TIMEOUT_SECONDS", 0.05),
         patch.object(tmux_vim, "_LANDING_TIMEOUT_SECONDS", 0.05),
@@ -204,8 +205,9 @@ def test_a_vim_whose_state_is_gone_is_still_asked_about_readonly() -> None:
     FollowerState.clear("@9")
     answer = cache.CACHE_DIR / "readonly-2.txt"
     answer.parent.mkdir(parents=True, exist_ok=True)
-    answer.write_text("1\n")
+    answer.write_text("1\n123456\n")
     (cache.CACHE_DIR / "readonly-2.asked").touch()  # a restore requested it
+    tmux_vim._SENT_READONLY_TOKENS["%2"] = 123456  # and this process sent it
     assert TmuxVimFollower(pane_id="%2", window_id="@9").user_readonly("/tmp/t.py") is True
 
 
@@ -288,3 +290,12 @@ def test_a_real_vims_landing_left_by_an_earlier_call_never_confirms_a_new_one(
         stdin=subprocess.DEVNULL,
     )
     assert out.read_text().splitlines() == ["elsewhere", "p2-bbbbbb", "0"]
+
+
+def test_the_readonly_token_is_a_six_digit_number_vim_reads_as_decimal() -> None:
+    """The token is typed as a bare Vim number (a quoted one does not fit two
+    screen rows with a six-digit pane id), and a Vim number with a leading 0
+    is octal: the answer would carry back another number."""
+    tokens = {tmux_vim._readonly_token() for _ in range(500)}
+    assert all(100000 <= token <= 999999 for token in tokens)
+    assert len(tokens) > 400

@@ -193,7 +193,7 @@ def test_every_typed_call_fits_two_screen_rows(pane: str) -> None:
         tmux_vim._call_line("goto", handle, 1),
         tmux_vim._call_line("probe", handle, 1),
         tmux_vim._call_line("landed", handle),
-        tmux_vim._call_line("restore_readonly", number),
+        tmux_vim._call_line("restore_readonly", number, 999999),
         tmux_vim._call_line("reload", 1, 1),
         tmux_vim._call_line("relock", 1, 1),
         tmux_vim._HOME_CHECK.format(
@@ -204,6 +204,13 @@ def test_every_typed_call_fits_two_screen_rows(pane: str) -> None:
         tmux_vim, "_home_relative", return_value="~/.cache/claude-vim-follower/vaf-abcdef.vim"
     ):
         lines.append(tmux_vim._define_line(pane))
+    # And the plain lines typed whole, with no call.
+    lines += [
+        tmux_vim._UNLOCK_FOR_ANIMATION,
+        tmux_vim._RELOCK_READONLY + tmux_vim._OUR_READONLY_CLAIM,
+        tmux_vim._RESTORE_PASTE,
+        tmux_vim._HAND_OVER_UNLOCK,
+    ]
     too_long = [line for line in lines if len(line) > MAXIMUM_LINE_LENGTH]
     assert too_long == []
 

@@ -135,6 +135,7 @@ _RELOCK = f":setlocal nomodifiable nopaste|{_FORGET_USER_PASTE}"
 _RELOCK_READONLY = f":setlocal readonly nomodifiable nopaste|{_FORGET_USER_PASTE}"
 _GIVE_BACK_PASTE = f"let &paste = get(g:, 'vaf_user_paste', 0)|{_FORGET_USER_PASTE}"
 _RESTORE_PASTE = f":{_GIVE_BACK_PASTE}"
+_HAND_OVER_UNLOCK = f":setlocal modifiable|{_GIVE_BACK_PASTE}"
 _ADOPTED_LOCK_READONLY = _LOCK_READONLY + " | let b:vaf_ro_ours = 1"
 _OUR_READONLY_CLAIM = " | let b:vaf_ro_ours = 1"
 # The restore also leaves its answer for user_readonly (the hand-off cue) in
@@ -143,7 +144,11 @@ _OUR_READONLY_CLAIM = " | let b:vaf_ro_ours = 1"
 # costs no extra keystrokes into a Vim the user is about to type into (a
 # separate probe line at the hand-off interleaved with the user's first keys;
 # measured 2026-09-28 with a test's keys, which garbled both command lines).
-# Inside try/catch: no failure may leave a prompt.
+# Inside try/catch: no failure may leave a prompt. The answer closes with the
+# restore's token (_readonly_token), and user_readonly reads only the answer
+# to the restore its own process sent: the file is named by the pane id
+# alone, which two tmux servers can share (`%2` in each), so one server's
+# answer could otherwise be read as the other's (C2/C3 minor, by reasoning).
 _VIM_READONLY = r"""
 function! s:note_user_readonly() abort
   if !get(b:, 'vaf_ro_ours')
@@ -159,7 +164,7 @@ function! s:unlock() abort
   let b:vaf_ro_ours = 2
 endfunction
 
-function! s:restore_readonly(pane) abort
+function! s:restore_readonly(pane, token) abort
   if get(b:, 'vaf_user_ro')
     setlocal readonly
     let b:vaf_ro_ours = 0
@@ -172,7 +177,7 @@ function! s:restore_readonly(pane) abort
   unlet! b:vaf_user_ro b:vaf_user_ma
   let answer = &readonly && !get(b:, 'vaf_ro_ours') ? '1' : '0'
   try
-    call writefile([answer], s:dir . 'readonly-' . a:pane . '.txt')
+    call writefile([answer, a:token], s:dir . 'readonly-' . a:pane . '.txt')
   catch
   endtry
 endfunction
@@ -1001,6 +1006,20 @@ def _readonly_answer_path(pane_id: str) -> Path:
     return cache.CACHE_DIR / f"readonly-{pane_id.lstrip('%')}.txt"
 
 
+# The token of the last readonly restore THIS process sent, by pane id
+# (_send_restore_readonly): user_readonly waits only for the answer that
+# carries it. Module-level, not on the follower, because the restore and the
+# question come from different TmuxVimFollower instances of one hook process.
+_SENT_READONLY_TOKENS: dict[str, int] = {}
+
+
+def _readonly_token() -> int:
+    """A token for one readonly restore: six decimal digits, typed as a bare
+    Vim number (a quoted string does not fit two screen rows with a six-digit
+    pane id), never with a leading 0, which Vim would read as octal."""
+    return 100000 + secrets.randbelow(900000)
+
+
 def _readonly_request_path(pane_id: str) -> Path:
     """Marks that a readonly restore was sent for this pane and its answer is
     still to be read: user_readonly waits only for an answer requested this
@@ -1623,23 +1642,25 @@ class TmuxVimFollower:
         if self._is_dedicated():
             return False
         request = _readonly_request_path(self.pane_id)
-        if not request.exists():
+        token = _SENT_READONLY_TOKENS.pop(self.pane_id, None)
+        if not request.exists() or token is None:
+            request.unlink(missing_ok=True)
             return False
         try:
-            return self._await_readonly_answer(file_path)
+            return self._await_readonly_answer(file_path, token)
         finally:
             request.unlink(missing_ok=True)
 
-    def _await_readonly_answer(self, file_path: str) -> bool:
+    def _await_readonly_answer(self, file_path: str, token: int) -> bool:
+        """The answer of the restore that sent `token`; an answer closed by
+        any other token (another server's pane of the same id, an older
+        restore) is not this one's."""
         answer = _readonly_answer_path(self.pane_id)
         deadline = time.monotonic() + _PROBE_TIMEOUT_SECONDS
         while True:
-            try:
-                text = answer.read_text()
-            except OSError:
-                text = ""
-            if text.endswith("\n"):
-                return text == "1\n"
+            lines = _read_probe(answer, str(token))
+            if lines is not None:
+                return lines == ["1"]
             if time.monotonic() >= deadline:
                 logger.warning(
                     "no readonly answer from the follower's Vim about %s%s",
@@ -1649,13 +1670,17 @@ class TmuxVimFollower:
                 return False
             time.sleep(_PROBE_POLL_SECONDS)
 
-    def _send_restore_readonly(self, pane: TmuxPane) -> None:
+    def _send_restore_readonly(self, pane: TmuxPane) -> int:
+        """Send s:restore_readonly; returns the token its answer will carry."""
         answer = _readonly_answer_path(self.pane_id)
         answer.parent.mkdir(parents=True, exist_ok=True)
         answer.unlink(missing_ok=True)
         _readonly_request_path(self.pane_id).touch()
-        pane.send_text(_call_line("restore_readonly", int(self.pane_id.lstrip("%"))))
+        token = _readonly_token()
+        _SENT_READONLY_TOKENS[self.pane_id] = token
+        pane.send_text(_call_line("restore_readonly", int(self.pane_id.lstrip("%")), token))
         pane.send_key("Enter")
+        return token
 
     def _with_unlocked(
         self, relock: _Relock, run: Callable[[TmuxPane], AnimationResult]
@@ -1863,7 +1888,7 @@ class TmuxVimFollower:
         pane = TmuxPane(pane_id=self.pane_id)
         pane.send_text(_COC_ENABLE)
         pane.send_key("Enter")
-        pane.send_text(f":setlocal modifiable|{_GIVE_BACK_PASTE}")
+        pane.send_text(_HAND_OVER_UNLOCK)
         pane.send_key("Enter")
         # A hand-off after rewrite_buffer's unlock (a replay interrupted
         # mid-rebuild), or of a crash-orphaned remainder, gives an adopted

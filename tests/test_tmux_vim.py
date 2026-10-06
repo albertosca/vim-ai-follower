@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -17,7 +18,7 @@ from helpers import register_fake_follower as _register_fake_follower
 
 from vim_ai_follower import cache, config, control, state
 from vim_ai_follower.animate import AnimationResult
-from vim_ai_follower.backends import get_follower
+from vim_ai_follower.backends import get_follower, tmux_vim
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower, _case_folds
 from vim_ai_follower.diff import EditOp, compute_edit_script
 
@@ -58,8 +59,19 @@ _ADOPTED_UNLOCK = call_spelled("unlock")
 _ADOPTED_LOCK_READONLY = ":setlocal readonly nomodifiable | let b:vaf_ro_ours = 1"
 
 
+# The token every readonly restore in this file carries (see the autouse
+# fixture below): the answer must name it to count.
+_READONLY_TOKEN = 123456
+
+
+@pytest.fixture(autouse=True)
+def fixed_readonly_token() -> Iterator[None]:
+    with patch.object(tmux_vim, "_readonly_token", return_value=_READONLY_TOKEN):
+        yield
+
+
 def _restore() -> str:
-    return call_spelled("restore_readonly", 2)
+    return call_spelled("restore_readonly", 2, _READONLY_TOKEN)
 
 
 def test_is_alive_true_when_vim_is_running_in_pane() -> None:
@@ -909,17 +921,37 @@ def test_a_dedicated_follower_never_asks_whose_readonly_it_is() -> None:
     run.assert_not_called()
 
 
-@pytest.mark.parametrize(("answer", "expected"), [("1\n", True), ("0\n", False)])
+@pytest.mark.parametrize(("answer", "expected"), [("1", True), ("0", False)])
 def test_an_adopted_vim_answers_from_the_restore_it_just_ran(answer: str, expected: bool) -> None:
     follower = _adopted_follower()
-    (cache.CACHE_DIR / "readonly-2.asked").touch()  # the restore requested it
-    (cache.CACHE_DIR / "readonly-2.txt").write_text(answer)
+    with patch("vim_ai_follower.tmux.subprocess.run"):
+        follower.hand_over()
+    (cache.CACHE_DIR / "readonly-2.txt").write_text(f"{answer}\n{_READONLY_TOKEN}\n")
     assert follower.user_readonly("/tmp/f.txt") is expected
+
+
+def test_an_answer_to_another_restore_is_never_read_as_this_ones(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Two tmux servers can both have a pane `%2`, and their answer files
+    share one name: only the token this follower sent identifies its own."""
+    follower = _adopted_follower()
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        follower.hand_over()
+    assert (_restore(), True) in _sent_commands(run)
+    (cache.CACHE_DIR / "readonly-2.txt").write_text("1\n654321\n")
+    with (
+        patch("vim_ai_follower.backends.tmux_vim._PROBE_TIMEOUT_SECONDS", 0.05),
+        patch("vim_ai_follower.backends.tmux_vim.time.sleep"),
+    ):
+        assert follower.user_readonly("/tmp/f.txt") is False
+    assert "no readonly answer" in caplog.text
 
 
 def test_no_answer_from_the_restore_is_the_plain_cue(caplog: pytest.LogCaptureFixture) -> None:
     follower = _adopted_follower()
-    (cache.CACHE_DIR / "readonly-2.asked").touch()  # the restore requested it
+    with patch("vim_ai_follower.tmux.subprocess.run"):
+        follower.hand_over()  # the restore requested it
     with (
         patch("vim_ai_follower.backends.tmux_vim._PROBE_TIMEOUT_SECONDS", 0.05),
         patch("vim_ai_follower.backends.tmux_vim.time.sleep"),
@@ -934,7 +966,7 @@ def test_the_restore_requests_the_answer_user_readonly_then_consumes() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run"):
         follower.hand_over()
     assert request.exists()
-    (cache.CACHE_DIR / "readonly-2.txt").write_text("1\n")
+    (cache.CACHE_DIR / "readonly-2.txt").write_text(f"1\n{_READONLY_TOKEN}\n")
     assert follower.user_readonly("/tmp/f.txt") is True
     assert not request.exists()
     # Asked once per hand-off: the same answer is never read twice.
