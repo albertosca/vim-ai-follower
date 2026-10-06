@@ -51,7 +51,7 @@ only after another guard's answer landed finds it gone and sends nothing. The
 lock is held only for that sequence, never across the entry point's own RPC.
 A lock file that cannot be used at all (no permission, no space, no flock) is
 not "busy": the guard then answers under an in-process lock only, since an
-unanswered prompt is a certain hang (`_answer_lock`).
+unanswered prompt hangs the hook (`_answer_lock`).
 
 Residual, not solvable here: the USER pressing a key at the very instant a
 guard answers. Their key then lands spare in normal mode, through their own
@@ -103,8 +103,14 @@ WATCHDOG_THREAD_NAME = "vaf-hit-enter-watchdog"
 _active = threading.local()
 
 # Sockets whose answer lock already failed with a real error (not "busy"):
-# logged once per process, so a read-only cache cannot flood hook.log.
+# logged once per process, so a read-only cache cannot flood hook.log. The
+# check-then-add is under a lock: a sweep and a watchdog can fail together.
 _lock_errors_logged: set[str] = set()
+_lock_errors_guard = threading.Lock()
+
+# A lock file untouched this long belongs to a socket nobody has answered on
+# for a week. Taking a lock refreshes its mtime, so one in use is never old.
+ANSWER_LOCK_MAX_AGE_SECONDS = 7 * 24 * 3600.0
 
 # The fallback when the file lock is unusable: one threading.Lock per socket,
 # so the guards of ONE process (a sweep and a watchdog) still answer a prompt
@@ -120,12 +126,37 @@ def _process_lock(socket_path: str) -> threading.Lock:
 
 def _answer_lock_path(socket_path: str) -> Path:
     """The answer lock for one nvim socket. In the cache directory, keyed by a
-    hash of the socket path, rather than beside the socket: an nvim socket can
+    hash of the REAL socket path (two spellings of one socket, a symlinked
+    directory, share one lock), rather than beside the socket: an nvim socket can
     live anywhere (standalone launches, a user-chosen path), and only the
     cache directory is known to be ours and writable. Read at call time, so a
     relocated cache (tests) is honoured."""
-    digest = hashlib.sha256(socket_path.encode()).hexdigest()[:16]
-    return cache.CACHE_DIR / "answer-locks" / f"{digest}.lock"
+    # fsencode, not encode(): a socket path may hold bytes that are not UTF-8.
+    digest = hashlib.sha256(os.fsencode(os.path.realpath(socket_path))).hexdigest()[:16]
+    return _answer_locks_directory() / f"{digest}.lock"
+
+
+def _answer_locks_directory() -> Path:
+    return cache.CACHE_DIR / "answer-locks"
+
+
+def sweep_answer_locks(max_age_seconds: float = ANSWER_LOCK_MAX_AGE_SECONDS) -> int:
+    """Remove answer-lock files untouched for `max_age_seconds`; return how many
+    went. Nothing else ever deletes them, and each socket path leaves one.
+    Unlinking a file some guard holds at that very instant only splits the lock
+    for that one prompt (the residual in the module docstring); a lock in use
+    is refreshed on every answer, so in practice it is never old. A file that
+    cannot be stat'ed or removed is skipped."""
+    removed = 0
+    cutoff = time.time() - max_age_seconds
+    for path in _answer_locks_directory().glob("*.lock"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 @contextlib.contextmanager
@@ -147,22 +178,32 @@ def _answer_lock(socket_path: str) -> Iterator[bool]:
     process, and it is logged once per socket per process. What is lost: two
     hook PROCESSES may then both answer one prompt, and the spare answer goes
     through the user's normal-mode mappings — harmful only with a config that
-    remaps <CR> or <Esc> (module docstring). The hang, by contrast, is
-    certain."""
-    fd = -1
+    remaps <CR> or <Esc> (module docstring). An unanswered prompt hangs the
+    hook; the per-process fallback can still let two processes both answer,
+    which with a remapping config was measured to freeze nvim 3 times in 40
+    (2026-09-28).
+
+    Opened O_RDONLY: flock needs no write access, and read-only keeps a
+    same-owner 0400 file usable with its exclusion intact. A held lock
+    refreshes the file's mtime, which is what `sweep_answer_locks` ages by."""
+    descriptor = -1
     held = False
     fallback: threading.Lock | None = None
     try:
         path = _answer_lock_path(socket_path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        descriptor = os.open(path, os.O_RDONLY | os.O_CREAT, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         held = True
+        with contextlib.suppress(OSError):
+            os.utime(descriptor)
     except OSError as exc:
         busy = isinstance(exc, BlockingIOError) or exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN)
         if not busy:
-            if socket_path not in _lock_errors_logged:
+            with _lock_errors_guard:
+                first_failure = socket_path not in _lock_errors_logged
                 _lock_errors_logged.add(socket_path)
+            if first_failure:
                 logger.warning(
                     "nvim follower: answer lock unusable for %s, "
                     "answering under a per-process lock only: %s",
@@ -176,11 +217,11 @@ def _answer_lock(socket_path: str) -> Iterator[bool]:
     finally:
         if fallback is not None and held:
             fallback.release()
-        if fd != -1:
+        if descriptor != -1:
             with contextlib.suppress(OSError):
                 if held and fallback is None:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-            os.close(fd)
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
 
 
 def _answer_for(mode: dict[str, Any]) -> str | None:

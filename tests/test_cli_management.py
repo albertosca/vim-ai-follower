@@ -63,6 +63,25 @@ def test_stop_without_active_follower_is_a_noop() -> None:
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
 
 
+@pytest.mark.parametrize("command", ["start", "stop"])
+def test_start_and_stop_sweep_old_answer_locks_and_survive_a_failing_sweep(command: str) -> None:
+    run = {"start": commands.cmd_start, "stop": commands.cmd_stop}[command]
+    with (
+        patch("vim_ai_follower.commands.resolve_session", return_value=None),
+        patch("vim_ai_follower.commands.nvim_prompt.sweep_answer_locks") as sweep,
+    ):
+        assert run({"TMUX_PANE": "%1"}) == 1
+    sweep.assert_called_once_with()
+    with (
+        patch("vim_ai_follower.commands.resolve_session", return_value=None),
+        patch(
+            "vim_ai_follower.commands.nvim_prompt.sweep_answer_locks",
+            side_effect=PermissionError("denied"),
+        ),
+    ):
+        assert run({"TMUX_PANE": "%1"}) == 1
+
+
 def test_stop_standalone_stops_the_backend_but_skips_tmux_side_effects() -> None:
     # Standalone (no TMUX_PANE): resolve_session() returns a Session with
     # in_tmux=False. cmd_stop must still drive the backend's stop() (an nvim

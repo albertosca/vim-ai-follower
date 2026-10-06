@@ -424,7 +424,9 @@ def test_two_guard_processes_seeing_one_prompt_send_exactly_one_answer(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("unusable", ["locks-dir-read-only", "lock-file-read-only"])
+@pytest.mark.parametrize(
+    "unusable", ["locks-dir-read-only", "lock-file-no-access", "lock-file-read-only"]
+)
 def test_an_unusable_answer_lock_still_answers_the_prompt(
     ui_nvim: Callable[[str], str],
     tmp_path: Path,
@@ -432,17 +434,20 @@ def test_an_unusable_answer_lock_still_answers_the_prompt(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     # The answer lock cannot be taken — `answer-locks/` is not writable (mode
-    # 0500), or the lock file is 0400 (say, left by a `sudo` run). Treating
+    # 0500), or the lock file is 0000 (say, left by a `sudo` run). Treating
     # that like "another guard is answering" meant nobody ever answered: the
     # entry point hung on the prompt, the very freeze the guard exists for.
+    # A 0400 file of the same owner is NOT unusable since the lock is opened
+    # O_RDONLY (flock needs no write): it still answers, under the file lock,
+    # and logs nothing.
     # The cache dir is the per-test one (conftest's isolated_dirs).
     sock = ui_nvim("none")
     probe = pynvim.attach("socket", path=sock)
     lock = nvim_prompt._answer_lock_path(sock)
     lock.parent.mkdir(parents=True)
-    if unusable == "lock-file-read-only":
+    if unusable in ("lock-file-no-access", "lock-file-read-only"):
         lock.write_text("")
-        lock.chmod(0o400)
+        lock.chmod(0o400 if unusable == "lock-file-read-only" else 0o000)
     else:
         lock.parent.chmod(0o500)
     target = tmp_path / "a.py"
@@ -462,7 +467,7 @@ def test_an_unusable_answer_lock_still_answers_the_prompt(
         assert "error" not in box, box.get("error")
         assert probe.api.get_mode()["blocking"] is False
         assert _buffer_bytes(probe, str(target)) == [b"x = 1", "y = 'é'".encode()]
-        assert "answer lock unusable" in caplog.text
+        assert ("answer lock unusable" in caplog.text) is (unusable != "lock-file-read-only")
     finally:
         _unfreeze(probe)
         lock.parent.chmod(0o700)

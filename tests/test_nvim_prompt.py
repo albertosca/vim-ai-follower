@@ -178,9 +178,9 @@ def test_a_filesystem_without_flock_still_answers_and_closes_the_file() -> None:
     closed: list[int] = []
     real_close = os.close
 
-    def recording_close(fd: int) -> None:
-        closed.append(fd)
-        real_close(fd)
+    def recording_close(descriptor: int) -> None:
+        closed.append(descriptor)
+        real_close(descriptor)
 
     with (
         patch(
@@ -228,6 +228,79 @@ def test_the_answer_lock_is_released_after_answering_and_after_a_raise() -> None
 def test_answer_locks_are_per_socket() -> None:
     with nvim_prompt._answer_lock("/one") as one, nvim_prompt._answer_lock("/two") as two:
         assert (one, two) == (True, True)
+
+
+def test_the_lock_file_is_opened_read_only() -> None:
+    # flock needs no write access, and read-only keeps a same-owner 0400 file
+    # usable (measured in sweep 3).
+    opened_flags: list[int] = []
+    real_open = os.open
+
+    def recording_open(path: Any, flags: int, mode: int = 0o777) -> int:
+        opened_flags.append(flags)
+        return real_open(path, flags, mode)
+
+    with (
+        patch("vim_ai_follower.backends.nvim_prompt.os.open", recording_open),
+        nvim_prompt._answer_lock("/s") as held,
+    ):
+        assert held
+    assert opened_flags
+    assert opened_flags[0] & os.O_ACCMODE == os.O_RDONLY
+
+
+def test_taking_the_lock_refreshes_its_mtime() -> None:
+    path = nvim_prompt._answer_lock_path("/s")
+    path.parent.mkdir(parents=True)
+    path.touch()
+    os.utime(path, (0, 0))
+    with nvim_prompt._answer_lock("/s"):
+        pass
+    assert time.time() - path.stat().st_mtime < 60
+
+
+def test_the_sweep_removes_only_old_locks() -> None:
+    old = nvim_prompt._answer_lock_path("/old")
+    fresh = nvim_prompt._answer_lock_path("/fresh")
+    old.parent.mkdir(parents=True)
+    old.touch()
+    fresh.touch()
+    os.utime(old, (0, 0))
+    assert nvim_prompt.sweep_answer_locks() == 1
+    assert not old.exists()
+    assert fresh.exists()
+
+
+def test_the_sweep_with_no_lock_directory_removes_nothing() -> None:
+    assert nvim_prompt.sweep_answer_locks() == 0
+
+
+def test_the_sweep_skips_a_lock_it_cannot_remove() -> None:
+    old = nvim_prompt._answer_lock_path("/old")
+    old.parent.mkdir(parents=True)
+    old.touch()
+    os.utime(old, (0, 0))
+    with patch("pathlib.Path.unlink", side_effect=PermissionError(errno.EPERM, "denied")):
+        assert nvim_prompt.sweep_answer_locks() == 0
+
+
+def test_two_spellings_of_one_socket_share_one_lock(tmp_path: Any) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    (tmp_path / "link").symlink_to(real)
+    assert nvim_prompt._answer_lock_path(str(real / "n.sock")) == nvim_prompt._answer_lock_path(
+        str(tmp_path / "link" / "n.sock")
+    )
+
+
+def test_a_non_utf8_socket_path_does_not_raise(tmp_path: Any) -> None:
+    weird = os.fsdecode(os.fsencode(tmp_path) + b"/\xff.sock")
+    with nvim_prompt._answer_lock(weird) as held:
+        assert held is True
+
+
+def test_the_log_once_set_is_guarded() -> None:
+    assert isinstance(nvim_prompt._lock_errors_guard, type(threading.Lock()))
 
 
 # --- prompt_guard -------------------------------------------------------------
