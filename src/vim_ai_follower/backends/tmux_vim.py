@@ -1213,20 +1213,72 @@ def _vim_functions() -> tuple[str, str]:
 def _script_file(name: str, text: str) -> Path:
     """The script's file in the cache directory, written when missing or not
     exactly `text`: through a temporary file and a rename, so a Vim never
-    sources a half-written one."""
+    sources a half-written one. A file already right is only touched: its
+    mtime is when a hook last used it, which is what _sweep_scripts ages."""
     directory = cache.CACHE_DIR
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"vaf-{name.removeprefix('VafFollower_')}.vim"
     data = text.encode()
     try:
         if path.read_bytes() == data:
+            os.utime(path)
+            _sweep_scripts(path)
             return path
     except OSError:
         pass
     partial = directory / f".{path.name}.{secrets.token_hex(4)}"
     partial.write_bytes(data)
     partial.replace(path)
+    _sweep_scripts(path)
     return path
+
+
+# How long a script of another version (or of another spelling of the cache
+# directory, which hashes to another name) stays in the cache directory after
+# a hook last wrote or used it (_sweep_scripts). A hook that sweeps marks its
+# own script as used on every define line, so this only ever removes a
+# script no such hook used for a day.
+_SCRIPT_MAX_AGE_SECONDS = 86400.0
+_SCRIPT_NAME = re.compile(r"vaf-[0-9a-f]{6}\.vim")
+_SCRIPT_TEMPORARY_NAME = re.compile(r"\.vaf-[0-9a-f]{6}\.vim\.[0-9a-f]{8}")
+
+
+def _sweep_scripts(current: Path) -> None:
+    """Delete, from `current`'s directory and nowhere else, the scripts
+    (`vaf-<6 hex>.vim`) unused for _SCRIPT_MAX_AGE_SECONDS and the temporaries
+    (`.vaf-<6 hex>.vim.<8 hex>`) older than _PATH_HANDLE_MAX_AGE_SECONDS that
+    _script_file leaves when a write is cut off before its rename. `current`
+    always stays. Nothing else is touched, and a missing or unwritable
+    directory, or a file another hook swept first, is no error.
+
+    No Vim needs a script it already sourced: its functions live in memory,
+    and the new script's cleanup loop finds an older dispatcher by the
+    "Last set from" path Vim recorded, whether that file still exists or
+    not. A file is only read again by the define line of a Vim that lacks
+    its dispatcher, right after that version's hook wrote or kept it; a hook
+    of this version or later marks it used then (_script_file), so the age
+    protects it. An OLDER hook keeps its existing file without touching it:
+    should a sweep delete that file in the moment between the older hook's
+    check and its Vim's `:source`, the source finds nothing, the calls do
+    nothing, the navigation fails safe (NavigationFailed, the edit is
+    skipped), and that hook's next define line writes the file again."""
+    now = time.time()
+    try:
+        entries = list(current.parent.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if entry.name == current.name:
+            continue
+        if _SCRIPT_NAME.fullmatch(entry.name):
+            maximum_age = _SCRIPT_MAX_AGE_SECONDS
+        elif _SCRIPT_TEMPORARY_NAME.fullmatch(entry.name):
+            maximum_age = _PATH_HANDLE_MAX_AGE_SECONDS
+        else:
+            continue
+        with contextlib.suppress(OSError):
+            if now - entry.lstat().st_mtime > maximum_age:
+                entry.unlink()
 
 
 def _call_line(op: str, *arguments: str | int) -> str:

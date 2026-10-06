@@ -165,13 +165,77 @@ def test_the_script_file_is_written_once_and_rewritten_when_it_differs() -> None
     assert path.read_text() == text
     written = path.stat().st_mtime_ns
     os.utime(path, ns=(written - 10**9, written - 10**9))
+    inode = path.stat().st_ino
     assert tmux_vim._script_file(name, text) == path
-    assert path.stat().st_mtime_ns == written - 10**9  # left alone
+    assert path.stat().st_ino == inode  # not rewritten
+    assert path.stat().st_mtime_ns > written - 10**9  # marked as used (the sweep's age)
     path.write_text("garbage")
     tmux_vim._script_file(name, text)
     assert path.read_text() == text
     # The rewrite goes through a temporary file and a rename.
     assert [entry.name for entry in cache.CACHE_DIR.iterdir()] == [path.name]
+
+
+def test_old_scripts_and_stale_temporaries_are_swept_and_nothing_else() -> None:
+    """One script per plugin version accumulates in the cache directory, and
+    a write cut off before its rename leaves a temporary. The current script
+    stays, and so does a script or temporary another hook may still be about
+    to use: a script written or used within a day, a temporary younger than
+    the handles' 600 s."""
+    cache.CACHE_DIR.mkdir(parents=True)
+    now = time.time()
+
+    def aged(name: str, seconds: float) -> Path:
+        path = cache.CACHE_DIR / name
+        path.write_text("x\n")
+        os.utime(path, (now - seconds, now - seconds))
+        return path
+
+    old_script = aged("vaf-aaaaaa.vim", 2 * 86400)
+    stale_temporary = aged(".vaf-bbbbbb.vim.1234abcd", 20 * 60)
+    young_temporary = aged(".vaf-cccccc.vim.5678abcd", 60)
+    recent_script = aged("vaf-dddddd.vim", 3600)
+    unrelated = [
+        aged(name, 3 * 86400)
+        for name in (
+            "vaf-notahash.vim",
+            "vaf-eeeeee.vim.bak",
+            "user.vim",
+            "p3-dead00",
+            ".vaf-ffffff.vim.notahex",
+        )
+    ]
+    name, text = tmux_vim._vim_functions()
+    current = cache.CACHE_DIR / f"vaf-{name.removeprefix('VafFollower_')}.vim"
+    current.write_text(text)
+    os.utime(current, (now - 3 * 86400, now - 3 * 86400))
+
+    assert tmux_vim._script_file(name, text) == current
+
+    assert not old_script.exists()
+    assert not stale_temporary.exists()
+    assert young_temporary.exists()
+    assert recent_script.exists()
+    assert all(path.exists() for path in unrelated)
+    assert current.read_text() == text
+    # Kept, and marked as used: another version's sweep measures from here.
+    assert time.time() - current.stat().st_mtime < 60
+
+
+def test_the_sweep_is_a_no_op_on_a_missing_or_unwritable_directory(tmp_path: Path) -> None:
+    tmux_vim._sweep_scripts(tmp_path / "missing" / "vaf-abcdef.vim")
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    old = locked / "vaf-aaaaaa.vim"
+    old.write_text("x\n")
+    long_ago = time.time() - 2 * 86400
+    os.utime(old, (long_ago, long_ago))
+    locked.chmod(0o500)
+    try:
+        tmux_vim._sweep_scripts(locked / "vaf-abcdef.vim")
+    finally:
+        locked.chmod(0o700)
+    assert old.exists()
 
 
 def test_a_call_line_does_nothing_in_a_vim_without_the_functions() -> None:
@@ -635,3 +699,48 @@ def test_a_real_vim_defines_no_dispatcher_from_a_half_loaded_script(
         stdin=subprocess.DEVNULL,
     )
     assert out.read_text().splitlines() == ["0"]
+
+
+@pytest.mark.integration
+def test_a_real_vim_drops_an_older_dispatcher_whose_script_was_swept(tmp_path: Path) -> None:
+    """The cleanup loop goes by the "Last set from" path Vim recorded, not by
+    the file: a Vim that sourced an older version, whose script the sweep
+    has since deleted, still loses that dispatcher to the current one."""
+    cache.CACHE_DIR.mkdir(parents=True)
+    older = cache.CACHE_DIR / "vaf-0a0b0c.vim"
+    older.write_text("function! VafFollower_0a0b0c(op, ...) abort\nendfunction\n")
+    name = tmux_vim._vim_functions()[0]
+    with patch.object(tmux_vim, "_home_relative", return_value=None):
+        define = tmux_vim._define_line("%3")
+    # The define line's sweep left the older script alone (it is young),
+    # so Vim can source it; Vim then deletes it, standing in for a sweep a
+    # day later, before the current script's define line runs.
+    assert older.exists()
+    out = tmp_path / "out.txt"
+    subprocess.run(
+        [
+            "vim",
+            "-Nu",
+            "NONE",
+            "-i",
+            "NONE",
+            "-es",
+            "-c",
+            f"source {older}",
+            "-c",
+            "let g:before = exists('*VafFollower_0a0b0c')",
+            "-c",
+            f"call delete('{older}')",
+            "-c",
+            define.removeprefix(":"),
+            "-c",
+            "call writefile([g:before . '', exists('*VafFollower_0a0b0c') . '',"
+            f" filereadable('{older}') . '', exists('*{name}') . ''], '{out}')",
+            "-c",
+            "qa!",
+        ],
+        check=True,
+        timeout=30,
+        stdin=subprocess.DEVNULL,
+    )
+    assert out.read_text().splitlines() == ["1", "0", "0", "1"]
