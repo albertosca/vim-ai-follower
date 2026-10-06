@@ -973,6 +973,41 @@ def test_the_restore_requests_the_answer_user_readonly_then_consumes() -> None:
     assert follower.user_readonly("/tmp/f.txt") is False
 
 
+def test_an_unwritable_answer_directory_never_breaks_the_hand_off(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The restore's answer bookkeeping (mkdir, unlink, the request mark) on
+    the interrupt path: an OSError there escaped _with_unlocked, so the hook
+    lost the interrupted result. Now it is one warning, the restore is still
+    sent, and the cue is the plain one."""
+    locked = tmp_path / "locked"
+    locked.mkdir()
+    locked.chmod(0o500)
+    follower = _adopted_follower()
+    try:
+        with (
+            patch(
+                "vim_ai_follower.backends.tmux_vim._readonly_answer_path",
+                return_value=locked / "sub" / "readonly-2.txt",
+            ),
+            patch(
+                "vim_ai_follower.backends.tmux_vim._readonly_request_path",
+                return_value=locked / "sub" / "readonly-2.asked",
+            ),
+            patch("vim_ai_follower.tmux.subprocess.run") as run,
+            patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
+        ):
+            result = follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
+            assert follower.user_readonly("/tmp/f.txt") is False
+    finally:
+        locked.chmod(0o700)
+    assert result == AnimationResult("interrupted", 0)
+    assert (_restore(), True) in _sent_commands(run)
+    warnings = [record for record in caplog.records if record.levelname == "WARNING"]
+    assert len(warnings) == 1, [record.getMessage() for record in warnings]
+    assert "readonly answer" in warnings[0].getMessage()
+
+
 def test_the_restore_clears_the_last_answer_before_it_is_sent() -> None:
     """A stale answer from an earlier hand-off must never be read as this one's."""
     follower = _adopted_follower()

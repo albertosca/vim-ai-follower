@@ -1671,11 +1671,20 @@ class TmuxVimFollower:
             time.sleep(_PROBE_POLL_SECONDS)
 
     def _send_restore_readonly(self, pane: TmuxPane) -> int:
-        """Send s:restore_readonly; returns the token its answer will carry."""
+        """Send s:restore_readonly; returns the token its answer will carry.
+
+        The answer's bookkeeping (clearing the last answer, the request mark)
+        must never raise: this runs on the interrupt path, and an OSError
+        there escaped _with_unlocked with the interrupted result. Without
+        the mark user_readonly does not wait, so the cue is the plain one;
+        the restore itself is still sent."""
         answer = _readonly_answer_path(self.pane_id)
-        answer.parent.mkdir(parents=True, exist_ok=True)
-        answer.unlink(missing_ok=True)
-        _readonly_request_path(self.pane_id).touch()
+        try:
+            answer.parent.mkdir(parents=True, exist_ok=True)
+            answer.unlink(missing_ok=True)
+            _readonly_request_path(self.pane_id).touch()
+        except OSError as error:
+            logger.warning("could not prepare the readonly answer for %s: %s", self.pane_id, error)
         token = _readonly_token()
         _SENT_READONLY_TOKENS[self.pane_id] = token
         pane.send_text(_call_line("restore_readonly", int(self.pane_id.lstrip("%")), token))
