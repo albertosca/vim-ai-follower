@@ -16,7 +16,7 @@ from typing import Any
 from unittest.mock import MagicMock, call, patch
 
 import pytest
-from helpers import fresh_buffer, route_exec_lua
+from helpers import fresh_buffer, route_exec_lua, tabnew_adds_a_tab
 
 from vim_ai_follower import state
 from vim_ai_follower.animate import AnimationResult
@@ -29,6 +29,7 @@ def _disk_loading_nvim() -> MagicMock:
     _open_from_disk take the disk-reading branch and bufadd hands out 42."""
     nvim = MagicMock()
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
+    tabnew_adds_a_tab(nvim)
     nvim.funcs.bufadd.return_value = 42
     return nvim
 
@@ -144,7 +145,7 @@ def test_goto_file_opts_the_buffer_it_creates_out_of_swap_before_naming_it() -> 
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
-    nvim.api.list_tabpages.return_value = []
+    tabnew_adds_a_tab(nvim)
     buf = nvim.api.create_buf.return_value
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.goto_file("/tmp/f.py")
@@ -175,32 +176,33 @@ def test_show_fresh_opts_its_new_buffer_out_of_swap_before_naming_it(tmp_path: P
     )
 
 
-def _goto_hidden_buffer(loaded: bool) -> MagicMock:
-    """goto_file on a buffer that exists (number 5) but has no window."""
+def _goto_hidden_buffer(loaded: bool) -> tuple[MagicMock, MagicMock]:
+    """goto_file on a buffer that exists (number 5) but has no window; the
+    mock and the window of the tab it added."""
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
     nvim.exec_lua.return_value = 5
-    nvim.api.list_tabpages.return_value = []
+    window = tabnew_adds_a_tab(nvim)
     nvim.api.buf_is_loaded.return_value = loaded
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.goto_file("/tmp/f.py")
-    return nvim
+    return nvim, window
 
 
 def test_goto_file_opts_an_unloaded_buffer_out_of_swap_before_loading_it() -> None:
     # win_set_buf LOADS an unloaded buffer, and the load runs the swap check:
     # E325 with a live editor holding the swap (measured 2026-09-28).
-    nvim = _goto_hidden_buffer(loaded=False)
+    nvim, window = _goto_hidden_buffer(loaded=False)
     calls = nvim.api.mock_calls
     assert calls.index(call.buf_set_option(5, "swapfile", False)) < calls.index(
-        call.win_set_buf(0, 5)
+        call.win_set_buf(window, 5)
     )
 
 
 def test_goto_file_leaves_a_loaded_buffers_swap_alone() -> None:
-    nvim = _goto_hidden_buffer(loaded=True)
+    nvim, window = _goto_hidden_buffer(loaded=True)
     assert "swapfile" not in [c.args[1] for c in nvim.api.buf_set_option.call_args_list]
-    assert call.win_set_buf(0, 5) in nvim.api.mock_calls
+    assert call.win_set_buf(window, 5) in nvim.api.mock_calls
 
 
 _SWAP_BACK_ON = (
@@ -261,7 +263,7 @@ def test_goto_file_turns_swap_back_on_after_loading_only_when_adopted(
     state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=adopted)
     nvim = MagicMock()
     route_exec_lua(nvim, buffer=existing, display_name="/tmp/f.py")
-    nvim.api.list_tabpages.return_value = []
+    tabnew_adds_a_tab(nvim)
     nvim.api.buf_is_loaded.return_value = False
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.goto_file("/tmp/f.py")
@@ -280,7 +282,7 @@ def test_goto_file_leaves_a_loaded_buffers_swap_alone_even_when_adopted() -> Non
     state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=True)
     nvim = MagicMock()
     nvim.exec_lua.return_value = 5
-    nvim.api.list_tabpages.return_value = []
+    tabnew_adds_a_tab(nvim)
     nvim.api.buf_is_loaded.return_value = True
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.goto_file("/tmp/f.py")
@@ -295,13 +297,14 @@ def test_open_from_disk_turns_swap_back_on_after_loading_only_when_adopted(
     state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=adopted)
     nvim = MagicMock()
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
+    window = tabnew_adds_a_tab(nvim)
     nvim.funcs.bufadd.return_value = 42
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.ensure_showing("/tmp/f.py")
     calls = nvim.api.mock_calls
     back_on = call.exec2(_SWAP_BACK_ON, {"output": True})
     if adopted:
-        assert calls.index(call.win_set_buf(0, 42)) < calls.index(back_on)
+        assert calls.index(call.win_set_buf(window, 42)) < calls.index(back_on)
     else:
         assert back_on not in calls
 

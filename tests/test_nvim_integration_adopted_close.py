@@ -253,3 +253,21 @@ def test_a_stop_then_start_racing_a_read_never_wipes_the_users_modified_buffer(
     buffer = _buffer(nvim, mine)
     assert buffer is not None, "the user's buffer was wiped"
     assert buffer[:] == ["mine = 1", UNSAVED]
+
+
+def test_reads_leave_no_empty_buffer_behind(headless_nvim: str, tmp_path: Path) -> None:
+    """Final review of backlog-sweep-3, M7: every Read through
+    _open_from_disk left the empty buffer its `:tabnew` made, hidden
+    (buffers 3, 5, 7, … = '')."""
+    root = Path(os.path.realpath(tmp_path))
+    nvim, follower = _adopted(headless_nvim)
+
+    for path in _others(root, 5):
+        _read(follower, path, 5)
+
+    hidden_empty = [
+        buffer.number
+        for buffer in nvim.buffers
+        if buffer.name == "" and not nvim.funcs.win_findbuf(buffer.number)
+    ]
+    assert hidden_empty == []

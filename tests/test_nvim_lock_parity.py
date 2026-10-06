@@ -16,7 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
-from helpers import route_exec_lua
+from helpers import route_exec_lua, tabnew_adds_a_tab
 
 from vim_ai_follower import state
 from vim_ai_follower.animate import AnimationResult
@@ -95,6 +95,7 @@ def test_ensure_showing_leaves_an_adopted_followers_disk_loaded_buffer_modifiabl
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
+    tabnew_adds_a_tab(nvim)
     nvim.funcs.bufadd.return_value = 42
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -118,6 +119,7 @@ def test_apply_edit_leaves_an_adopted_followers_disk_loaded_buffer_modifiable(
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
+    tabnew_adds_a_tab(nvim)
     nvim.funcs.bufadd.return_value = 42
     ops = [EditOp(kind="replace", start_line=3, end_line=3, new_lines=("C",))]
     with (
@@ -140,6 +142,7 @@ def test_ensure_showing_locks_a_disk_loaded_buffer_for_a_never_seen_file() -> No
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
+    tabnew_adds_a_tab(nvim)
     nvim.funcs.bufadd.return_value = 42
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -159,6 +162,7 @@ def test_apply_edit_locks_the_disk_loaded_buffer_when_the_original_vanished() ->
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
+    tabnew_adds_a_tab(nvim)
     nvim.funcs.bufadd.return_value = 42
     ops = [EditOp(kind="replace", start_line=3, end_line=3, new_lines=("C",))]
     with (
@@ -229,6 +233,7 @@ def test_ensure_showing_of_a_new_file_with_the_state_gone_locks_nothing(tmp_path
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
+    tabnew_adds_a_tab(nvim)
     nvim.funcs.bufadd.return_value = 42
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),

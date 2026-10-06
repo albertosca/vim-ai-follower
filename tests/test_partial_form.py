@@ -26,7 +26,7 @@ from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
-from helpers import make_mock_tmux_run, register_fake_follower
+from helpers import make_mock_tmux_run, register_fake_follower, shows_the_buffer
 
 from vim_ai_follower import control, hooks, snapshot, state
 from vim_ai_follower.animate import AnimationResult, run_ops
@@ -145,6 +145,7 @@ def test_the_nvim_backend_persists_the_blank_ending_prefix_in_terminated_form(
 ) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
+    shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
     nvim.exec_lua.return_value = 3
     nvim.api.buf_get_lines.return_value = _BEFORE.splitlines()

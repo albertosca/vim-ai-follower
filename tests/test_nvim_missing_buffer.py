@@ -7,7 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
-from helpers import route_exec_lua
+from helpers import route_exec_lua, tabnew_adds_a_tab
 
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends.nvim import NvimFollower
@@ -36,6 +36,7 @@ def test_ensure_showing_loads_the_real_disk_content_when_no_buffer_exists() -> N
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
+    window = tabnew_adds_a_tab(nvim)
     nvim.funcs.bufadd.return_value = 42
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -61,7 +62,7 @@ def test_ensure_showing_loads_the_real_disk_content_when_no_buffer_exists() -> N
         "call bufload(42)",
         "filetype detect",
     ]
-    nvim.api.win_set_buf.assert_called_once_with(0, 42)
+    nvim.api.win_set_buf.assert_called_once_with(window, 42)
 
 
 def test_goto_line_clamps_an_offset_past_the_last_line() -> None:
@@ -92,6 +93,7 @@ def test_apply_edit_shows_disk_content_instead_of_animating_into_nothing() -> No
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
+    window = tabnew_adds_a_tab(nvim)
     nvim.funcs.bufadd.return_value = 42
     ops = [
         EditOp(kind="replace", start_line=5, end_line=5, new_lines=("E",)),
@@ -105,7 +107,7 @@ def test_apply_edit_shows_disk_content_instead_of_animating_into_nothing() -> No
     assert result == AnimationResult("completed", 2)
     goto_file.assert_not_called()
     nvim.api.exec2.assert_any_call("call bufload(42)", {"output": True})
-    nvim.api.win_set_buf.assert_called_once_with(0, 42)
+    nvim.api.win_set_buf.assert_called_once_with(window, 42)
     # nothing was animated into the freshly loaded buffer
     nvim.api.buf_set_lines.assert_not_called()
     nvim.api.buf_set_text.assert_not_called()

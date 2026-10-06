@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from helpers import fresh_buffer, route_exec_lua
+from helpers import fresh_buffer, route_exec_lua, shows_the_buffer
 
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends.nvim import NvimFollower
@@ -109,6 +109,7 @@ def test_show_fresh_mid_char_pause_leaves_the_half_typed_line_out_of_the_partial
 def test_run_ops_pause_records_the_applied_prefix_as_the_partial(tmp_path: Path) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
+    shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
     nvim.exec_lua.return_value = 3
     nvim.api.buf_get_lines.return_value = ["a", "b", "c"]
@@ -144,6 +145,7 @@ def test_resume_fresh_pause_records_the_buffer_prefix_plus_the_typed_lines(
     # ones this run typed.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
+    shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
     nvim.exec_lua.return_value = 3
     nvim.api.buf_get_lines.return_value = ["a", "x"]  # seedless: exactly the partial
@@ -170,6 +172,7 @@ def test_resume_fresh_pause_excludes_the_trailing_seed_blank_from_the_partial(
     # which the replay types in FRONT of — it is not part of the partial.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
+    shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
     nvim.exec_lua.return_value = 3
     nvim.api.buf_get_lines.return_value = ["a", ""]

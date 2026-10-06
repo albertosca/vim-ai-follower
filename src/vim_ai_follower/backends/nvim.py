@@ -405,6 +405,83 @@ def _name_without_swap(nvim: pynvim.Nvim, buf: pynvim.api.Buffer, file_path: str
     nvim.api.buf_set_name(buf, _display_name(nvim, file_path))
 
 
+def _show_in_window(nvim: pynvim.Nvim, window: pynvim.api.Window, buf: int, file_path: str) -> None:
+    """Put the buffer `buf` in `window`, make that window current, and wipe
+    the empty buffer it showed before (_wipe_if_scratch). NavigationFailed
+    when the current buffer is not `buf` afterwards (an autocommand moved
+    the cursor) or the API refused: under 'nohidden', replacing a window's
+    modified buffer raises E37, which used to escape the hook as a raw
+    NvimError (final review of backlog-sweep-3, N2/N3)."""
+    try:
+        replaced = nvim.api.win_get_buf(window)
+        nvim.api.win_set_buf(window, buf)
+        nvim.api.set_current_win(window)
+    except pynvim.NvimError as error:
+        raise NavigationFailed(
+            f"the follower's nvim could not show {file_path}: {error}"
+        ) from error
+    _wipe_if_scratch(nvim, replaced, buf)
+    if nvim.api.get_current_buf().handle != buf:
+        raise NavigationFailed(f"the follower's nvim did not land on {file_path}")
+
+
+def _is_scratch(nvim: pynvim.Nvim, buffer: pynvim.api.Buffer) -> bool:
+    """Whether `buffer` is the empty buffer a `:tabnew` makes: unnamed,
+    unmodified and holding one empty line.
+
+    Under 'nohidden' that buffer is already UNLOADED once replaced (measured,
+    nvim 0.12), and an unloaded buffer has no lines to read: unloaded and
+    unnamed it holds no text at all, so it counts as empty too."""
+    return (
+        nvim.api.buf_get_name(buffer) == ""
+        and not nvim.api.buf_get_option(buffer, "modified")
+        and (
+            not nvim.api.buf_is_loaded(buffer)
+            or (
+                nvim.api.buf_line_count(buffer) == 1
+                and nvim.api.buf_get_lines(buffer, 0, 1, False) == [""]
+            )
+        )
+    )
+
+
+def _wipe_if_scratch(nvim: pynvim.Nvim, scratch: pynvim.api.Buffer, kept: int) -> None:
+    """Wipe `scratch` when it is a `:tabnew`'s empty buffer (_is_scratch)
+    shown in no window, and not `kept`. Anything else may be the user's and
+    is left alone."""
+    if (
+        scratch.handle != kept
+        and _is_scratch(nvim, scratch)
+        and not nvim.funcs.win_findbuf(scratch.handle)
+    ):
+        nvim.command(f"silent! bwipeout {scratch.handle}")
+
+
+def _give_back_hijacked_windows(
+    nvim: pynvim.Nvim, shown_before: dict[int, int], added: pynvim.api.Window
+) -> None:
+    """Undo what a user autocommand that jumps on TabNew or BufNew (`autocmd
+    TabNew * tabfirst`) makes nvim's own `:tabnew` do: the jump runs before
+    the tabnew's empty buffer is entered, so that buffer lands in the window
+    the cursor jumped to, the USER's, while the added tab's window keeps
+    the split copy of what the old current window showed. Every window that
+    showed buffer B before the tabnew (`shown_before`: window handle ->
+    buffer handle) and now shows an empty scratch, while `added` shows B,
+    gets B back, and the scratch is wiped once shown nowhere. Measured
+    (2026-10-06, headless nvim 0.12): without this a Read hid the user's
+    buffer under 'hidden' and failed with E37 under 'nohidden' (final review
+    of backlog-sweep-3, N2). B stays displayed in `added` while it is given
+    back, so no abandon check runs on it."""
+    copied = nvim.api.win_get_buf(added).handle
+    for window_handle, buffer_handle in shown_before.items():
+        if buffer_handle != copied or not nvim.api.win_is_valid(window_handle):
+            continue
+        now = nvim.api.win_get_buf(window_handle)
+        if now.handle != buffer_handle and _is_scratch(nvim, now):
+            nvim.api.win_set_buf(window_handle, buffer_handle)
+            _wipe_if_scratch(nvim, now, buffer_handle)
+
+
 @dataclass(frozen=True)
 class NvimFollower:
     """Follower backend that animates edits in a real Neovim over the RPC API.
@@ -621,50 +698,65 @@ class NvimFollower:
             return self._drive(nvim, buf, run, list(lines) or [""], bomb_from=file_path)
 
     def _fresh_buffer(self, nvim: pynvim.Nvim, file_path: str, in_new_tab: bool) -> int:
-        """A new buffer named file_path, shown in a new tab (in_new_tab) or
-        the current window, made current; its handle.
+        """A new buffer named file_path, shown in a new tab (in_new_tab,
+        _show_in_new_tab) or the current window, made current; its handle.
 
         Created BY HANDLE and named before it is shown, never "the current
         buffer after `:tabnew`": a user autocommand that jumps on the tabnew
         (`BufEnter * if bufname('%') ==# '' … | tabfirst`) made the follower
         rename the USER's buffer onto Claude's file and the read-and-clear
         empty it, unsaved text and all (final review of backlog-sweep-3, I1,
-        reproduced at acce2b2). The new tab is found by handle too (the one
-        tabpage the tabnew added), and the empty buffer the tabnew put in it
-        is wiped once replaced, as `:enew` reuses an empty unnamed one. If,
-        after all that, the current buffer is still not the new one (another
-        autocommand moved the cursor), the new buffer is wiped again and
-        NavigationFailed raised: nothing has acted on any other buffer."""
-        buf = nvim.api.create_buf(True, False)
-        _name_without_swap(nvim, buf, file_path)
-        nvim.api.buf_set_var(buf, _CREATED, 1)
-        if in_new_tab:
-            before = {tab.handle for tab in nvim.api.list_tabpages()}
-            nvim.command("tabnew")
-            added = [tab for tab in nvim.api.list_tabpages() if tab.handle not in before]
-            window = nvim.api.tabpage_get_win(added[0]) if added else None
-        else:
-            window = nvim.api.get_current_win()
-        if window is not None:
-            scratch = nvim.api.win_get_buf(window)
-            nvim.api.win_set_buf(window, buf)
-            nvim.api.set_current_win(window)
-            if (
-                scratch != buf
-                and nvim.api.buf_get_name(scratch) == ""
-                and not nvim.api.buf_get_option(scratch, "modified")
-                and nvim.api.buf_line_count(scratch) == 1
-                and nvim.api.buf_get_lines(scratch, 0, 1, False) == [""]
-                and not nvim.funcs.win_findbuf(scratch.handle)
-            ):
-                nvim.command(f"silent! bwipeout {scratch.handle}")
-        handle: int = buf.handle
-        if window is None or nvim.api.get_current_buf() != buf:
+        reproduced at acce2b2). If it is not current afterwards
+        (NavigationFailed), the new buffer is wiped again: nothing has acted
+        on any other buffer."""
+        created = nvim.api.create_buf(True, False)
+        _name_without_swap(nvim, created, file_path)
+        nvim.api.buf_set_var(created, _CREATED, 1)
+        handle: int = created.handle
+        try:
+            if in_new_tab:
+                self._show_in_new_tab(nvim, handle, file_path)
+            else:
+                _show_in_window(nvim, nvim.api.get_current_win(), handle, file_path)
+        except NavigationFailed:
             nvim.command(f"silent! bwipeout! {handle}")
-            raise NavigationFailed(
-                f"the follower's nvim did not land on the new tab for {file_path}"
-            )
+            raise
         return handle
+
+    def _show_in_new_tab(self, nvim: pynvim.Nvim, buf: int, file_path: str) -> pynvim.api.Window:
+        """Show the existing buffer `buf` in one new tab and make it current;
+        that tab's window, which the caller may mark as the follower's
+        (`w:vaf_opened`).
+
+        The tab is found BY HANDLE (the one tabpage `:tabnew` added), never
+        as "the current window after `:tabnew`": a user autocommand that
+        jumps tabs on the tabnew (`BufEnter * if bufname('%') ==# '' |
+        tabfirst | endif`) put Claude's file into the USER's window, leaked
+        one empty tab per Read, marked the user's window `w:vaf_opened` (which
+        an adopted eviction then closed), and under 'nohidden' raised a raw
+        E37 out of every Read (final review of backlog-sweep-3, N2/N3). The
+        empty buffer the tabnew made is wiped once replaced, as `:enew`
+        reuses an empty unnamed one (final M7: one leaked per Read). Raises
+        NavigationFailed when no tab was added or `buf` is not current
+        afterwards; it never wipes `buf`, which may be the user's (a caller
+        that created it wipes it)."""
+        before = {tab.handle for tab in nvim.api.list_tabpages()}
+        shown_before = {
+            window.handle: nvim.api.win_get_buf(window).handle for window in nvim.api.list_wins()
+        }
+        nvim.command("tabnew")
+        added = [tab for tab in nvim.api.list_tabpages() if tab.handle not in before]
+        if not added:
+            raise NavigationFailed(f"the follower's nvim did not open a tab for {file_path}")
+        window: pynvim.api.Window = nvim.api.tabpage_get_win(added[0])
+        try:
+            _give_back_hijacked_windows(nvim, shown_before, window)
+        except pynvim.NvimError as error:
+            raise NavigationFailed(
+                f"the follower's nvim could not open a tab for {file_path}: {error}"
+            ) from error
+        _show_in_window(nvim, window, buf, file_path)
+        return window
 
     def _run_ops(
         self,
@@ -1036,11 +1128,17 @@ class NvimFollower:
         would trigger Vim's "abandon unsaved changes" guard (E37) or
         silently discard typed-but-unsaved content and reload from disk,
         exactly what this backend must never do (its buffers are never
-        written; see show_fresh). This is the entry point that NEVER reads
-        disk — a missing buffer is created EMPTY here, because show_fresh's
-        callers must not see the finished file flashed before it is typed.
-        ensure_showing is the sibling that does read disk. Looked up via
-        _buffer_number, never bufnr() — see there."""
+        written; see show_fresh). This is the entry point that never SHOWS
+        disk content — a missing buffer is created EMPTY here, because
+        show_fresh's callers must not see the finished file flashed before
+        it is typed. Its one disk read is the read-then-clear of that
+        missing buffer (_READ_THEN_CLEAR_LUA): it lands on the buffer just
+        created, empty and in a tab of its own, inside one request, so
+        nothing is on screen and nothing can be discarded; it only makes the
+        buffer "edited", so a later plain `:w` saves it. ensure_showing is
+        the sibling that shows disk content. Every new tab is found by
+        handle (_show_in_new_tab). Looked up via _buffer_number, never
+        bufnr() — see there."""
         nvim = self._connect()
         with self._guarded(nvim, "goto_file"):
             bufnr = _buffer_number(nvim, file_path)
@@ -1066,19 +1164,21 @@ class NvimFollower:
                 loading = not nvim.api.buf_is_loaded(bufnr)
                 if loading:
                     nvim.api.buf_set_option(bufnr, "swapfile", False)
-                nvim.command("tabnew")
-                nvim.api.win_set_buf(0, bufnr)
+                window = self._show_in_new_tab(nvim, bufnr, file_path)
                 # The window is the follower's, the buffer is not (s:evict).
-                nvim.api.win_set_var(0, _OPENED, 1)
+                # Marked by the handle _show_in_new_tab proved is the new
+                # tab's, never window 0, which a jumping autocommand makes
+                # the user's own.
+                nvim.api.win_set_var(window, _OPENED, 1)
                 if loading:
                     self._restore_swap_if_adopted(nvim)
                 return
-            # No such buffer at all — create one fresh, in a new tab.
-            nvim.command("tabnew")
-            buf = nvim.api.create_buf(True, False)
-            _name_without_swap(nvim, buf, file_path)
-            nvim.api.buf_set_var(buf, _CREATED, 1)
-            nvim.api.win_set_buf(0, buf)
+            # No such buffer at all — create one in a new tab, then read the
+            # file in and clear it in one request (_READ_THEN_CLEAR_LUA, as
+            # show_fresh does): naming left it "not edited", so a plain `:w`
+            # after a hand-off hit E13 (C2-C5 (c)).
+            buf = self._fresh_buffer(nvim, file_path, in_new_tab=True)
+            nvim.exec_lua(_READ_THEN_CLEAR_LUA, buf)
             self._restore_swap_if_adopted(nvim)
 
     def _open_from_disk(self, nvim: pynvim.Nvim, file_path: str) -> None:
@@ -1166,8 +1266,11 @@ class NvimFollower:
         # hit-enter prompt (nvim_prompt).
         self._exec(nvim, f"call bufload({bufnr})")
         nvim.api.buf_set_option(bufnr, "buflisted", True)
-        nvim.command("tabnew")
-        nvim.api.win_set_buf(0, bufnr)
+        try:
+            self._show_in_new_tab(nvim, bufnr, file_path)
+        except NavigationFailed:
+            nvim.command(f"silent! bwipeout! {bufnr}")
+            raise
         self._restore_swap_if_adopted(nvim)
         self._exec(nvim, "filetype detect")
         if self._locks_buffers():
@@ -1197,9 +1300,11 @@ class NvimFollower:
         and binary-file entry point, where the finished content is exactly
         what should appear because nothing is animated afterwards.
 
-        This is THE disk-reading entry point of this backend; goto_file is
-        the one that NEVER reads disk, because show_fresh's callers rely on
-        the finished file not being flashed before it is typed. An existing
+        This is THE entry point of this backend that shows disk content;
+        goto_file never shows it (its one read, the read-then-clear of a
+        buffer it creates, is cleared in the same request), because
+        show_fresh's callers rely on the finished file not being flashed
+        before it is typed. An existing
         buffer is switched to and re-read only when it is CLEAN (see
         _reload_if_clean), in a dedicated and an adopted nvim alike, so a
         file rewritten outside Claude's Edits (a formatter, `sed -i`, a

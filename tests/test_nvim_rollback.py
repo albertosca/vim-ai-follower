@@ -13,6 +13,7 @@ from typing import Any
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+from helpers import shows_the_buffer
 
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends.nvim import NvimFollower
@@ -30,6 +31,7 @@ def _mock_nvim(line_counts: list[int], old_lines: list[str]) -> MagicMock:
     real buffer shrinks and grows as the op deletes and types) and whose
     buf_get_lines returns the range the op is about to delete."""
     nvim = MagicMock()
+    shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
     nvim.api.buf_line_count.side_effect = line_counts
     nvim.api.buf_get_lines.return_value = old_lines

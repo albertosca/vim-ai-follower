@@ -71,6 +71,45 @@ def register_fake_follower(
         )
 
 
+def shows_the_buffer(nvim: MagicMock, number: object = None) -> None:
+    """Wire a mock nvim so goto_file finds the looked-up buffer already shown
+    in a window (its switch branch): one tab, one window, showing the buffer
+    `number`, or by default whatever exec_lua answers at the time of the
+    call (the buffer lookup of a test that sets exec_lua.return_value). A
+    bare MagicMock lists no tab at all, so goto_file would take its new-tab
+    branch, which proves the tab it adds (_show_in_new_tab) and fails."""
+    nvim.api.list_tabpages.return_value = [MagicMock(name="tab")]
+    nvim.api.tabpage_list_wins.return_value = [MagicMock(name="window")]
+    nvim.api.win_get_buf.side_effect = lambda window: MagicMock(
+        number=nvim.exec_lua.return_value if number is None else number
+    )
+
+
+def tabnew_adds_a_tab(nvim: MagicMock) -> MagicMock:
+    """Wire a mock nvim so `:tabnew` adds one tabpage and whatever buffer is
+    put in a window becomes the current one: what _show_in_new_tab needs to
+    prove it landed. Returns the new tab's window, the one the buffer must
+    be put in (never window 0, see _show_in_new_tab)."""
+    old_tab, new_tab = MagicMock(handle=1), MagicMock(handle=2)
+    window = MagicMock(name="the new tab's window")
+    opened: list[MagicMock] = []
+    shown: list[object] = []
+
+    def command(text: str) -> None:
+        if text == "tabnew":
+            opened.append(new_tab)
+
+    def win_set_buf(target: object, buffer: object) -> None:
+        shown.append(buffer)
+
+    nvim.command.side_effect = command
+    nvim.api.list_tabpages.side_effect = lambda: [old_tab, *opened]
+    nvim.api.tabpage_get_win.side_effect = lambda tab: window
+    nvim.api.win_set_buf.side_effect = win_set_buf
+    nvim.api.get_current_buf.side_effect = lambda: MagicMock(handle=shown[-1] if shown else None)
+    return window
+
+
 def fresh_buffer(nvim: MagicMock, handle: int = 7) -> MagicMock:
     """Wire a mock nvim for NvimFollower._fresh_buffer, which show_fresh
     names, reads and types into: the buffer create_buf returns is

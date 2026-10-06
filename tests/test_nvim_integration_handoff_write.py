@@ -82,3 +82,23 @@ def test_plain_w_still_warns_when_the_file_changed_outside_since(
     time.sleep(0.3)
     assert "changed since reading" in other.command_output("messages")
     assert target.read_text() == "changed outside\n"
+
+
+@pytest.mark.parametrize("on_disk", [True, False], ids=["exists", "new-file"])
+def test_plain_w_saves_a_buffer_goto_file_created(
+    headless_nvim: str, tmp_path: Path, on_disk: bool
+) -> None:
+    """C2-C5 (c): goto_file's "no buffer at all" branch named a new buffer,
+    which left it "not edited", so a plain `:w` over the existing file hit
+    E13 exactly as show_fresh's did before its read-then-clear."""
+    target = tmp_path / "made.py"
+    if on_disk:
+        target.write_text("before = 1\n")
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    follower.goto_file(str(target))
+
+    other = pynvim.attach("socket", path=headless_nvim)
+    other.current.buffer[:] = ["typed = 1"]
+    other.command("w")
+
+    assert target.read_text() == "typed = 1\n"

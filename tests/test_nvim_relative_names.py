@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
-from helpers import fresh_buffer, route_exec_lua
+from helpers import fresh_buffer, route_exec_lua, tabnew_adds_a_tab
 
 from vim_ai_follower.backends.nvim import _DISPLAY_NAME_LUA, NvimFollower, _display_name
 
@@ -54,6 +54,7 @@ def test_show_fresh_names_its_buffer_with_the_display_name(tmp_path: Path) -> No
 
 def test_goto_file_names_the_buffer_it_creates_with_the_display_name() -> None:
     nvim = _nvim("sub/a.py")
+    tabnew_adds_a_tab(nvim)
     buf = nvim.api.create_buf.return_value
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         NvimFollower(socket_path="/tmp/x.sock").goto_file("/p/sub/a.py")
@@ -62,6 +63,7 @@ def test_goto_file_names_the_buffer_it_creates_with_the_display_name() -> None:
 
 def test_ensure_showing_adds_the_buffer_under_the_display_name() -> None:
     nvim = _nvim("sub/a.py")
+    tabnew_adds_a_tab(nvim)
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch.object(NvimFollower, "goto_file"),

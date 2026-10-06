@@ -5,12 +5,13 @@ from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
-from helpers import fresh_buffer, route_exec_lua
+from helpers import fresh_buffer, route_exec_lua, shows_the_buffer, tabnew_adds_a_tab
 
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends import get_follower
 from vim_ai_follower.backends.nvim import (
     _FIND_BUFFER_LUA,
+    _READ_THEN_CLEAR_LUA,
     NvimFollower,
     _animate_lines,
     _bomb_from_disk,
@@ -269,7 +270,7 @@ def test_show_fresh_opens_a_new_tab_when_requested(tmp_path: Path) -> None:
     window = nvim.api.tabpage_get_win.return_value
     added = nvim.api.tabpage_get_win.call_args.args[0]
     assert added.handle == 2
-    assert call.api.win_set_buf(window, nvim.api.create_buf.return_value) in nvim.mock_calls
+    assert call.api.win_set_buf(window, 7) in nvim.mock_calls
     nvim.api.set_current_win.assert_called_once_with(window)
 
 
@@ -390,6 +391,7 @@ def test_apply_edit_pause_at_op_boundary_saves_ops_and_resumes(tmp_path: Path) -
 
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
+    shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
     nvim.api.buf_line_count.return_value = 1
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
@@ -423,6 +425,7 @@ def test_apply_edit_pause_at_op_boundary_saves_ops_and_resumes(tmp_path: Path) -
 def test_apply_edit_pause_at_op_boundary_then_interrupt(tmp_path: Path) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
+    shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
     with (
@@ -438,6 +441,7 @@ def test_apply_edit_pause_at_op_boundary_then_interrupt(tmp_path: Path) -> None:
 def test_apply_edit_pause_inside_an_ops_lines_saves_and_resumes(tmp_path: Path) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
+    shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
     nvim.api.buf_line_count.return_value = 1
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
@@ -561,6 +565,7 @@ def test_stop_is_a_noop_for_an_adopted_nvim(tmp_path: Path) -> None:
 def test_apply_edit_deletes_then_animates_each_op(tmp_path: Path) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
+    shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
     ops = compute_edit_script("hello\nworld\n", "hello\nvim ai follower\n")
     with (
@@ -600,6 +605,7 @@ def test_apply_edit_navigates_to_the_tab_showing_file_path(tmp_path: Path) -> No
 def test_apply_edit_interrupted_reports_completed_op_index(tmp_path: Path) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
+    shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
     nvim.api.buf_line_count.return_value = 1
     ops = [
@@ -622,6 +628,7 @@ def test_apply_edit_interrupted_inside_an_ops_line_animation(tmp_path: Path) -> 
     # op boundary), so apply_edit must surface interrupted at that op's index.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
+    shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
     nvim.api.buf_line_count.return_value = 1
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
@@ -639,6 +646,7 @@ def test_apply_edit_interrupted_inside_an_ops_line_animation(tmp_path: Path) -> 
 def test_apply_edit_pure_delete_op_needs_no_animation(tmp_path: Path) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
+    shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
     op = EditOp(kind="delete", start_line=2, end_line=3, new_lines=())
     with (
@@ -750,11 +758,14 @@ def test_goto_file_opens_a_new_tab_when_the_buffer_exists_but_isnt_shown() -> No
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
     nvim.exec_lua.return_value = 9
-    nvim.api.list_tabpages.return_value = []  # no tab shows it
+    window = tabnew_adds_a_tab(nvim)  # no tab shows it yet
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.goto_file("/tmp/f.py")
     nvim.command.assert_called_once_with("tabnew")
-    nvim.api.win_set_buf.assert_called_once_with(0, 9)
+    # Into the window of the tab the tabnew ADDED, and marked there: window 0
+    # is the user's own when an autocommand jumps on the tabnew (N3).
+    nvim.api.win_set_buf.assert_called_once_with(window, 9)
+    nvim.api.win_set_var.assert_called_once_with(window, "vaf_opened", 1)
     nvim.api.create_buf.assert_not_called()
 
 
@@ -762,13 +773,21 @@ def test_goto_file_creates_a_new_buffer_in_a_new_tab_when_none_exists() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
-    nvim.api.create_buf.return_value = 42
+    window = tabnew_adds_a_tab(nvim)
+    created = MagicMock(handle=42)
+    nvim.api.create_buf.return_value = created
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.goto_file("/tmp/f.py")
     nvim.command.assert_called_once_with("tabnew")
     nvim.api.create_buf.assert_called_once_with(True, False)
-    nvim.api.buf_set_name.assert_called_once_with(42, "/tmp/f.py")
-    nvim.api.win_set_buf.assert_called_once_with(0, 42)
+    nvim.api.buf_set_name.assert_called_once_with(created, "/tmp/f.py")
+    nvim.api.win_set_buf.assert_called_once_with(window, 42)
+    # Read in and cleared, so a plain `:w` saves it (C2-C5 (c)); after it is
+    # shown, so the read lands on the new buffer and nowhere else.
+    calls = nvim.mock_calls
+    assert calls.index(call.api.win_set_buf(window, 42)) < calls.index(
+        call.exec_lua(_READ_THEN_CLEAR_LUA, 42)
+    )
 
 
 def test_ensure_showing_delegates_to_goto_file_when_the_buffer_exists() -> None:

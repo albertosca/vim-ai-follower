@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
-from helpers import fresh_buffer, route_exec_lua
+from helpers import fresh_buffer, route_exec_lua, shows_the_buffer
 
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends.nvim import NvimFollower, _animate_lines
@@ -109,6 +109,7 @@ def test_apply_edit_interrupted_mid_op_line_reports_op_index_with_no_snap(
 ) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.05)
     nvim = MagicMock()
+    shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
     nvim.api.buf_line_count.return_value = 1
     op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("wxyz",))

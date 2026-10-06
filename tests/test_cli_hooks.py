@@ -24,6 +24,7 @@ from helpers import (
     rename_spelled,
     resolve_typed_paths,
     route_exec_lua,
+    shows_the_buffer,
     wipe_spelled,
 )
 from helpers import make_mock_tmux_run as _mock_tmux_run
@@ -505,6 +506,7 @@ def test_eviction_wipes_the_buffer_for_the_nvim_backend(
     nvim = MagicMock()
     # buffer 7 is what the lookup resolves str(a) to; the naming answers the path itself
     route_exec_lua(nvim, buffer=7, display_name=str(c))
+    shows_the_buffer(nvim, number=7)  # goto_file switches to it, opens no tab
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("pynvim.attach", return_value=nvim),

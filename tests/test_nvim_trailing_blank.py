@@ -8,6 +8,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
+from helpers import shows_the_buffer
+
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends.nvim import NvimFollower
 from vim_ai_follower.diff import EditOp, compute_edit_script
@@ -22,6 +24,7 @@ def test_apply_edit_drops_the_implicit_blank_when_an_op_wipes_the_whole_buffer(
     # typing completes, exactly as show_fresh drops its own seed blank.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
+    shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
     nvim.api.buf_line_count.return_value = 1
     ops = compute_edit_script("a = 1\n", "a = 2\n")
@@ -44,6 +47,7 @@ def test_apply_edit_wipe_and_replace_of_a_multiline_buffer_drops_only_one_blank(
     # not a single-line file, to prove the fix isn't special-cased to N=1.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
+    shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
     nvim.api.buf_line_count.return_value = 3
     ops = compute_edit_script("a\nb\nc\n", "x\ny\n")
@@ -65,6 +69,7 @@ def test_apply_edit_does_not_drop_a_line_when_other_content_survives(tmp_path: P
     # no extra buf_set_lines drop call should be issued.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = MagicMock()
+    shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
     nvim.api.buf_line_count.return_value = 3
     ops = compute_edit_script("a\nb\nc\n", "a\nB\nc\n")
@@ -93,6 +98,7 @@ def test_apply_edit_pure_delete_that_empties_the_buffer_leaves_the_implicit_blan
     # representation of an emptied buffer here (same as an empty file).
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
+    shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
     nvim.api.buf_line_count.return_value = 1
     op = EditOp(kind="delete", start_line=1, end_line=1, new_lines=())
@@ -113,6 +119,7 @@ def test_apply_edit_interrupted_mid_wipe_rolls_back_instead_of_dropping(tmp_path
     # swallows the implicit blank here — no separate drop call.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
+    shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
     # pre-delete (1 = the sole line "z"), post-delete (1 = the implicit blank
     # alone), interrupt (2 = the row inserted for "a" plus that blank).
