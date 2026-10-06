@@ -1000,10 +1000,15 @@ endfunction
 
 # The whole script. `@DIR@` is the cache directory (a Vim string literal,
 # trailing slash included) and `@NAME@` the dispatcher's name, both filled in
-# by _vim_functions. The dispatcher is defined LAST, so `exists()` of it is
-# true only once everything before it was read. The loop after it deletes the
-# dispatchers of other versions: a `VafFollower_<6 hex>` only when Vim says it
-# was set from the follower's own script for that hash, `vaf-<6 hex>.vim`
+# by _vim_functions. The dispatcher is defined LAST, and only when every
+# `s:` helper the script defines exists (`@HELPERS@`, the `exists()` chain
+# _vim_functions builds from the script's own `function! s:` lines, so it
+# cannot drift): `:source` carries on past an error and the define line's
+# `sil!` hides it, so a helper that failed to define (a Vim too old for its
+# syntax) leaves no dispatcher, the calls do nothing and the navigation
+# fails safe (SHRINK review, M3). The loop after it deletes the dispatchers
+# of other versions: a `VafFollower_<6 hex>` only when Vim says it was set
+# from the follower's own script for that hash, `vaf-<6 hex>.vim`
 # (`:verbose function`'s "Last set from <path>" line, whose words are
 # translated but whose path is not; measured 2026-10-05 in C and pt_BR). A
 # user function of the same name shape, set anywhere else, stays (review of
@@ -1028,9 +1033,11 @@ _VIM_SCRIPT = (
     + _VIM_EVICT
     + _VIM_PROBE
     + r"""
+if @HELPERS@
 function! @NAME@(op, ...) abort
   return call('s:' . a:op, a:000)
 endfunction
+endif
 
 for s:name in getcompletion('VafFollower_', 'function')
   let s:name = matchstr(s:name, '^VafFollower_\x\{6}\ze(')
@@ -1195,7 +1202,10 @@ def _vim_functions() -> tuple[str, str]:
     directory. The name carries a hash of the text, so any change to the
     script, or another cache directory, is another name (see the comment at
     the top)."""
-    text = _VIM_SCRIPT.replace("@DIR@", _vim_string(f"{cache.CACHE_DIR}/"))
+    helpers = dict.fromkeys(re.findall(r"^function! s:(\w+)", _VIM_SCRIPT, re.MULTILINE))
+    text = _VIM_SCRIPT.replace("@DIR@", _vim_string(f"{cache.CACHE_DIR}/")).replace(
+        "@HELPERS@", " && ".join(f"exists('*s:{helper}')" for helper in helpers)
+    )
     name = "VafFollower_" + hashlib.sha256(text.encode()).hexdigest()[:6]
     return name, text.replace("@NAME@", name)
 

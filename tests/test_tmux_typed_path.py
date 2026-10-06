@@ -596,3 +596,42 @@ def test_a_real_vim_drops_the_dispatchers_of_other_versions_and_nothing_else(
         stdin=subprocess.DEVNULL,
     )
     assert out.read_text().splitlines() == ["0", "1", "1", "1"]
+
+
+@pytest.mark.integration
+def test_a_real_vim_defines_no_dispatcher_from_a_half_loaded_script(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`:source` carries on past an error, and the define line's `sil!`
+    hides it: a helper that failed to define must not leave a dispatcher
+    behind, or every call would run against a half-loaded script. Without
+    the dispatcher the calls do nothing and the navigation fails safe."""
+    broken = tmux_vim._VIM_SCRIPT.replace(
+        "function! s:goto(token, folds) abort", "function! s:goto(token, folds abort"
+    )
+    assert broken != tmux_vim._VIM_SCRIPT
+    monkeypatch.setattr(tmux_vim, "_VIM_SCRIPT", broken)
+    with patch.object(tmux_vim, "_home_relative", return_value=None):
+        define = tmux_vim._define_line("%3")
+    name = tmux_vim._vim_functions()[0]
+    out = tmp_path / "out.txt"
+    subprocess.run(
+        [
+            "vim",
+            "-Nu",
+            "NONE",
+            "-i",
+            "NONE",
+            "-es",
+            "-c",
+            define.removeprefix(":"),
+            "-c",
+            f"call writefile([exists('*{name}') . ''], '{out}')",
+            "-c",
+            "qa!",
+        ],
+        check=False,
+        timeout=30,
+        stdin=subprocess.DEVNULL,
+    )
+    assert out.read_text().splitlines() == ["0"]
