@@ -144,7 +144,10 @@ _OUR_READONLY_CLAIM = " | let b:vaf_ro_ours = 1"
 # costs no extra keystrokes into a Vim the user is about to type into (a
 # separate probe line at the hand-off interleaved with the user's first keys;
 # measured 2026-09-28 with a test's keys, which garbled both command lines).
-# Inside try/catch: no failure may leave a prompt. The answer closes with the
+# s:give_back is the same give-back for the buffer a path handle names, by
+# number, and writes no answer: the post-pause goto that failed
+# (NavigationFailed) left some other buffer current, and no cue follows
+# (final M1). Inside try/catch: no failure may leave a prompt. The answer closes with the
 # restore's token (_readonly_token), and user_readonly reads only the answer
 # to the restore its own process sent: the file is named by the pane id
 # alone, which two tmux servers can share (`%2` in each), so one server's
@@ -164,17 +167,34 @@ function! s:unlock() abort
   let b:vaf_ro_ours = 2
 endfunction
 
+function! s:readonly_back(number) abort
+  let variables = getbufvar(a:number, '')
+  if get(variables, 'vaf_user_ro')
+    call setbufvar(a:number, '&readonly', 1)
+    call setbufvar(a:number, 'vaf_ro_ours', 0)
+  elseif get(variables, 'vaf_ro_ours') == 2
+    call setbufvar(a:number, 'vaf_ro_ours', 0)
+  endif
+  if !get(variables, 'vaf_user_ma', 1)
+    call setbufvar(a:number, '&modifiable', 0)
+  endif
+  for name in ['vaf_user_ro', 'vaf_user_ma']
+    if has_key(variables, name)
+      call remove(variables, name)
+    endif
+  endfor
+endfunction
+
+function! s:give_back(token, folds) abort
+  let path = s:read(a:token)
+  let number = path ==# '' ? -1 : s:find(path, a:folds)
+  if number > 0
+    call s:readonly_back(number)
+  endif
+endfunction
+
 function! s:restore_readonly(pane, token) abort
-  if get(b:, 'vaf_user_ro')
-    setlocal readonly
-    let b:vaf_ro_ours = 0
-  elseif get(b:, 'vaf_ro_ours') == 2
-    let b:vaf_ro_ours = 0
-  endif
-  if !get(b:, 'vaf_user_ma', 1)
-    setlocal nomodifiable
-  endif
-  unlet! b:vaf_user_ro b:vaf_user_ma
+  call s:readonly_back(bufnr('%'))
   let answer = &readonly && !get(b:, 'vaf_ro_ours') ? '1' : '0'
   try
     call writefile([answer, a:token], s:dir . 'readonly-' . a:pane . '.txt')
@@ -1719,7 +1739,7 @@ class TmuxVimFollower:
         return token
 
     def _with_unlocked(
-        self, relock: _Relock, run: Callable[[TmuxPane], AnimationResult]
+        self, relock: _Relock, file_path: str, run: Callable[[TmuxPane], AnimationResult]
     ) -> AnimationResult:
         """Owns the lock protocol shared by every animation entry point.
         'paste' suppresses autoindent/smartindent/cindent for the duration:
@@ -1735,14 +1755,31 @@ class TmuxVimFollower:
         resume) — the buffer's name matches the file Claude just wrote, so
         the reload is visually a no-op, but it grounds the buffer's
         timestamp and clears the W11 staleness that an unsynced retype
-        would otherwise leave behind."""
+        would otherwise leave behind.
+
+        A post-pause goto that fails (NavigationFailed, from run's on_resume)
+        stops the animation mid-way with no relock: the user's 'paste' goes
+        back, and in an adopted Vim the readonly of file_path's buffer, found
+        by handle (s:give_back), never the current buffer's, which is
+        whatever the failed goto left current. The remainder is already back
+        on disk (animate._resume) and the error goes on to the caller."""
         adopted = self._is_adopted()
         pane = TmuxPane(pane_id=self.pane_id)
         pane.send_text(_COC_DISABLE)
         pane.send_key("Enter")
         pane.send_text(_call_line("unlock") if adopted else _UNLOCK_FOR_ANIMATION)
         pane.send_key("Enter")
-        result = run(pane)
+        try:
+            result = run(pane)
+        except NavigationFailed:
+            self._normal_mode(pane)
+            pane.send_text(_RESTORE_PASTE)
+            pane.send_key("Enter")
+            if adopted and file_path:
+                handle = _path_handle(self.pane_id, file_path)
+                pane.send_text(_call_line("give_back", handle.name, _case_folds(file_path)))
+                pane.send_key("Enter")
+            raise
         if result.outcome != "interrupted":
             pane.send_text(relock.line(adopted))
             pane.send_key("Enter")
@@ -1778,6 +1815,7 @@ class TmuxVimFollower:
         self.goto_file(file_path)
         return self._with_unlocked(
             _RELOCK_SYNCED,
+            file_path,
             lambda pane: run_ops(
                 pane,
                 self.window_id,
@@ -1842,7 +1880,7 @@ class TmuxVimFollower:
                 base_content="",
             )
 
-        return self._with_unlocked(_RELOCK_READONLY_SYNCED, run)
+        return self._with_unlocked(_RELOCK_READONLY_SYNCED, file_path, run)
 
     def resume(
         self,
@@ -1892,6 +1930,7 @@ class TmuxVimFollower:
         if isinstance(pending, PendingApplyEdit):
             return self._with_unlocked(
                 _RELOCK_SYNCED if reload else _RELOCK_PLAIN,
+                pending.file_path,
                 lambda pane: run_ops(
                     pane,
                     self.window_id,
@@ -1904,6 +1943,7 @@ class TmuxVimFollower:
             )
         return self._with_unlocked(
             _RELOCK_READONLY_SYNCED if reload else _RELOCK_READONLY_PLAIN,
+            pending.file_path,
             lambda pane: run_lines(
                 pane,
                 self.window_id,

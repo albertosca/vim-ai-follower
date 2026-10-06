@@ -466,9 +466,13 @@ def cmd_pause(env: dict[str, str]) -> int:
         try:
             result = follower.resume(pending)
         except NavigationFailed as failure:
-            # Nothing was typed after the failed navigation: the remainder is
-            # still whole, so it stays recoverable.
-            _resave_pending(session.window_id, pending)
+            # A failed first navigation typed nothing: the remainder is still
+            # whole, so it stays recoverable. A goto that failed after a pause
+            # inside the replay already saved what was left at that point
+            # (animate._resume), and that one is kept: the original would
+            # replay ops already typed (final M1).
+            if not control.has_pending_animation(session.window_id):
+                _resave_pending(session.window_id, pending)
             print(f"claude-follow: could not resume: {failure}", file=sys.stderr)
             return 1
     finally:

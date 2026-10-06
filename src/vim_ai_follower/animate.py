@@ -174,6 +174,26 @@ def _wait_while_paused(
         control.mark_animating(window_id, base_dir, state="running")
 
 
+def _resume(on_resume: Callable[[], None] | None, save_pending: Callable[[], None]) -> None:
+    """Run the post-pause navigation (on_resume). The pause wait has just
+    discarded the pending, so a navigation that fails (NavigationFailed: the
+    follower's Vim did not land) saves the remainder again before the error
+    escapes: nothing was typed since the pause, so the remainder from this
+    boundary is exactly what is still to type (final M1). Without it the
+    caller found nothing, or re-saved the ORIGINAL remainder, and the next P
+    replayed ops already on screen."""
+    # Imported here: the backends package imports this module.
+    from vim_ai_follower.backends import NavigationFailed
+
+    if on_resume is None:
+        return
+    try:
+        on_resume()
+    except NavigationFailed:
+        save_pending()
+        raise
+
+
 def run_ops(
     pane: TmuxPane,
     window_id: str,
@@ -247,8 +267,7 @@ def run_ops(
                 if not _wait_while_paused(window_id, save_pending, base_dir):
                     return AnimationResult("interrupted", index)
                 deadline += time.monotonic() - paused_at
-                if on_resume is not None:
-                    on_resume()
+                _resume(on_resume, save_pending)
                 continue  # resumed: retry this op from its clean boundary
 
         insert_seq, prefix_len = _insert_sequences(op)
@@ -279,8 +298,7 @@ def run_ops(
                 if not _wait_while_paused(window_id, save_pending, base_dir):
                     return AnimationResult("interrupted", index)
                 deadline += time.monotonic() - paused_at
-                if on_resume is not None:
-                    on_resume()
+                _resume(on_resume, save_pending)
                 continue
 
         index += 1
@@ -386,8 +404,7 @@ def run_lines(
             if not _wait_while_paused(window_id, save_pending, base_dir):
                 return AnimationResult("interrupted", index)
             deadline += time.monotonic() - paused_at
-            if on_resume is not None:
-                on_resume()
+            _resume(on_resume, save_pending)
             continue  # resumed: retry this line (same opener, clean boundary)
         index += 1
     return AnimationResult("completed", len(lines))

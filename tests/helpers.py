@@ -134,7 +134,7 @@ _SOURCED = re.compile(r"sil! so [^|\s]+|exe 'sil! so ' \. fnameescape\('(?:[^']|
 _CALL = re.compile(r"call <fn>\('(\w+)'((?:,[^,)]+)*)\)")
 _HANDLE = re.compile(r"'(p[0-9]+-[0-9a-f]{6})'")
 # The calls whose handle argument names a path (tmux_vim._path_handle).
-_READING_OPS = {"goto", "rename", "wipe", "probe", "evict"}
+_READING_OPS = {"goto", "rename", "wipe", "probe", "evict", "give_back"}
 # Every handle the backend created during the test, by name (conftest's
 # autouse record_path_handles): a test may read its sends after its own
 # CACHE_DIR patch is gone, and the line names the handle only.

@@ -578,3 +578,28 @@ def test_pause_resume_that_cannot_reach_the_file_keeps_the_remainder(
     assert "could not resume: did not land (no answer)" in capsys.readouterr().err
     assert control.has_pending_animation("@1") is True
     assert control.is_animating("@1") is False
+
+
+def test_a_resume_that_fails_after_a_pause_keeps_the_drivers_remainder() -> None:
+    """Final M1: the replay typed op 0, was paused, and its post-pause goto
+    failed. The driver saved the remainder from op 1 before the error came
+    out; re-saving the ORIGINAL over it would replay op 0 on the next P."""
+    _register_fake_follower("@1", "%2")
+    typed = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("typed",))
+    left = EditOp(kind="insert", start_line=2, end_line=1, new_lines=("left",))
+    control.save_pending_apply_edit("@1", [typed, left], 0.0, file_path="/tmp/f.py", partial="")
+
+    def typed_one_then_failed(*_args: object, **_kwargs: object) -> None:
+        control.save_pending_apply_edit("@1", [left], 0.0, file_path="/tmp/f.py", partial="typed\n")
+        raise NavigationFailed("did not land (no answer)")
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()),
+        patch.object(TmuxVimFollower, "resume", side_effect=typed_one_then_failed),
+    ):
+        assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 1
+
+    assert control.load_pending_animation("@1") == control.PendingApplyEdit(
+        [left], 0.0, file_path="/tmp/f.py", partial="typed\n"
+    )

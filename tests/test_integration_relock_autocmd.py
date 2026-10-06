@@ -31,11 +31,13 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from vim_ai_follower import control
 from vim_ai_follower.animate import AnimationResult
+from vim_ai_follower.backends import NavigationFailed
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.diff import compute_edit_script
 from vim_ai_follower.state import FollowerState
@@ -202,3 +204,62 @@ def test_an_interrupt_hands_back_the_users_own_nomodifiable(
 
     assert result.outcome == "interrupted"
     assert state(pane, tmp_path, wait_until)[0] == "0"
+
+
+def test_a_goto_that_fails_after_a_pause_gives_the_animated_buffer_its_readonly_back(
+    tmux_session: str, tmp_path: Path, wait_until: Callable[..., bool]
+) -> None:
+    """Final M1 on a real Vim: an adopted animation is paused, and its
+    post-pause goto does not land (here: the cursor is on another tab, as
+    a user autocommand or a busy Vim leaves it). The animated buffer had
+    the user's readonly, which the unlock took; it gets it back by handle,
+    the buffer that IS current is not touched, and 'paste' is the user's."""
+    target = tmp_path / "t.py"
+    target.write_text(BEFORE)
+    pane = vim_pane(tmux_session, tmp_path, wait_until, f"edit {target}")
+    _keys(pane, ":setlocal readonly")
+    follower(pane, adopted=True).ensure_showing(str(target))  # Claude's Read
+    real_goto = TmuxVimFollower.goto_file
+    gotos: list[str] = []
+
+    def goto_that_fails_after_the_pause(self: TmuxVimFollower, file_path: str) -> None:
+        gotos.append(file_path)
+        if len(gotos) == 1:
+            real_goto(self, file_path)
+            return
+        _keys(self.pane_id, ":tabnew")  # another, unnamed buffer is current
+        raise NavigationFailed(f"the follower's Vim did not land on {file_path}")
+
+    paced = follower(pane, adopted=True, speed="lento")
+    target.write_text(LONG)
+    errors: list[BaseException] = []
+
+    def animate() -> None:
+        try:
+            paced.apply_edit(str(target), compute_edit_script(BEFORE, LONG), before=BEFORE)
+        except NavigationFailed as error:
+            errors.append(error)
+
+    with patch.object(TmuxVimFollower, "goto_file", goto_that_fails_after_the_pause):
+        thread = threading.Thread(target=animate)
+        thread.start()
+        try:
+            assert wait_until(lambda: control.animating_state("@1") == "running", timeout=15.0)
+            control.request_pause("@1")
+            assert wait_until(lambda: control.animating_state("@1") == "paused", timeout=15.0)
+            control.request_pause("@1")  # the P toggle: resume
+        finally:
+            thread.join(timeout=30.0)
+    assert not thread.is_alive()
+    assert len(errors) == 1
+    # The remainder is on disk for the next P (animate._resume).
+    assert control.has_pending_animation("@1")
+
+    animated = f"bufnr('{target}')"
+    expression = (
+        f"getbufvar({animated}, '&readonly') . getbufvar({animated}, 'vaf_ro_ours', 'x')"
+        f" . has_key(getbufvar({animated}, ''), 'vaf_user_ro') . &readonly"
+        " . has_key(b:, 'vaf_ro_ours')"
+    )
+    _modifiable, paste, answer, *_ = state(pane, tmp_path, wait_until, expression)
+    assert (answer, paste) == ("10000", "0")

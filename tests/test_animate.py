@@ -25,6 +25,7 @@ from vim_ai_follower.animate import (
     run_ops,
     send_paced,
 )
+from vim_ai_follower.backends import NavigationFailed
 from vim_ai_follower.diff import EditOp
 from vim_ai_follower.tmux import TmuxPane
 
@@ -1042,3 +1043,71 @@ def test_time_spent_paused_does_not_eat_the_pacing_budget(tmp_path: Path, animat
     # 30 s before the pause, then the rest of the 60 s budget after it.
     assert clock.slept == MAX_ANIMATION_SECONDS
     assert clock.now == MAX_ANIMATION_SECONDS + 100.0
+
+
+def _pause_at_check(pause_check: int) -> Callable[..., str | None]:
+    """check_signal: a pause at the `pause_check`-th check, the resume toggle
+    at the next one (the pause wait's first poll), nothing otherwise."""
+    checks = {"count": 0}
+
+    def check(window_id: str, base_dir: Path | None = None) -> str | None:
+        checks["count"] += 1
+        return "pause" if checks["count"] in (pause_check, pause_check + 1) else None
+
+    return check
+
+
+def _failed_goto() -> None:
+    raise NavigationFailed("the follower's Vim did not land on /x.py (no answer)")
+
+
+def test_run_ops_keeps_the_remainder_when_the_post_pause_goto_fails(tmp_path: Path) -> None:
+    # Final M1: the wait's `finally` discards the pending, and a goto that
+    # then fails escaped with nothing on disk; the caller re-saved the
+    # ORIGINAL remainder and the next P replayed ops already typed.
+    pane = cast(TmuxPane, MagicMock())
+    ops = [
+        EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",)),
+        EditOp(kind="insert", start_line=1, end_line=0, new_lines=("b",)),
+        EditOp(kind="insert", start_line=1, end_line=0, new_lines=("c",)),
+    ]
+    # op 0 completes in 7 checks; the 8th, before op 1, pauses.
+    with (
+        patch("vim_ai_follower.control.check_signal", side_effect=_pause_at_check(8)),
+        pytest.raises(NavigationFailed),
+    ):
+        run_ops(
+            pane,
+            "@1",
+            ops,
+            pace_seconds=0.0,
+            base_dir=tmp_path,
+            file_path="/x.py",
+            on_resume=_failed_goto,
+            base_content="z\n",
+        )
+    assert control.load_pending_animation("@1", tmp_path) == control.PendingApplyEdit(
+        ops[1:], 0.0, file_path="/x.py", partial="a\nz\n"
+    )
+
+
+def test_run_lines_keeps_the_remainder_when_the_post_pause_goto_fails(tmp_path: Path) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    # line "a" completes in 6 checks; the 7th, before "b", pauses.
+    with (
+        patch("vim_ai_follower.control.check_signal", side_effect=_pause_at_check(7)),
+        pytest.raises(NavigationFailed),
+    ):
+        run_lines(
+            pane,
+            "@1",
+            ("a", "b", "c"),
+            pace_seconds=0.0,
+            base_dir=tmp_path,
+            file_path="/x.py",
+            on_resume=_failed_goto,
+            base_content="",
+        )
+    assert control.load_pending_animation("@1", tmp_path) == control.PendingShowFresh(
+        ("b", "c"), 0.0, continuation=True, file_path="/x.py", partial="a\n"
+    )

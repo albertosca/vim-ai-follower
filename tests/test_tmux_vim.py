@@ -12,13 +12,14 @@ from helpers import (
     landed_line,
     rename_spelled,
     resolve_typed_paths,
+    typed_path,
     wipe_spelled,
 )
 from helpers import register_fake_follower as _register_fake_follower
 
 from vim_ai_follower import cache, config, control, state
 from vim_ai_follower.animate import AnimationResult
-from vim_ai_follower.backends import get_follower, tmux_vim
+from vim_ai_follower.backends import NavigationFailed, get_follower, tmux_vim
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower, _case_folds
 from vim_ai_follower.diff import EditOp, compute_edit_script
 
@@ -865,6 +866,44 @@ def test_an_adopted_animation_notes_claims_and_restores_the_readonly(outcome: st
     else:
         assert (_RELOCK_SYNCED, True) not in commands
         assert commands[-4:] == [(_RESTORE_PASTE, True), ("Enter", False), *tail]
+
+
+@pytest.mark.parametrize("adopted", [False, True])
+def test_a_failed_goto_after_a_pause_gives_paste_and_readonly_back(adopted: bool) -> None:
+    """Final M1: the post-pause goto fails (NavigationFailed) mid-animation.
+    It escaped _with_unlocked with no relock and no restore, so an adopted
+    Vim kept the follower's global 'paste' on and its readonly claim. Now
+    the user's 'paste' comes back, and in an adopted Vim the readonly of
+    the ANIMATED file's buffer, found by handle: the current buffer is
+    whatever the failed goto left current, someone else's. Then it is
+    re-raised."""
+    if adopted:
+        follower = _adopted_follower()
+    else:
+        _register_fake_follower("@1", "%2")
+        follower = TmuxVimFollower(pane_id="%2", window_id="@1")
+    checks = {"count": 0}
+
+    def pause_then_resume(window_id: str, base_dir: Path | None = None) -> str | None:
+        checks["count"] += 1
+        return "pause" if checks["count"] in (1, 2) else None
+
+    failure = NavigationFailed("did not land")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch("vim_ai_follower.control.check_signal", side_effect=pause_then_resume),
+        patch.object(tmux_vim, "_await_landing", side_effect=[None, failure]),
+        pytest.raises(NavigationFailed) as raised,
+    ):
+        follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"), "a\n")
+    assert raised.value is failure
+    commands = _sent_commands(run)
+    tail = [(_RESTORE_PASTE, True), ("Enter", False)]
+    if adopted:
+        tail += [(call_spelled("give_back", typed_path("/tmp/f.txt"), 0), True), ("Enter", False)]
+    assert commands[-len(tail) :] == tail
+    assert (_RELOCK_SYNCED, True) not in commands
+    assert (_restore(), True) not in commands  # never the current buffer's
 
 
 def test_an_adopted_show_fresh_relock_claims_its_own_readonly() -> None:
