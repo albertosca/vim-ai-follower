@@ -38,7 +38,7 @@ jobs:
         with:
           python-version-file: ".python-version"
 
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@v10.3.0
 
       # PRs only prove the site still builds (build_docs.sh runs uv run --extra docs
       # zensical build --strict) — no --stamp, since a PR build isn't published.
