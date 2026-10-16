@@ -9,7 +9,7 @@ import time
 from typing import Literal
 
 from vim_ai_follower import cache, config, control, hooks, keybindings, snapshot, tmux
-from vim_ai_follower.backends import NavigationFailed, get_follower, nvim_prompt
+from vim_ai_follower.backends import NavigationFailed, get_follower, nvim_connect, nvim_prompt
 from vim_ai_follower.backends.nvim_connect import (
     NvimNeverListened,
     StandaloneLaunchFailed,
@@ -93,6 +93,8 @@ def cmd_start(
 ) -> int:
     with contextlib.suppress(OSError):
         nvim_prompt.sweep_answer_locks()
+    with contextlib.suppress(OSError):
+        nvim_connect.sweep_stale_sockets()
     session = resolve_session(env)
     if session is None:
         print(_unresolvable_pane(env), file=sys.stderr)
@@ -246,6 +248,8 @@ def _other_live_follower(window_id: str) -> bool:
 def cmd_stop(env: dict[str, str]) -> int:
     with contextlib.suppress(OSError):
         nvim_prompt.sweep_answer_locks()
+    with contextlib.suppress(OSError):
+        nvim_connect.sweep_stale_sockets()
     session = resolve_session(env)
     if session is None:
         print(_unresolvable_pane(env), file=sys.stderr)
@@ -312,6 +316,8 @@ def cmd_status(env: dict[str, str]) -> int:
     The other-followers list is printed only when this identity has no
     follower. On the happy path it would be noise — Alberto routinely has
     followers in several windows at once — and this is a CLI he reads often."""
+    with contextlib.suppress(OSError):
+        nvim_connect.sweep_stale_sockets()
     session = resolve_session(env)
     if session is None:
         print(_unresolvable_pane(env))
