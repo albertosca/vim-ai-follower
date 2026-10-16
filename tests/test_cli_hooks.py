@@ -5,12 +5,12 @@ import json
 import logging
 import os
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
 import time
 from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from unittest.mock import call as mock_call
@@ -19,6 +19,7 @@ import pytest
 from helpers import (
     call_spelled,
     define_line,
+    fake_nvim,
     goto_spelled,
     landed_line,
     rename_spelled,
@@ -510,6 +511,7 @@ def test_eviction_wipes_the_buffer_for_the_nvim_backend(
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
@@ -1022,6 +1024,7 @@ def test_auto_open_selects_nvim_backend_and_persists_launched(
         # The follower's own connection (show_fresh) is mocked out — this test
         # only asserts the backend selection and persisted state.
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
@@ -1344,6 +1347,7 @@ def test_pace0_consume_routes_resume_to_the_nvim_follower(
     with (
         patch("vim_ai_follower.hooks.get_follower", return_value=fake),
         patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
@@ -2115,7 +2119,10 @@ def test_standalone_post_edit_hook_animates_via_nvim_backend(
     # FollowerState.get's own liveness probe uses the real nvim backend
     # (not the hooks.get_follower fake above) to check is_alive() — give it
     # a socket that answers.
-    with patch("pynvim.attach", return_value=MagicMock()):
+    with (
+        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
+    ):
         assert hooks.cmd_hook_post({"TERM_SESSION_ID": "x"}, payload) == 0
 
     assert captured == {"backend": "nvim", "target": "/tmp/standalone.sock", "window_id": "term-x"}
@@ -2137,6 +2144,7 @@ def test_maybe_auto_open_standalone_nvim_auto_launches_and_persists(
     with (
         patch("vim_ai_follower.hooks.launch_standalone_nvim", return_value="/s.sock") as launch,
         patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
     ):
         result = hooks._maybe_auto_open(standalone, "/tmp/f.txt", cfg)
 
@@ -2167,6 +2175,7 @@ def test_maybe_auto_open_in_tmux_nvim_window_always_uses_standalone_launcher(
         patch("vim_ai_follower.hooks.resolve_nvim_target") as resolve,
         patch("vim_ai_follower.hooks.keybindings.register"),
         patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
     ):
         result = hooks._maybe_auto_open(in_tmux, "/tmp/f.txt", cfg)
 
@@ -2316,7 +2325,7 @@ def test_an_nvim_that_binds_after_the_auto_open_gave_up_is_attached_despite_the_
     standalone = Session(window_id="term-x", origin=None, in_tmux=False)
     directory = Path(tempfile.mkdtemp(prefix="vafs", dir="/tmp"))  # short: AF_UNIX
     sock = directory / "nvim-term-x.sock"
-    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    late_nvim = ExitStack()
     try:
         with (
             patch(
@@ -2329,15 +2338,14 @@ def test_an_nvim_that_binds_after_the_auto_open_gave_up_is_attached_despite_the_
         ):
             assert hooks._maybe_auto_open(standalone, "/tmp/f.txt", cfg) is None
             assert nvim_connect.launch_backoff_active("term-x")
-            server.bind(str(sock))  # the slow nvim finally listens
-            server.listen()
+            late_nvim.enter_context(fake_nvim(sock))  # the slow nvim finally answers
             # The launcher step of hook 2's auto-open (the rest of it would
             # talk RPC to this stand-in; the e2e drives a real nvim).
             assert hooks._launch_standalone_or_log("term-x") == str(sock)
         assert launch.call_count == 1  # attached, not relaunched
         assert not nvim_connect.launch_backoff_active("term-x")
     finally:
-        server.close()
+        late_nvim.close()
         shutil.rmtree(directory, ignore_errors=True)
 
 

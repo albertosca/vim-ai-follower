@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Callable
+import socket
+import threading
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, suppress
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from vim_ai_follower import state
@@ -280,3 +284,58 @@ def resolve_typed_paths(text: str) -> str:
         return f"call {FUNCTION}('{op}'{_HANDLE.sub(argument, arguments)})"
 
     return _CALL.sub(resolve, text)
+
+
+def nvim_mode_reply(message_id: int) -> bytes:
+    """msgpack `[1, message_id, nil, {"mode": "n", "blocking": false}]`."""
+    return bytes([0x94, 0x01, message_id, 0xC0, 0x82]) + b"\xa4mode\xa1n\xa8blocking\xc2"
+
+
+class FakeNvim:
+    """A unix-socket listener speaking just enough msgpack-RPC: each request
+    `[0, msgid, method, args]` gets `reply(msgid)` back (a well-formed
+    `nvim_get_mode` answer by default). `reply=None` accepts and never
+    answers, which is what a SIGSTOPped nvim looks like from outside;
+    `reply="hang up"` closes the connection without a word."""
+
+    def __init__(self, path: Path, reply: Any = "mode") -> None:
+        self.path = path
+        self.reply = reply
+        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.server.bind(str(path))
+        self.server.listen()
+        self.clients: list[socket.socket] = []
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    def _serve(self) -> None:
+        while True:
+            try:
+                client, _address = self.server.accept()
+            except OSError:
+                return
+            self.clients.append(client)
+            if self.reply is None:
+                continue
+            if self.reply == "hang up":
+                client.close()
+                continue
+            with suppress(OSError):
+                request = client.recv(4096)
+                # [0, msgid, ...]: a fixarray, the request type, a fixint msgid
+                message_id = request[2]
+                client.sendall(nvim_mode_reply(message_id) if self.reply == "mode" else self.reply)
+
+    def close(self) -> None:
+        for client in self.clients:
+            client.close()
+        self.server.close()
+
+
+@contextmanager
+def fake_nvim(path: Path, reply: Any = "mode") -> Iterator[FakeNvim]:
+    fake = FakeNvim(path, reply)
+    try:
+        yield fake
+    finally:
+        fake.close()

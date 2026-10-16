@@ -6,12 +6,16 @@ tests pin the surface's own command sequence directly."""
 
 from __future__ import annotations
 
+import shutil
+import tempfile
+import time
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, call, patch
 
 import pynvim
 import pytest
-from helpers import make_mock_tmux_run
+from helpers import fake_nvim, make_mock_tmux_run
 
 from vim_ai_follower.hooks import HANDOFF_CUE_READONLY
 from vim_ai_follower.state import FollowerState
@@ -154,6 +158,24 @@ def test_cterm_to_hex_covers_the_color_cube_and_the_grayscale_ramp() -> None:
     # Grayscale ramp (232-255): level = 8 + 10*(n-232).
     assert _cterm_to_hex(232) == "#080808"
     assert _cterm_to_hex(255) == "#eeeeee"
+
+
+def test_a_cue_into_a_frozen_nvim_gives_up_at_the_bounded_connect() -> None:
+    # A SIGSTOPped nvim accepts the connection and never answers. The cue is
+    # a hook's first call into the follower: unbounded, it held the hook (and
+    # Claude's tool call) until Claude Code's own timeout.
+    directory = Path(tempfile.mkdtemp(prefix="vafq", dir="/tmp"))  # short: AF_UNIX
+    sock = directory / "frozen.sock"
+    try:
+        with (
+            fake_nvim(sock, reply=None),
+            patch("vim_ai_follower.backends.nvim_connect.CONNECT_TIMEOUT_SECONDS", 0.2),
+        ):
+            started = time.monotonic()
+            NvimStatusSurface(socket_path=str(sock)).set_writer("code-reviewer", "colour78")
+            assert time.monotonic() - started < 2.0
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 def test_set_writer_creates_a_floating_window_when_none_exists() -> None:

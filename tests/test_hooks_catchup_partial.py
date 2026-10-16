@@ -223,6 +223,7 @@ def test_show_fresh_interrupt_persists_the_typed_prefix_as_the_partial(
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()),
         # FollowerState.get liveness-checks an nvim target for real.
         patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
@@ -261,6 +262,7 @@ def test_apply_edit_interrupt_persists_the_applied_prefix_as_the_partial(
         patch("vim_ai_follower.hooks.time.sleep"),
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()),
         patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
@@ -353,6 +355,7 @@ def test_catchup_runs_on_the_hook_path_with_the_partial_it_saved(
     with (
         patch("vim_ai_follower.control.check_signal", return_value=None),
         patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()),
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0

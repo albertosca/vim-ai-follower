@@ -208,9 +208,12 @@ class NvimStatusSurface:
     adopted: bool = True
 
     def _connect(self) -> pynvim.Nvim:
-        import pynvim
+        # Bounded like NvimFollower._connect: a frozen nvim raises RpcTimeout
+        # (an OSError, swallowed below) instead of hanging the hook on a cue.
+        from vim_ai_follower.backends.nvim_connect import bounded_attach
 
-        return pynvim.attach("socket", path=self.socket_path)
+        nvim: pynvim.Nvim = bounded_attach(self.socket_path)
+        return nvim
 
     @contextlib.contextmanager
     def _guarded(self) -> Iterator[pynvim.Nvim]:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
@@ -211,19 +212,37 @@ def test_animate_lines_empty_completes_without_typing() -> None:
 # --- NvimFollower (mocked pynvim.attach) ---------------------------------
 
 
-def test_is_alive_true_when_connection_succeeds() -> None:
+def test_is_alive_true_when_an_nvim_answers_the_probe() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock")
-    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=MagicMock()):
+    with patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers") as probe:
         assert follower.is_alive() is True
+    probe.assert_called_once_with("/tmp/x.sock")
 
 
-def test_is_alive_false_when_socket_missing() -> None:
+@pytest.mark.parametrize("verdict", ["absent", "garbled"])
+def test_is_alive_false_when_no_nvim_answers(verdict: str) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock")
-    with patch(
-        "vim_ai_follower.backends.nvim.pynvim.attach",
-        side_effect=OSError("no such file"),
+    with patch("vim_ai_follower.backends.nvim.probe_nvim", return_value=verdict):
+        assert follower.is_alive() is False
+
+
+def test_is_alive_names_a_silent_nvim_in_the_log(caplog: pytest.LogCaptureFixture) -> None:
+    # A SIGSTOPped nvim accepts the connection and never answers: gone, and
+    # said once, so a quiet log is not mistaken for "no follower here".
+    follower = NvimFollower(socket_path="/tmp/x.sock")
+    with (
+        caplog.at_level(logging.WARNING, logger="vim_ai_follower"),
+        patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="silent"),
     ):
         assert follower.is_alive() is False
+    assert "nvim at /tmp/x.sock did not answer within 1 s" in caplog.text
+
+
+def test_connect_goes_through_the_bounded_attach() -> None:
+    follower = NvimFollower(socket_path="/tmp/x.sock")
+    with patch("vim_ai_follower.backends.nvim.bounded_attach", return_value="connected") as attach:
+        assert follower._connect() == "connected"
+    attach.assert_called_once_with("/tmp/x.sock")
 
 
 def test_show_fresh_never_edits_the_real_file_and_types_the_content(tmp_path: Path) -> None:

@@ -164,6 +164,7 @@ def test_the_nvim_backend_persists_the_blank_ending_prefix_in_terminated_form(
 
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.backends.nvim.time.sleep"),
         # op0 boundary + its one line; pause at op1's boundary; resume; op1.
         patch(
@@ -230,6 +231,7 @@ def test_the_hook_interrupt_path_persists_the_blank_ending_prefix_in_terminated_
         patch("vim_ai_follower.hooks.time.sleep"),
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()),
         patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 

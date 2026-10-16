@@ -962,7 +962,7 @@ def test_an_nvim_that_binds_after_the_auto_open_gave_up_is_attached_and_animates
         world.cli("hook", "post", stdin=payload("Write", first), env=outside)
         assert list(world.cache_dir.glob("*.pane")) == [], "hook 1 attached to nothing"
         world.wait_until(
-            lambda: nvim_connect._answers(str(sock)), "the slow nvim to listen", timeout=15.0
+            lambda: nvim_connect.nvim_answers(str(sock)), "the slow nvim to listen", timeout=15.0
         )
 
         second = world.workdir / "second.py"

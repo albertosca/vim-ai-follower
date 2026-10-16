@@ -613,11 +613,15 @@ def test_an_adopted_follower_never_sweeps_or_watches() -> None:
 
 
 def test_is_alive_asks_a_fast_request_that_a_prompt_cannot_block() -> None:
-    nvim = MagicMock()
-    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+    # Liveness is a raw, bounded `nvim_get_mode` (answered even at a blocking
+    # prompt), never a pynvim session whose requests a prompt can hold.
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach") as attach,
+        patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers") as probe,
+    ):
         assert NvimFollower(socket_path="/tmp/x.sock").is_alive() is True
-    nvim.api.get_mode.assert_called_once_with()
-    nvim.api.get_current_buf.assert_not_called()
+    probe.assert_called_once_with("/tmp/x.sock")
+    attach.assert_not_called()
 
 
 def test_a_follower_with_no_state_fails_closed_no_sweep_no_watchdog() -> None:

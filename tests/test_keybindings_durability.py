@@ -233,6 +233,7 @@ def test_start_standalone_already_running_never_touches_keybindings(
         # the state reads back as dead and cmd_start never reaches the
         # already-running branch this test is about.
         patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.commands.keybindings.register") as register,
     ):
         assert commands.cmd_start({}) == 0

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import os
 import shutil
+import signal
 import socket
 import tempfile
+import threading
+import time
 from collections.abc import Iterator
 from contextlib import AbstractContextManager, ExitStack, contextmanager
 from pathlib import Path
@@ -10,8 +14,11 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from helpers import fake_nvim
 
+from vim_ai_follower import cache
 from vim_ai_follower.backends import nvim_connect
+from vim_ai_follower.state import FollowerState
 
 
 def test_discover_adopt_socket_matches_the_panes_nvim_pid(tmp_path: Path) -> None:
@@ -277,10 +284,7 @@ def test_launch_standalone_nvim_is_not_fooled_by_a_dead_nvims_socket_file() -> N
 def test_launch_standalone_nvim_never_removes_a_socket_someone_answers_on() -> None:
     with _short_socket_dir() as directory:
         sock_path = directory / "nvim-@1.sock"
-        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server.bind(str(sock_path))
-        server.listen()
-        try:
+        with fake_nvim(sock_path):
             launcher = MagicMock()
             with _patched_launcher(sock_path, launcher):
                 assert nvim_connect.launch_standalone_nvim("@1") == str(sock_path)
@@ -288,8 +292,6 @@ def test_launch_standalone_nvim_never_removes_a_socket_someone_answers_on() -> N
             # Adopted, not relaunched: a second window's nvim would die on
             # "address already in use" and stay on screen as an orphan.
             launcher.assert_not_called()
-        finally:
-            server.close()
 
 
 def test_launch_standalone_nvim_reports_a_socket_path_it_cannot_clear() -> None:
@@ -314,7 +316,7 @@ def test_launch_standalone_nvim_attaches_once_the_socket_accepts(tmp_path: Path)
     with (
         _patched_launcher(sock_path, lambda *_a, **_k: None),
         patch(
-            "vim_ai_follower.backends.nvim_connect._answers",
+            "vim_ai_follower.backends.nvim_connect.nvim_answers",
             # not up before the launch, then two polls before it answers
             side_effect=[False, False, False, True, True],
         ),
@@ -347,7 +349,9 @@ def test_launch_standalone_nvim_detects_iterm_from_term_program(tmp_path: Path) 
             return_value=sock_path,
         ),
         patch("vim_ai_follower.backends.nvim_connect.subprocess.run") as run,
-        patch("vim_ai_follower.backends.nvim_connect._answers", side_effect=[False, True, True]),
+        patch(
+            "vim_ai_follower.backends.nvim_connect.nvim_answers", side_effect=[False, True, True]
+        ),
         patch("vim_ai_follower.backends.nvim_connect.shutil.which", return_value=None),
         patch("vim_ai_follower.backends.nvim_connect._vimr_app_present", return_value=False),
         patch.dict("os.environ", {"TERM_PROGRAM": "iTerm.app"}, clear=False),
@@ -365,7 +369,9 @@ def test_launch_standalone_nvim_falls_back_to_terminal_when_not_iterm(tmp_path: 
             return_value=sock_path,
         ),
         patch("vim_ai_follower.backends.nvim_connect.subprocess.run") as run,
-        patch("vim_ai_follower.backends.nvim_connect._answers", side_effect=[False, True, True]),
+        patch(
+            "vim_ai_follower.backends.nvim_connect.nvim_answers", side_effect=[False, True, True]
+        ),
         patch("vim_ai_follower.backends.nvim_connect.shutil.which", return_value=None),
         patch("vim_ai_follower.backends.nvim_connect._vimr_app_present", return_value=False),
         patch.dict("os.environ", {"TERM_PROGRAM": "Apple_Terminal"}, clear=False),
@@ -468,3 +474,314 @@ def test_resolve_launched_creates_the_socket_directory_first(tmp_path: Path) -> 
     ):
         nvim_connect.resolve_nvim_target("%1", "@1", adopt=False)
     assert run.seen == [True]
+
+
+# --- bounded RPC: rpc_deadline, nvim_answers, sweep_stale_sockets ---------
+
+
+def test_rpc_timeout_is_an_oserror_so_every_dead_socket_path_catches_it() -> None:
+    assert issubclass(nvim_connect.RpcTimeout, OSError)
+    assert nvim_connect.RPC_TIMEOUT_SECONDS == 10.0
+    assert nvim_connect.CONNECT_TIMEOUT_SECONDS == 3.0
+    assert nvim_connect.LIVENESS_TIMEOUT_SECONDS == 1.0
+
+
+def test_rpc_deadline_raises_rpc_timeout_and_restores_the_previous_handler() -> None:
+    def sentinel(_signum: int, _frame: object) -> None:
+        return None
+
+    previous = signal.signal(signal.SIGALRM, sentinel)
+    try:
+        started = time.monotonic()
+        with (
+            pytest.raises(nvim_connect.RpcTimeout, match=r"within 0\.05 s"),
+            nvim_connect.rpc_deadline(0.05),
+        ):
+            time.sleep(2)
+        assert time.monotonic() - started < 1.0
+        assert signal.getsignal(signal.SIGALRM) is sentinel
+        assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+    finally:
+        signal.signal(signal.SIGALRM, previous)
+
+
+def test_rpc_deadline_that_is_met_leaves_no_timer_behind() -> None:
+    with nvim_connect.rpc_deadline(5.0):
+        pass
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+
+
+def test_a_nested_rpc_deadline_keeps_the_shorter_outer_one() -> None:
+    started = time.monotonic()
+    with (
+        pytest.raises(nvim_connect.RpcTimeout),
+        nvim_connect.rpc_deadline(0.1),
+        nvim_connect.rpc_deadline(5.0),
+    ):
+        time.sleep(2)
+    assert time.monotonic() - started < 1.0
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+
+
+def test_a_shorter_inner_rpc_deadline_fires_and_gives_the_outer_one_back() -> None:
+    with nvim_connect.rpc_deadline(5.0):
+        with pytest.raises(nvim_connect.RpcTimeout), nvim_connect.rpc_deadline(0.05):
+            time.sleep(2)
+        remaining, _interval = signal.getitimer(signal.ITIMER_REAL)
+        assert 3.0 < remaining <= 5.0
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+
+
+def test_an_outer_rpc_deadline_that_expired_inside_an_inner_one_still_fires() -> None:
+    with pytest.raises(nvim_connect.RpcTimeout), nvim_connect.rpc_deadline(5.0):
+        with (
+            patch(
+                "vim_ai_follower.backends.nvim_connect.time.monotonic",
+                side_effect=[0.0, 99.0],
+            ),
+            nvim_connect.rpc_deadline(0.5),
+        ):
+            pass
+        time.sleep(2)  # the outer deadline is long gone: it fires at once
+
+
+def test_a_longer_inner_rpc_deadline_met_leaves_the_outer_one_running() -> None:
+    with nvim_connect.rpc_deadline(5.0):
+        with nvim_connect.rpc_deadline(10.0):
+            pass
+        remaining, _interval = signal.getitimer(signal.ITIMER_REAL)
+        assert 3.0 < remaining <= 5.0
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
+
+
+def test_rpc_deadline_outside_the_main_thread_is_a_no_op() -> None:
+    outcome: list[str] = []
+
+    def worker() -> None:
+        with nvim_connect.rpc_deadline(0.01):
+            time.sleep(0.1)
+        outcome.append("finished")
+
+    handler_before = signal.getsignal(signal.SIGALRM)
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join(5)
+    assert outcome == ["finished"]
+    assert signal.getsignal(signal.SIGALRM) is handler_before
+
+
+def test_nvim_answers_false_when_there_is_no_socket_file() -> None:
+    with _short_socket_dir() as directory:
+        assert nvim_connect.nvim_answers(str(directory / "nvim-@1.sock")) is False
+
+
+def test_nvim_answers_false_for_a_dead_nvims_socket_file() -> None:
+    with _short_socket_dir() as directory:
+        path = directory / "nvim-@1.sock"
+        _dead_nvims_socket(path)
+        assert nvim_connect.nvim_answers(str(path)) is False
+
+
+def test_nvim_answers_false_for_a_listener_that_never_answers() -> None:
+    with _short_socket_dir() as directory:
+        path = directory / "nvim-@1.sock"
+        with fake_nvim(path, reply=None):
+            started = time.monotonic()
+            assert nvim_connect.nvim_answers(str(path), timeout=0.2) is False
+            assert time.monotonic() - started < 1.0
+
+
+@pytest.mark.parametrize(
+    "garbage",
+    [
+        b"HTTP/1.1 400 Bad Request\r\n\r\n",
+        b"\x94\x01\xcd\x03\xe7\xc0\x81\xa4mode\xa1n",  # [1, 999, nil, {...}]: not ours
+        b"\x94\x01\x01\xa8an error\xc0",  # [1, 1, "an error", nil]: an error
+        b"\x94",  # cut short
+    ],
+)
+def test_nvim_answers_false_for_a_listener_that_answers_garbage(garbage: bytes) -> None:
+    with _short_socket_dir() as directory:
+        path = directory / "nvim-@1.sock"
+        with fake_nvim(path, reply=garbage):
+            assert nvim_connect.nvim_answers(str(path), timeout=0.3) is False
+
+
+def test_probe_calls_a_listener_that_hangs_up_garbled() -> None:
+    with _short_socket_dir() as directory:
+        path = directory / "nvim-@1.sock"
+        with fake_nvim(path, reply="hang up"):
+            assert nvim_connect.probe_nvim(str(path), timeout=1.0) == "garbled"
+
+
+class _ScriptedProbe:
+    """A stand-in for the probe's socket: `connect`/`recv` raise or return
+    what the test scripted (the kernel's rare answers, made deterministic)."""
+
+    def __init__(self, connect_error: OSError | None, recv_error: OSError | None) -> None:
+        self.connect_error = connect_error
+        self.recv_error = recv_error
+
+    def settimeout(self, _seconds: float) -> None:
+        return None
+
+    def connect(self, _path: str) -> None:
+        if self.connect_error is not None:
+            raise self.connect_error
+
+    def sendall(self, _data: bytes) -> None:
+        return None
+
+    def recv(self, _size: int) -> bytes:
+        if self.recv_error is not None:
+            raise self.recv_error
+        return b"\x94"  # a byte at a time, never enough
+
+    def close(self) -> None:
+        return None
+
+
+@pytest.mark.parametrize(
+    ("connect_error", "recv_error", "verdict"),
+    [
+        # A full listen backlog: a frozen nvim stops accepting, so connect waits.
+        (TimeoutError("timed out"), None, "silent"),
+        (None, ConnectionResetError(54, "reset"), "garbled"),
+    ],
+)
+def test_probe_verdicts_for_what_the_kernel_rarely_answers(
+    connect_error: OSError | None, recv_error: OSError | None, verdict: str
+) -> None:
+    probe = _ScriptedProbe(connect_error, recv_error)
+    with patch("vim_ai_follower.backends.nvim_connect.socket.socket", return_value=probe):
+        assert nvim_connect.probe_nvim("/tmp/x.sock", timeout=1.0) == verdict
+
+
+def test_probe_that_trickles_past_its_deadline_is_silent() -> None:
+    # Bytes keep coming, too slowly: the probe's own deadline ends it, not
+    # the per-recv socket timeout.
+    probe = _ScriptedProbe(None, None)
+    with (
+        patch("vim_ai_follower.backends.nvim_connect.socket.socket", return_value=probe),
+        patch(
+            "vim_ai_follower.backends.nvim_connect.time.monotonic",
+            side_effect=[0.0, 0.1, 0.2, 5.0],
+        ),
+    ):
+        assert nvim_connect.probe_nvim("/tmp/x.sock", timeout=1.0) == "silent"
+
+
+def test_nvim_answers_true_for_a_well_formed_get_mode_reply() -> None:
+    with _short_socket_dir() as directory:
+        path = directory / "nvim-@1.sock"
+        with fake_nvim(path):
+            assert nvim_connect.nvim_answers(str(path)) is True
+
+
+def test_nvim_answers_true_for_a_real_nvim(headless_nvim: str) -> None:
+    assert nvim_connect.nvim_answers(headless_nvim) is True
+
+
+def test_a_frozen_nvim_times_out_the_bounded_attach_and_its_requests(headless_nvim: str) -> None:
+    """Measured first (Step 1 of the plan's Task 16): SIGALRM interrupts
+    pynvim's asyncio loop both inside attach and inside a request, and the
+    process connects again once the nvim is resumed."""
+    connected = nvim_connect.bounded_attach(headless_nvim)
+    pid = connected.call("getpid")
+    os.kill(pid, signal.SIGSTOP)
+    try:
+        with patch("vim_ai_follower.backends.nvim_connect.CONNECT_TIMEOUT_SECONDS", 0.2):
+            started = time.monotonic()
+            with pytest.raises(nvim_connect.RpcTimeout):
+                nvim_connect.bounded_attach(headless_nvim)
+            assert time.monotonic() - started < 2.0
+        with patch("vim_ai_follower.backends.nvim_connect.RPC_TIMEOUT_SECONDS", 0.2):
+            started = time.monotonic()
+            with pytest.raises(nvim_connect.RpcTimeout):
+                connected.api.get_mode()
+            assert time.monotonic() - started < 2.0
+        assert nvim_connect.nvim_answers(headless_nvim, timeout=0.2) is False
+    finally:
+        os.kill(pid, signal.SIGCONT)
+    assert nvim_connect.bounded_attach(headless_nvim).api.get_mode()["mode"] == "n"
+    assert nvim_connect.nvim_answers(headless_nvim) is True
+
+
+def _age(path: Path, seconds: float) -> None:
+    """Backdate a socket file's mtime (os.utime follows the path; a socket
+    file takes it like any other)."""
+    then = time.time() - seconds
+    os.utime(path, (then, then))
+
+
+def test_sweep_stale_sockets_removes_only_unnamed_sockets_nobody_answers_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with _short_socket_dir() as directory:
+        monkeypatch.setattr(cache, "CACHE_DIR", directory)
+        dead = directory / "nvim-@71.sock"
+        _dead_nvims_socket(dead)
+        named_by_its_window = directory / "nvim-@73.sock"
+        _dead_nvims_socket(named_by_its_window)
+        (directory / "@73.pane").write_text("{not json")
+        named_as_a_target = directory / "nvim-@75.sock"
+        _dead_nvims_socket(named_as_a_target)
+        FollowerState.set("@74", "nvim", str(named_as_a_target), base_dir=directory)
+        not_a_socket = directory / "nvim-@76.sock"
+        not_a_socket.write_text("")
+        booting = directory / "nvim-@77.sock"
+        _dead_nvims_socket(booting)
+        # A .pane gone between the listing and the read (a racing `stop`),
+        # held still here as a dangling symlink: its window's path is kept.
+        named_by_a_vanishing_pane = directory / "nvim-@78.sock"
+        _dead_nvims_socket(named_by_a_vanishing_pane)
+        (directory / "@78.pane").symlink_to(directory / "removed-meanwhile")
+        with fake_nvim(directory / "nvim-@72.sock") as answering:
+            for path in directory.glob("nvim-*.sock"):
+                if path != booting:
+                    _age(path, nvim_connect.SOCKET_SWEEP_GRACE_SECONDS + 5)
+            assert nvim_connect.sweep_stale_sockets() == [str(dead)]
+            assert answering.path.is_socket()
+        assert not dead.exists()
+        assert named_by_its_window.is_socket()
+        assert named_as_a_target.is_socket()
+        assert not_a_socket.exists()
+        assert booting.is_socket(), "a launch still booting lost its socket"
+        assert named_by_a_vanishing_pane.is_socket()
+
+
+def test_sweep_stale_sockets_with_no_cache_dir_removes_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "missing")
+    assert nvim_connect.sweep_stale_sockets() == []
+
+
+def test_answering_socket_adopts_only_an_nvim(monkeypatch: pytest.MonkeyPatch) -> None:
+    with _short_socket_dir() as directory:
+        monkeypatch.setattr(cache, "CACHE_DIR", directory)
+        path = directory / "nvim-@1.sock"
+        with fake_nvim(path, reply=None):
+            assert nvim_connect.answering_socket("@1") is None
+        path.unlink()
+        with fake_nvim(path):
+            assert nvim_connect.answering_socket("@1") == str(path)
+
+
+def test_launch_standalone_nvim_neither_adopts_nor_removes_a_listener_that_is_not_nvim() -> None:
+    """Slot/launch residual "adopt-if-answering trusts whatever answers": a
+    connection accepted is not an nvim. It is not adopted (a follower would
+    be persisted on it) and not unlinked (someone is listening there)."""
+    with _short_socket_dir() as directory:
+        sock_path = directory / "nvim-@1.sock"
+        with fake_nvim(sock_path, reply=None):
+            launcher = MagicMock()
+            with (
+                _patched_launcher(sock_path, launcher),
+                patch("vim_ai_follower.backends.nvim_connect.LIVENESS_TIMEOUT_SECONDS", 0.2),
+                pytest.raises(nvim_connect.SocketPathBlocked) as raised,
+            ):
+                nvim_connect.launch_standalone_nvim("@1")
+            assert sock_path.is_socket()
+            launcher.assert_not_called()
+        assert "not an nvim" in str(raised.value)

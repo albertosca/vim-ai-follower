@@ -1,19 +1,52 @@
 """Resolve the nvim RPC socket to drive: adopt a running nvim's socket, or
 launch a dedicated `nvim --listen` in a tmux split. macOS keeps a socket-less
 nvim's socket at $TMPDIR/nvim.$USER/<random>/nvim.<pid>.0 (XDG_RUNTIME_DIR is
-unset), so adoption globs by the pane's nvim pid."""
+unset), so adoption globs by the pane's nvim pid.
+
+Also the bound on every nvim RPC: an nvim that stops answering (SIGSTOPped,
+or wedged behind a prompt) used to hang `status`, `stop` and every hook until
+Claude Code's 600 s hook timeout. Liveness is a raw `nvim_get_mode` probe with
+a socket timeout (nvim_answers), and a connect or request made in the main
+thread runs under a SIGALRM deadline (rpc_deadline) that raises RpcTimeout,
+an OSError, so every "dead socket" path takes a frozen nvim for a dead one.
+
+pynvim is never imported at module level here: hooks.py imports this module
+and must stay importable without the optional `nvim` extra."""
 
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
+import signal
 import socket
 import subprocess
+import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 from vim_ai_follower import cache, state
 from vim_ai_follower.tmux import TmuxPane
+
+# One RPC request. A legitimate slow request (a bufload that runs a plugin's
+# FileType autocmd) finishes well inside it; a prompt the watchdog sweeps
+# costs well under a second.
+RPC_TIMEOUT_SECONDS = 10.0
+# pynvim.attach, including the api-info request it makes on connecting.
+CONNECT_TIMEOUT_SECONDS = 3.0
+# The liveness probe: nvim answers nvim_get_mode even at a hit-enter prompt,
+# so only a stopped or wedged nvim misses it.
+LIVENESS_TIMEOUT_SECONDS = 1.0
+# msgpack-RPC `[0, 1, "nvim_get_mode", []]`, hand-encoded so the probe needs
+# neither pynvim nor msgpack: fixarray(4), request type 0, msgid 1,
+# fixstr(13) "nvim_get_mode", fixarray(0).
+_GET_MODE_REQUEST = b"\x94\x00\x01\xadnvim_get_mode\x90"
+# Its answer starts `[1, 1, nil, ` (fixarray(4), response type 1, msgid 1, no
+# error), followed by the mode dictionary: a fixmap, map16 or map32 marker.
+_GET_MODE_REPLY_PREFIX = b"\x94\x01\x01\xc0"
+_MAP_MARKERS = frozenset(range(0x80, 0x90)) | {0xDE, 0xDF}
 
 # Bounded wait for the launched nvim to bind its RPC socket before we return
 # control to the caller. The socket file's mere existence is a sound
@@ -34,6 +67,10 @@ _STANDALONE_SOCKET_WAIT_SECONDS = 10.0
 # explicit, patient retry and clears the backoff).
 AUTO_OPEN_SOCKET_WAIT_SECONDS = 3.0
 LAUNCH_BACKOFF_SECONDS = 300.0
+# The socket sweep spares a socket file younger than this: a launch whose
+# nvim is still booting (past the caller's wait, see answering_socket) has
+# bound its socket but may not answer yet, and no .pane names it until then.
+SOCKET_SWEEP_GRACE_SECONDS = 60.0
 _SOCKET_POLL_INTERVAL_SECONDS = 0.02
 
 
@@ -147,10 +184,120 @@ def _vimr_app_present() -> bool:
     return Path("/Applications/VimR.app").exists()
 
 
-def _answers(sock: str) -> bool:
-    """True when something ACCEPTS a connection on the socket. Existence is
-    not readiness: a SIGKILLed nvim leaves its socket file behind, and a
-    launcher that started nothing then looked like an attached follower."""
+class RpcTimeout(OSError):
+    """nvim did not answer within the deadline. An OSError on purpose: every
+    `except OSError` that handles a dead socket handles a frozen nvim too."""
+
+
+@contextlib.contextmanager
+def rpc_deadline(seconds: float) -> Iterator[None]:
+    """Raise RpcTimeout in the main thread when the block outlives `seconds`.
+
+    A SIGALRM timer (setitimer), whose handler raises: measured 2026-10-16
+    against a SIGSTOPped nvim, it interrupts pynvim's asyncio loop both
+    inside `attach` and inside a request, and the process connects again
+    once the nvim is resumed. The previous handler and timer come back in
+    `finally`; a nested deadline keeps whichever expires first. Outside the
+    main thread signals cannot be used, so it is a no-op there (the prompt
+    watchdog's thread makes only fast requests, on its own connection)."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    outer_remaining, _interval = signal.getitimer(signal.ITIMER_REAL)
+    if outer_remaining and outer_remaining <= seconds:
+        yield  # the enclosing deadline is the shorter one: it stays in charge
+        return
+
+    def expired(_signum: int, _frame: object) -> None:
+        raise RpcTimeout(f"nvim did not answer within {seconds:g} s")
+
+    started = time.monotonic()
+    previous_handler = signal.signal(signal.SIGALRM, expired)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if outer_remaining:
+            left = outer_remaining - (time.monotonic() - started)
+            # An outer deadline that passed meanwhile still fires, at once.
+            signal.setitimer(signal.ITIMER_REAL, max(left, 0.001))
+
+
+def bounded_attach(socket_path: str) -> Any:
+    """`pynvim.attach` under CONNECT_TIMEOUT_SECONDS, with every later request
+    on the connection run under RPC_TIMEOUT_SECONDS (main thread only, like
+    rpc_deadline). pynvim 0.6.0 routes every API call — `nvim.api.*`,
+    `nvim.command`, a Buffer's or Window's methods — through the one
+    `Session.request` of the connection, so wrapping it covers them all."""
+    import pynvim
+
+    with rpc_deadline(CONNECT_TIMEOUT_SECONDS):
+        nvim = pynvim.attach("socket", path=socket_path)
+    session = nvim._session
+    unbounded_request = session.request
+
+    def bounded_request(method: Any, *args: Any, **kwargs: Any) -> Any:
+        with rpc_deadline(RPC_TIMEOUT_SECONDS):
+            return unbounded_request(method, *args, **kwargs)
+
+    setattr(session, "request", bounded_request)  # noqa: B010 - an instance override of a method
+    return nvim
+
+
+def probe_nvim(sock: str, timeout: float = LIVENESS_TIMEOUT_SECONDS) -> str:
+    """Ask whatever listens on `sock` for nvim_get_mode, raw, within `timeout`.
+
+    "answers": a well-formed reply to this request. "absent": no socket file,
+    or nobody listening (a SIGKILLed nvim leaves its file behind). "silent":
+    the connection was accepted (the kernel does that for a SIGSTOPped
+    process) and nothing came back in time. "garbled": something answered
+    that is not an nvim's reply, or hung up. Thread-safe, no pynvim."""
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(timeout)
+    try:
+        try:
+            probe.connect(sock)
+        except TimeoutError:
+            return "silent"
+        except OSError:
+            return "absent"
+        deadline = time.monotonic() + timeout
+        received = b""
+        try:
+            probe.sendall(_GET_MODE_REQUEST)
+            while len(received) < len(_GET_MODE_REPLY_PREFIX) + 1:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    return "silent"
+                probe.settimeout(left)
+                chunk = probe.recv(64)
+                if not chunk:
+                    return "garbled"
+                received += chunk
+        except TimeoutError:
+            return "silent"
+        except OSError:
+            return "garbled"
+    finally:
+        probe.close()
+    well_formed = (
+        received.startswith(_GET_MODE_REPLY_PREFIX)
+        and received[len(_GET_MODE_REPLY_PREFIX)] in _MAP_MARKERS
+    )
+    return "answers" if well_formed else "garbled"
+
+
+def nvim_answers(sock: str, timeout: float = LIVENESS_TIMEOUT_SECONDS) -> bool:
+    """True only when an nvim answers on `sock` within `timeout`: a protocol
+    check, not "something accepted a connection"."""
+    return probe_nvim(sock, timeout) == "answers"
+
+
+def _accepts(sock: str) -> bool:
+    """True when something ACCEPTS a connection on the socket, nvim or not:
+    the test for a path that must not be unlinked from under a listener."""
     probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     probe.settimeout(_SOCKET_POLL_INTERVAL_SECONDS * 10)
     try:
@@ -162,16 +309,57 @@ def _answers(sock: str) -> bool:
     return True
 
 
+def sweep_stale_sockets() -> list[str]:
+    """Remove the cache dir's `nvim-*.sock` files that no follower state names
+    and no nvim answers on (a SIGKILLed nvim's leftovers, one per window ever
+    followed), and return their paths. A socket a `*.pane` names — by its
+    window's socket path or as its target, readable or not — stays; so does
+    one an nvim answers on, and one younger than SOCKET_SWEEP_GRACE_SECONDS
+    (a launch still booting)."""
+    directory = cache.CACHE_DIR
+    named: set[str] = set()
+    for pane in directory.glob("*.pane"):
+        named.add(os.path.realpath(state.nvim_socket_path(pane.stem, directory)))
+        try:
+            recorded = state.FollowerState.read(pane.stem, directory)
+        except (OSError, ValueError):  # unreadable: its window's path is kept above
+            continue
+        if recorded is not None:
+            named.add(os.path.realpath(recorded.target))
+    removed = []
+    for candidate in sorted(directory.glob("nvim-*.sock")):
+        if os.path.realpath(candidate) in named or not candidate.is_socket():
+            continue
+        if time.time() - candidate.lstat().st_mtime < SOCKET_SWEEP_GRACE_SECONDS:
+            continue
+        if nvim_answers(str(candidate)):
+            continue
+        with contextlib.suppress(OSError):
+            candidate.unlink()
+            removed.append(str(candidate))
+    return removed
+
+
 def _remove_dead_socket(sock: str) -> None:
     """Clear a socket file nobody answers on, so the new nvim can bind the
     path and a leftover can never pass for it. One that answers is a live
     nvim's and is never removed."""
     path = Path(sock)
-    if path.exists() and not _answers(sock):
-        try:
-            path.unlink(missing_ok=True)
-        except OSError as exc:  # a directory there, or a file we may not delete
-            raise SocketPathBlocked(sock, exc) from exc
+    if not path.exists():
+        return
+    if _accepts(sock):
+        # Someone listens there but it is not an answering nvim (the caller
+        # asked first): neither adopted nor unlinked from under it.
+        raise SocketPathBlocked(
+            sock,
+            OSError(
+                f"a listener that is not an nvim answering within {LIVENESS_TIMEOUT_SECONDS:g} s"
+            ),
+        )
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:  # a directory there, or a file we may not delete
+        raise SocketPathBlocked(sock, exc) from exc
 
 
 def launch_backoff_path(window_id: str) -> Path:
@@ -198,16 +386,17 @@ def clear_launch_backoff(window_id: str) -> None:
 
 def answering_socket(window_id: str) -> str | None:
     """This window's standalone socket when an nvim already answers on it —
-    typically one a slow launcher bound after the caller stopped waiting."""
+    typically one a slow launcher bound after the caller stopped waiting.
+    An nvim, not whatever accepts a connection there."""
     sock = str(launch_socket_path(window_id))
-    return sock if _answers(sock) else None
+    return sock if nvim_answers(sock) else None
 
 
 def launch_standalone_nvim(
     window_id: str, wait_seconds: float = _STANDALONE_SOCKET_WAIT_SECONDS
 ) -> str:
     sock = str(_socket_path_in_existing_dir(window_id))
-    if _answers(sock):
+    if nvim_answers(sock, LIVENESS_TIMEOUT_SECONDS):
         # Already up (a launch that outlived its caller's wait): attach. A
         # second launch's nvim would die on "address already in use" and
         # stay on screen as an orphan error window.
@@ -221,9 +410,9 @@ def launch_standalone_nvim(
     )
     subprocess.run(cmd, check=True)
     deadline = time.monotonic() + wait_seconds
-    while not _answers(sock) and time.monotonic() < deadline:
+    while not nvim_answers(sock) and time.monotonic() < deadline:
         time.sleep(_SOCKET_POLL_INTERVAL_SECONDS)
-    if not _answers(sock):
+    if not nvim_answers(sock):
         # The launcher exited 0 (nvim-qt that found no nvim, a terminal whose
         # nvim died on a config error): there is nothing to attach to, and a
         # follower persisted here would point at a socket no one listens on.

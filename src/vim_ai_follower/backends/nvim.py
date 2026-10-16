@@ -26,8 +26,10 @@ from vim_ai_follower.backends import (
     classify_buffer,
     log_adopted_close,
     log_state_gone,
+    nvim_connect,
     typed_form,
 )
+from vim_ai_follower.backends.nvim_connect import bounded_attach, probe_nvim
 from vim_ai_follower.backends.nvim_prompt import dismiss_prompt, exec_logged, prompt_guard
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
 from vim_ai_follower.diff import EditOp, apply_ops
@@ -532,7 +534,11 @@ class NvimFollower:
     pace_seconds: float = DEFAULT_PACE_SECONDS
 
     def _connect(self) -> pynvim.Nvim:
-        return pynvim.attach("socket", path=self.socket_path)
+        """Bounded: the attach under CONNECT_TIMEOUT_SECONDS and every request
+        under RPC_TIMEOUT_SECONDS (nvim_connect.bounded_attach), so a frozen
+        nvim raises RpcTimeout, an OSError, instead of hanging the hook."""
+        nvim: pynvim.Nvim = bounded_attach(self.socket_path)
+        return nvim
 
     def _pace_provider(self) -> float:
         """Re-read the live speed from FollowerState each line so a running
@@ -574,16 +580,24 @@ class NvimFollower:
         return self._is_dedicated()
 
     def is_alive(self) -> bool:
-        """A FAST request on purpose: nvim answers get_mode even while a
-        hit-enter prompt blocks every other call, so a follower stuck on a
-        plugin's message still reads as alive — and the entry point that
-        follows sweeps the prompt (see nvim_prompt) instead of the liveness
-        check itself hanging before anything can."""
-        try:
-            self._connect().api.get_mode()
-            return True
-        except OSError:
-            return False
+        """An nvim answering a raw nvim_get_mode within
+        LIVENESS_TIMEOUT_SECONDS (nvim_connect.probe_nvim) — bounded, because
+        `status`, `stop` and every hook ask it of each follower, and a
+        SIGSTOPped nvim accepts the connection and never answers. FAST on
+        purpose: nvim answers get_mode even while a hit-enter prompt blocks
+        every other call, so a follower stuck on a plugin's message still
+        reads as alive — and the entry point that follows sweeps the prompt
+        (see nvim_prompt). A silent nvim is logged, once per probe: it is the
+        one "gone" that a live process can still be behind."""
+        verdict = probe_nvim(self.socket_path)
+        if verdict == "silent":
+            logger.warning(
+                "nvim at %s did not answer within %g s (stopped or frozen?): "
+                "treating its follower as gone",
+                self.socket_path,
+                nvim_connect.LIVENESS_TIMEOUT_SECONDS,
+            )
+        return verdict == "answers"
 
     @contextlib.contextmanager
     def _guarded(self, nvim: pynvim.Nvim, label: str) -> Iterator[None]:

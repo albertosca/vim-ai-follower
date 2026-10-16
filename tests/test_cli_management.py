@@ -93,6 +93,7 @@ def test_stop_standalone_stops_the_backend_but_skips_tmux_side_effects() -> None
     with (
         patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session),
         patch("pynvim.attach", return_value=MagicMock()) as attach,
+        patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
         patch("vim_ai_follower.commands.keybindings.unregister") as mock_unregister,
     ):
@@ -117,6 +118,7 @@ def test_speed_standalone_updates_speed_but_skips_the_tmux_status_line() -> None
     with (
         patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session),
         patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.commands.tmux.show_status") as show_status,
     ):
         assert commands.cmd_speed({}, "up") == 0
@@ -816,6 +818,7 @@ def test_stop_on_adopted_nvim_closes_tabs_over_rpc_not_tmux_send_keys(
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
         patch("pynvim.attach", return_value=nvim_mock) as attach,
+        patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
     ):
         exit_code = commands.cmd_stop({"TMUX_PANE": "%1"})
     assert exit_code == 0
