@@ -2586,3 +2586,44 @@ def test_an_unreachable_edit_after_a_concurrent_stop_touches_no_surface(
     hooks._skip_unreachable_edit("@gone", "/tmp/a.py", {}, NavigationFailed("x"))
     surface.clear.assert_not_called()
     assert "skipped the animation of /tmp/a.py: x" in caplog.text
+
+
+@pytest.mark.parametrize("tool_name", ["Edit", "Read"])
+def test_a_hook_skips_a_busy_nvim_follower_and_keeps_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tool_name: str,
+) -> None:
+    # The probe found it accepting and silent (`:!make`, `system()`): alive,
+    # so no reopen and no "no follower"; but every request would wait out the
+    # deadline, so the hook sends nothing — an Edit marks the file stale.
+    target = tmp_path / "f.txt"
+    target.write_text("hello\n")
+    state.FollowerState.set(
+        "term-x",
+        "nvim",
+        "/tmp/busy.sock",
+        open_files=(str(target),),
+        shown_any=True,
+        on_failure="reopen",
+        origin="%9",
+    )
+    get_follower = MagicMock()
+    monkeypatch.setattr(hooks, "get_follower", get_follower)
+    monkeypatch.setattr(hooks, "status_surface_for", get_follower)
+    payload: dict[str, object] = {"tool_name": tool_name, "tool_input": {"file_path": str(target)}}
+    with (
+        caplog.at_level(logging.WARNING, logger="vim_ai_follower"),
+        patch("vim_ai_follower.backends.nvim_connect._probe", return_value="silent"),
+        patch("vim_ai_follower.hooks.resolve_nvim_target") as relaunch,
+    ):
+        assert hooks.cmd_hook_post({"TERM_SESSION_ID": "x"}, payload) == 0
+    get_follower.assert_not_called()
+    relaunch.assert_not_called()
+    after = state.FollowerState.read("term-x")
+    assert after is not None and after.target == "/tmp/busy.sock"
+    assert after.stale_files == ((str(target),) if tool_name == "Edit" else ())
+    skipped = [line for line in caplog.text.splitlines() if "did not answer within 1 s" in line]
+    assert len(skipped) == 1, caplog.text
+    assert "/tmp/busy.sock" in skipped[0] and str(target) in skipped[0]

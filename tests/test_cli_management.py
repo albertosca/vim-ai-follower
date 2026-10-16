@@ -1125,3 +1125,23 @@ def test_toggle_on_reopens_dead_pane_as_dedicated_split() -> None:
     assert result.adopted is False
     assert result.shown_any is False
     assert result.open_files == ()
+
+
+@pytest.mark.parametrize("verdict", ["silent", "answers"])
+def test_status_marks_an_nvim_follower_that_does_not_answer(
+    capsys: pytest.CaptureFixture[str], verdict: str
+) -> None:
+    # Silent (busy in `:!make`, or stopped) is listed — alive — and marked,
+    # both as this identity's follower and as another identity's.
+    state.FollowerState.set("term-x", "nvim", "/tmp/mine.sock", current_file="/tmp/a.py")
+    state.FollowerState.set("@7", "nvim", "/tmp/theirs.sock", current_file="/tmp/b.py")
+    with patch("vim_ai_follower.backends.nvim_connect._probe", return_value=verdict):
+        assert commands.cmd_status({"TERM_SESSION_ID": "x"}) == 0
+        mine = capsys.readouterr().out
+        assert commands.cmd_status({"TERM_SESSION_ID": "y"}) == 0
+        others = capsys.readouterr().out
+    marked = verdict == "silent"
+    assert "backend nvim (/tmp/mine.sock)" in mine
+    assert ("not answering (busy in a command, or stopped)" in mine) is marked
+    assert "@7: nvim /tmp/theirs.sock, showing /tmp/b.py" in others
+    assert ("/tmp/b.py — not answering" in others) is marked

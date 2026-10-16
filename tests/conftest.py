@@ -15,7 +15,7 @@ import pytest
 from helpers import PATH_HANDLES, resolve_typed_paths
 
 from vim_ai_follower import cache, config, hooks, session, snapshot
-from vim_ai_follower.backends import tmux_vim
+from vim_ai_follower.backends import nvim_connect, tmux_vim
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 
 
@@ -35,6 +35,9 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[N
     # The readonly restores this process sent, by pane (tmux_vim): a token
     # one test sent must never be awaited by the next.
     monkeypatch.setattr(tmux_vim, "_SENT_READONLY_TOKENS", {}, raising=False)
+    # The probe verdicts this process remembers, by socket: a "silent" one
+    # test left behind must never make the next one's follower read as busy.
+    monkeypatch.setattr(nvim_connect, "_last_verdicts", {})
     yield
     hooks.logger.handlers.clear()
 

@@ -6,9 +6,12 @@ unset), so adoption globs by the pane's nvim pid.
 Also the bound on every nvim RPC: an nvim that stops answering (SIGSTOPped,
 or wedged behind a prompt) used to hang `status`, `stop` and every hook until
 Claude Code's 600 s hook timeout. Liveness is a raw `nvim_get_mode` probe with
-a socket timeout (nvim_answers), and a connect or request made in the main
+a socket timeout (probe_nvim), and a connect or request made in the main
 thread runs under a SIGALRM deadline (rpc_deadline) that raises RpcTimeout,
-an OSError, so every "dead socket" path takes a frozen nvim for a dead one.
+an OSError. A probe that gets no answer ("silent") is NOT a dead nvim: one
+running `:!make`, `system()` or a long Lua loop is silent too, so only
+"absent" (nobody listening) may make a follower read as gone, and only an
+absent socket is ever unlinked.
 
 pynvim is never imported at module level here: hooks.py imports this module
 and must stay importable without the optional `nvim` extra."""
@@ -37,7 +40,8 @@ RPC_TIMEOUT_SECONDS = 10.0
 # pynvim.attach, including the api-info request it makes on connecting.
 CONNECT_TIMEOUT_SECONDS = 3.0
 # The liveness probe: nvim answers nvim_get_mode even at a hit-enter prompt,
-# so only a stopped or wedged nvim misses it.
+# confirm() or input(), but NOT while it runs `:!cmd`, `system()` or busy Lua
+# (measured) — so a miss ("silent") means busy or stopped, never gone.
 LIVENESS_TIMEOUT_SECONDS = 1.0
 # msgpack-RPC `[0, 1, "nvim_get_mode", []]`, hand-encoded so the probe needs
 # neither pynvim nor msgpack: fixarray(4), request type 0, msgid 1,
@@ -246,14 +250,32 @@ def bounded_attach(socket_path: str) -> Any:
     return nvim
 
 
+# The last verdict probe_nvim reached for each socket, in this process: lets
+# a hook that asked FollowerState.get (which probes) tell a busy follower
+# from an idle one without probing a second time.
+_last_verdicts: dict[str, str] = {}
+
+
+def last_probe_verdict(sock: str) -> str | None:
+    """probe_nvim's latest verdict on `sock` in this process, None if never probed."""
+    return _last_verdicts.get(sock)
+
+
 def probe_nvim(sock: str, timeout: float = LIVENESS_TIMEOUT_SECONDS) -> str:
     """Ask whatever listens on `sock` for nvim_get_mode, raw, within `timeout`.
 
     "answers": a well-formed reply to this request. "absent": no socket file,
     or nobody listening (a SIGKILLed nvim leaves its file behind). "silent":
-    the connection was accepted (the kernel does that for a SIGSTOPped
-    process) and nothing came back in time. "garbled": something answered
-    that is not an nvim's reply, or hung up. Thread-safe, no pynvim."""
+    the connection was accepted and nothing came back in time — a SIGSTOPped
+    nvim, and just as well a live one busy in `:!cmd`, `system()` or a Lua
+    loop. "garbled": something answered that is not an nvim's reply, or hung
+    up. Thread-safe, no pynvim. The verdict is remembered (last_probe_verdict)."""
+    verdict = _probe(sock, timeout)
+    _last_verdicts[sock] = verdict
+    return verdict
+
+
+def _probe(sock: str, timeout: float) -> str:
     probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     probe.settimeout(timeout)
     try:
@@ -311,11 +333,12 @@ def _accepts(sock: str) -> bool:
 
 def sweep_stale_sockets() -> list[str]:
     """Remove the cache dir's `nvim-*.sock` files that no follower state names
-    and no nvim answers on (a SIGKILLed nvim's leftovers, one per window ever
+    and nobody listens on (a SIGKILLed nvim's leftovers, one per window ever
     followed), and return their paths. A socket a `*.pane` names — by its
     window's socket path or as its target, readable or not — stays; so does
-    one an nvim answers on, and one younger than SOCKET_SWEEP_GRACE_SECONDS
-    (a launch still booting)."""
+    one younger than SOCKET_SWEEP_GRACE_SECONDS (a launch still booting), and
+    any socket the probe does not find "absent": an nvim busy in `:!make` is
+    silent, and its socket must not be unlinked from under it."""
     directory = cache.CACHE_DIR
     named: set[str] = set()
     for pane in directory.glob("*.pane"):
@@ -332,7 +355,7 @@ def sweep_stale_sockets() -> list[str]:
             continue
         if time.time() - candidate.lstat().st_mtime < SOCKET_SWEEP_GRACE_SECONDS:
             continue
-        if nvim_answers(str(candidate)):
+        if probe_nvim(str(candidate)) != "absent":
             continue
         with contextlib.suppress(OSError):
             candidate.unlink()
@@ -348,12 +371,14 @@ def _remove_dead_socket(sock: str) -> None:
     if not path.exists():
         return
     if _accepts(sock):
-        # Someone listens there but it is not an answering nvim (the caller
-        # asked first): neither adopted nor unlinked from under it.
+        # Someone listens there but did not answer as an nvim (the caller
+        # asked first) — a busy nvim (`:!make`) is silent too: neither adopted
+        # nor unlinked from under it, and no second nvim is launched over it.
         raise SocketPathBlocked(
             sock,
             OSError(
-                f"a listener that is not an nvim answering within {LIVENESS_TIMEOUT_SECONDS:g} s"
+                "a listener that did not answer as an nvim within "
+                f"{LIVENESS_TIMEOUT_SECONDS:g} s (busy, stopped, or not an nvim)"
             ),
         )
     try:

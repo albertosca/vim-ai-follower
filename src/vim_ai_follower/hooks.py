@@ -1013,6 +1013,20 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         control.clear_animating(session.window_id)
 
 
+def _busy_nvim(current: FollowerState) -> str | None:
+    """Why this hook must leave an nvim follower alone, or None: the liveness
+    probe FollowerState.get just ran found it accepting and SILENT — busy in
+    `:!make`, `system()` or a Lua loop, or stopped. It is alive (so nothing
+    reopens or replaces it), but every request would wait out the RPC
+    deadline; the hook skips instead, before raising any cue."""
+    if current.backend != "nvim" or nvim_connect.last_probe_verdict(current.target) != "silent":
+        return None
+    return (
+        f"nvim at {current.target} did not answer within "
+        f"{nvim_connect.LIVENESS_TIMEOUT_SECONDS:g} s (busy in a command, or stopped)"
+    )
+
+
 def _skip_unreachable_edit(
     window_id: str, file_path: str, payload: dict[str, Any], failure: NavigationFailed
 ) -> None:
@@ -1327,6 +1341,13 @@ def _animate_edit(
     current = _live_follower_healing_keys(session) or _maybe_auto_open(session, file_path, cfg)
     if current is None:
         _warn_lost_window_identity(session)
+        return 0
+    busy = _busy_nvim(current)
+    if busy is not None:
+        # Skipped like an unreachable edit, minus the cue: none was raised,
+        # and taking one down would wait on the same silent nvim.
+        logger.warning("skipped the animation of %s: %s; marked it stale", file_path, busy)
+        FollowerState.mark_stale(session.window_id, file_path)
         return 0
     _register_writer(session.window_id, payload)
     _apply_writer_cue(session.window_id, current.target, payload)
@@ -1671,6 +1692,10 @@ def _navigate_for_read(
     current = _live_follower_healing_keys(session) or _maybe_auto_open(session, file_path, cfg)
     if current is None:
         _warn_lost_window_identity(session)
+        return 0
+    busy = _busy_nvim(current)
+    if busy is not None:
+        logger.warning("skipped the Read of %s: %s", file_path, busy)
         return 0
     # window_id is what lets an NvimFollower read its FollowerState: without
     # it an adopted nvim looks dedicated (locked on Read, its prompts answered).

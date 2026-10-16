@@ -299,6 +299,16 @@ def cmd_stop(env: dict[str, str]) -> int:
     return 0
 
 
+def _answering_note(backend: str, target: str) -> str:
+    """Marks a follower whose nvim accepted the liveness probe but answered
+    nothing (nvim_connect.probe_nvim's "silent"): alive, but busy in a
+    `:!cmd`/`system()`/Lua loop, or stopped. FollowerState.get has just
+    probed it in this process, so nothing is asked a second time."""
+    if backend == "nvim" and nvim_connect.last_probe_verdict(target) == "silent":
+        return " — not answering (busy in a command, or stopped)"
+    return ""
+
+
 def _identity_label(session: Session) -> str:
     return f"{session.window_id} ({'tmux' if session.in_tmux else 'not in tmux'})"
 
@@ -329,6 +339,7 @@ def cmd_status(env: dict[str, str]) -> int:
             f"backend {existing.backend} ({existing.target}), "
             f"showing {existing.current_file}, "
             f"on_failure={existing.on_failure}, speed={existing.speed}"
+            f"{_answering_note(existing.backend, existing.target)}"
         )
         return 0
     print(f"claude-follow: no follower for {_identity_label(session)}")
@@ -340,7 +351,8 @@ def cmd_status(env: dict[str, str]) -> int:
         )
         for other in others:
             print(
-                f"  {other.window_id}: {other.backend} {other.target}, showing {other.current_file}"
+                f"  {other.window_id}: {other.backend} {other.target}, "
+                f"showing {other.current_file}{_answering_note(other.backend, other.target)}"
             )
     return 0
 

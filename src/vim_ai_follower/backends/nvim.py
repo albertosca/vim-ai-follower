@@ -26,7 +26,6 @@ from vim_ai_follower.backends import (
     classify_buffer,
     log_adopted_close,
     log_state_gone,
-    nvim_connect,
     typed_form,
 )
 from vim_ai_follower.backends.nvim_connect import bounded_attach, probe_nvim
@@ -580,24 +579,19 @@ class NvimFollower:
         return self._is_dedicated()
 
     def is_alive(self) -> bool:
-        """An nvim answering a raw nvim_get_mode within
-        LIVENESS_TIMEOUT_SECONDS (nvim_connect.probe_nvim) — bounded, because
-        `status`, `stop` and every hook ask it of each follower, and a
-        SIGSTOPped nvim accepts the connection and never answers. FAST on
-        purpose: nvim answers get_mode even while a hit-enter prompt blocks
-        every other call, so a follower stuck on a plugin's message still
-        reads as alive — and the entry point that follows sweeps the prompt
-        (see nvim_prompt). A silent nvim is logged, once per probe: it is the
-        one "gone" that a live process can still be behind."""
-        verdict = probe_nvim(self.socket_path)
-        if verdict == "silent":
-            logger.warning(
-                "nvim at %s did not answer within %g s (stopped or frozen?): "
-                "treating its follower as gone",
-                self.socket_path,
-                nvim_connect.LIVENESS_TIMEOUT_SECONDS,
-            )
-        return verdict == "answers"
+        """Something nvim-like still listens on the socket: the raw
+        nvim_get_mode probe (nvim_connect.probe_nvim) answers, or accepts and
+        stays SILENT — bounded, because `status`, `stop` and every hook ask it
+        of each follower. Silence is not death: an nvim running `:!make`,
+        `system()` or a long Lua loop answers nothing until it is done, just
+        like a SIGSTOPped one, and calling it gone let a `stop` in another
+        window collect its state and a hook launch a second follower over it.
+        Callers that must not wait on it read nvim_connect.last_probe_verdict.
+        Only "absent" (nobody listening) and "garbled" (not an nvim) are gone.
+        nvim answers get_mode even at a hit-enter prompt, so a follower stuck
+        on a plugin's message reads as alive and answering — the entry point
+        that follows sweeps the prompt (see nvim_prompt)."""
+        return probe_nvim(self.socket_path) in ("answers", "silent")
 
     @contextlib.contextmanager
     def _guarded(self, nvim: pynvim.Nvim, label: str) -> Iterator[None]:

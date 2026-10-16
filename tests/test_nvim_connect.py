@@ -750,6 +750,36 @@ def test_sweep_stale_sockets_removes_only_unnamed_sockets_nobody_answers_on(
         assert named_by_a_vanishing_pane.is_socket()
 
 
+@pytest.mark.parametrize("reply", [None, b"HTTP/1.1 400 Bad Request\r\n\r\n"])
+def test_sweep_stale_sockets_never_unlinks_a_socket_someone_listens_on(
+    monkeypatch: pytest.MonkeyPatch, reply: bytes | None
+) -> None:
+    # Silent is an nvim busy in `:!make` (or stopped); garbled is a listener
+    # that is not an nvim. Neither is "absent": the file stays under them.
+    with _short_socket_dir() as directory:
+        monkeypatch.setattr(cache, "CACHE_DIR", directory)
+        listened_on = directory / "nvim-@79.sock"
+        with fake_nvim(listened_on, reply=reply):
+            _age(listened_on, nvim_connect.SOCKET_SWEEP_GRACE_SECONDS + 5)
+            assert nvim_connect.sweep_stale_sockets() == []
+            assert listened_on.is_socket()
+
+
+def test_probe_nvim_remembers_its_last_verdict_per_socket() -> None:
+    with _short_socket_dir() as directory:
+        path = directory / "nvim-@1.sock"
+        assert nvim_connect.last_probe_verdict(str(path)) is None
+        assert nvim_connect.probe_nvim(str(path)) == "absent"
+        assert nvim_connect.last_probe_verdict(str(path)) == "absent"
+        with fake_nvim(path, reply=None):
+            assert nvim_connect.probe_nvim(str(path), timeout=0.2) == "silent"
+            assert nvim_connect.last_probe_verdict(str(path)) == "silent"
+        path.unlink()
+        with fake_nvim(path):
+            assert nvim_connect.probe_nvim(str(path)) == "answers"
+            assert nvim_connect.last_probe_verdict(str(path)) == "answers"
+
+
 def test_sweep_stale_sockets_with_no_cache_dir_removes_nothing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

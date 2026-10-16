@@ -107,7 +107,10 @@ def test_status_and_stop_return_promptly_with_a_frozen_nvim(world: E2EFollower) 
         assert status.returncode == 0, status.stderr
         assert status_seconds < 5.0, f"status took {status_seconds:.1f} s"
         assert f"{world.window_id}: nvim {live_socket}" in status.stdout, status.stdout
-        assert frozen_window not in status.stdout, status.stdout
+        # Listed, marked: a silent nvim is busy or stopped, never "gone".
+        frozen_line = f"{frozen_window}: nvim {frozen_socket}"
+        assert frozen_line in status.stdout, status.stdout
+        assert "not answering" in status.stdout.split(frozen_line, 1)[1].splitlines()[0]
         assert frozen_socket.exists(), "the sweep removed a socket a .pane still names"
 
         hook, hook_seconds = _timed_cli(

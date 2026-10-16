@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, call, patch
@@ -226,16 +225,12 @@ def test_is_alive_false_when_no_nvim_answers(verdict: str) -> None:
         assert follower.is_alive() is False
 
 
-def test_is_alive_names_a_silent_nvim_in_the_log(caplog: pytest.LogCaptureFixture) -> None:
-    # A SIGSTOPped nvim accepts the connection and never answers: gone, and
-    # said once, so a quiet log is not mistaken for "no follower here".
+def test_a_silent_nvim_is_alive() -> None:
+    # Busy in `:!make`, `system()` or a Lua loop answers nothing, exactly like
+    # a SIGSTOPped nvim: alive either way, so nothing collects or replaces it.
     follower = NvimFollower(socket_path="/tmp/x.sock")
-    with (
-        caplog.at_level(logging.WARNING, logger="vim_ai_follower"),
-        patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="silent"),
-    ):
-        assert follower.is_alive() is False
-    assert "nvim at /tmp/x.sock did not answer within 1 s" in caplog.text
+    with patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="silent"):
+        assert follower.is_alive() is True
 
 
 def test_connect_goes_through_the_bounded_attach() -> None:
