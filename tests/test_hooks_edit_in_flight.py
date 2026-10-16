@@ -545,3 +545,18 @@ def test_a_read_of_a_crlf_file_whose_edit_only_changed_line_endings_is_held_back
     target.write_bytes(b"a\r\nb\r\n")  # the Edit wrote; its post has not run
 
     assert _read(target) == []
+
+
+def test_a_file_gone_after_its_read_counts_as_changed_while_the_mark_lives(
+    tmp_path: Path,
+) -> None:
+    """The Read tool just read the file, so a file that cannot be read now
+    (deleted or locked right after) is no longer the edit's base: the mark
+    holds the Read back rather than showing a base the edit already left."""
+    target = tmp_path / "a.py"
+    target.write_text("one\n")
+    _pre(target)
+    real_path = _real(target)
+    target.unlink()
+    assert hooks._edit_in_flight("@1", real_path, reader=None) is True
+    assert snapshot.in_flight("@1", real_path)

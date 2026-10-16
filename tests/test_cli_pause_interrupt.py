@@ -820,3 +820,24 @@ def test_on_nvim_a_busy_refusal_shows_on_the_float_for_a_moment(
     assert _popup_calls(popen) == []
     assert "another animation owns this window" in capsys.readouterr().err
     assert control.has_pending_animation("@1") is True
+
+
+@pytest.mark.parametrize("command", [commands.cmd_pause, commands.cmd_interrupt])
+def test_a_busy_refusal_with_no_live_follower_shows_nothing(
+    command: object, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A crash left a resumable remainder, the follower is gone (no state),
+    and another process holds the slot: the press is refused on stderr, with
+    no popup and no float, since there is no follower to show them on."""
+    control.save_pending_show_fresh("@1", ("leftover",), 0.15, continuation=True)
+    with (
+        patch("vim_ai_follower.commands.status_surface_for") as surface_for,
+        patch("vim_ai_follower.commands.control.try_acquire_animating", return_value=False),
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
+    ):
+        assert command({"TMUX_PANE": "%1"}) == 1  # type: ignore[operator]
+    assert _popup_calls(popen) == []
+    surface_for.assert_not_called()
+    assert "another animation owns this window" in capsys.readouterr().err
+    assert control.has_pending_animation("@1") is True
