@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -168,11 +169,18 @@ def test_a_cue_into_a_frozen_nvim_gives_up_at_the_bounded_connect() -> None:
     sock = directory / "frozen.sock"
     try:
         with (
-            fake_nvim(sock, reply=None),
+            fake_nvim(sock, reply=None) as frozen,
             patch("vim_ai_follower.backends.nvim_connect.CONNECT_TIMEOUT_SECONDS", 0.2),
         ):
+            # With the bound gone the cue would wait forever: hanging up after
+            # 5 s ends it, and the timing assertion FAILS instead of hanging.
+            hang_guard = threading.Timer(5.0, frozen.close)
+            hang_guard.start()
             started = time.monotonic()
-            NvimStatusSurface(socket_path=str(sock)).set_writer("code-reviewer", "colour78")
+            try:
+                NvimStatusSurface(socket_path=str(sock)).set_writer("code-reviewer", "colour78")
+            finally:
+                hang_guard.cancel()
             assert time.monotonic() - started < 2.0
     finally:
         shutil.rmtree(directory, ignore_errors=True)

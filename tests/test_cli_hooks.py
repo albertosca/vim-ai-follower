@@ -2627,3 +2627,35 @@ def test_a_hook_skips_a_busy_nvim_follower_and_keeps_it(
     skipped = [line for line in caplog.text.splitlines() if "did not answer within 1 s" in line]
     assert len(skipped) == 1, caplog.text
     assert "/tmp/busy.sock" in skipped[0] and str(target) in skipped[0]
+
+
+@pytest.mark.parametrize("tool_name", ["Edit", "Read"])
+def test_an_rpc_timeout_outside_the_typing_skips_in_one_line(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tool_name: str,
+) -> None:
+    # An nvim that stops answering at the connect or a navigation (the typing
+    # itself waits): no "crashed" traceback; an Edit marks the file stale and
+    # refreshes the cue, a Read changes nothing.
+    target = tmp_path / "f.txt"
+    target.write_text("hello\n")
+    state.FollowerState.set("term-x", "nvim", "/tmp/s.sock", open_files=(str(target),))
+    timeout = nvim_connect.RpcTimeout("nvim did not answer within 10 s")
+    monkeypatch.setattr(hooks, "_animate_edit", MagicMock(side_effect=timeout))
+    monkeypatch.setattr(hooks, "_navigate_for_read", MagicMock(side_effect=timeout))
+    refresh = MagicMock()
+    monkeypatch.setattr(hooks, "_refresh_writer_cue", refresh)
+    payload: dict[str, object] = {"tool_name": tool_name, "tool_input": {"file_path": str(target)}}
+    with caplog.at_level(logging.WARNING, logger="vim_ai_follower"):
+        assert (
+            hooks.run_hook("post", {"TERM_SESSION_ID": "x"}, io.StringIO(json.dumps(payload))) == 0
+        )
+    assert "crashed" not in caplog.text
+    skipped = [line for line in caplog.text.splitlines() if "nvim did not answer within" in line]
+    assert len(skipped) == 1 and str(target) in skipped[0], caplog.text
+    after = state.FollowerState.read("term-x")
+    assert after is not None
+    assert after.stale_files == ((str(target),) if tool_name == "Edit" else ())
+    assert refresh.called is (tool_name == "Edit")

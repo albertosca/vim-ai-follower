@@ -999,7 +999,11 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         return 0
     try:
         return _animate_edit(payload, session, file_path, cfg)
-    except NavigationFailed as failure:
+    except (NavigationFailed, nvim_connect.RpcTimeout) as failure:
+        # RpcTimeout: an nvim that stopped answering outside the typing (which
+        # waits, see NvimFollower._drive) — at the connect or a navigation, a
+        # catch-up's goto, an eviction. Nothing was typed by the request that
+        # timed out, so the same skip: one line, the cue down, marked stale.
         _skip_unreachable_edit(session.window_id, file_path, payload, failure)
         return 0
     finally:
@@ -1028,7 +1032,10 @@ def _busy_nvim(current: FollowerState) -> str | None:
 
 
 def _skip_unreachable_edit(
-    window_id: str, file_path: str, payload: dict[str, Any], failure: NavigationFailed
+    window_id: str,
+    file_path: str,
+    payload: dict[str, Any],
+    failure: NavigationFailed | nvim_connect.RpcTimeout,
 ) -> None:
     """The follower could not confirm it reached file_path's buffer, so the
     backend sent nothing that would act on another one. Skip the edit: one
@@ -1661,6 +1668,12 @@ def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
         return 0
     try:
         return _navigate_for_read(session, payload, file_path, cfg)
+    except nvim_connect.RpcTimeout as timeout:
+        # An nvim that stopped answering mid-Read (a prompt the user has up in
+        # an adopted nvim, a `:!make` started meanwhile): the Read changes no
+        # buffer content, so one line and nothing else.
+        logger.warning("skipped the Read of %s: %s", file_path, timeout)
+        return 0
     finally:
         _drain_unconsumed_signals(
             session.window_id, FollowerState.read(session.window_id), session.in_tmux

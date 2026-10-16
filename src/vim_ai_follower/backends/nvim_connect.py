@@ -11,7 +11,9 @@ thread runs under a SIGALRM deadline (rpc_deadline) that raises RpcTimeout,
 an OSError. A probe that gets no answer ("silent") is NOT a dead nvim: one
 running `:!make`, `system()` or a long Lua loop is silent too, so only
 "absent" (nobody listening) may make a follower read as gone, and only an
-absent socket is ever unlinked.
+absent socket is ever unlinked. The requests that type an animation are
+exempt from the request deadline (unbounded_requests): there, an nvim
+waiting on its user is to be waited for.
 
 pynvim is never imported at module level here: hooks.py imports this module
 and must stay importable without the optional `nvim` extra."""
@@ -234,20 +236,50 @@ def bounded_attach(socket_path: str) -> Any:
     on the connection run under RPC_TIMEOUT_SECONDS (main thread only, like
     rpc_deadline). pynvim 0.6.0 routes every API call — `nvim.api.*`,
     `nvim.command`, a Buffer's or Window's methods — through the one
-    `Session.request` of the connection, so wrapping it covers them all."""
+    `Session.request` of the connection, so wrapping it covers them all.
+    Inside unbounded_requests(nvim) the request deadline is lifted."""
     import pynvim
 
     with rpc_deadline(CONNECT_TIMEOUT_SECONDS):
         nvim = pynvim.attach("socket", path=socket_path)
     session = nvim._session
     unbounded_request = session.request
+    bounds = {"lifted": 0}
 
     def bounded_request(method: Any, *args: Any, **kwargs: Any) -> Any:
+        if bounds["lifted"]:
+            return unbounded_request(method, *args, **kwargs)
         with rpc_deadline(RPC_TIMEOUT_SECONDS):
             return unbounded_request(method, *args, **kwargs)
 
     setattr(session, "request", bounded_request)  # noqa: B010 - an instance override of a method
+    setattr(session, _BOUNDS_ATTRIBUTE, bounds)
     return nvim
+
+
+_BOUNDS_ATTRIBUTE = "_vaf_bounds"
+
+
+@contextlib.contextmanager
+def unbounded_requests(nvim: Any) -> Iterator[None]:
+    """Lift bounded_attach's request deadline for the body, on this
+    connection: the requests that TYPE an animation. There an nvim that stops
+    answering is, far more often than not, an nvim waiting on its user (a
+    hit-enter prompt in an adopted nvim, which no watchdog dismisses), and
+    cutting a request at RPC_TIMEOUT_SECONDS crashed the hook with a
+    half-typed line and "Writing..." left up — while the abandoned request
+    still landed at Enter. The outer bound is the hook's own timeout. The
+    connect, the liveness probe, navigation, status, stop and the status float
+    keep their deadlines. A no-op on a connection bounded_attach did not make."""
+    bounds = getattr(nvim._session, _BOUNDS_ATTRIBUTE, None)
+    if not isinstance(bounds, dict):
+        yield
+        return
+    bounds["lifted"] += 1
+    try:
+        yield
+    finally:
+        bounds["lifted"] -= 1
 
 
 # The last verdict probe_nvim reached for each socket, in this process: lets

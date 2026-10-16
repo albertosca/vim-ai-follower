@@ -20,6 +20,11 @@ from vim_ai_follower import cache
 from vim_ai_follower.backends import nvim_connect
 from vim_ai_follower.state import FollowerState
 
+# How long a test whose deadline went missing may block before its guard
+# unblocks it, so the regression FAILS in bounded time (CI has no
+# pytest-timeout).
+_HANG_GUARD_SECONDS = 5.0
+
 
 def test_discover_adopt_socket_matches_the_panes_nvim_pid(tmp_path: Path) -> None:
     # simulate $TMPDIR/nvim.$USER/<rand>/nvim.<pid>.0 with a matching + a stale one
@@ -685,10 +690,17 @@ def test_nvim_answers_true_for_a_real_nvim(headless_nvim: str) -> None:
 def test_a_frozen_nvim_times_out_the_bounded_attach_and_its_requests(headless_nvim: str) -> None:
     """Measured first (Step 1 of the plan's Task 16): SIGALRM interrupts
     pynvim's asyncio loop both inside attach and inside a request, and the
-    process connects again once the nvim is resumed."""
+    process connects again once the nvim is resumed.
+
+    The hang guard resumes the nvim after _HANG_GUARD_SECONDS: with a
+    deadline gone, the blocked call then returns and `pytest.raises` FAILS
+    instead of hanging the run (CI has no pytest-timeout). It cannot be a
+    SIGALRM, which is what the code under test uses."""
     connected = nvim_connect.bounded_attach(headless_nvim)
     pid = connected.call("getpid")
     os.kill(pid, signal.SIGSTOP)
+    hang_guard = threading.Timer(_HANG_GUARD_SECONDS, os.kill, (pid, signal.SIGCONT))
+    hang_guard.start()
     try:
         with patch("vim_ai_follower.backends.nvim_connect.CONNECT_TIMEOUT_SECONDS", 0.2):
             started = time.monotonic()
@@ -702,9 +714,38 @@ def test_a_frozen_nvim_times_out_the_bounded_attach_and_its_requests(headless_nv
             assert time.monotonic() - started < 2.0
         assert nvim_connect.nvim_answers(headless_nvim, timeout=0.2) is False
     finally:
+        hang_guard.cancel()
         os.kill(pid, signal.SIGCONT)
     assert nvim_connect.bounded_attach(headless_nvim).api.get_mode()["mode"] == "n"
     assert nvim_connect.nvim_answers(headless_nvim) is True
+
+
+_SLOW_LUA = "vim.uv.sleep(600)"
+
+
+def test_unbounded_requests_lift_the_deadline_on_that_connection_only(headless_nvim: str) -> None:
+    # The typing of an animation waits for an nvim that is waiting on its
+    # user; everything else on the connection keeps the deadline.
+    connected = nvim_connect.bounded_attach(headless_nvim)
+    with patch("vim_ai_follower.backends.nvim_connect.RPC_TIMEOUT_SECONDS", 0.2):
+        with pytest.raises(nvim_connect.RpcTimeout):
+            connected.exec_lua(_SLOW_LUA, [])
+        # A fresh connection: the abandoned request's late answer would end
+        # the next request on this one (see the review of T16).
+        connected = nvim_connect.bounded_attach(headless_nvim)
+        with nvim_connect.unbounded_requests(connected):
+            with nvim_connect.unbounded_requests(connected):
+                connected.exec_lua(_SLOW_LUA, [])
+            connected.exec_lua(_SLOW_LUA, [])  # still lifted: nested, not reset
+        with pytest.raises(nvim_connect.RpcTimeout):
+            connected.exec_lua(_SLOW_LUA, [])
+
+
+def test_unbounded_requests_is_a_no_op_on_a_connection_it_did_not_bound() -> None:
+    nvim = MagicMock()
+    with nvim_connect.unbounded_requests(nvim):
+        nvim.api.get_mode()
+    nvim.api.get_mode.assert_called_once_with()
 
 
 def _age(path: Path, seconds: float) -> None:

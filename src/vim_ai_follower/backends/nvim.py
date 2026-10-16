@@ -26,6 +26,7 @@ from vim_ai_follower.backends import (
     classify_buffer,
     log_adopted_close,
     log_state_gone,
+    nvim_connect,
     typed_form,
 )
 from vim_ai_follower.backends.nvim_connect import bounded_attach, probe_nvim
@@ -660,18 +661,26 @@ class NvimFollower:
         Signals are NOT cleared here: one pressed since the hook claimed the
         slot is addressed to this process and must survive to the first check;
         a stale one is addressed elsewhere and is dropped there (see
-        control._request)."""
-        nvim.api.buf_set_option(buf, "modifiable", True)
-        control.mark_animating(self.window_id)
-        result = run()
-        if result.outcome != "interrupted":
-            if format_from is not None:
-                _format_from_disk(nvim, buf, format_from)
-            # Clean only if it holds exactly what Claude wrote: see _IS_CLEAN_LUA.
-            if expected is not None:
-                nvim.exec_lua(_STAMP_IF_EXPECTED_LUA, buf, list(expected))
-            if self._locks_buffers():
-                nvim.api.buf_set_option(buf, "modifiable", False)
+        control._request).
+
+        Every request in here runs without the RPC deadline
+        (nvim_connect.unbounded_requests): mid-animation, an nvim that stops
+        answering is waiting on its user — a hit-enter prompt in an adopted
+        nvim holds the typing until Enter, then it finishes. Cutting it
+        crashed the hook, left a half-typed line and the "Writing..." float
+        up, and the abandoned request still landed at Enter."""
+        with nvim_connect.unbounded_requests(nvim):
+            nvim.api.buf_set_option(buf, "modifiable", True)
+            control.mark_animating(self.window_id)
+            result = run()
+            if result.outcome != "interrupted":
+                if format_from is not None:
+                    _format_from_disk(nvim, buf, format_from)
+                # Clean only if it holds exactly what Claude wrote: see _IS_CLEAN_LUA.
+                if expected is not None:
+                    nvim.exec_lua(_STAMP_IF_EXPECTED_LUA, buf, list(expected))
+                if self._locks_buffers():
+                    nvim.api.buf_set_option(buf, "modifiable", False)
         return result
 
     def show_fresh(self, file_path: str, content: str, in_new_tab: bool = False) -> AnimationResult:
