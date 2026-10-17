@@ -14,6 +14,7 @@ import logging
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import tempfile
 import time
@@ -197,3 +198,67 @@ def test_an_init_error_stays_on_screen_and_the_split_is_attached_once_nvim_start
     assert attached.adopted is False
     assert [pane_id for pane_id, _command in _panes(tmux_session)] == [origin, error_pane]
     assert not nvim_connect.launch_backoff_active(window_id)
+
+
+def _fill_the_listen_queue(sock: Path) -> None:
+    """What ~32 hooks' probes leave on an nvim that never accepts: on macOS a
+    connection its client closed keeps its slot, and nvim's backlog is 32
+    (review I1, measured 2026-10-17). Past it, connect is refused."""
+    for _attempt in range(40):
+        nvim_connect.probe_nvim(str(sock), timeout=0.05)
+
+
+def test_a_spinning_nvims_full_listen_queue_never_reads_as_a_dead_socket(
+    short_cache_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sock = short_cache_dir / "nvim-@91.sock"
+    spinner = subprocess.Popen(
+        ["nvim", "--headless", "-u", "NONE", "-i", "NONE", "-n", "--listen", str(sock),
+         "--cmd", _SPIN_FOREVER],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )  # fmt: skip
+    try:
+        deadline = time.monotonic() + 5.0
+        while not sock.is_socket() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        _fill_the_listen_queue(sock)
+        refused = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        with pytest.raises(ConnectionRefusedError):  # the queue IS full
+            refused.connect(str(sock))
+        refused.close()
+        assert nvim_connect.probe_nvim(str(sock)) == "silent"
+        with pytest.raises(nvim_connect.SocketPathBlocked):
+            nvim_connect._remove_dead_socket(str(sock))
+        then = time.time() - nvim_connect.SOCKET_SWEEP_GRACE_SECONDS - 5
+        os.utime(sock, (then, then))
+        assert nvim_connect.sweep_stale_sockets() == []
+        assert sock.is_socket()
+        assert spinner.poll() is None
+    finally:
+        spinner.kill()
+        spinner.wait()
+
+
+def test_a_failed_split_whose_queue_filled_is_never_split_beside(
+    tmux_session: str,
+    short_cache_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    origin, window_id = _window_whose_splits_run(tmux_session, _SPIN_FOREVER, tmp_path, monkeypatch)
+    nvim_socket = state.nvim_socket_path(window_id)
+    in_tmux = Session(window_id=window_id, origin=origin, in_tmux=True)
+    assert hooks._maybe_auto_open(in_tmux, "/tmp/f.txt", config.load()) is None
+    spinning = _spinning_nvim(nvim_socket)
+    assert spinning
+    _fill_the_listen_queue(nvim_socket)  # ~32 hooks during the backoff
+    nvim_connect.clear_launch_backoff(window_id)  # the 5 minutes passed
+    capsys.readouterr()
+
+    assert hooks._maybe_auto_open(in_tmux, "/tmp/g.txt", config.load()) is None
+    assert len(_panes(tmux_session)) == 2, "a second nvim was split beside the first"
+    assert nvim_socket.is_socket()
+    assert _spinning_nvim(nvim_socket) == spinning
+    assert nvim_connect.launch_backoff_active(window_id)
+    assert f"cannot clear {nvim_socket}" in capsys.readouterr().err

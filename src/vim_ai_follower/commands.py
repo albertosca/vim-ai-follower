@@ -81,10 +81,14 @@ def _split_nvim_or_report(origin: str, window_id: str, adopt: bool) -> tuple[str
         )
     except (nvim_connect.SplitNvimNeverAnswered, StandaloneLaunchFailed) as exc:
         nvim_connect.record_launch_failure(window_id)
-        hooks._configure_logging()
-        hooks.logger.warning("start: %s", exc)
-        print(f"claude-follow: {exc}", file=sys.stderr)
-        return None
+        message = str(exc)
+    except subprocess.CalledProcessError as exc:  # tmux refused the split: no backoff
+        detail = (exc.stderr or "").strip() or str(exc)
+        message = f"tmux could not split a pane for nvim: {detail}"
+    hooks._configure_logging()
+    hooks.logger.warning("start: %s", message)
+    print(f"claude-follow: {message}", file=sys.stderr)
+    return None
 
 
 def _unresolvable_pane(env: dict[str, str]) -> str:

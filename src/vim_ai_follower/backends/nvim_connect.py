@@ -11,7 +11,11 @@ thread runs under a SIGALRM deadline (rpc_deadline) that raises RpcTimeout,
 an OSError. A probe that gets no answer ("silent") is NOT a dead nvim: one
 running `:!make`, `system()` or a long Lua loop is silent too, so only
 "absent" (nobody listening) may make a follower read as gone, and only an
-absent socket is ever unlinked. The requests that type an animation are
+absent socket is ever unlinked. A REFUSED connect is not proof of absence
+either: on macOS a connection its client closed keeps its slot in the listen
+queue, so after 32 probes of an nvim that never accepts, connect is refused
+exactly as on a dead nvim's file; a refusal reads "absent" only when no live
+process was launched with `--listen <that socket>`. The requests that type an animation are
 exempt from the request deadline (unbounded_requests): there, an nvim
 waiting on its user is to be waited for.
 
@@ -58,6 +62,9 @@ _MAP_MARKERS = frozenset(range(0x80, 0x90)) | {0xDE, 0xDF}
 # blocking true, and holds every other request until the user answers.
 _BLOCKING_KEY = b"\xa8blocking"
 _MSGPACK_TRUE = 0xC3
+# The process scan that tells a full listen queue from a dead socket file:
+# one `ps`, bounded; a scan that fails or runs out counts as a live listener.
+PROCESS_SCAN_TIMEOUT_SECONDS = 2.0
 # msgpack-RPC `[0, 1, "nvim_get_vvar", ["vim_did_enter"]]`, hand-encoded like
 # the probe: fixarray(4), request 0, msgid 1, fixstr(13), fixarray(1) of a
 # fixstr(13). Its answer once nvim has started is `[1, 1, nil, 1]`.
@@ -106,6 +113,19 @@ class SocketPathBlocked(StandaloneLaunchFailed):
 
     def __init__(self, sock: str, cause: OSError) -> None:
         super().__init__(f"cannot clear {sock}: {cause}")
+        self.sock = sock
+
+
+class SplitNvimNotStarted(StandaloneLaunchFailed):
+    """The nvim on this window's launch socket answers but has not finished
+    starting: a split left open at its startup prompt (an init error, a swap
+    ATTENTION, an `input()`). Neither attached nor split beside."""
+
+    def __init__(self, sock: str) -> None:
+        super().__init__(
+            f"nvim on {sock} has not finished starting (a prompt in its pane?); "
+            "press Enter there or close the pane"
+        )
         self.sock = sock
 
 
@@ -170,7 +190,10 @@ def resolve_nvim_target(
     finds one, else this window's dedicated split. Raises
     SplitNvimNeverAnswered when the split's nvim does not answer within
     `wait_seconds`, SocketPathBlocked when the socket path cannot be
-    cleared for it, CalledProcessError when tmux cannot split."""
+    cleared for it, SplitNvimNotStarted when the nvim already there has not
+    finished starting, CalledProcessError when tmux cannot split. The wait is
+    `wait_seconds` in all: each check and each pause is capped to the time
+    left, so the message's number is the time spent."""
     if adopt:
         found = discover_adopt_socket(origin_pane)
         if found is not None:
@@ -181,6 +204,8 @@ def resolve_nvim_target(
         # pane was left open): attach. A second split's nvim would die on
         # "address already in use" next to it.
         return sock, True
+    if last_probe_verdict(sock) == "answers":
+        raise SplitNvimNotStarted(sock)
     _remove_dead_socket(sock)
     split = subprocess.run(
         [
@@ -193,12 +218,14 @@ def resolve_nvim_target(
     )  # fmt: skip
     pane_id = split.stdout.strip()
     deadline = time.monotonic() + wait_seconds
-    while not nvim_ready(sock):
-        if time.monotonic() >= deadline:
+    while True:
+        left = deadline - time.monotonic()
+        if left <= 0:
             pane_open = TmuxPane(pane_id=pane_id).running_command() is not None
             raise SplitNvimNeverAnswered(sock, wait_seconds, pane_id, pane_open=pane_open)
-        time.sleep(_SOCKET_POLL_INTERVAL_SECONDS)
-    return sock, True
+        if nvim_ready(sock, min(LIVENESS_TIMEOUT_SECONDS, left)):
+            return sock, True
+        time.sleep(min(_SOCKET_POLL_INTERVAL_SECONDS, max(deadline - time.monotonic(), 0.0)))
 
 
 def standalone_launch_command(
@@ -363,10 +390,12 @@ def probe_nvim(sock: str, timeout: float = LIVENESS_TIMEOUT_SECONDS) -> str:
     """Ask whatever listens on `sock` for nvim_get_mode, raw, within `timeout`.
 
     "answers": a well-formed reply to this request. "absent": no socket file,
-    or nobody listening (a SIGKILLed nvim leaves its file behind). "silent":
-    the connection was accepted and nothing came back in time — a SIGSTOPped
-    nvim, and just as well a live one busy in `:!cmd`, `system()` or a Lua
-    loop. "garbled": something answered that is not an nvim's reply, or hung
+    or nobody listening (a SIGKILLed nvim leaves its file behind) and no live
+    process launched to listen there. "silent": the connection was accepted
+    and nothing came back in time — a SIGSTOPped nvim, and just as well a
+    live one busy in `:!cmd`, `system()` or a Lua loop — or it was refused
+    while a live process listens there (a queue full of probes it never
+    accepted). "garbled": something answered that is not an nvim's reply, or hung
     up. Thread-safe, no pynvim. The verdict is remembered (last_probe_verdict),
     and so is whether an answer said `blocking: true` (last_probe_blocking)."""
     verdict, blocking = _probe(sock, timeout)
@@ -401,8 +430,10 @@ def _probe(sock: str, timeout: float) -> tuple[str, bool]:
             probe.connect(sock)
         except TimeoutError:
             return "silent", False
-        except OSError:
+        except FileNotFoundError:
             return "absent", False
+        except OSError:  # refused: a dead nvim's file, or a full listen queue
+            return ("silent" if is_listened_on_by_a_live_process(sock) else "absent"), False
         deadline = time.monotonic() + timeout
         received = b""
         try:
@@ -454,7 +485,11 @@ def nvim_ready(sock: str, timeout: float = LIVENESS_TIMEOUT_SECONDS) -> bool:
     spins never answers again; an init that errors leaves nvim at a startup
     hit-enter prompt, which answers get_mode and holds every other request,
     so its error stays on screen instead of being swept as a follower prompt."""
-    return nvim_answers(sock, timeout) and _did_enter(sock, timeout)
+    deadline = time.monotonic() + timeout
+    if not nvim_answers(sock, timeout):
+        return False
+    left = deadline - time.monotonic()
+    return left > 0 and _did_enter(sock, left)
 
 
 def _did_enter(sock: str, timeout: float) -> bool:
@@ -487,6 +522,38 @@ def ready_split_socket(window_id: str) -> str | None:
     split whose nvim came up after its caller stopped waiting."""
     sock = str(launch_socket_path(window_id))
     return sock if nvim_ready(sock) else None
+
+
+def is_listened_on_by_a_live_process(sock: str) -> bool:
+    """True when a live process's command line has `--listen <sock>`, the
+    path a whole argument (an nvim launched to listen there, or the `--embed`
+    server its TUI starts with the same arguments), or when the scan cannot
+    say: one `ps` within PROCESS_SCAN_TIMEOUT_SECONDS, failing CLOSED, since
+    the caller is about to treat the socket as dead. `ps` prints argv joined
+    by spaces, unquoted, so the match is on the joined text: a path with
+    spaces still matches whole."""
+    try:
+        listing = subprocess.run(
+            ["ps", "-A", "-ww", "-o", "command="],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=PROCESS_SCAN_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    if listing.returncode != 0:
+        return True
+    markers = {f" --listen {sock}", f" --listen {os.path.realpath(sock)}"}
+    for command_line in listing.stdout.splitlines():
+        for marker in markers:
+            start = command_line.find(marker)
+            while start != -1:
+                end = start + len(marker)
+                if end == len(command_line) or command_line[end].isspace():
+                    return True
+                start = command_line.find(marker, start + 1)
+    return False
 
 
 def _accepts(sock: str) -> bool:
@@ -542,10 +609,11 @@ def _remove_dead_socket(sock: str) -> None:
     path = Path(sock)
     if not path.exists():
         return
-    if _accepts(sock):
+    if _accepts(sock) or is_listened_on_by_a_live_process(sock):
         # Someone listens there but did not answer as an nvim (the caller
-        # asked first) — a busy nvim (`:!make`) is silent too: neither adopted
-        # nor unlinked from under it, and no second nvim is launched over it.
+        # asked first) — a busy nvim (`:!make`) is silent too, and one that
+        # never accepts refuses once its queue is full: neither adopted nor
+        # unlinked from under it, and no second nvim is launched over it.
         raise SocketPathBlocked(
             sock,
             OSError(

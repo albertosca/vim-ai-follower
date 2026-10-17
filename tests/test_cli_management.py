@@ -1879,3 +1879,26 @@ def test_start_reports_a_split_socket_it_cannot_clear(capsys: pytest.CaptureFixt
         assert commands.cmd_start({"TMUX_PANE": "%1"}, backend="nvim") == 1
     assert capsys.readouterr().err == "claude-follow: cannot clear /c/nvim-@1.sock: a listener\n"
     assert state.FollowerState.read("@1") is None
+
+
+def test_start_reports_a_tmux_that_cannot_split_in_one_line(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Review m4: the split's CalledProcessError used to end `start` in a
+    # traceback. No backoff: tmux failing is not an nvim that never came up.
+    refused = subprocess.CalledProcessError(
+        1, ["tmux", "split-window"], stderr="no space for new pane\n"
+    )
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.commands.resolve_nvim_target", side_effect=refused),
+    ):
+        assert commands.cmd_start({"TMUX_PANE": "%1"}, backend="nvim") == 1
+    captured = capsys.readouterr()
+    assert (
+        captured.err
+        == "claude-follow: tmux could not split a pane for nvim: no space for new pane\n"
+    )
+    assert "attached" not in captured.out
+    assert state.FollowerState.read("@1") is None
+    assert not nvim_connect.launch_backoff_active("@1")
