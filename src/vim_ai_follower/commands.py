@@ -353,6 +353,7 @@ def cmd_stop(env: dict[str, str]) -> int:
         # unregistering here would either no-op against a foreign tmux
         # server or, worse, unbind real keys on one that happens to be
         # running on the machine.
+        hooks._configure_logging()  # a binding it cannot restore is logged
         keybindings.unregister()
     print("claude-follow: stopped")
     return 0

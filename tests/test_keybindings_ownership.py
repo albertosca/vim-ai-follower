@@ -8,6 +8,7 @@ import functools
 import json
 import os
 import time
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -63,20 +64,151 @@ def test_register_records_the_owner_and_unregister_deletes_it(
     assert not keybindings._owner_path().exists()
 
 
-def test_unregister_restores_a_chained_user_binding_whole() -> None:
-    # list-keys prints a chain as `\;`, which shlex turns into a bare `;`:
-    # passed as is, tmux ended bind-key there, bound only `send-keys x`, and
-    # ran `send-keys y` as a command of its own at stop time (measured, tmux 3.8).
+class _FakeBindingServer:
+    """A tmux that answers `list-keys` from `listed` and records what
+    `source-file` was given (the file is gone once unregister returns)."""
+
+    def __init__(self, listed: dict[str, str], source_status: int = 0) -> None:
+        self.listed = listed
+        self.source_status = source_status
+        self.sourced: list[str] = []
+        self.source_paths: list[str] = []
+        self.unbound: list[str] = []
+        self.on_source: Callable[[str], None] = lambda content: None
+
+    def __call__(self, command: list[str], **_options: object) -> MagicMock:
+        if command[:2] == ["tmux", "source-file"]:
+            content = Path(command[2]).read_text()
+            self.source_paths.append(command[2])
+            self.sourced.append(content)
+            self.on_source(content)
+            return MagicMock(returncode=self.source_status, stdout="", stderr="")
+        if command[:2] == ["tmux", "list-keys"]:
+            return MagicMock(
+                returncode=0, stdout="".join(line + "\n" for line in self.listed.values())
+            )
+        if command[:2] == ["tmux", "unbind-key"]:
+            self.unbound.append(command[-1])
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+
+def _saved(**previous: str) -> None:
     path = keybindings._saved_bindings_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    previous = "bind-key  -T prefix P send-keys x \\; send-keys y"
-    path.write_text(json.dumps({"P": previous}))
-    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+    path.write_text(json.dumps(previous))
+
+
+@pytest.mark.parametrize(
+    "previous",
+    [
+        # list-keys prints a chain as `\;`, which shlex turned into a bare
+        # `;`: tmux ended bind-key there, bound only `send-keys x`, and ran
+        # `send-keys y` as a command of its own at stop time (3714a9b).
+        "bind-key    -T prefix P       send-keys x \\; send-keys y",
+        # T24a review m4: a brace block failed to bind and left ours bound,
+        # and `"\$HOME"` came back `\\\$HOME`.
+        "bind-key    -T prefix P       if-shell true { display-message a ; display-message b }",
+        'bind-key    -T prefix P       display-message "\\$HOME"',
+    ],
+)
+def test_unregister_sources_the_users_binding_verbatim(previous: str) -> None:
+    _saved(P=previous)
+    server = _FakeBindingServer({"P": previous})
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=server):
         keybindings.unregister()
-    restores = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "bind-key"]]
-    assert restores == [
-        ["tmux", "bind-key", "-T", "prefix", "P", "send-keys", "x", "\\;", "send-keys", "y"]
+    assert server.sourced == [previous + "\n"]
+    assert "P" not in server.unbound
+    assert not any(Path(path).exists() for path in server.source_paths)
+
+
+@pytest.mark.parametrize(
+    ("listed", "sourced"),
+    [
+        ("send-keys \\;", "send-keys '\\;'"),
+        ("send-keys \\; \\; display-message b", "send-keys '\\;' \\; display-message b"),
+        ("send-keys \\; \\;", "send-keys '\\;' '\\;'"),
+        (
+            "if-shell true { send-keys a } \\; send-keys \\;",
+            "if-shell true { send-keys a } \\; send-keys '\\;'",
+        ),
+        ('display-message "x \\\\; y"', 'display-message "x \\\\; y"'),
+    ],
+)
+def test_a_literal_semicolon_key_is_quoted_and_a_separator_is_not(
+    listed: str, sourced: str
+) -> None:
+    # list-keys prints `send-keys '\;'` as `send-keys \;`, which source-file
+    # reads back as a separator: bound `send-keys` with no key (measured).
+    previous = f"bind-key    -T prefix P       {listed}"
+    _saved(P=previous)
+    server = _FakeBindingServer({"P": previous})
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=server):
+        keybindings.unregister()
+    assert server.sourced == [f"bind-key    -T prefix P       {sourced}\n"]
+
+
+def test_a_brace_block_written_over_lines_lists_back_with_one_semicolon() -> None:
+    previous = "bind-key    -T prefix P       if-shell true { send-keys a ;; send-keys b }"
+    _saved(P=previous)
+    server = _FakeBindingServer(
+        {"P": "bind-key -T prefix P if-shell true { send-keys a ; send-keys b }"}
+    )
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=server):
+        keybindings.unregister()
+    assert "P" not in server.unbound
+
+
+def _restore_fails(
+    server: _FakeBindingServer, previous: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    _saved(P=previous)
+    with (
+        caplog.at_level("WARNING", logger="vim_ai_follower"),
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=server),
+    ):
+        keybindings.unregister()
+    # Ours never stays bound in its place, and one line names the binding.
+    assert "P" in server.unbound
+    warnings = [
+        record.getMessage()
+        for record in caplog.records
+        if "could not restore" in record.getMessage()
     ]
+    assert warnings == [
+        f"stop: could not restore your tmux binding {previous}; prefix P is unbound"
+    ]
+
+
+def test_a_binding_tmux_refuses_unbinds_ours_and_says_so(caplog: pytest.LogCaptureFixture) -> None:
+    ours = "bind-key -T prefix P run-shell -b claude-follow pause"
+    previous = "bind-key    -T prefix P       if-shell true { display-message a"
+    _restore_fails(_FakeBindingServer({"P": ours}, source_status=1), previous, caplog)
+
+
+def test_a_binding_that_lists_back_different_unbinds_ours_and_says_so(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    previous = "bind-key    -T prefix P       send-keys a \\; b"
+    server = _FakeBindingServer({"P": "bind-key -T prefix P send-keys a"})
+    _restore_fails(server, previous, caplog)
+
+
+def test_a_binding_gone_after_the_source_unbinds_and_says_so(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    previous = "bind-key    -T prefix P       send-keys a"
+    server = _FakeBindingServer({"P": previous})
+    server.on_source = lambda content: server.listed.clear()
+    _restore_fails(server, previous, caplog)
+
+
+def test_a_saved_line_that_is_not_a_bind_key_is_never_sourced(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    previous = "run-shell 'rm -rf /tmp/x'"
+    server = _FakeBindingServer({})
+    _restore_fails(server, previous, caplog)
+    assert server.sourced == []
 
 
 @pytest.mark.parametrize("content", ["", "{not json", "[]", '{"executable": "/x"}'])

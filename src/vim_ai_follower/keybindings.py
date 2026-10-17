@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
 from vim_ai_follower import cache
-from vim_ai_follower.tmux import literal_argument
+
+logger = logging.getLogger("vim_ai_follower")
 
 _KEYBINDINGS: tuple[tuple[str, str], ...] = (
     ("P", "pause"),
@@ -363,6 +367,46 @@ def describe(result: Claim) -> str | None:
     )
 
 
+# A `\;` token list-keys prints is a chain separator, or a literal `;`
+# argument (`send-keys '\;'` prints `send-keys \;`): it can only be the
+# separator when a command follows it, since a command list holds no empty
+# command and no command is named `;` or `}`.
+_LITERAL_SEMICOLON_KEY = re.compile(r"(?<=\s)\\;(?=\s+(?:\\;|\})(?=\s|$)|\s*$)")
+
+
+def _same_binding(listed: str, saved: str) -> bool:
+    """Whether two list-keys lines name the same binding. Column padding
+    differs with the other keys bound, and a brace block written over
+    several lines lists as `a ;; b` but re-lists as `a ; b` once sourced
+    (measured on tmux 3.8, 2026-10-17)."""
+
+    def tokens(line: str) -> list[str]:
+        return [";" if token == ";;" else token for token in line.split()]
+
+    return tokens(listed) == tokens(saved)
+
+
+def _restore_binding(key: str, previous: str) -> bool:
+    """Re-bind the user's own `previous` (a line list-keys printed) and say
+    whether tmux now lists exactly it. The line goes to `source-file`
+    verbatim, since list-keys prints what the config parser reads back:
+    brace blocks, `"\\$HOME"` and chains included, which an argv rebuilt by
+    shlex lost (T24a review m4). Only a literal `;` key needs a quote."""
+    if not previous.startswith("bind-key "):
+        return False
+    descriptor, config_path = tempfile.mkstemp(prefix="vaf-binding-", suffix=".conf")
+    try:
+        with os.fdopen(descriptor, "w") as config_file:
+            config_file.write(_LITERAL_SEMICOLON_KEY.sub("'\\\\;'", previous) + "\n")
+        result = subprocess.run(
+            ["tmux", "source-file", config_path], capture_output=True, text=True, check=False
+        )
+    finally:
+        Path(config_path).unlink(missing_ok=True)
+    listed = _existing_binding(key)
+    return result.returncode == 0 and listed is not None and _same_binding(listed, previous)
+
+
 def unregister() -> None:
     # check=False everywhere: stop after a crash that skipped registration
     # must still clean up without erroring. Keybindings are SERVER-global
@@ -376,11 +420,13 @@ def unregister() -> None:
     for key, _ in _KEYBINDINGS:
         previous = saved.get(key)
         if previous and "claude-follow" not in previous:
-            # shlex turns list-keys' chain separator `\;` into a bare `;`,
-            # which would end bind-key there (see tmux.literal_argument).
-            restored = [literal_argument(token) for token in shlex.split(previous)]
-            subprocess.run(["tmux", *restored], check=False)
-        else:
-            subprocess.run(["tmux", "unbind-key", "-T", "prefix", key], check=False)
+            if _restore_binding(key, previous):
+                continue
+            # Never leave ours bound in its place: a key that runs a stopped
+            # follower's command is worse than an unbound one.
+            logger.warning(
+                "stop: could not restore your tmux binding %s; prefix %s is unbound", previous, key
+            )
+        subprocess.run(["tmux", "unbind-key", "-T", "prefix", key], check=False)
     saved_path.unlink(missing_ok=True)
     _owner_path().unlink(missing_ok=True)

@@ -731,12 +731,15 @@ def test_stop_unregisters_keybindings_and_clears_signals() -> None:
 
 def test_stop_restores_a_pre_existing_binding() -> None:
     previous = "bind-key -T prefix P paste-buffer"
+    sourced: list[str] = []
 
     def _run_with_existing_binding(cmd: list[str], **kwargs: object) -> MagicMock:
         # Full-table listing (no per-key filter arg): the caller extracts
         # P's line itself and finds nothing for S.
         if cmd[:4] == ["tmux", "list-keys", "-T", "prefix"]:
             return MagicMock(returncode=0, stdout=previous + "\n")
+        if cmd[:2] == ["tmux", "source-file"]:  # the restore, read before it is deleted
+            sourced.append(Path(cmd[2]).read_text())
         return _mock_tmux_run()(cmd, **kwargs)
 
     with patch(
@@ -745,9 +748,9 @@ def test_stop_restores_a_pre_existing_binding() -> None:
         assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
 
-    rebinds = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "bind-key"]]
-    assert ["tmux", "bind-key", "-T", "prefix", "P", "paste-buffer"] in rebinds
+    assert sourced == [previous + "\n"]
     unbinds = _unbind_calls(run)
+    assert ["tmux", "unbind-key", "-T", "prefix", "P"] not in unbinds
     assert ["tmux", "unbind-key", "-T", "prefix", "S"] in unbinds  # S had no previous binding
     assert not keybindings._saved_bindings_path().exists()
 
