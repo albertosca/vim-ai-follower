@@ -99,12 +99,21 @@ def test_the_prompt_shows_the_question_and_restores_the_terminal(
 
 def test_main_writes_the_answer_with_its_token(tmp_path: Path) -> None:
     answer_path = tmp_path / "answer.txt"
+    seen: list[str] = []
+
+    def prompt_reading_the_file(*_arguments: object) -> str:
+        seen.append(answer_path.read_text())
+        return "timeout"
+
     with (
-        patch("vim_ai_follower.take_over.run_prompt", return_value="timeout") as prompt,
+        patch(
+            "vim_ai_follower.take_over.run_prompt", side_effect=prompt_reading_the_file
+        ) as prompt,
         patch("vim_ai_follower.take_over.sys.stdin"),
     ):
         assert take_over.main([str(answer_path), "abc", "4", "Neovim"]) == 0
     assert prompt.call_args.args[2:] == (4.0, "Neovim")
+    assert seen == ["abc started\n"]
     assert answer_path.read_text() == "abc timeout\n"
     assert list(tmp_path.iterdir()) == [answer_path]
 
@@ -117,13 +126,27 @@ def test_show_writes_and_flushes(capsys: pytest.CaptureFixture[str]) -> None:
 _Popup = Callable[[list[str]], "subprocess.CompletedProcess[str] | None"]
 
 
-def _tmux(clients: str = "/dev/ttys001\n", popup: _Popup | None = None) -> MagicMock:
-    """A subprocess.run stand-in: list-clients answers `clients`; the popup
-    call runs `popup(argv)` (writing an answer, raising, failing)."""
+def _tmux(
+    clients: str = "1792249862 /dev/ttys001\n",
+    popup: _Popup | None = None,
+    *,
+    clients_code: int = 0,
+) -> MagicMock:
+    """A subprocess.run stand-in: list-clients of the target's session
+    answers `clients` (`<activity> <name>` lines); the popup call runs
+    `popup(argv)` (writing an answer, raising, failing)."""
 
     def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         if argv[1] == "list-clients":
-            return subprocess.CompletedProcess(argv, 0, clients, "")
+            assert argv == [
+                "tmux",
+                "list-clients",
+                "-t",
+                "%3",
+                "-F",
+                "#{client_activity} #{client_name}",
+            ], argv
+            return subprocess.CompletedProcess(argv, clients_code, clients, "")
         assert argv[1] == "display-popup"
         if popup is not None:
             result = popup(argv)
@@ -147,7 +170,7 @@ def test_ask_is_yes_only_for_its_own_token() -> None:
     with patch("vim_ai_follower.take_over.subprocess.run", _tmux(popup=_answering("yes"))) as run:
         assert take_over.ask("%3", "Vim", 10) == take_over.YES
     popup = run.call_args_list[1].args[0]
-    assert popup[:5] == ["tmux", "display-popup", "-t", "%3", "-E"]
+    assert popup[:7] == ["tmux", "display-popup", "-c", "/dev/ttys001", "-t", "%3", "-E"]
     assert "vim_ai_follower.take_over" in popup[-1] and popup[-1].endswith(" 10 Vim")
     assert f"PYTHONPATH={Path(take_over.__file__).resolve().parent.parent}" in popup[-1]
     assert run.call_args_list[1].kwargs["timeout"] == 15.0
@@ -166,21 +189,55 @@ def test_ask_reports_a_no(answer: str) -> None:
         assert take_over.ask("%3", "Vim", 10) == f"answered {answer}"
 
 
+_NEVER_SHOWN = (
+    "not asked: the question was never shown (another popup was up, or it closed before it started)"
+)
+
+
 def test_ask_reports_a_popup_tmux_dropped() -> None:
     with patch("vim_ai_follower.take_over.subprocess.run", _tmux()):
-        assert take_over.ask("%3", "Vim", 10) == (
-            "not asked: the question was never shown (another popup was up)"
-        )
+        assert take_over.ask("%3", "Vim", 10) == _NEVER_SHOWN
+
+
+_NO_CLIENT = "not asked: no tmux client is attached to the session of %3 to show the question on"
 
 
 def test_ask_without_a_pane_or_a_client_asks_nothing() -> None:
     with patch("vim_ai_follower.take_over.subprocess.run", _tmux(clients="")) as run:
         assert take_over.ask("", "Neovim", 10) == "not asked: the editor is not in tmux"
         run.assert_not_called()
-        assert take_over.ask("%3", "Neovim", 10) == (
-            "not asked: no tmux client is attached to show the question on"
-        )
+        assert take_over.ask("%3", "Neovim", 10) == _NO_CLIENT
     assert len(run.call_args_list) == 1
+
+
+def test_ask_shows_the_question_on_the_most_recently_active_client_of_the_targets_session() -> None:
+    # Measured on tmux 3.8: `list-clients -t <pane>` lists only the clients
+    # of that pane's session, and #{client_activity} moves when a client is
+    # typed into; a popup with no -c went to another client (review m7).
+    clients = "1792249861 /dev/ttys041\n1792249865 /dev/ttys042\nnot-a-number /dev/x\n\n"
+    clients += "1792249863 /dev/ttys043\n"
+    with patch(
+        "vim_ai_follower.take_over.subprocess.run", _tmux(clients, _answering("yes"))
+    ) as run:
+        assert take_over.ask("%3", "Vim", 10) == take_over.YES
+    assert run.call_args_list[1].args[0][2:4] == ["-c", "/dev/ttys042"]
+
+
+@pytest.mark.parametrize(("clients", "code"), [("", 0), ("1 /dev/ttys001\n", 1), ("x y\n", 0)])
+def test_ask_with_no_client_on_the_targets_session_asks_nothing(clients: str, code: int) -> None:
+    # A client attached only to an unrelated session lists nothing here.
+    with patch(
+        "vim_ai_follower.take_over.subprocess.run", _tmux(clients, clients_code=code)
+    ) as run:
+        assert take_over.ask("%3", "Vim", 10) == _NO_CLIENT
+    assert len(run.call_args_list) == 1
+
+
+def test_ask_reports_a_question_that_closed_without_an_answer() -> None:
+    # The prompt marks the answer file "started" first: a popup closed after
+    # that (a client killed, `display-popup -C`) is not a dropped popup.
+    with patch("vim_ai_follower.take_over.subprocess.run", _tmux(popup=_answering("started"))):
+        assert take_over.ask("%3", "Vim", 10) == "no answer: the question closed without one"
 
 
 def test_ask_reports_a_popup_tmux_refused() -> None:

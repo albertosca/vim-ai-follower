@@ -156,6 +156,9 @@ def test_no_mode_file_is_none() -> None:
     assert tmux_vim._recorded_mode(_VimProcess(pid=202, started=time.time() - 60)) is None
 
 
+_COMPLETION = "in insert mode (completion)"
+
+
 @pytest.mark.parametrize(
     ("bottom_row", "reason"),
     [
@@ -171,8 +174,35 @@ def test_no_mode_file_is_none() -> None:
         ("-- (replace) --", "in replace mode"),
         ("-- (vreplace) --", "in replace mode"),
         ("-- TERMINAL --", "in terminal mode"),
+        ("-- INSERT --recording @a       1,1           All", "in insert mode"),
+        # Insert completion and CTRL-X mode (review I1): the rows measured on
+        # Vim 9.2 at 49 columns, then the rest of Vim's completion messages.
+        ("-- Keyword completion (^N^P) match 1 of 3", _COMPLETION),
+        ("-- Keyword completion (^N^P) Back at original", _COMPLETION),
+        ("-- Keyword completion (^N^P) Pattern not found", _COMPLETION),
+        ("-- ^X mode (^]^D^E^F^I^K^L^N^O^P^Rs^U^V^Y)", _COMPLETION),
+        ("-- Whole line completion (^L^N^P) match 1 of 3", _COMPLETION),
+        ("-- File name completion (^F^N^P) match 1 of 4", _COMPLETION),
+        ("-- Path pattern completion (^N^P) match 1 of 3", _COMPLETION),
+        ("-- Keyword Local completion (^N^P) match 1 of 3", _COMPLETION),
+        ("-- Pattern not found", _COMPLETION),
+        ("-- match 1 of 633", _COMPLETION),
+        ("-- Omni completion (^O^N^P) Pattern not found", _COMPLETION),
+        ("-- Spelling suggestion (s^N^P) match 1 of 5", _COMPLETION),
+        ("-- Dictionary completion (^K^N^P)", _COMPLETION),
+        ("-- Thesaurus completion (^T^N^P)", _COMPLETION),
+        ("-- Tag completion (^]^N^P)", _COMPLETION),
+        ("-- Definition completion (^D^N^P)", _COMPLETION),
+        ("-- Command-line completion (^V^N^P)", _COMPLETION),
+        ("-- User defined completion (^U^N^P)", _COMPLETION),
+        ("-- Adding", _COMPLETION),
+        # Measured non-typing rows: the more-prompt (also after a wrong key),
+        # the no-lines message (no space after its dashes), a recording.
         ("-- More --", None),
-        ("-- No lines in buffer --", None),
+        ("-- More -- SPACE/d/j: screen/page/line down, b/u/", None),
+        ("--No lin... buffer--           0,0-1         All", None),
+        ("--No lines in buffer--", None),
+        ("recording @a                   1,1           All", None),
         (":term", None),
         ("", None),
         ('"f.txt" 3L, 18B', None),
@@ -181,6 +211,56 @@ def test_no_mode_file_is_none() -> None:
 def test_the_bottom_row_tells_a_typing_mode(bottom_row: str, reason: str | None) -> None:
     with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(bottom_row=bottom_row)):
         assert tmux_vim._typing_on_screen("%5") == reason
+
+
+def _settling(rows: list[str]) -> MagicMock:
+    """A pane whose bottom row reads each of `rows` in turn (the last one
+    from then on): a Vim still redrawing its screen."""
+    remaining = list(rows)
+
+    def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        if argv[1] == "display-message":
+            return _completed(argv, "20 default\n")
+        row = remaining.pop(0) if len(remaining) > 1 else remaining[0]
+        return _completed(argv, row + "\n")
+
+    return MagicMock(side_effect=run)
+
+
+def test_a_filler_bottom_row_is_read_again_until_vim_has_redrawn() -> None:
+    # Measured in the integration suite: `~` on the bottom row for 0.6 s
+    # before `-- INSERT --` came back; acting on the first read typed into
+    # the user's insert mode.
+    with (
+        patch(
+            "vim_ai_follower.backends.tmux_vim.subprocess.run",
+            _settling(["~", "~", "-- INSERT --"]),
+        ) as run,
+        patch("vim_ai_follower.backends.tmux_vim.time.sleep") as sleep,
+    ):
+        assert tmux_vim._typing_on_screen("%5") == "in insert mode"
+    assert sleep.call_args_list == [((tmux_vim._SETTLE_POLL_SECONDS,),)] * 2
+    assert [call.args[0][1] for call in run.call_args_list].count("capture-pane") == 3
+
+
+def test_a_filler_bottom_row_that_never_settles_asks() -> None:
+    with (
+        patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _settling(["~"])),
+        patch("vim_ai_follower.backends.tmux_vim.time.sleep"),
+        patch(
+            "vim_ai_follower.backends.tmux_vim.time.monotonic",
+            MagicMock(side_effect=[100.0, 100.0, 101.0, 102.0]),
+        ),
+    ):
+        assert tmux_vim._typing_on_screen("%5") == tmux_vim._UNSETTLED_REASON
+
+
+def test_a_filler_bottom_row_settling_on_an_empty_row_is_not_typing() -> None:
+    with (
+        patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _settling(["~", ""])),
+        patch("vim_ai_follower.backends.tmux_vim.time.sleep"),
+    ):
+        assert tmux_vim._typing_on_screen("%5") is None
 
 
 @pytest.mark.parametrize(
@@ -215,14 +295,37 @@ def test_a_bottom_row_that_cannot_be_read_falls_back_to_the_cursor() -> None:
     assert len(run.call_args_list) == 1
 
 
-def test_the_mode_file_decides_over_the_screen() -> None:
-    _mode_file(202, "202 n\n")
+def test_a_typing_mode_file_decides_without_the_screen() -> None:
+    _mode_file(202, "202 t\n")
     world = _world(processes="  202   202   202    00:10 vim\n", bottom_row="-- INSERT --")
     with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", world):
-        assert tmux_vim.typing_mode("%5") is None
-    _mode_file(202, "202 t\n")
-    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", world):
         assert tmux_vim.typing_mode("%5") == "in terminal mode"
+    assert [call.args[0][0] for call in world.call_args_list] == ["tmux", "ps"]
+
+
+@pytest.mark.parametrize(
+    ("bottom_row", "reason"),
+    [("-- INSERT --", "in insert mode"), ("", None)],
+)
+def test_a_non_typing_mode_file_still_reads_the_screen(bottom_row: str, reason: str | None) -> None:
+    # Review m9: a file that stopped updating ('eventignore' holding
+    # ModeChanged, the user's `:au! vim_ai_follower_mode`) keeps its last
+    # `n` while the user types; only a typing mode in it skips the screen.
+    _mode_file(202, "202 n\n")
+    world = _world(processes="  202   202   202    00:10 vim\n", bottom_row=bottom_row)
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", world):
+        assert tmux_vim.typing_mode("%5") == reason
+
+
+def test_the_mode_file_is_written_whole_or_not_at_all() -> None:
+    # Review m9: writefile() truncates then writes, so a reader could see an
+    # empty file; the script writes a temporary in the same directory and
+    # renames it over the mode file.
+    script = tmux_vim._VIM_MODE
+    written = "s:dir . '.mode-' . getpid() . '.txt.tmp'"
+    assert f"call writefile([getpid() . ' ' . mode(1)], {written})" in script
+    assert f"call rename({written}, s:dir . 'mode-' . getpid() . '.txt')" in script
+    assert script.count("writefile(") == 1
 
 
 @pytest.mark.parametrize(
@@ -250,12 +353,16 @@ def test_the_sweep_deletes_only_the_mode_files_of_gone_vims() -> None:
     dead = _mode_file(_dead_pid(), "x n\n", modified=time.time())
     alive = _mode_file(os.getpid(), "x i\n", modified=time.time() - 10 * 86400)
     zero = _mode_file(0, "0 n\n")
+    dead_temporary = cache.CACHE_DIR / f".mode-{_dead_pid()}.txt.tmp"
+    dead_temporary.write_text("x i\n")
+    alive_temporary = cache.CACHE_DIR / f".mode-{os.getpid()}.txt.tmp"
+    alive_temporary.write_text("x i\n")
     other = cache.CACHE_DIR / "mode-notes.txt"
     other.write_text("")
     with patch("vim_ai_follower.backends.tmux_vim.os.kill", wraps=os.kill) as kill:
         tmux_vim._sweep_scripts(cache.CACHE_DIR / "vaf-000000.vim")
-    assert not dead.exists()
-    assert alive.exists() and zero.exists() and other.exists()
+    assert not dead.exists() and not dead_temporary.exists()
+    assert alive.exists() and zero.exists() and other.exists() and alive_temporary.exists()
     assert all(call.args[0] > 0 for call in kill.call_args_list)
 
 

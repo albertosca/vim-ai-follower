@@ -2799,8 +2799,10 @@ def _adopted_nvim_state(target: str = "/tmp/user.sock") -> state.FollowerState:
         "answered no",
         "answered timeout",
         "no answer",
-        "not asked: no tmux client is attached to show the question on",
-        "not asked: the question was never shown (another popup was up)",
+        "not asked: no tmux client is attached to the session of %9 to show the question on",
+        "not asked: the question was never shown"
+        " (another popup was up, or it closed before it started)",
+        "no answer: the question closed without one",
     ],
 )
 def test_a_typing_adopted_nvim_is_skipped_on_any_answer_but_yes(answer: str) -> None:
@@ -3438,6 +3440,36 @@ def test_a_typing_adopted_vim_answered_yes_leaves_its_mode_and_goes_on(
         assert hooks._busy_follower(_adopted_vim_state(), 10) is None
     leave.assert_called_once_with("%7")
     assert "(in terminal mode): taken over (answered y)" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("typing", "noted"),
+    [
+        ("in insert mode", True),
+        ("in insert mode (completion)", True),
+        ("in insert mode (a bar cursor)", True),
+        ("in replace mode", True),
+        ("in terminal mode", False),
+        ("in visual mode", False),
+        ("in select mode", False),
+    ],
+)
+def test_a_yes_in_insert_or_replace_mode_notes_a_pending_literal_key(
+    caplog: pytest.LogCaptureFixture, typing: str, noted: bool
+) -> None:
+    # Review I2 (measured): a pending CTRL-V takes CTRL-\ literally (and the
+    # CTRL-N then completes), a pending CTRL-K inserts ^N; no byte cancels
+    # CTRL-V without inserting, so the log says it may have happened.
+    with (
+        caplog.at_level(logging.INFO, logger="vim_ai_follower"),
+        patch("vim_ai_follower.backends.tmux_vim.typing_mode", return_value=typing),
+        patch("vim_ai_follower.take_over.ask", return_value=take_over.YES),
+        patch("vim_ai_follower.backends.tmux_vim.leave_typing_mode"),
+    ):
+        assert hooks._busy_follower(_adopted_vim_state(), 10) is None
+    note = "; a pending CTRL-V/CTRL-K may have inserted a character"
+    assert f"({typing}): taken over (answered y){note}" in caplog.text or not noted
+    assert (note in caplog.text) is noted
 
 
 @pytest.mark.parametrize("tool_name", ["Edit", "Read"])

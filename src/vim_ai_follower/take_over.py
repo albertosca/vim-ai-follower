@@ -24,8 +24,10 @@ read of more than one byte (a burst or a paste).
 
 The prompt itself runs inside the popup as `python -m
 vim_ai_follower.take_over <answer file> <token> <seconds> <editor>`, and
-writes `<token> <answer>` to the answer file; only a file holding THIS ask's
-token and "yes" is a yes."""
+writes `<token> started` to the answer file, then `<token> <answer>`; only a
+file holding THIS ask's token and "yes" is a yes. The popup is shown on the
+most recently active client of the target pane's own session (`-c`), and
+with no client there nothing is asked."""
 
 from __future__ import annotations
 
@@ -54,6 +56,9 @@ _POPUP_WIDTH = 46
 _POPUP_HEIGHT = 6
 
 YES = "yes"
+# What the prompt writes to the answer file before it asks: a popup that
+# closes after this without an answer was shown, not dropped.
+_STARTED = "started"
 
 # What typing_reason answers: the modes in which the user is typing.
 TYPING_REASONS = frozenset(
@@ -93,14 +98,31 @@ def _package_root() -> str:
     return str(Path(__file__).resolve().parent.parent)
 
 
-def _has_client() -> bool:
+def _client_for(target_pane: str) -> str | None:
+    """The client to show the question on: of the clients attached to
+    `target_pane`'s session, the most recently active one (the one the user
+    typed into last), or None when that session has none. Measured on tmux
+    3.8: `list-clients -t <pane>` lists only the clients of the pane's
+    session, and #{client_activity} moves when a client is typed into.
+    Without `-c`, a popup went to whichever client tmux picked: with two
+    clients a `y` in the watched one timed out, and with the only client on
+    an unrelated session the question was shown there (review m7)."""
     result = subprocess.run(
-        ["tmux", "list-clients", "-F", "#{client_name}"],
+        ["tmux", "list-clients", "-t", target_pane, "-F", "#{client_activity} #{client_name}"],
         capture_output=True,
         text=True,
         check=False,
     )
-    return result.returncode == 0 and bool(result.stdout.strip())
+    if result.returncode != 0:
+        return None
+    latest: tuple[int, str] | None = None
+    for line in result.stdout.splitlines():
+        activity, _, name = line.partition(" ")
+        if not activity.isdigit() or not name:
+            continue
+        if latest is None or int(activity) > latest[0]:
+            latest = (int(activity), name)
+    return latest[1] if latest is not None else None
 
 
 def ask(target_pane: str, editor: str, seconds: float) -> str:
@@ -108,8 +130,12 @@ def ask(target_pane: str, editor: str, seconds: float) -> str:
     YES only for a deliberate `y`; otherwise why not, for the hook's log."""
     if not target_pane:
         return "not asked: the editor is not in tmux"
-    if not _has_client():
-        return "not asked: no tmux client is attached to show the question on"
+    client = _client_for(target_pane)
+    if client is None:
+        return (
+            f"not asked: no tmux client is attached to the session of {target_pane}"
+            " to show the question on"
+        )
     token = secrets.token_hex(8)
     answer_path = _answer_path(token)
     cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -132,6 +158,8 @@ def ask(target_pane: str, editor: str, seconds: float) -> str:
                 [
                     "tmux",
                     "display-popup",
+                    "-c",
+                    client,
                     "-t",
                     target_pane,
                     "-E",
@@ -159,10 +187,18 @@ def _read_answer(answer_path: Path, token: str) -> str:
     try:
         written = answer_path.read_text().split()
     except OSError:
-        # tmux drops a popup opened while another is up, with exit 0.
-        return "not asked: the question was never shown (another popup was up)"
+        # tmux drops a popup opened while another is up, with exit 0; a popup
+        # closed before its prompt started leaves no file either.
+        return (
+            "not asked: the question was never shown"
+            " (another popup was up, or it closed before it started)"
+        )
     if len(written) != 2 or written[0] != token:
         return "no answer"
+    if written[1] == _STARTED:
+        # The prompt ran and the popup closed without its answer: a client
+        # killed, a `display-popup -C` (review m8).
+        return "no answer: the question closed without one"
     if written[1] == YES:
         return YES
     return f"answered {written[1]}"
@@ -223,6 +259,7 @@ def _show(text: str) -> None:
 
 def main(arguments: list[str]) -> int:
     answer_path, token, seconds, editor = arguments
+    _write_answer(Path(answer_path), token, _STARTED)
     answer = run_prompt(sys.stdin.fileno(), _show, float(seconds), editor)
     _write_answer(Path(answer_path), token, answer)
     return 0

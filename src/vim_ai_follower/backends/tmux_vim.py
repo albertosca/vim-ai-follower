@@ -1038,7 +1038,10 @@ endfunction
 # that ends that line never fires (measured): the script writes the mode
 # once itself (the command line's `c`, which is not a typing mode). A Vim
 # without ModeChanged (before 8.2.3430) writes nothing, and every hook
-# reads its screen instead (typing_mode). The write is in a try: a cache
+# reads its screen instead (typing_mode). writefile() truncates and then
+# writes, so the mode goes to a temporary in the same directory first and
+# rename() puts it in place whole (review m9): a reader never sees it
+# empty. The write is in a try: a cache
 # directory gone or unwritable must not raise an error on every mode change
 # of the user's Vim. Its `autocmd!` names the group, as the swap answer's
 # does (see _VIM_SWAP_ANSWER): a bare one after a failed `augroup` would run
@@ -1046,7 +1049,8 @@ endfunction
 _VIM_MODE = r"""
 function! s:note_mode() abort
   try
-    call writefile([getpid() . ' ' . mode(1)], s:dir . 'mode-' . getpid() . '.txt')
+    call writefile([getpid() . ' ' . mode(1)], s:dir . '.mode-' . getpid() . '.txt.tmp')
+    call rename(s:dir . '.mode-' . getpid() . '.txt.tmp', s:dir . 'mode-' . getpid() . '.txt')
   catch
   endtry
 endfunction
@@ -1386,8 +1390,9 @@ def _sweep_scripts(current: Path) -> None:
     _sweep_mode_files(entries)
 
 
-# A Vim's mode file (_VIM_MODE), named after its pid.
-_MODE_FILE_NAME = re.compile(r"mode-([0-9]+)\.txt")
+# A Vim's mode file (_VIM_MODE), named after its pid, and the temporary it
+# is written through (left only by a rename that failed).
+_MODE_FILE_NAME = re.compile(r"\.?mode-([0-9]+)\.txt(?:\.tmp)?")
 
 
 def _sweep_mode_files(entries: list[Path]) -> None:
@@ -1897,6 +1902,27 @@ _SHOWMODE_REASONS = {
     "SELECT": "in select mode",
     "TERMINAL": "in terminal mode",
 }
+# Any other bottom row that starts `-- ` is insert completion or CTRL-X
+# mode (review I1, measured on Vim 9.2: `-- Keyword completion (^N^P) match
+# 1 of 3`, `-- ^X mode (^]^D^E^F^I^K^L^N^O^P^Rs^U^V^Y)`, `-- Pattern not
+# found`, `-- match 1 of 633`, in modes `ic`/`ix`), or something unknown,
+# which asks: asking is the safe direction. The one measured non-typing row
+# with that start is the more-prompt (`-- More --`, also with its help after
+# a wrong key); `--No lines in buffer--` has no space, and a recording shows
+# `recording @a`.
+_NOT_TYPING_ROW = "-- More --"
+_COMPLETION_REASON = "in insert mode (completion)"
+# Vim's bottom row is always its command line, never a `~` filler line: a
+# `~` there is a screen Vim has not finished redrawing (measured in the
+# integration suite, 2026-10-17, with three tmux clients attached: the
+# pane's bottom row read `~`, with no `-- INSERT --`, for 0.6 s while the
+# user was in insert mode, and the first-contact Edit acted on the user's
+# typing). It is read again until it settles, and one that never settles
+# asks: asking is the safe direction.
+_FILLER_ROW = "~"
+_SETTLE_SECONDS = 2.0
+_SETTLE_POLL_SECONDS = 0.1
+_UNSETTLED_REASON = "in an unknown mode (its screen was still being redrawn)"
 # tmux's #{cursor_shape} as the program last set it (DECSCUSR): a Vim
 # configured to show insert and replace mode by its cursor (t_SI/t_SR) sets
 # a bar or an underline there; "default" and "block" say nothing.
@@ -1914,8 +1940,11 @@ def _typing_on_screen(pane_id: str) -> str | None:
     row with 'showmode' on (Vim's default), nothing with it off; the cursor
     stays "default" in every mode unless the user's vimrc sets t_SI/t_SR;
     a terminal window in Terminal-Job mode showed neither."""
-    height, _, cursor = _tmux_answer(pane_id, "#{pane_height} #{cursor_shape}").partition(" ")
-    if height.isdigit() and int(height) > 0:
+    deadline = time.monotonic() + _SETTLE_SECONDS
+    while True:
+        height, _, cursor = _tmux_answer(pane_id, "#{pane_height} #{cursor_shape}").partition(" ")
+        if not (height.isdigit() and int(height) > 0):
+            break
         bottom = int(height) - 1
         result = subprocess.run(
             ["tmux", "capture-pane", "-p", "-t", pane_id, "-S", str(bottom), "-E", str(bottom)],
@@ -1923,25 +1952,39 @@ def _typing_on_screen(pane_id: str) -> str | None:
             text=True,
             check=False,
         )
-        match = _SHOWMODE.match(result.stdout.strip()) if result.returncode == 0 else None
+        row = result.stdout.strip() if result.returncode == 0 else ""
+        if row != _FILLER_ROW:
+            break
+        if time.monotonic() >= deadline:
+            return _UNSETTLED_REASON
+        time.sleep(_SETTLE_POLL_SECONDS)
+    if height.isdigit() and int(height) > 0:
+        match = _SHOWMODE.match(row)
         if match is not None and (match.group(2) or match.group(1)):
             return _SHOWMODE_REASONS[match.group(2) or match.group(1)]
+        if row.startswith("-- ") and not row.startswith(_NOT_TYPING_ROW):
+            return _COMPLETION_REASON
     return _TYPING_CURSORS.get(cursor.strip())
 
 
 def typing_mode(pane_id: str) -> str | None:
     """Why the user of the Vim in `pane_id` is known to be TYPING (insert,
     replace, terminal, visual or select mode), read without typing a key, or
-    None. Its mode file (_VIM_MODE) decides once the script has been sourced
-    there; a missing or stale one (a Vim that never had the script, one too
-    old for ModeChanged, a reused pid) is a first contact, which reads the
-    screen (_typing_on_screen). Only a mode file that names a mode outside
-    those five, or a screen that shows none of them, answers None: the
-    follower then acts as it always did, starting with its Escape pair."""
+    None. Its mode file (_VIM_MODE) naming a typing mode decides once the
+    script has been sourced there; otherwise (a file naming another mode, or
+    a missing or stale one: a Vim that never had the script, one too old for
+    ModeChanged, a reused pid) the screen decides (_typing_on_screen). Only
+    a screen that shows none of them, with no typing mode in the file,
+    answers None: the follower then acts as it always did, starting with its
+    Escape pair."""
     vim = _foreground_vim(pane_id)
     recorded = _recorded_mode(vim) if vim is not None else None
-    if recorded is not None:
-        return take_over.typing_reason(recorded)
+    reason = take_over.typing_reason(recorded)
+    if reason is not None:
+        return reason
+    # A file that names a non-typing mode may have stopped updating (review
+    # m9: 'eventignore' holding ModeChanged, the user's `:au!` of our
+    # group), so the screen is read too; it types nothing.
     return _typing_on_screen(pane_id)
 
 

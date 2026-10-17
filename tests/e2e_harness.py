@@ -780,10 +780,11 @@ class AttachedClient:
 
 @contextmanager
 def attached_client(
-    world: E2EFollower, columns: int = 120, rows: int = 40
+    world: E2EFollower, columns: int = 120, rows: int = 40, *, session: str | None = None
 ) -> Iterator[AttachedClient]:
-    """Attach a client to `world`'s session on a pty, read its output away on
-    a thread (a full pty would block the client), and kill it after."""
+    """Attach a client to `world`'s session (or `session`) on a pty, read its
+    output away on a thread (a full pty would block the client), and kill it
+    after."""
     import fcntl
     import pty
     import struct
@@ -792,7 +793,7 @@ def attached_client(
 
     pid, terminal = pty.fork()
     if pid == 0:  # pragma: no cover - the child execs
-        os.execvpe("tmux", ["tmux", "attach-session", "-t", world.session], world.env)
+        os.execvpe("tmux", ["tmux", "attach-session", "-t", session or world.session], world.env)
     fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
     stopping = threading.Event()
 
@@ -811,7 +812,7 @@ def attached_client(
     reader.start()
     try:
         world.wait_until(
-            lambda: bool(world.tmux("list-clients", "-F", "#{client_pid}").stdout.strip()),
+            lambda: str(pid) in world.tmux("list-clients", "-F", "#{client_pid}").stdout.split(),
             "an attached tmux client",
             timeout=10.0,
         )

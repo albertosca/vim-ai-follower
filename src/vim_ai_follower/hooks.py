@@ -1179,7 +1179,15 @@ def _busy_vim(current: FollowerState, question_seconds: float) -> str | None:
     if answer != take_over.YES:
         return f"{waiting}, not taken over ({answer})"
     tmux_vim.leave_typing_mode(current.target)
-    logger.info("%s: taken over (answered y)", waiting)
+    # Review I2, measured: with a CTRL-V pending in insert or replace mode
+    # Vim inserts the CTRL-\ literally and the CTRL-N completes; with a
+    # CTRL-K pending the digraph lookup fails and inserts ^N. The mode reads
+    # `i` either way and no byte cancels a CTRL-V without inserting, so the
+    # log says it may have happened.
+    note = ""
+    if typing.startswith(("in insert mode", "in replace mode")):
+        note = "; a pending CTRL-V/CTRL-K may have inserted a character"
+    logger.info("%s: taken over (answered y)%s", waiting, note)
     return None
 
 

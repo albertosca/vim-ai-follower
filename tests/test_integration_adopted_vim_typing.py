@@ -18,10 +18,12 @@ from __future__ import annotations
 import os
 import time
 from collections.abc import Iterator
+from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
 from e2e_harness import (
+    AttachedClient,
     E2EFollower,
     attached_client,
     e2e_world,
@@ -149,20 +151,27 @@ def _type_half(
 
 
 def _edit_answered(
-    world: E2EFollower, claudes_file: Path, answer: str
+    world: E2EFollower,
+    claudes_file: Path,
+    answer: str,
+    client: AttachedClient | None = None,
 ) -> tuple[float, FollowerState]:
     """Run Claude's Edit of claudes_file (one -> TWO) through the real hooks,
-    answer the take-over question (`none`: no key), and return how long the
-    post hook took and the state after it."""
+    answer the take-over question on `client` (default: a client attached
+    for it; `none`: no key; `unasked`: no question is expected), and return
+    how long the post hook took and the state after it."""
     hook = payload("Edit", claudes_file)
     pre = world.cli("hook", "pre", stdin=hook)
     assert pre.returncode == 0, pre.stderr
     claudes_file.write_text("one\nTWO\n")
-    with attached_client(world) as client:
+    with ExitStack() as stack:
+        if client is None:
+            client = stack.enter_context(attached_client(world))
         started = time.monotonic()
         post = world.cli_background("hook", "post", stdin=hook)
-        wait_for_take_over_question(world, armed=answer != "y-in-flight")
-        if answer != "none":
+        if answer != "unasked":
+            wait_for_take_over_question(world, armed=answer != "y-in-flight")
+        if answer not in ("none", "unasked"):
             client.type(answer[0].encode())
         world.wait_for_hook_exit(post, timeout=40.0)
         seconds = time.monotonic() - started
@@ -295,5 +304,143 @@ def test_a_yes_in_a_terminal_window_leaves_terminal_job_mode_first(world: E2EFol
         assert state.stale_files == ()
         assert "exists(" not in report["terminals"], report
         assert "VafFollower" not in report["terminals"], report
+    finally:
+        world.tmux("send-keys", "-t", pane_id, "Escape")
+
+
+@pytest.mark.parametrize(("keys", "mode"), [("C-n", "ic"), ("C-x", "ix")])
+def test_a_first_contact_in_insert_completion_reads_the_screen_and_asks(
+    world: E2EFollower, keys: str, mode: str
+) -> None:
+    # Review I1: completion and CTRL-X mode show `-- Keyword completion
+    # (^N^P) ...` / `-- ^X mode (...)` on the bottom row, no mode word; with
+    # no mode file yet, the follower took the Vim over without asking.
+    _question_seconds(world, 3)
+    users_file = world.workdir / "a.txt"
+    users_file.write_text("aaa\n")
+    claudes_file = world.workdir / "file.py"
+    claudes_file.write_text("one\ntwo\n")
+    pane_id, observed = _users_vim(world, users_file, claudes_file, showmode=True)
+    _adopted_state(world, pane_id, claudes_file)
+    world.tmux("send-keys", "-t", pane_id, "-l", "oa")
+    world.tmux("send-keys", "-t", pane_id, keys)
+    world.wait_until(
+        lambda: (_observed(observed) or {}).get("mode") == mode,
+        f"the user's Vim in mode {mode}",
+        timeout=10.0,
+    )
+    before = _observed(observed)
+    assert before is not None and before["buffer"] == os.path.realpath(users_file), before
+    assert not list(world.cache_dir.glob("mode-*.txt"))
+    try:
+        _seconds, state = _edit_answered(world, claudes_file, "n")
+        log = _hook_log(world)
+        assert "Traceback" not in log, log
+        skipped = [line for line in log.splitlines() if "is waiting on its user" in line]
+        assert len(skipped) == 1, log
+        assert "(in insert mode (completion)), not taken over (answered no)" in skipped[0]
+        report = _settled(world, observed)
+        assert report["mode"] == mode, report
+        assert report["buffer"] == os.path.realpath(users_file), report
+        assert report["lines"] == before["lines"], report
+        assert state.stale_files == (os.path.realpath(claudes_file),)
+    finally:
+        world.tmux("send-keys", "-t", pane_id, "Escape")
+
+
+def _typed_on_session(world: E2EFollower, session: str) -> None:
+    """A second session for an unrelated client to sit on."""
+    world.tmux("new-session", "-d", "-s", session, "-x", "80", "-y", "20")
+
+
+def _activity(world: E2EFollower, client: AttachedClient) -> int:
+    listed = world.tmux("list-clients", "-F", "#{client_pid} #{client_activity}").stdout
+    for line in listed.splitlines():
+        pid, _, activity = line.partition(" ")
+        if pid == str(client.pid):
+            return int(activity)
+    raise AssertionError(listed)
+
+
+def test_the_question_shows_on_the_targets_session_client_most_recently_active(
+    world: E2EFollower,
+) -> None:
+    # Review m7: with no `-c`, the popup went to whichever client tmux chose:
+    # one on an unrelated session, or the other client of the same session.
+    # Here the watched client is the follower session's most recently active
+    # one, attached FIRST; a client of the same session attached later and a
+    # client of an unrelated session attached last must not get the popup.
+    _question_seconds(world, 3)
+    users_file = world.workdir / "a.txt"
+    users_file.write_text("aaa\n")
+    claudes_file = world.workdir / "file.py"
+    claudes_file.write_text("one\ntwo\n")
+    pane_id, observed = _users_vim(world, users_file, claudes_file, showmode=True)
+    _adopted_state(world, pane_id, claudes_file)
+    _type_half(world, pane_id, observed, users_file)
+    _typed_on_session(world, "unrelated")
+    try:
+        with (
+            attached_client(world) as watched,
+            attached_client(world) as later,
+        ):
+            time.sleep(1.1)
+            with attached_client(world, session="unrelated") as elsewhere:
+                # Prefix, then an unbound key (F12): moves a client's
+                # activity and does nothing else. The watched client is then
+                # its session's most recently active one, and the unrelated
+                # client the most recently active of all.
+                time.sleep(1.1)
+                watched.type(b"\x02\x1b[24~")
+                world.wait_until(
+                    lambda: _activity(world, watched) > _activity(world, later),
+                    "the watched client the most recently active of its session",
+                    timeout=5.0,
+                )
+                time.sleep(1.1)
+                elsewhere.type(b"\x02\x1b[24~")
+                world.wait_until(
+                    lambda: _activity(world, elsewhere) > _activity(world, watched),
+                    "the unrelated client the most recently active of all",
+                    timeout=5.0,
+                )
+                _seconds, state = _edit_answered(world, claudes_file, "y", client=watched)
+        log = _hook_log(world)
+        assert "Traceback" not in log, log
+        assert "(in insert mode): taken over (answered y)" in log, log
+        report = _settled(world, observed)
+        assert report["claudes"] == "one|TWO", report
+        assert state.stale_files == ()
+    finally:
+        world.tmux("send-keys", "-t", pane_id, "Escape")
+
+
+def test_no_client_on_the_targets_session_asks_nothing_and_skips(world: E2EFollower) -> None:
+    # Review m7: the only client sits on an unrelated session, where the
+    # question was shown and timed out; now nothing is asked.
+    _question_seconds(world, 3)
+    users_file = world.workdir / "a.txt"
+    users_file.write_text("aaa\n")
+    claudes_file = world.workdir / "file.py"
+    claudes_file.write_text("one\ntwo\n")
+    pane_id, observed = _users_vim(world, users_file, claudes_file, showmode=True)
+    _adopted_state(world, pane_id, claudes_file)
+    _type_half(world, pane_id, observed, users_file)
+    _typed_on_session(world, "unrelated")
+    try:
+        with attached_client(world, session="unrelated") as elsewhere:
+            seconds, state = _edit_answered(world, claudes_file, "unasked", client=elsewhere)
+        log = _hook_log(world)
+        assert "Traceback" not in log, log
+        skipped = [line for line in log.splitlines() if "is waiting on its user" in line]
+        assert len(skipped) == 1, log
+        assert (
+            f"not taken over (not asked: no tmux client is attached to the session of {pane_id}"
+            in skipped[0]
+        ), skipped
+        assert seconds < 3.0, f"the hook waited {seconds:.1f} s"
+        report = _settled(world, observed)
+        assert report["mode"] == "i" and report["lines"] == "aaahalf", report
+        assert state.stale_files == (os.path.realpath(claudes_file),)
     finally:
         world.tmux("send-keys", "-t", pane_id, "Escape")
