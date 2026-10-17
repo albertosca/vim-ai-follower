@@ -26,6 +26,16 @@ class TmuxPane:
         return None
 
     def send_text(self, text: str) -> None:
+        """Type `text` byte-exact. tmux reads any argument that ends in `;`
+        as the end of its command and drops that `;` (`int a = 1;` typed as
+        `int a = 1`, a lone `;` as nothing; a final `\\;` became `;`), and
+        an interrupted Write's `:w` then saved the damaged lines. Where the
+        `;` is dropped, a backslash left at the end becomes the `;`, so a
+        final `;` sent as `\\;` comes out as exactly one `;`, whatever comes
+        before it (measured in Vim on tmux 3.8, 2026-10-17: `-H` hex was
+        exact too, but costs one argument per byte)."""
+        if text.endswith(";"):
+            text = text[:-1] + "\\;"
         subprocess.run(
             ["tmux", "send-keys", "-t", self.pane_id, "-l", "--", text],
             check=True,

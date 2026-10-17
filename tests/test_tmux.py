@@ -23,6 +23,32 @@ def test_send_text_calls_tmux_send_keys_literal() -> None:
     )
 
 
+def _tmux_argument(argument: str) -> tuple[str, bool]:
+    """How tmux 3.x reads one send-keys argument from argv (cmd-parse.c):
+    a final `;` is dropped and ends the command, unless what is left ends in
+    a backslash, which then becomes the `;`. Returns (text, ends_command)."""
+    if not argument.endswith(";"):
+        return argument, False
+    kept = argument[:-1]
+    if kept.endswith("\\"):
+        return kept[:-1] + ";", False
+    return kept, True
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["a;", "b\\;", "c;;", ";", "x \\;", "ab;\\;", ";;;", "m;id; more", "trail\\", "\\", "", "é;"],
+)
+def test_send_text_reaches_tmux_as_exactly_the_text(text: str) -> None:
+    pane = TmuxPane("%3")
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        pane.send_text(text)
+    argv = run.call_args.args[0]
+    assert argv[:6] == ["tmux", "send-keys", "-t", "%3", "-l", "--"]
+    assert len(argv) == 7
+    assert _tmux_argument(argv[6]) == (text, False)
+
+
 def test_send_key_calls_tmux_send_keys_named() -> None:
     pane = TmuxPane(pane_id="%3")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
