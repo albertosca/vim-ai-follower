@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -98,12 +98,32 @@ def _observed(observed: Path) -> dict[str, str] | None:
     }
 
 
+def _observation(
+    world: E2EFollower,
+    observed: Path,
+    matches: Callable[[dict[str, str]], bool],
+    what: str,
+    timeout: float,
+) -> dict[str, str]:
+    """Wait for an observation that `matches`, and return THAT one: a second
+    read can land while the observer's writefile() has truncated the file
+    (it failed `_settled` 1 run in 55, 2026-10-17)."""
+    found: list[dict[str, str]] = []
+
+    def matching() -> bool:
+        report = _observed(observed)
+        if report is not None and matches(report):
+            found.append(report)
+            return True
+        return False
+
+    world.wait_until(matching, what, timeout=timeout)
+    return found[-1]
+
+
 def _settled(world: E2EFollower, observed: Path) -> dict[str, str]:
     time.sleep(0.3)
-    world.wait_until(lambda: _observed(observed) is not None, "an observation", timeout=5.0)
-    report = _observed(observed)
-    assert report is not None
-    return report
+    return _observation(world, observed, lambda _report: True, "an observation", 5.0)
 
 
 def _adopted_state(world: E2EFollower, pane_id: str, claudes_file: Path) -> None:
@@ -137,16 +157,14 @@ def _type_half(
 ) -> dict[str, str]:
     """The user, back in their own file, appends `half` and stays in insert."""
     world.tmux("send-keys", "-t", pane_id, "-l", "Ahalf")
-    world.wait_until(
-        lambda: (
-            (_observed(observed) or {}).get("lines") == "aaahalf"
-            and (_observed(observed) or {}).get("mode") == "i"
-        ),
+    report = _observation(
+        world,
+        observed,
+        lambda report: report["lines"] == "aaahalf" and report["mode"] == "i",
         "the user's half-typed text, in insert mode",
-        timeout=10.0,
+        10.0,
     )
-    report = _observed(observed)
-    assert report is not None and report["buffer"] == os.path.realpath(users_file), report
+    assert report["buffer"] == os.path.realpath(users_file), report
     return report
 
 
@@ -324,13 +342,14 @@ def test_a_first_contact_in_insert_completion_reads_the_screen_and_asks(
     _adopted_state(world, pane_id, claudes_file)
     world.tmux("send-keys", "-t", pane_id, "-l", "oa")
     world.tmux("send-keys", "-t", pane_id, keys)
-    world.wait_until(
-        lambda: (_observed(observed) or {}).get("mode") == mode,
+    before = _observation(
+        world,
+        observed,
+        lambda report: report["mode"] == mode,
         f"the user's Vim in mode {mode}",
-        timeout=10.0,
+        10.0,
     )
-    before = _observed(observed)
-    assert before is not None and before["buffer"] == os.path.realpath(users_file), before
+    assert before["buffer"] == os.path.realpath(users_file), before
     assert not list(world.cache_dir.glob("mode-*.txt"))
     try:
         _seconds, state = _edit_answered(world, claudes_file, "n")

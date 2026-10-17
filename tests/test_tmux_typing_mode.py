@@ -5,6 +5,7 @@ screen on a first contact."""
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import time
 from collections.abc import Callable
@@ -156,6 +157,41 @@ def test_no_mode_file_is_none() -> None:
     assert tmux_vim._recorded_mode(_VimProcess(pid=202, started=time.time() - 60)) is None
 
 
+def test_a_mode_file_caught_mid_rename_is_read_from_its_temporary() -> None:
+    # Review m11: Vim's rename() deletes the target before it renames, so a
+    # read during a mode change found no file (8% of reads under a 1 ms
+    # mode flip) and fell back to the screen.
+    started = time.time() - 60
+    cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    (cache.CACHE_DIR / ".mode-202.txt.tmp").write_text("202 i\n")
+    assert tmux_vim._recorded_mode(_VimProcess(pid=202, started=started)) == "i"
+
+
+def test_a_mode_file_renamed_between_the_reads_is_read_again() -> None:
+    # Missing, then the temporary already renamed away: the second read of
+    # the file itself finds the new mode.
+    started = time.time() - 60
+    path = cache.CACHE_DIR / "mode-202.txt"
+    original = Path.read_text
+
+    def read_text(self: Path, *args: object, **kwargs: object) -> str:
+        if self.name == ".mode-202.txt.tmp":
+            _mode_file(202, "202 R\n")
+            raise FileNotFoundError(self)
+        return original(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    assert not path.exists()
+    with patch.object(Path, "read_text", read_text):
+        assert tmux_vim._recorded_mode(_VimProcess(pid=202, started=started)) == "R"
+
+
+def test_an_empty_temporary_is_not_a_mode() -> None:
+    # A temporary caught while writefile() fills it.
+    cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    (cache.CACHE_DIR / ".mode-202.txt.tmp").write_text("")
+    assert tmux_vim._recorded_mode(_VimProcess(pid=202, started=time.time() - 60)) is None
+
+
 _COMPLETION = "in insert mode (completion)"
 
 
@@ -241,6 +277,61 @@ def test_a_filler_bottom_row_is_read_again_until_vim_has_redrawn() -> None:
         assert tmux_vim._typing_on_screen("%5") == "in insert mode"
     assert sleep.call_args_list == [((tmux_vim._SETTLE_POLL_SECONDS,),)] * 2
     assert [call.args[0][1] for call in run.call_args_list].count("capture-pane") == 3
+
+
+def test_every_filler_bottom_row_sends_the_vim_a_resize_signal() -> None:
+    # Measured 2026-10-17 on Vim 9.2: a Vim with a repeating timer (the
+    # test's observer; any plugin's) missed 9-11 of 60 pane resizes for
+    # 2.5 s to over 15 s, its screen left at the old size with `~` on the
+    # pane's bottom row. A SIGWINCH redrew it in 0.044-0.056 s, but can be
+    # missed the same way: 11 missed resizes of 150 took 1, 1, 1, 1, 1, 3, 1,
+    # 1, 1, 1 and 2 signals, so one goes with every filler read. A Vim with
+    # no timer missed none.
+    with (
+        patch(
+            "vim_ai_follower.backends.tmux_vim.subprocess.run",
+            _settling(["~", "~", "-- INSERT --"]),
+        ),
+        patch("vim_ai_follower.backends.tmux_vim.time.sleep"),
+        patch("vim_ai_follower.backends.tmux_vim.os.kill") as kill,
+    ):
+        assert tmux_vim._typing_on_screen("%5", vim_pid=202) == "in insert mode"
+    assert kill.call_args_list == [((202, signal.SIGWINCH),)] * 2
+
+
+def test_a_settled_bottom_row_sends_no_signal() -> None:
+    with (
+        patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _settling(["-- INSERT --"])),
+        patch("vim_ai_follower.backends.tmux_vim.os.kill") as kill,
+    ):
+        assert tmux_vim._typing_on_screen("%5", vim_pid=202) == "in insert mode"
+    kill.assert_not_called()
+
+
+def test_a_resize_signal_that_fails_still_re_reads() -> None:
+    # No Vim known (pid None): nothing is signalled; a Vim gone meanwhile:
+    # the signal's error is swallowed. Both keep re-reading.
+    for vim_pid, failure in ((None, None), (202, ProcessLookupError())):
+        with (
+            patch(
+                "vim_ai_follower.backends.tmux_vim.subprocess.run",
+                _settling(["~", "-- VISUAL --"]),
+            ),
+            patch("vim_ai_follower.backends.tmux_vim.time.sleep"),
+            patch("vim_ai_follower.backends.tmux_vim.os.kill", side_effect=failure) as kill,
+        ):
+            assert tmux_vim._typing_on_screen("%5", vim_pid=vim_pid) == "in visual mode"
+        assert kill.call_count == (0 if vim_pid is None else 1)
+
+
+def test_typing_mode_passes_the_foreground_vims_pid_to_the_screen_read() -> None:
+    vim = _VimProcess(pid=202, started=time.time() - 60)
+    with (
+        patch("vim_ai_follower.backends.tmux_vim._foreground_vim", return_value=vim),
+        patch("vim_ai_follower.backends.tmux_vim._typing_on_screen", return_value=None) as read,
+    ):
+        assert tmux_vim.typing_mode("%5") is None
+    read.assert_called_once_with("%5", vim_pid=202)
 
 
 def test_a_filler_bottom_row_that_never_settles_asks() -> None:

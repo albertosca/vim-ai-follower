@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import secrets
+import signal
 import subprocess
 import time
 from collections.abc import Callable
@@ -1869,17 +1870,25 @@ _START_SLACK_SECONDS = 2.0
 def _recorded_mode(vim: _VimProcess) -> str | None:
     """The mode the Vim's ModeChanged autocommand last wrote (_VIM_MODE), or
     None when there is no such file, or it is another process's: written
-    under another pid, or before this Vim started (a reused pid)."""
-    path = cache.CACHE_DIR / f"mode-{vim.pid}.txt"
-    try:
-        written = path.read_text(encoding="utf-8", errors="replace")
-        modified = path.stat().st_mtime
-    except OSError:
-        return None
-    pid, _, mode = written.rstrip("\n").partition(" ")
-    if pid != str(vim.pid) or not mode or modified < vim.started - _START_SLACK_SECONDS:
-        return None
-    return mode
+    under another pid, or before this Vim started (a reused pid).
+
+    Vim's rename() deletes the target before it renames (review m11,
+    measured: 8% of reads under a 1 ms mode flip found no file), so a file
+    caught missing is read from the temporary Vim is about to rename, and,
+    when that has just been renamed away too, once more from the file."""
+    final = cache.CACHE_DIR / f"mode-{vim.pid}.txt"
+    temporary = cache.CACHE_DIR / f".mode-{vim.pid}.txt.tmp"
+    for path in (final, temporary, final):
+        try:
+            written = path.read_text(encoding="utf-8", errors="replace")
+            modified = path.stat().st_mtime
+        except OSError:
+            continue
+        pid, _, mode = written.rstrip("\n").partition(" ")
+        if pid != str(vim.pid) or not mode or modified < vim.started - _START_SLACK_SECONDS:
+            return None
+        return mode
+    return None
 
 
 # Vim's 'showmode' text on the bottom row, in English (a translated Vim
@@ -1913,12 +1922,17 @@ _SHOWMODE_REASONS = {
 _NOT_TYPING_ROW = "-- More --"
 _COMPLETION_REASON = "in insert mode (completion)"
 # Vim's bottom row is always its command line, never a `~` filler line: a
-# `~` there is a screen Vim has not finished redrawing (measured in the
-# integration suite, 2026-10-17, with three tmux clients attached: the
-# pane's bottom row read `~`, with no `-- INSERT --`, for 0.6 s while the
-# user was in insert mode, and the first-contact Edit acted on the user's
-# typing). It is read again until it settles, and one that never settles
-# asks: asking is the safe direction.
+# `~` there is a screen Vim drew for a taller pane. A Vim with a repeating
+# timer (any plugin's) misses pane resizes: measured 2026-10-17 on Vim 9.2,
+# 9-11 of 60 resizes with a 10-30 ms timer (none without one) left its
+# &lines at the old size for 2.5 s to over 15 s, and a client attaching
+# (its status line takes a row) made the first-contact Edit read `~`
+# instead of `-- INSERT --` and act on the user's typing. A SIGWINCH sent to
+# the Vim redrew it in 0.044-0.056 s (it only makes Vim ask the terminal its
+# size), but a signal can be missed the same way (11 missed resizes of 150
+# took 1-3 signals). So every `~` read sends one and reads again 0.1 s
+# later, until the row settles; one that never settles asks: asking is the
+# safe direction.
 _FILLER_ROW = "~"
 _SETTLE_SECONDS = 2.0
 _SETTLE_POLL_SECONDS = 0.1
@@ -1932,14 +1946,16 @@ _TYPING_CURSORS = {
 }
 
 
-def _typing_on_screen(pane_id: str) -> str | None:
+def _typing_on_screen(pane_id: str, *, vim_pid: int | None = None) -> str | None:
     """What the pane SHOWS, read without typing a key: Vim's 'showmode' text
     on its bottom row, or a typing cursor. Measured 2026-10-17 on Vim 9.2
     and tmux 3.8 at 49 columns: `-- INSERT --`, `-- VISUAL --`,
     `-- VISUAL LINE --`, `-- SELECT --` and `-- REPLACE --` on the bottom
     row with 'showmode' on (Vim's default), nothing with it off; the cursor
     stays "default" in every mode unless the user's vimrc sets t_SI/t_SR;
-    a terminal window in Terminal-Job mode showed neither."""
+    a terminal window in Terminal-Job mode showed neither. Every `~`
+    bottom row sends the Vim (`vim_pid`, when known) a SIGWINCH: see
+    _FILLER_ROW."""
     deadline = time.monotonic() + _SETTLE_SECONDS
     while True:
         height, _, cursor = _tmux_answer(pane_id, "#{pane_height} #{cursor_shape}").partition(" ")
@@ -1957,6 +1973,9 @@ def _typing_on_screen(pane_id: str) -> str | None:
             break
         if time.monotonic() >= deadline:
             return _UNSETTLED_REASON
+        if vim_pid is not None:
+            with contextlib.suppress(OSError):
+                os.kill(vim_pid, signal.SIGWINCH)
         time.sleep(_SETTLE_POLL_SECONDS)
     if height.isdigit() and int(height) > 0:
         match = _SHOWMODE.match(row)
@@ -1985,7 +2004,7 @@ def typing_mode(pane_id: str) -> str | None:
     # A file that names a non-typing mode may have stopped updating (review
     # m9: 'eventignore' holding ModeChanged, the user's `:au!` of our
     # group), so the screen is read too; it types nothing.
-    return _typing_on_screen(pane_id)
+    return _typing_on_screen(pane_id, vim_pid=vim.pid if vim is not None else None)
 
 
 def leave_typing_mode(pane_id: str) -> None:
