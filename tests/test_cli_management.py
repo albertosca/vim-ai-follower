@@ -2032,3 +2032,53 @@ def test_start_reports_a_tmux_that_cannot_split_in_one_line(
     assert "attached" not in captured.out
     assert state.FollowerState.read("@1") is None
     assert not nvim_connect.launch_backoff_active("@1")
+
+
+@pytest.mark.parametrize(
+    ("typing", "failure", "logged"),
+    [
+        ("in insert mode", None, "(in insert mode)"),
+        (None, OSError("ps vanished"), "(its mode could not be read: ps vanished)"),
+    ],
+    ids=["typing", "unreadable"],
+)
+def test_stop_of_an_adopted_vim_whose_user_is_typing_sends_nothing_and_asks_nothing(
+    typing: str | None, failure: Exception | None, logged: str
+) -> None:
+    # `stop` takes no answer (Alberto, 2026-10-17): close_tab's Escape pair
+    # would end the user's mode, so nothing reaches the Vim, and a mode it
+    # cannot read counts the same.
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="%7 vim\n"),
+    ):
+        state.FollowerState.set(
+            "@1",
+            "tmux",
+            "%7",
+            origin="%1",
+            adopted=True,
+            open_files=("/tmp/a.py",),
+            shown_any=True,
+            server_pid=MOCK_SERVER_PID,
+        )
+    with (
+        patch(
+            "vim_ai_follower.tmux.subprocess.run",
+            side_effect=make_mock_tmux_run(pane_id="%7", other_panes=("%1",)),
+        ) as run,
+        patch(
+            "vim_ai_follower.backends.tmux_vim.typing_mode",
+            return_value=typing,
+            side_effect=failure,
+        ) as read,
+        patch("vim_ai_follower.take_over.ask") as asked,
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    read.assert_called_once_with("%7")
+    asked.assert_not_called()
+    sends = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "send-keys"]]
+    assert sends == []
+    assert state.FollowerState.get("@1") is None
+    lines = [line for line in _hook_log().splitlines() if "waiting on its user" in line]
+    assert len(lines) == 1 and logged in lines[0], _hook_log()

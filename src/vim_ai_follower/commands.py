@@ -15,7 +15,13 @@ from typing import Any, Literal
 
 from vim_ai_follower import binding, cache, config, control, hooks, keybindings, snapshot, tmux
 from vim_ai_follower import state as state_module
-from vim_ai_follower.backends import NavigationFailed, get_follower, nvim_connect, nvim_prompt
+from vim_ai_follower.backends import (
+    NavigationFailed,
+    get_follower,
+    nvim_connect,
+    nvim_prompt,
+    tmux_vim,
+)
 from vim_ai_follower.backends.nvim_connect import (
     NvimNeverListened,
     RpcTimeout,
@@ -416,6 +422,21 @@ def _tear_down_tmux(existing: FollowerState, window_id: str) -> None:
         )
         return
     if existing.adopted:
+        # A user typing in their own Vim is never asked and never typed into:
+        # the Escape pair close_tab starts with would end their mode (or
+        # reach a terminal window's job), and `stop` takes no answer
+        # (Alberto, 2026-10-17). Its tabs stay; nothing is lost.
+        try:
+            typing = tmux_vim.typing_mode(existing.target)
+        except Exception as error:  # never raised by stop; unknown sends nothing
+            typing = f"its mode could not be read: {error}"
+        if typing is not None:
+            hooks.logger.warning(
+                "stop: Vim in %s is waiting on its user (%s); nothing was sent to it",
+                existing.target,
+                typing,
+            )
+            return
         # Adoption never took ownership of the pane: only close the tabs the
         # follower opened, and never the user's work (close_tab leaves a
         # modified buffer, or one the user had open, and says so in hook.log).

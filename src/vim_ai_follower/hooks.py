@@ -34,6 +34,7 @@ from vim_ai_follower.backends import (
     get_follower,
     nvim_connect,
     nvim_prompt,
+    tmux_vim,
     without_bom,
 )
 from vim_ai_follower.backends.nvim_connect import (
@@ -1151,6 +1152,37 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         control.clear_animating(session.window_id)
 
 
+def _busy_follower(current: FollowerState, question_seconds: float) -> str | None:
+    """Why this hook must leave the follower alone, or None: _busy_nvim for
+    an nvim, _busy_vim for a Vim."""
+    if current.backend == "nvim":
+        return _busy_nvim(current, question_seconds)
+    return _busy_vim(current, question_seconds)
+
+
+def _busy_vim(current: FollowerState, question_seconds: float) -> str | None:
+    """Why this hook must leave a Vim follower alone, or None: an ADOPTED Vim
+    whose user is known to be typing (tmux_vim.typing_mode: its mode file,
+    or on a first contact its screen) is asked about first, as an nvim is
+    (Alberto, 2026-10-17), before anything is typed: the Escape pair every
+    navigation starts with would end their insert, replace, visual or select
+    mode, or go to a terminal window's job. Only `y` takes it over, with
+    CTRL-\\ CTRL-N (tmux_vim.leave_typing_mode), and the hook goes on.
+    A dedicated follower is never asked: its Vim is the follower's."""
+    if not current.adopted:
+        return None
+    typing = tmux_vim.typing_mode(current.target)
+    if typing is None:
+        return None
+    waiting = f"Vim in {current.target} is waiting on its user ({typing})"
+    answer = take_over.ask(current.target, "Vim", question_seconds)
+    if answer != take_over.YES:
+        return f"{waiting}, not taken over ({answer})"
+    tmux_vim.leave_typing_mode(current.target)
+    logger.info("%s: taken over (answered y)", waiting)
+    return None
+
+
 def _busy_nvim(
     current: FollowerState,
     question_seconds: float = config.DEFAULT_TAKE_OVER_QUESTION_SECONDS,
@@ -1185,8 +1217,6 @@ def _busy_nvim(
     or select mode) is asked about instead (Alberto, 2026-10-17): a popup
     over the follower's window, `question_seconds` long, and only a `y`
     takes it over (_take_over_nvim); any other answer skips, as above."""
-    if current.backend != "nvim":
-        return None
     if nvim_connect.last_probe_verdict(current.target) == "silent":
         return (
             f"nvim at {current.target} did not answer within "
@@ -1206,9 +1236,7 @@ def _busy_nvim(
 
 # The adopted_user_pending reasons that mean the user is typing: acting under
 # one puts their next keys into Claude's buffer, so the hook asks first.
-TYPING_MODES = frozenset(
-    {"in insert mode", "in replace mode", "in terminal mode", "in visual mode", "in select mode"}
-)
+TYPING_MODES = take_over.TYPING_REASONS
 
 # How long a taken-over nvim may take to leave its typing mode.
 _LEAVE_TYPING_SECONDS = 2.0
@@ -1280,16 +1308,9 @@ def adopted_user_pending(socket_path: str) -> str | None:
         return "on the command line"
     if mode is not None and mode.startswith("no"):
         return "an operator pending"
-    if mode is not None and mode.startswith(("i", "niI")):
-        return "in insert mode"
-    if mode is not None and mode.startswith(("R", "niR", "niV")):
-        return "in replace mode"
-    if mode is not None and mode.startswith(("t", "ntT")):
-        return "in terminal mode"
-    if mode in ("vs", "Vs", "\x16s") or (mode is not None and mode.startswith(("s", "S", "\x13"))):
-        return "in select mode"
-    if mode is not None and mode.startswith(("v", "V", "\x16")):
-        return "in visual mode"
+    typing = take_over.typing_reason(mode)
+    if typing is not None:
+        return typing
     if nvim_connect.last_probe_blocking(socket_path):
         if not nvim_prompt.answerable(mode):
             return "in the middle of a key sequence"
@@ -1709,7 +1730,7 @@ def _animate_edit(
     if current is None:
         _warn_lost_window_identity(session)
         return 0
-    busy = _busy_nvim(current, cfg.take_over_question_seconds)
+    busy = _busy_follower(current, cfg.take_over_question_seconds)
     if busy is not None:
         # Skipped like an unreachable edit, minus the cue: none was raised,
         # and taking one down would wait on the same silent nvim.
@@ -2071,7 +2092,7 @@ def _navigate_for_read(
     if current is None:
         _warn_lost_window_identity(session)
         return 0
-    busy = _busy_nvim(current, cfg.take_over_question_seconds)
+    busy = _busy_follower(current, cfg.take_over_question_seconds)
     if busy is not None:
         logger.warning("skipped the Read of %s: %s", file_path, busy)
         return 0

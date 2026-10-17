@@ -3376,3 +3376,99 @@ def test_a_reopen_whose_split_never_answers_keeps_the_old_state_and_backs_off(
     assert unchanged.target == "/tmp/old.sock"
     assert nvim_connect.launch_backoff_active("@1")
     assert "nvim did not answer on /c/nvim-@1.sock" in capsys.readouterr().err
+
+
+# --- the take-over question for an ADOPTED Vim (tmux backend) -------------
+
+
+def _adopted_vim_state(adopted: bool = True) -> state.FollowerState:
+    return state.FollowerState(
+        backend="tmux",
+        target="%7",
+        current_file=None,
+        origin="%9",
+        on_failure="silent",
+        speed="normal",
+        adopted=adopted,
+    )
+
+
+def test_a_dedicated_vim_is_never_read_or_asked() -> None:
+    with (
+        patch("vim_ai_follower.backends.tmux_vim.typing_mode") as typing,
+        patch("vim_ai_follower.take_over.ask") as asked,
+    ):
+        assert hooks._busy_follower(_adopted_vim_state(adopted=False), 10) is None
+    typing.assert_not_called()
+    asked.assert_not_called()
+
+
+def test_an_adopted_vim_whose_user_is_not_typing_is_not_asked() -> None:
+    with (
+        patch("vim_ai_follower.backends.tmux_vim.typing_mode", return_value=None) as typing,
+        patch("vim_ai_follower.take_over.ask") as asked,
+    ):
+        assert hooks._busy_follower(_adopted_vim_state(), 10) is None
+    typing.assert_called_once_with("%7")
+    asked.assert_not_called()
+
+
+@pytest.mark.parametrize("answer", ["answered no", "answered timeout", "no answer"])
+def test_a_typing_adopted_vim_is_skipped_on_any_answer_but_yes(answer: str) -> None:
+    with (
+        patch("vim_ai_follower.backends.tmux_vim.typing_mode", return_value="in insert mode"),
+        patch("vim_ai_follower.take_over.ask", return_value=answer) as asked,
+        patch("vim_ai_follower.backends.tmux_vim.leave_typing_mode") as leave,
+    ):
+        busy = hooks._busy_follower(_adopted_vim_state(), 4.5)
+    asked.assert_called_once_with("%7", "Vim", 4.5)
+    leave.assert_not_called()
+    assert busy == f"Vim in %7 is waiting on its user (in insert mode), not taken over ({answer})"
+
+
+def test_a_typing_adopted_vim_answered_yes_leaves_its_mode_and_goes_on(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with (
+        caplog.at_level(logging.INFO, logger="vim_ai_follower"),
+        patch("vim_ai_follower.backends.tmux_vim.typing_mode", return_value="in terminal mode"),
+        patch("vim_ai_follower.take_over.ask", return_value=take_over.YES),
+        patch("vim_ai_follower.backends.tmux_vim.leave_typing_mode") as leave,
+    ):
+        assert hooks._busy_follower(_adopted_vim_state(), 10) is None
+    leave.assert_called_once_with("%7")
+    assert "(in terminal mode): taken over (answered y)" in caplog.text
+
+
+@pytest.mark.parametrize("tool_name", ["Edit", "Read"])
+def test_a_hook_asks_before_typing_into_a_typing_adopted_vim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tool_name: str,
+) -> None:
+    target = tmp_path / "f.txt"
+    target.write_text("hello\n")
+    state.FollowerState.set(
+        "term-x", "tmux", "%7", open_files=(str(target),), shown_any=True, origin="%9", adopted=True
+    )
+    current = state.FollowerState.read("term-x")
+    assert current is not None
+    monkeypatch.setattr(hooks, "_live_follower_healing_keys", lambda _session: current)
+    get_follower = MagicMock()
+    monkeypatch.setattr(hooks, "get_follower", get_follower)
+    monkeypatch.setattr(hooks, "status_surface_for", get_follower)
+    payload: dict[str, object] = {"tool_name": tool_name, "tool_input": {"file_path": str(target)}}
+    with (
+        caplog.at_level(logging.WARNING, logger="vim_ai_follower"),
+        patch("vim_ai_follower.backends.tmux_vim.typing_mode", return_value="in visual mode"),
+        patch("vim_ai_follower.take_over.ask", return_value="answered no") as asked,
+    ):
+        assert hooks.cmd_hook_post({"TERM_SESSION_ID": "x"}, payload) == 0
+    asked.assert_called_once_with("%7", "Vim", config.DEFAULT_TAKE_OVER_QUESTION_SECONDS)
+    get_follower.assert_not_called()
+    after = state.FollowerState.read("term-x")
+    assert after is not None
+    assert after.stale_files == ((str(target),) if tool_name == "Edit" else ())
+    skipped = [line for line in caplog.text.splitlines() if "not taken over" in line]
+    assert len(skipped) == 1 and str(target) in skipped[0], caplog.text

@@ -55,6 +55,33 @@ _POPUP_HEIGHT = 6
 
 YES = "yes"
 
+# What typing_reason answers: the modes in which the user is typing.
+TYPING_REASONS = frozenset(
+    {"in insert mode", "in replace mode", "in terminal mode", "in visual mode", "in select mode"}
+)
+
+
+def typing_reason(mode: str | None) -> str | None:
+    """The typing mode a Vim or nvim `mode(1)` string names (one of
+    TYPING_REASONS), or None. Both editors spell them alike: insert and
+    replace (`i…`, `R…`, and the `niI`/`niR`/`niV` of a CTRL-O from one),
+    terminal (`t…`, nvim's `ntT`), select (`s`/`S`/CTRL-S and the
+    `vs`/`Vs`/CTRL-V `s` of a CTRL-O from select) and visual
+    (`v`/`V`/CTRL-V). Vim's Terminal-Normal `nt` is Normal mode."""
+    if mode is None:
+        return None
+    if mode.startswith(("i", "niI")):
+        return "in insert mode"
+    if mode.startswith(("R", "niR", "niV")):
+        return "in replace mode"
+    if mode.startswith(("t", "ntT")):
+        return "in terminal mode"
+    if mode in ("vs", "Vs", "\x16s") or mode.startswith(("s", "S", "\x13")):
+        return "in select mode"
+    if mode.startswith(("v", "V", "\x16")):
+        return "in visual mode"
+    return None
+
 
 def _answer_path(token: str) -> Path:
     return cache.CACHE_DIR / f"take-over-{token}.txt"

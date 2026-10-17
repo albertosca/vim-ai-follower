@@ -49,6 +49,11 @@ class TmuxPane:
             check=True,
         )
 
+    def send_hex(self, *byte_values: str) -> None:
+        """Send raw bytes, each a two-digit hex string (`send-keys -H`): no
+        key-name parsing in between."""
+        subprocess.run(["tmux", "send-keys", "-t", self.pane_id, "-H", *byte_values], check=True)
+
     def send_key(self, key_name: str) -> None:
         subprocess.run(["tmux", "send-keys", "-t", self.pane_id, key_name], check=True)
 

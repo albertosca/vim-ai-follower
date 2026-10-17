@@ -212,3 +212,29 @@ def test_the_prompt_runs_as_a_module() -> None:
         env={**os.environ, "PYTHONPATH": str(Path(take_over.__file__).resolve().parent.parent)},
     )
     assert result.stdout.strip() == "yes", result.stderr
+
+
+@pytest.mark.parametrize(
+    ("mode", "reason"),
+    [
+        ("i", "in insert mode"),
+        ("niI", "in insert mode"),
+        ("Rv", "in replace mode"),
+        ("niV", "in replace mode"),
+        ("t", "in terminal mode"),
+        ("ntT", "in terminal mode"),
+        ("Vs", "in select mode"),
+        ("\x13", "in select mode"),
+        ("\x16", "in visual mode"),
+        ("n", None),
+        ("nt", None),
+        ("c", None),
+        ("no", None),
+        (None, None),
+    ],
+)
+def test_typing_reason_names_the_typing_modes_of_vim_and_nvim(
+    mode: str | None, reason: str | None
+) -> None:
+    assert take_over.typing_reason(mode) == reason
+    assert reason is None or reason in take_over.TYPING_REASONS

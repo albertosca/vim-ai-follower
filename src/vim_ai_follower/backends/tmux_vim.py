@@ -6,12 +6,13 @@ import logging
 import os
 import re
 import secrets
+import subprocess
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from vim_ai_follower import cache, config, control
+from vim_ai_follower import cache, config, control, take_over
 from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult, run_lines, run_ops
 from vim_ai_follower.backends import (
     BufferProbe,
@@ -1025,6 +1026,47 @@ function! s:probe(token, folds) abort
 endfunction
 """
 
+# The user's mode, for the hook to read before it types anything into an
+# ADOPTED Vim (typing_mode): a Vim whose user is typing is asked about first
+# (Alberto, 2026-10-17), and the Escape pair the follower would send leaves
+# their insert, replace, visual or select mode, or goes to the job of a
+# terminal window. Every ModeChanged writes `<pid> <mode(1)>` to
+# `mode-<pid>.txt` in the cache directory, and VimLeave deletes it.
+# Measured 2026-10-17 on Vim 9.2: i, n, c, v, s, R, niI, t and nt are all
+# written as the user enters them, and the file is gone after `:qa!`. The
+# autocommands are defined while the define line runs, so the ModeChanged
+# that ends that line never fires (measured): the script writes the mode
+# once itself (the command line's `c`, which is not a typing mode). A Vim
+# without ModeChanged (before 8.2.3430) writes nothing, and every hook
+# reads its screen instead (typing_mode). The write is in a try: a cache
+# directory gone or unwritable must not raise an error on every mode change
+# of the user's Vim. Its `autocmd!` names the group, as the swap answer's
+# does (see _VIM_SWAP_ANSWER): a bare one after a failed `augroup` would run
+# in the default group and delete every autocommand the user has.
+_VIM_MODE = r"""
+function! s:note_mode() abort
+  try
+    call writefile([getpid() . ' ' . mode(1)], s:dir . 'mode-' . getpid() . '.txt')
+  catch
+  endtry
+endfunction
+
+function! s:forget_mode() abort
+  call delete(s:dir . 'mode-' . getpid() . '.txt')
+endfunction
+
+augroup vim_ai_follower_mode
+  autocmd! vim_ai_follower_mode
+  if exists('##ModeChanged')
+    autocmd ModeChanged * call s:note_mode()
+    autocmd VimLeave * call s:forget_mode()
+  endif
+augroup END
+if exists('##ModeChanged')
+  call s:note_mode()
+endif
+"""
+
 # The whole script. `@DIR@` is the cache directory (a Vim string literal,
 # trailing slash included) and `@NAME@` the dispatcher's name, both filled in
 # by _vim_functions. The dispatcher is defined LAST, and only when every
@@ -1082,6 +1124,7 @@ _VIM_SCRIPT = (
     + _VIM_WIPE
     + _VIM_EVICT
     + _VIM_PROBE
+    + _VIM_MODE
     + r"""
 if @HELPERS@
 function! @NAME@(op, ...) abort
@@ -1340,6 +1383,35 @@ def _sweep_scripts(current: Path) -> None:
         with contextlib.suppress(OSError):
             if now - entry.lstat().st_mtime > maximum_age:
                 entry.unlink()
+    _sweep_mode_files(entries)
+
+
+# A Vim's mode file (_VIM_MODE), named after its pid.
+_MODE_FILE_NAME = re.compile(r"mode-([0-9]+)\.txt")
+
+
+def _sweep_mode_files(entries: list[Path]) -> None:
+    """Delete the mode files of Vims that are gone: VimLeave deletes its own,
+    but a Vim killed with SIGKILL, or a crash, leaves it. Never by age: a
+    Vim left in insert mode overnight still needs its file to say so, or
+    the next hook would read only its screen (typing_mode). A pid that is
+    alive again is another process: _recorded_mode tells it by its start."""
+    for entry in entries:
+        match = _MODE_FILE_NAME.fullmatch(entry.name)
+        if match is None:
+            continue
+        pid = int(match.group(1))
+        if pid <= 0:
+            # Never a Vim's; kill(0) would signal our own process group.
+            continue
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            with contextlib.suppress(OSError):
+                entry.unlink()
+        except OSError:
+            # EPERM: alive, another user's.
+            continue
 
 
 def _call_line(op: str, *arguments: str | int) -> str:
@@ -1717,6 +1789,170 @@ _RELOCK_SYNCED = _Relock(synced=True, readonly=False)
 _RELOCK_READONLY_SYNCED = _Relock(synced=True, readonly=True)
 _RELOCK_PLAIN = _Relock(synced=False, readonly=False)
 _RELOCK_READONLY_PLAIN = _Relock(synced=False, readonly=True)
+
+
+@dataclass(frozen=True)
+class _VimProcess:
+    pid: int
+    # When it started, in time.time() seconds, to a second (ps's etime).
+    started: float
+
+
+def _tmux_answer(pane_id: str, form: str) -> str:
+    result = subprocess.run(
+        ["tmux", "display-message", "-p", "-t", pane_id, form],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _elapsed_seconds(etime: str) -> int | None:
+    """ps's `etime`, `[[dd-]hh:]mm:ss`, in seconds; None when malformed."""
+    days, _, clock = etime.rpartition("-")
+    try:
+        parts = [int(part) for part in clock.split(":")]
+        whole_days = int(days) if days else 0
+    except ValueError:
+        return None
+    if not 2 <= len(parts) <= 3:
+        return None
+    seconds = 0
+    for part in parts:
+        seconds = seconds * 60 + part
+    return whole_days * 86400 + seconds
+
+
+def _foreground_vim(pane_id: str) -> _VimProcess | None:
+    """The Vim the pane's terminal has in the foreground: the one process
+    named vim in the group that owns the tty (pgid == tpgid). None when
+    there is not exactly one, or ps could not say."""
+    terminal = _tmux_answer(pane_id, "#{pane_tty}").removeprefix("/dev/")
+    if not terminal:
+        return None
+    try:
+        result = subprocess.run(
+            ["ps", "-t", terminal, "-o", "pid=,pgid=,tpgid=,etime=,comm="],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_PS_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    now = time.time()
+    found: list[_VimProcess] = []
+    for line in result.stdout.splitlines():
+        fields = line.split(None, 4)
+        if len(fields) != 5 or fields[1] != fields[2] or Path(fields[4]).name != "vim":
+            continue
+        elapsed = _elapsed_seconds(fields[3])
+        if elapsed is None or not fields[0].isdigit():
+            continue
+        found.append(_VimProcess(pid=int(fields[0]), started=now - elapsed))
+    return found[0] if len(found) == 1 else None
+
+
+_PS_TIMEOUT_SECONDS = 2.0
+# ps's etime is whole seconds, so a process looks up to a second younger
+# than it is; a mode file this much older than the computed start is
+# another process's (a reused pid).
+_START_SLACK_SECONDS = 2.0
+
+
+def _recorded_mode(vim: _VimProcess) -> str | None:
+    """The mode the Vim's ModeChanged autocommand last wrote (_VIM_MODE), or
+    None when there is no such file, or it is another process's: written
+    under another pid, or before this Vim started (a reused pid)."""
+    path = cache.CACHE_DIR / f"mode-{vim.pid}.txt"
+    try:
+        written = path.read_text(encoding="utf-8", errors="replace")
+        modified = path.stat().st_mtime
+    except OSError:
+        return None
+    pid, _, mode = written.rstrip("\n").partition(" ")
+    if pid != str(vim.pid) or not mode or modified < vim.started - _START_SLACK_SECONDS:
+        return None
+    return mode
+
+
+# Vim's 'showmode' text on the bottom row, in English (a translated Vim
+# shows its own words, and reads as no typing mode here): `-- INSERT --`,
+# `-- (insert) --` (CTRL-O from insert), `-- (insert) VISUAL --`,
+# `-- VISUAL LINE --`, `-- SELECT --`, `-- REPLACE --`, `-- VREPLACE --`,
+# `-- TERMINAL --`, with suffixes such as `(paste)` or `recording @q`.
+_SHOWMODE = re.compile(
+    r"--\s(?:\((insert|replace|vreplace)\)\s?)?"
+    r"(INSERT|REPLACE|VREPLACE|VISUAL|SELECT|TERMINAL)?"
+)
+_SHOWMODE_REASONS = {
+    "INSERT": "in insert mode",
+    "insert": "in insert mode",
+    "REPLACE": "in replace mode",
+    "VREPLACE": "in replace mode",
+    "replace": "in replace mode",
+    "vreplace": "in replace mode",
+    "VISUAL": "in visual mode",
+    "SELECT": "in select mode",
+    "TERMINAL": "in terminal mode",
+}
+# tmux's #{cursor_shape} as the program last set it (DECSCUSR): a Vim
+# configured to show insert and replace mode by its cursor (t_SI/t_SR) sets
+# a bar or an underline there; "default" and "block" say nothing.
+_TYPING_CURSORS = {
+    "bar": "in insert mode (a bar cursor)",
+    "underline": "in replace mode (an underline cursor)",
+}
+
+
+def _typing_on_screen(pane_id: str) -> str | None:
+    """What the pane SHOWS, read without typing a key: Vim's 'showmode' text
+    on its bottom row, or a typing cursor. Measured 2026-10-17 on Vim 9.2
+    and tmux 3.8 at 49 columns: `-- INSERT --`, `-- VISUAL --`,
+    `-- VISUAL LINE --`, `-- SELECT --` and `-- REPLACE --` on the bottom
+    row with 'showmode' on (Vim's default), nothing with it off; the cursor
+    stays "default" in every mode unless the user's vimrc sets t_SI/t_SR;
+    a terminal window in Terminal-Job mode showed neither."""
+    height, _, cursor = _tmux_answer(pane_id, "#{pane_height} #{cursor_shape}").partition(" ")
+    if height.isdigit() and int(height) > 0:
+        bottom = int(height) - 1
+        result = subprocess.run(
+            ["tmux", "capture-pane", "-p", "-t", pane_id, "-S", str(bottom), "-E", str(bottom)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        match = _SHOWMODE.match(result.stdout.strip()) if result.returncode == 0 else None
+        if match is not None and (match.group(2) or match.group(1)):
+            return _SHOWMODE_REASONS[match.group(2) or match.group(1)]
+    return _TYPING_CURSORS.get(cursor.strip())
+
+
+def typing_mode(pane_id: str) -> str | None:
+    """Why the user of the Vim in `pane_id` is known to be TYPING (insert,
+    replace, terminal, visual or select mode), read without typing a key, or
+    None. Its mode file (_VIM_MODE) decides once the script has been sourced
+    there; a missing or stale one (a Vim that never had the script, one too
+    old for ModeChanged, a reused pid) is a first contact, which reads the
+    screen (_typing_on_screen). Only a mode file that names a mode outside
+    those five, or a screen that shows none of them, answers None: the
+    follower then acts as it always did, starting with its Escape pair."""
+    vim = _foreground_vim(pane_id)
+    recorded = _recorded_mode(vim) if vim is not None else None
+    if recorded is not None:
+        return take_over.typing_reason(recorded)
+    return _typing_on_screen(pane_id)
+
+
+def leave_typing_mode(pane_id: str) -> None:
+    """CTRL-\\ CTRL-N, as bytes: Normal mode from insert, replace, visual and
+    select, and Terminal-Normal from a terminal window's job, where the
+    Escape pair would go to the job. Sent only once the user answered `y`
+    to the take-over question; with no hit-enter prompt up (the user is
+    typing), so not the pair that corrupted a vim-visual-multi command line
+    (see _normal_mode)."""
+    TmuxPane(pane_id=pane_id).send_hex("1c", "0e")
 
 
 @dataclass(frozen=True)

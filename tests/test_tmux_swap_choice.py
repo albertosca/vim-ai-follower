@@ -61,6 +61,7 @@ from helpers import call_spelled, case_folds, resolve_typed_paths, typed_path, v
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower, _vim_functions
 
 _GROUP = "vim_ai_follower_swap"
+_MODE_GROUP = "vim_ai_follower_mode"
 
 
 def _sent_text(run_mock: MagicMock) -> list[str]:
@@ -112,7 +113,9 @@ def test_the_script_contains_no_bare_autocmd_bang() -> None:
     autocommand the user has. Nothing needs it, because `finally` clears
     the group on every pass."""
     script = _vim_functions()[1]
-    assert script.count("autocmd!") == script.count(f"autocmd! {_GROUP}") == 1
+    named = script.count(f"autocmd! {_GROUP}") + script.count(f"autocmd! {_MODE_GROUP}")
+    assert script.count("autocmd!") == named == 2
+    assert script.count(f"autocmd! {_GROUP}") == 1
     teardown = vim_function("swap_answer_close")
     assert teardown.index(f"autocmd! {_GROUP}") < teardown.index(f"augroup! {_GROUP}")
 
