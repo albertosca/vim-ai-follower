@@ -3,4 +3,5 @@
 # source scripts/check_readme_facts.py reads for the "100% branch coverage" claim.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+bash scripts/validate_plugin.sh
 exec uv run pytest -q --cov=vim_ai_follower --cov-branch --cov-fail-under=100 "$@"
