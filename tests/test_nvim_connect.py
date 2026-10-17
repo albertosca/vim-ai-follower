@@ -862,6 +862,37 @@ def test_nvim_ready_asks_nothing_more_of_a_socket_nobody_answers_on() -> None:
     did_enter.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("reply", "open_window"),
+    [
+        (b"\x94\x01\x01\xc0\xa0", False),  # getcmdwintype() is ""
+        (b"\x94\x01\x01\xc0\xa1:", True),  # `q:`
+        (b"\x94\x01\x01\xc0\xa1/", True),  # `q/`
+        (b"\x94\x01\x01\xc1\xa0", None),  # an error answer, not a result
+        (b"\x94\x01\x01\xc0\x01", None),  # a result that is no string
+        (b"\x94\x01\x01\xc0", None),  # a reply that stops short
+        ("hang up", None),
+        (None, None),  # held: busy, or at a prompt after all
+    ],
+)
+def test_in_command_line_window_reads_getcmdwintype(reply: Any, open_window: bool | None) -> None:
+    # Inside `q:` get_mode reads "n", not blocking, and every window change
+    # raises E11 (T22 re-review m2): only getcmdwintype() tells.
+    with _short_socket_dir() as directory:
+        path = directory / "nvim-@1.sock"
+        with fake_nvim(path, reply=reply):
+            assert nvim_connect.in_command_line_window(str(path), timeout=0.3) is open_window
+
+
+def test_in_command_line_window_is_none_for_a_socket_nobody_listens_on() -> None:
+    with _short_socket_dir() as directory:
+        assert nvim_connect.in_command_line_window(str(directory / "nowhere.sock")) is None
+
+
+def test_in_command_line_window_asks_a_real_nvim(headless_nvim: str) -> None:
+    assert nvim_connect.in_command_line_window(headless_nvim) is False
+
+
 def test_ready_split_socket_names_the_windows_launch_socket_only_when_ready() -> None:
     with _short_socket_dir() as directory:
         path = directory / "nvim-@1.sock"

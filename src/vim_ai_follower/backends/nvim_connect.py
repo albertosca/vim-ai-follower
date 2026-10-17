@@ -83,6 +83,12 @@ _DEFAULT_SOCKET_NAME = re.compile(r"nvim\.([1-9][0-9]*)\.[0-9]+")
 # fixstr(13). Its answer once nvim has started is `[1, 1, nil, 1]`.
 _DID_ENTER_REQUEST = b"\x94\x00\x01\xadnvim_get_vvar\x91\xadvim_did_enter"
 _DID_ENTER_REPLY = b"\x94\x01\x01\xc0\x01"
+# msgpack-RPC `[0, 1, "nvim_call_function", ["getcmdwintype", []]]`, hand-encoded
+# like the probe: fixstr(18) method, fixarray(2) args of a fixstr(13) and an
+# empty fixarray. Its answer is `[1, 1, nil, <fixstr>]`: "" outside the
+# command-line window, its type (":", "/", "?") inside one.
+_CMDWIN_REQUEST = b"\x94\x00\x01\xb2nvim_call_function\x92\xadgetcmdwintype\x90"
+_CMDWIN_REPLY_PREFIX = b"\x94\x01\x01\xc0"
 # Read at most this much of the reply looking for the key: get_mode's whole
 # answer is about 30 bytes.
 _REPLY_READ_LIMIT = 256
@@ -561,6 +567,38 @@ def _did_enter(sock: str, timeout: float) -> bool:
     finally:
         probe.close()
     return received.startswith(_DID_ENTER_REPLY)
+
+
+def in_command_line_window(sock: str, timeout: float = LIVENESS_TIMEOUT_SECONDS) -> bool | None:
+    """Whether the nvim on `sock` has its command-line window open (`q:`,
+    `q/`), raw like _probe, within `timeout`. get_mode cannot tell: inside
+    it the mode reads "n" (or "i"), not blocking, while every window change
+    raises E11 (measured 2026-10-17, nvim 0.12.6). None when no well-formed
+    answer came in time — not an ordinary request's answer at a blocking
+    prompt, so ask only an nvim the probe found not blocking."""
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    connection.settimeout(timeout)
+    deadline = time.monotonic() + timeout
+    received = b""
+    try:
+        connection.connect(sock)
+        connection.sendall(_CMDWIN_REQUEST)
+        while len(received) < len(_CMDWIN_REPLY_PREFIX) + 1:
+            connection.settimeout(max(deadline - time.monotonic(), 0.0))
+            chunk = connection.recv(64)
+            if not chunk:
+                return None
+            received += chunk
+    except OSError:  # TimeoutError included: held at a prompt, busy, or gone
+        return None
+    finally:
+        connection.close()
+    if not received.startswith(_CMDWIN_REPLY_PREFIX):
+        return None
+    marker = received[len(_CMDWIN_REPLY_PREFIX)]
+    if not _FIXSTR_FIRST <= marker <= _FIXSTR_LAST:
+        return None
+    return marker != _FIXSTR_FIRST
 
 
 def ready_split_socket(window_id: str) -> str | None:

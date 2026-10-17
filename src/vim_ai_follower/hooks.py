@@ -1189,16 +1189,30 @@ def adopted_user_pending(socket_path: str) -> str | None:
     """What the user of an ADOPTED nvim is in the middle of, by the last
     probe's mode, when it is something the follower must not act under: a
     confirm (`r?`), the command line (any `c…` mode: `input()`, a `:`
-    command or a search being typed), or a blocking key sequence (`q` waiting
-    for its register reads `n`, blocking). None for an idle nvim or one at a
-    hit-enter or more-prompt, which the follower answers when it acts."""
+    command or a search being typed), an operator waiting for its motion
+    (any `no…` mode: the user's second `d` deleted Claude's line, T22
+    re-review I2), or a blocking key sequence (`q` waiting for its register
+    reads `n`, blocking). An nvim that answered not blocking is also asked
+    whether its command-line window is open (`q:` reads "n", and every
+    window change in it raises E11: show_fresh crashed the hook, re-review
+    m2) — one more bounded raw request; no answer counts as not open. None
+    for an idle nvim or one at a hit-enter or more-prompt, which the
+    follower answers when it acts."""
     mode = nvim_connect.last_probe_mode(socket_path)
     if mode == "r?":
         return "a confirm prompt"
     if mode is not None and mode.startswith("c"):
         return "on the command line"
-    if nvim_connect.last_probe_blocking(socket_path) and not nvim_prompt.answerable(mode):
-        return "in the middle of a key sequence"
+    if mode is not None and mode.startswith("no"):
+        return "an operator pending"
+    if nvim_connect.last_probe_blocking(socket_path):
+        if not nvim_prompt.answerable(mode):
+            return "in the middle of a key sequence"
+        return None
+    if nvim_connect.last_probe_verdict(
+        socket_path
+    ) == "answers" and nvim_connect.in_command_line_window(socket_path):
+        return "in the command-line window"
     return None
 
 

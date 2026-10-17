@@ -1327,8 +1327,21 @@ def test_toggle_on_clears_a_tombstone_before_writing() -> None:
         (False, "r?", "a confirm prompt"),
         (False, "c", "on the command line"),
         (False, "cv", "on the command line"),
+        (False, "no", "an operator pending"),
+        (False, "nov", "an operator pending"),
+        (False, "noV", "an operator pending"),
+        (False, "no\x16", "an operator pending"),
     ],
-    ids=["keys-pending", "confirm", "cmdline", "cmdline-ex"],
+    ids=[
+        "keys-pending",
+        "confirm",
+        "cmdline",
+        "cmdline-ex",
+        "operator",
+        "operator-v",
+        "operator-V",
+        "operator-ctrl-v",
+    ],
 )
 def test_stop_of_an_adopted_nvim_waiting_on_its_user_sends_nothing_and_logs_one_line(
     blocking: bool, mode: str, named: str
@@ -1351,6 +1364,31 @@ def test_stop_of_an_adopted_nvim_waiting_on_its_user_sends_nothing_and_logs_one_
     lines = [line for line in _hook_log().splitlines() if _DEDICATED_SOCKET in line]
     assert len(lines) == 1, _hook_log()
     assert f"waiting on its user ({named})" in lines[0]
+    assert state.FollowerState.read("@1") is None
+
+
+def test_stop_of_an_adopted_nvim_in_its_command_line_window_sends_nothing() -> None:
+    # `q:` reads "n", not blocking; closing the follower's tabs there raises
+    # E11 (T22 re-review m2).
+    _nvim_follower(adopted=True, open_files=("/tmp/a.py",))
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+        patch("pynvim.attach") as attach,
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
+        patch("vim_ai_follower.commands.nvim_connect.last_probe_verdict", return_value="answers"),
+        patch("vim_ai_follower.commands.nvim_connect.last_probe_blocking", return_value=False),
+        patch("vim_ai_follower.commands.nvim_connect.last_probe_mode", return_value="n"),
+        patch(
+            "vim_ai_follower.commands.nvim_connect.in_command_line_window", return_value=True
+        ) as cmdwin,
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    cmdwin.assert_called_once_with(_DEDICATED_SOCKET)
+    attach.assert_not_called()
+    assert not any(c.args[0][:2] == ["tmux", "kill-pane"] for c in run.call_args_list)
+    lines = [line for line in _hook_log().splitlines() if _DEDICATED_SOCKET in line]
+    assert len(lines) == 1, _hook_log()
+    assert "waiting on its user (in the command-line window)" in lines[0]
     assert state.FollowerState.read("@1") is None
 
 

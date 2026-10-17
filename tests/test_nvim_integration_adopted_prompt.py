@@ -230,13 +230,16 @@ def test_an_nvim_blocked_in_a_key_sequence_skips_the_edit_in_one_line(
 # while one is up), but the user's answer or Enter runs against whatever buffer
 # is current WHEN it lands: a follower that opened Claude's file meanwhile had
 # the user's `:s///c` substitute Claude's buffer, and their `:let` read Claude's
-# name. Alberto's answer A: the edit is skipped, the file marked stale.
+# name. Alberto's answer A: the edit is skipped, the file marked stale. An
+# operator waiting for its motion (`d`: mode "no", not blocking either) is the
+# same: the user's second `d` deleted Claude's line (T22 re-review I2).
 _USER_PENDING = {
     # (keys typed into the user's nvim, "Enter" after them?, mode it waits in,
     #  keys that finish it, what the log names)
     "substitute-confirm": (":%s/aaa/ZZZ/gc", True, "r?", "a", "a confirm prompt"),
     "half-typed-command": (":let g:who = bufname('%')", False, "c", "Enter", "on the command line"),
     "input": (":let g:who = input('Name: ')", True, "c", "bob Enter", "on the command line"),
+    "operator-pending": ("d", False, "no", "d", "an operator pending"),
 }
 
 
@@ -272,16 +275,17 @@ def test_an_nvim_whose_user_is_mid_confirm_or_command_line_is_skipped(
         post, seconds = _timed_cli(world, "hook", "post", pane_id=pane_id, stdin=hook)
         assert post.returncode == 0, post.stderr
         assert seconds < 8.0, f"the hook took {seconds:.1f} s"
+        observer = world._nvim(str(socket_path))
+        # The follower did not act: still the user's prompt, no buffer for
+        # Claude's file, the user's buffer untouched.
+        assert observer.call("bufnr", str(claudes_file)) == -1
+        assert observer.api.get_mode() == {"mode": mode, "blocking": False}
+        assert _buffer_lines(world, socket_path, users_file) == ["aaa", "bbb aaa", "ccc"]
         log = _hook_log(world)
         assert "Traceback" not in log, log
         skipped = [line for line in log.splitlines() if "is waiting on its user" in line]
         assert len(skipped) == 1, log
         assert f"({named})" in skipped[0], skipped
-        observer = world._nvim(str(socket_path))
-        # The follower did not act: still the user's prompt, no buffer for
-        # Claude's file, the user's buffer still current.
-        assert observer.api.get_mode() == {"mode": mode, "blocking": False}
-        assert observer.call("bufnr", str(claudes_file)) == -1
         world.tmux("send-keys", "-t", pane_id, *finish.split())
         world.wait_until(
             lambda: world._nvim(str(socket_path)).api.get_mode()["mode"] == "n",
@@ -291,6 +295,8 @@ def test_an_nvim_whose_user_is_mid_confirm_or_command_line_is_skipped(
         observer = world._nvim(str(socket_path))
         if pending == "substitute-confirm":
             assert _buffer_lines(world, socket_path, users_file) == ["ZZZ", "bbb ZZZ", "ccc"]
+        elif pending == "operator-pending":
+            assert _buffer_lines(world, socket_path, users_file) == ["bbb aaa", "ccc"]
         elif pending == "half-typed-command":
             assert os.path.realpath(observer.eval("g:who")) == os.path.realpath(users_file)
         else:
@@ -299,4 +305,64 @@ def test_an_nvim_whose_user_is_mid_confirm_or_command_line_is_skipped(
         assert claudes_file.read_text() == "def aaa():\n    return aaa\n"
     finally:
         world.tmux("send-keys", "-t", pane_id, "Escape")
+        world.tmux("send-keys", "-t", pane_id, "Escape")
+
+
+@pytest.mark.parametrize("tool", ["Edit", "Write"])
+def test_an_nvim_whose_user_is_in_the_command_line_window_is_skipped(
+    world: E2EFollower, tool: str
+) -> None:
+    # `q:` reads mode "n", not blocking, but every window change in it raises
+    # E11: show_fresh crashed the hook with a traceback and left an empty
+    # buffer behind (T22 re-review m2). An adopted nvim in the cmdwin is
+    # skipped like one on the command line.
+    socket_path = world.cache_dir / "nvim-adopted.sock"
+    world.cache_dir.mkdir(parents=True, exist_ok=True)
+    users_file = world.workdir / "a.txt"
+    users_file.write_text("aaa\n")
+    claudes_file = world.workdir / "file.py"
+    before = "one\ntwo\n"
+    claudes_file.write_text(before)
+    opened = (users_file, claudes_file) if tool == "Edit" else (users_file,)
+    window_id, pane_id = _nvim_window(world, socket_path, *opened)
+    tracked = claudes_file if tool == "Edit" else users_file
+    _adopted_state(world, window_id, pane_id, socket_path, tracked)
+    hook = payload(tool, claudes_file)
+    pre, _seconds = _timed_cli(world, "hook", "pre", pane_id=pane_id, stdin=hook)
+    assert pre.returncode == 0, pre.stderr
+    claudes_file.write_text("one\nTWO\n")
+    world.tmux("send-keys", "-t", pane_id, "q:")
+    world.wait_until(
+        lambda: world._nvim(str(socket_path)).call("getcmdwintype") == ":",
+        "the user's command-line window",
+        timeout=10.0,
+    )
+    try:
+        buffers_before = len(world._nvim(str(socket_path)).call("getbufinfo"))
+        # `nvim a.txt file.py` loads only the first argument: file.py's buffer
+        # is listed but unloaded (no lines) until something visits it.
+        claudes_lines_before = (
+            _buffer_lines(world, socket_path, claudes_file) if tool == "Edit" else []
+        )
+        post, seconds = _timed_cli(world, "hook", "post", pane_id=pane_id, stdin=hook)
+        assert post.returncode == 0, post.stderr
+        assert seconds < 8.0, f"the hook took {seconds:.1f} s"
+        observer = world._nvim(str(socket_path))
+        assert len(observer.call("getbufinfo")) == buffers_before
+        assert observer.call("getcmdwintype") == ":"
+        if tool == "Edit":
+            assert _buffer_lines(world, socket_path, claudes_file) == claudes_lines_before
+        else:
+            assert observer.call("bufnr", str(claudes_file)) == -1
+        log = _hook_log(world)
+        assert "Traceback" not in log, log
+        skipped = [line for line in log.splitlines() if "is waiting on its user" in line]
+        assert len(skipped) == 1, log
+        assert "(in the command-line window)" in skipped[0], skipped
+        state = FollowerState.read(window_id, base_dir=world.cache_dir)
+        assert state is not None
+        if tool == "Edit":
+            assert state.stale_files == (os.path.realpath(claudes_file),)
+    finally:
+        world.tmux("send-keys", "-t", pane_id, "C-c")
         world.tmux("send-keys", "-t", pane_id, "Escape")

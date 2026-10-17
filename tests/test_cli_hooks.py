@@ -2611,8 +2611,24 @@ _ADOPTED_ON_THE_CMDLINE = ("answers", False, "c")
         (_ADOPTED_AT_A_CONFIRM, True, "is waiting on its user (a confirm prompt)"),
         (_ADOPTED_ON_THE_CMDLINE, True, "is waiting on its user (on the command line)"),
         (("answers", False, "cv"), True, "is waiting on its user (on the command line)"),
+        # A `d` waiting for its motion: the user's second `d` deleted Claude's
+        # line (T22 re-review I2). Not blocking.
+        (("answers", False, "no"), True, "is waiting on its user (an operator pending)"),
+        (("answers", False, "nov"), True, "is waiting on its user (an operator pending)"),
+        (("answers", False, "noV"), True, "is waiting on its user (an operator pending)"),
+        (("answers", False, "no\x16"), True, "is waiting on its user (an operator pending)"),
     ],
-    ids=["silent", "adopted-blocked", "adopted-confirm", "adopted-cmdline", "adopted-cmdline-ex"],
+    ids=[
+        "silent",
+        "adopted-blocked",
+        "adopted-confirm",
+        "adopted-cmdline",
+        "adopted-cmdline-ex",
+        "adopted-operator",
+        "adopted-operator-v",
+        "adopted-operator-V",
+        "adopted-operator-ctrl-v",
+    ],
 )
 @pytest.mark.parametrize("tool_name", ["Edit", "Read"])
 def test_a_hook_skips_a_busy_nvim_follower_and_keeps_it(
@@ -2697,8 +2713,58 @@ def test_an_adopted_nvim_in_an_ordinary_mode_is_not_skipped(mode: str | None) ->
         "vim_ai_follower.backends.nvim_connect._probe", return_value=("answers", False, mode)
     ):
         nvim_connect.probe_nvim("/tmp/user.sock")
-    assert hooks.adopted_user_pending("/tmp/user.sock") is None
-    assert hooks._busy_nvim(current) is None
+    with patch(
+        "vim_ai_follower.backends.nvim_connect.in_command_line_window", return_value=False
+    ) as cmdwin:
+        assert hooks.adopted_user_pending("/tmp/user.sock") is None
+        assert hooks._busy_nvim(current) is None
+    cmdwin.assert_called_with("/tmp/user.sock")
+
+
+@pytest.mark.parametrize("answer", [True, False, None])
+def test_an_adopted_nvim_in_its_command_line_window_is_skipped(
+    answer: bool | None, caplog: pytest.LogCaptureFixture
+) -> None:
+    # `q:` reads "n", not blocking, and every window change in it raises E11
+    # (show_fresh crashed the hook, T22 re-review m2). No answer (None) is
+    # not proof of the cmdwin: the follower acts as before.
+    current = state.FollowerState(
+        backend="nvim",
+        target="/tmp/user.sock",
+        current_file=None,
+        origin="%9",
+        on_failure="silent",
+        speed="normal",
+        adopted=True,
+    )
+    with patch(
+        "vim_ai_follower.backends.nvim_connect._probe", return_value=("answers", False, "n")
+    ):
+        nvim_connect.probe_nvim("/tmp/user.sock")
+    with (
+        caplog.at_level(logging.WARNING, logger="vim_ai_follower"),
+        patch("vim_ai_follower.backends.nvim_connect.in_command_line_window", return_value=answer),
+    ):
+        busy = hooks._busy_nvim(current)
+    if answer:
+        assert busy == "nvim at /tmp/user.sock is waiting on its user (in the command-line window)"
+    else:
+        assert busy is None
+
+
+@pytest.mark.parametrize(
+    "probe_answer", [("answers", True, "r"), ("answers", True, "n"), ("silent", None, None)]
+)
+def test_the_command_line_window_is_asked_only_of_an_nvim_answering_not_blocking(
+    probe_answer: tuple[str, bool | None, str | None],
+) -> None:
+    # An ordinary request is held at a blocking prompt, and a silent nvim
+    # answers nothing: asking would cost its whole timeout.
+    with patch("vim_ai_follower.backends.nvim_connect._probe", return_value=probe_answer):
+        nvim_connect.probe_nvim("/tmp/user.sock")
+    with patch("vim_ai_follower.backends.nvim_connect.in_command_line_window") as cmdwin:
+        hooks.adopted_user_pending("/tmp/user.sock")
+    cmdwin.assert_not_called()
 
 
 @pytest.mark.parametrize("mode", ["r", "rm"])
