@@ -59,6 +59,8 @@ You need tmux with `claude` running inside it, Vim or Neovim ≥ 0.10, and Pytho
 
 Then run `/vim-ai-follower:start` inside the tmux session where `claude` runs. The default Vim backend needs no `pip` install; the Neovim extra, requirements and the manual install are in the [install guide →](https://albertosca.github.io/vim-ai-follower/getting-started/install/)
 
+`/vim-ai-follower:stop` stays stopped for this window until `start` (or toggle) — auto-open does not reopen it.
+
 ## Map
 
 - [Follow your first edit](https://albertosca.github.io/vim-ai-follower/getting-started/first-follow/) — start the follower and watch an edit land

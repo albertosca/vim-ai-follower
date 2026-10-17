@@ -15,6 +15,7 @@ from typing import Any, Literal, Protocol
 
 from vim_ai_follower import binding, cache, config, control, keybindings, snapshot, writer_cue
 from vim_ai_follower import diff as diff_module
+from vim_ai_follower import state as state_module
 from vim_ai_follower.backends import (
     BufferProbe,
     Follower,
@@ -355,8 +356,29 @@ def _launch_standalone_or_log(window_id: str) -> str | None:
         return None
 
 
+def _stopped_window(session: Session) -> bool:
+    """True when `claude-follow stop` silenced this window (state.is_stopped,
+    under this tmux server): auto-open must not undo an explicit stop. Said
+    once per window in hook.log, so a quiet window can be explained."""
+    server_pid = binding.tmux_server_pid() if session.in_tmux else None
+    if not state_module.is_stopped(session.window_id, server_pid):
+        return False
+    note = state_module.stopped_note_path(session.window_id)
+    if not note.exists():
+        with contextlib.suppress(OSError):
+            note.write_text("")
+        logger.info(
+            "window %s was stopped with `claude-follow stop`; auto-open stays off "
+            "until `claude-follow start` (or toggle)",
+            session.window_id,
+        )
+    return True
+
+
 def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> FollowerState | None:
     if cfg.open_policy == "manual" or not _passes_policy(cfg, file_path):
+        return None
+    if _stopped_window(session):
         return None
     if not session.in_tmux:
         # Standalone: same decisions cmd_start makes outside tmux. No tmux

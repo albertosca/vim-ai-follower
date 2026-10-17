@@ -14,6 +14,7 @@ nvims and animates at human pace, so it is slow by nature and CI runs
 
 from __future__ import annotations
 
+import json
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -424,3 +425,57 @@ def test_nvim_a_pause_on_a_write_that_never_animates_is_taken_back(
     leftovers = sorted(entry.name for entry in world.cache_dir.iterdir() if ".pause" in entry.name)
     assert leftovers == [], f"a signal was left behind: {leftovers}"
     assert world.animating_state() is None
+
+
+# ------------------------------------------------- stop sticks (sweep-4 T17)
+
+
+def _write_config(world: E2EFollower, settings: dict[str, str]) -> None:
+    path = world.home / ".config" / "claude-vim-follower" / "config.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(settings))
+
+
+def _write_through_hooks(world: E2EFollower, path: Path) -> None:
+    world.cli("hook", "pre", stdin=payload("Write", path))
+    path.write_text(_text("print('written')"))
+    world.cli("hook", "post", stdin=payload("Write", path))
+
+
+def test_a_stopped_window_stays_stopped_until_start_or_toggle(world: E2EFollower) -> None:
+    """`stop` used to last until the next tool call: with `open_policy`
+    auto-opening, the next Write's hook opened a fresh follower in the window
+    the user had just stopped. Now the stop holds until `start` (or toggle,
+    which turns auto-open back on without starting anything)."""
+    _write_config(world, {"backend": "nvim", "open_policy": "always"})
+    state_path = world.cache_dir / f"{world.window_id}.pane"
+    world.start("nvim")
+    socket_path = Path(world.follower_target())
+    world.cli("stop")
+    world.wait_until(lambda: not socket_path.exists(), "the follower nvim to quit", timeout=10.0)
+
+    _write_through_hooks(world, world.workdir / "after_stop.py")
+    assert not state_path.exists(), "auto-open reopened a stopped window"
+    assert not socket_path.exists()
+    assert (world.cache_dir / "hook.log").read_text().count("claude-follow stop") == 1
+
+    world.start("nvim")
+    assert state_path.exists(), "start did not lift the stop"
+    world.cli("stop")
+    world.wait_until(lambda: not socket_path.exists(), "the follower nvim to quit", timeout=10.0)
+
+    toggled = world.cli("toggle")
+    assert "auto-open is back on" in toggled.stdout, toggled.stdout
+    _write_through_hooks(world, world.workdir / "after_toggle.py")
+    assert state_path.exists(), "auto-open stayed off after toggle"
+
+
+def test_a_stop_under_another_tmux_server_does_not_hold_this_window(world: E2EFollower) -> None:
+    """Window ids are reused across tmux restarts: a tombstone left by a stop
+    under a previous server (here pid 1, which no tmux server has) is not this
+    window's, and auto-open opens it as usual."""
+    _write_config(world, {"backend": "nvim", "open_policy": "always"})
+    world.cache_dir.mkdir(parents=True, exist_ok=True)
+    (world.cache_dir / f"{world.window_id}.stopped").write_text("1")
+    _write_through_hooks(world, world.workdir / "reused_window.py")
+    assert (world.cache_dir / f"{world.window_id}.pane").exists()

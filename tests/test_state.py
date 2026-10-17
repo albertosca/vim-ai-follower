@@ -234,3 +234,86 @@ def test_touch_open_files_recency_and_eviction() -> None:
         ("/a.py",),
     )
     assert touch_open_files(("/a.py",), "/b.py", 1) == (("/b.py",), ("/a.py",))
+
+
+# --- the stop tombstone: a stopped window stays stopped until `start` -------
+
+
+def _set_follower(window_id: str) -> None:
+    FollowerState.set(window_id, "nvim", "/tmp/nvim-x.sock", origin="%1", adopted=False)
+
+
+def test_mark_stopped_records_the_tmux_server_pid() -> None:
+    from vim_ai_follower import state
+
+    state.mark_stopped("@4", 64091)
+    assert state.stopped_path("@4").read_text() == "64091"
+    assert state.is_stopped("@4", 64091) is True
+
+
+def test_a_tombstone_from_another_tmux_server_does_not_count() -> None:
+    # Window ids are reused across tmux restarts: @4 today is not the @4 a
+    # stop under the previous server silenced.
+    from vim_ai_follower import state
+
+    state.mark_stopped("@4", 64091)
+    assert state.is_stopped("@4", 70001) is False
+    assert state.is_stopped("@4", None) is False
+
+
+def test_a_standalone_tombstone_holds_whatever_the_server() -> None:
+    from vim_ai_follower import state
+
+    state.mark_stopped("term-x", None)
+    assert state.stopped_path("term-x").read_text() == ""
+    assert state.is_stopped("term-x", None) is True
+    assert state.is_stopped("term-x", 64091) is True
+
+
+def test_no_tombstone_is_not_stopped() -> None:
+    from vim_ai_follower import state
+
+    assert state.is_stopped("@4", 64091) is False
+
+
+def test_clear_stopped_removes_the_tombstone_and_tolerates_none() -> None:
+    from vim_ai_follower import state
+
+    state.clear_stopped("@4")
+    state.mark_stopped("@4", 64091)
+    state.clear_stopped("@4")
+    assert not state.stopped_path("@4").exists()
+
+
+def test_set_and_update_write_nothing_under_a_tombstone_of_this_server() -> None:
+    from vim_ai_follower import state
+
+    _set_follower("@4")
+    held = FollowerState.read("@4")
+    assert held is not None
+    FollowerState.clear("@4")
+    state.mark_stopped("@4", 64091)
+    with patch("vim_ai_follower.binding.tmux_server_pid", return_value=64091):
+        _set_follower("@4")
+        # A hook that read the state before the stop: update's own read
+        # comes back with that state (the stop landed between its read and
+        # its write).
+        with patch.object(FollowerState, "read", return_value=held):
+            FollowerState.update("@4", current_file="/tmp/a.py")
+    assert not state._state_path("@4", None).exists()
+
+
+def test_set_writes_again_under_a_tombstone_of_another_server() -> None:
+    from vim_ai_follower import state
+
+    state.mark_stopped("@4", 64091)
+    with patch("vim_ai_follower.binding.tmux_server_pid", return_value=70001):
+        _set_follower("@4")
+    assert FollowerState.read("@4") is not None
+
+
+def test_set_never_asks_tmux_when_there_is_no_tombstone() -> None:
+    with patch("vim_ai_follower.binding.tmux_server_pid") as server_pid:
+        _set_follower("@4")
+    server_pid.assert_not_called()
+    assert FollowerState.read("@4") is not None

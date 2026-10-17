@@ -14,11 +14,11 @@
 |---|---|
 | `claude-follow start` | Abre um pane de follower (ou adota um Vim já existente). |
 | `claude-follow status` | Mostra o follower ativo e o arquivo que ele está mostrando. |
-| `claude-follow stop` | Desmonta o follower e remove os atalhos. |
+| `claude-follow stop` | Desmonta o follower e remove os atalhos. Vale para esta janela até o próximo `start` (ou toggle) — a abertura automática não a reabre. Sempre volta rápido: um nvim ocupado, congelado ou parado num prompt não recebe nada (uma linha no `hook.log` avisa), e um nvim do follower que não fecha tem o próprio pane fechado. |
 | `claude-follow pause` | Pausa ou retoma uma animação em execução (ligado a `prefix` `P`). |
 | `claude-follow interrupt` | Entrega o buffer pra você, ou descarta suas edições de entrega (ligado a `prefix` `S`). |
 | `claude-follow speed-up` / `speed-down` | Muda o ritmo da animação (ligado a `prefix` `+` / `prefix` `_`). |
-| `claude-follow toggle` | Muta/desmuta o follower (ligado a `prefix` `F`). |
+| `claude-follow toggle` | Muta/desmuta o follower (ligado a `prefix` `F`). Depois de um `stop`, religa a abertura automática da janela sem abrir nada. |
 | `claude-follow hook pre` / `hook post` / `hook failure` | O handler de hook que o Claude Code chama; lê o payload do hook como JSON no stdin. O `hook failure` roda quando uma edição falha ou é negada, pra que um Read desse arquivo não fique mais retido. |
 
 As teclas estão descritas em [Atalhos](keybindings.md).

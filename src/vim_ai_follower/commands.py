@@ -13,7 +13,7 @@ import time
 from collections.abc import Callable
 from typing import Literal
 
-from vim_ai_follower import cache, config, control, hooks, keybindings, snapshot, tmux
+from vim_ai_follower import binding, cache, config, control, hooks, keybindings, snapshot, tmux
 from vim_ai_follower.backends import NavigationFailed, get_follower, nvim_connect, nvim_prompt
 from vim_ai_follower.backends.nvim_connect import (
     NvimNeverListened,
@@ -26,7 +26,7 @@ from vim_ai_follower.backends.nvim_connect import (
 )
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.session import Session, other_live_followers, resolve_session
-from vim_ai_follower.state import FollowerState
+from vim_ai_follower.state import FollowerState, clear_stopped, mark_stopped, stopped_path
 from vim_ai_follower.status_surface import status_surface_for
 from vim_ai_follower.tmux import TmuxPane, adopt_target
 
@@ -106,6 +106,9 @@ def cmd_start(
     if session is None:
         print(_unresolvable_pane(env), file=sys.stderr)
         return 1
+    # An explicit start is what lifts a `stop` (see cmd_stop): before any
+    # write, since FollowerState.set refuses to write under the tombstone.
+    clear_stopped(session.window_id)
     if FollowerState.get(session.window_id) is not None:
         message = "claude-follow: follower already running for this window"
         if session.in_tmux:
@@ -264,7 +267,9 @@ def cmd_stop(env: dict[str, str]) -> int:
     The state goes FIRST, before anything talks to the editor: a teardown
     that hangs or fails (a frozen nvim, one at a hit-enter prompt) used to
     exit 1 with the `.pane` still there, so the follower was still "running"
-    and the next hook drove it again.
+    and the next hook drove it again. A tombstone (state.mark_stopped) keeps
+    it stopped: no hook that read the state before this can write it back,
+    and auto-open does not reopen the window, until `start` or toggle.
 
     The teardown is then best-effort and bounded, every step logged in
     hook.log rather than raised: an nvim gets one liveness probe and at most
@@ -285,6 +290,7 @@ def cmd_stop(env: dict[str, str]) -> int:
         existing = FollowerState.read(window_id)
     except _UNREADABLE_STATE_ERRORS:
         existing = None  # unreadable: nothing to tear down, still cleared below
+    mark_stopped(window_id, binding.tmux_server_pid() if session.in_tmux else None)
     FollowerState.clear(window_id)
     control.clear_signals(window_id)
     control.discard_pending_animation(window_id)
@@ -294,8 +300,8 @@ def cmd_stop(env: dict[str, str]) -> int:
             _tear_down_nvim(existing, session)
         else:
             _tear_down_tmux(existing, window_id)
-        # A hook that read the state before the clear above may have written
-        # it back during the teardown.
+        # A writer that passed set()'s tombstone check just before the
+        # mark_stopped above may have landed its write during the teardown.
         FollowerState.clear(window_id)
     other_live = _other_live_follower()
     if session.in_tmux and not other_live:
@@ -826,6 +832,13 @@ def cmd_toggle(env: dict[str, str]) -> int:
         return 1
     raw = FollowerState.read(session.window_id)
     if raw is None:
+        if stopped_path(session.window_id).exists():
+            # A `stop` silenced auto-open for this window; toggling is the
+            # user asking for the follower back without starting it now (a
+            # tombstone from another tmux server goes too: it holds nothing).
+            clear_stopped(session.window_id)
+            print("claude-follow: no follower to toggle; auto-open is back on for this window")
+            return 0
         print("claude-follow: no follower to toggle")
         return 0
     if raw.enabled:
@@ -837,6 +850,8 @@ def cmd_toggle(env: dict[str, str]) -> int:
     # Re-enable. open_files is cleared so every next touch resyncs via a
     # fresh retype — the disk moved while we were muted, and animating a
     # diff over a stale buffer would produce garbage. Tabs stay for reading.
+    # Turning on lifts a `stop` tombstone, before the write it would refuse.
+    clear_stopped(session.window_id)
     FollowerState.update(session.window_id, enabled=True, open_files=())
     if raw.origin:
         TmuxPane(pane_id=raw.origin).set_zoomed(False)

@@ -1214,7 +1214,24 @@ def test_stop_clears_the_state_before_a_teardown_that_fails() -> None:
     assert not (cache.CACHE_DIR / "@1.pane").exists()
     assert control.check_signal("@1") is None
     assert control.has_pending_animation("@1") is False
+    assert state.is_stopped("@1", 4242)
     assert "nvim did not answer within 10 s" in _hook_log()
+
+
+def test_a_hook_finishing_after_stop_does_not_resurrect_the_follower() -> None:
+    _register_fake_follower("@1", "%2", open_files=("/tmp/a.py",))
+    held = state.FollowerState.read("@1")
+    assert held is not None
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.binding.tmux_server_pid", return_value=4242),
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+        # The hook's own reads still see the state it read before the stop.
+        with patch.object(state.FollowerState, "read", return_value=held):
+            state.FollowerState.update("@1", current_file="/tmp/a.py")
+            state.FollowerState.mark_stale("@1", "/tmp/a.py")
+    assert not (cache.CACHE_DIR / "@1.pane").exists()
 
 
 def test_stop_clears_a_state_a_racing_hook_wrote_during_the_teardown() -> None:
@@ -1236,6 +1253,42 @@ def test_stop_clears_a_state_a_racing_hook_wrote_during_the_teardown() -> None:
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
     assert not (cache.CACHE_DIR / "@1.pane").exists()
     unregister.assert_called_once_with()
+
+
+def test_start_clears_the_tombstone() -> None:
+    state.mark_stopped("@1", 4242)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.binding.tmux_server_pid", return_value=4242),
+    ):
+        assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
+    assert not state.stopped_path("@1").exists()
+    assert state.FollowerState.read("@1") is not None
+
+
+def test_toggle_after_stop_turns_auto_open_back_on(capsys: pytest.CaptureFixture[str]) -> None:
+    state.mark_stopped("@1", 4242)
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        assert commands.cmd_toggle({"TMUX_PANE": "%1"}) == 0
+    assert not state.stopped_path("@1").exists()
+    assert "auto-open is back on for this window" in capsys.readouterr().out
+
+
+def test_toggle_on_clears_a_tombstone_before_writing() -> None:
+    _register_fake_follower("@1", "%2")
+    state.FollowerState.update("@1", enabled=False)
+    state.mark_stopped("@1", 4242)
+    with (
+        patch(
+            "vim_ai_follower.tmux.subprocess.run",
+            side_effect=_mock_tmux_run_with_zoom("1", pane_id="%2"),
+        ),
+        patch("vim_ai_follower.binding.tmux_server_pid", return_value=4242),
+    ):
+        assert commands.cmd_toggle({"TMUX_PANE": "%1"}) == 0
+    result = state.FollowerState.read("@1")
+    assert result is not None
+    assert result.enabled is True
 
 
 def test_stop_of_an_adopted_nvim_at_a_prompt_sends_nothing_and_logs_one_line() -> None:

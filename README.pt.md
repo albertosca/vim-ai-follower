@@ -59,6 +59,8 @@ Você precisa do tmux com o `claude` rodando dentro dele, de Vim ou Neovim ≥ 0
 
 Depois rode `/vim-ai-follower:start` dentro da sessão tmux onde o `claude` está rodando. O backend padrão, de Vim, não precisa de `pip install`; o extra do Neovim, os requisitos e a instalação manual estão no [guia de instalação →](https://albertosca.github.io/vim-ai-follower/pt/getting-started/install/)
 
+O `/vim-ai-follower:stop` vale para esta janela até o próximo `start` (ou toggle) — a abertura automática não a reabre.
+
 ## Mapa
 
 - [Acompanhe sua primeira edição](https://albertosca.github.io/vim-ai-follower/pt/getting-started/first-follow/) — inicie o follower e veja uma edição chegar

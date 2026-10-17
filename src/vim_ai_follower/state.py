@@ -23,6 +23,57 @@ def _state_path(window_id: str, base_dir: Path | None) -> Path:
     return directory / f"{window_id}.pane"
 
 
+def stopped_path(window_id: str, base_dir: Path | None = None) -> Path:
+    """The tombstone `claude-follow stop` leaves for a window: it holds the
+    tmux server pid the stop ran under ('' standalone). While it holds, no
+    state is written for the window and auto-open does not reopen it, until
+    `start` or toggle clear it. Never named "*.pane": the orphan scan in
+    commands._other_live_follower collects those."""
+    directory = base_dir if base_dir is not None else cache.CACHE_DIR
+    return directory / f"{window_id}.stopped"
+
+
+def mark_stopped(window_id: str, server_pid: int | None, base_dir: Path | None = None) -> None:
+    path = stopped_path(window_id, base_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("" if server_pid is None else str(server_pid))
+
+
+def is_stopped(window_id: str, server_pid: int | None, base_dir: Path | None = None) -> bool:
+    """True while the window's tombstone holds. A tombstone written under a
+    tmux server pid holds only under that same server: window ids are reused
+    across tmux restarts, so @4 today is not the @4 a stop under the previous
+    server silenced. One written with no pid (standalone, where the window id
+    is the terminal's own) holds whatever the server."""
+    try:
+        recorded = stopped_path(window_id, base_dir).read_text().strip()
+    except OSError:
+        return False
+    return recorded == "" or (server_pid is not None and recorded == str(server_pid))
+
+
+def clear_stopped(window_id: str, base_dir: Path | None = None) -> None:
+    stopped_path(window_id, base_dir).unlink(missing_ok=True)
+    stopped_note_path(window_id, base_dir).unlink(missing_ok=True)
+
+
+def stopped_note_path(window_id: str, base_dir: Path | None = None) -> Path:
+    """Marks that auto-open already said, once, why it is not reopening this
+    stopped window; it goes with the tombstone."""
+    directory = base_dir if base_dir is not None else cache.CACHE_DIR
+    return directory / f"{window_id}.stopped-noted"
+
+
+def _stopped_here(window_id: str, base_dir: Path | None) -> bool:
+    """is_stopped for the CURRENT tmux server, asking tmux only when a
+    tombstone exists, so an ordinary write costs one stat."""
+    if not stopped_path(window_id, base_dir).exists():
+        return False
+    from vim_ai_follower import binding
+
+    return is_stopped(window_id, binding.tmux_server_pid(), base_dir)
+
+
 def nvim_socket_path(window_id: str, base_dir: Path | None = None) -> Path:
     """Deterministic per-window RPC socket path. The Neovim side must call
     vim.fn.serverstart() at this exact path (the README documents no such integration).
@@ -120,6 +171,13 @@ class FollowerState:
         writer_labels: tuple[str, ...] = (),
         base_dir: Path | None = None,
     ) -> None:
+        if _stopped_here(window_id, base_dir):
+            # `claude-follow stop` ran for this window after this writer read
+            # the state: a hook finishing its animation, or an auto-open
+            # racing the stop. Writing now would resurrect the follower the
+            # user just stopped, so the write is dropped (`start`/toggle
+            # clear the tombstone before they write).
+            return
         path = _state_path(window_id, base_dir)
         path.parent.mkdir(parents=True, exist_ok=True)
         # Enforce stale_files is a subset of open_files here rather than at
@@ -129,7 +187,7 @@ class FollowerState:
         # more -- the same dangling shape this pairing exists to prevent.
         # Eviction relies on it too: touch_open_files drops the victim from
         # open_files and this drops its stale mark in the same write.
-        stale_files = tuple(f for f in stale_files if f in open_files)
+        stale_files = tuple(stale for stale in stale_files if stale in open_files)
         payload = json.dumps(
             {
                 "backend": backend,
@@ -154,9 +212,9 @@ class FollowerState:
         # half-written file, and two racing writers never share a temp to
         # corrupt. The temp name never ends in ".pane", so a crash leaves
         # nothing the *.pane orphan scan would mistake for state.
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        tmp.write_text(payload)
-        tmp.replace(path)
+        temporary_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        temporary_path.write_text(payload)
+        temporary_path.replace(path)
 
     @classmethod
     def update(cls, window_id: str, base_dir: Path | None = None, **changes: Any) -> None:
@@ -248,7 +306,7 @@ class FollowerState:
         cls.update(
             window_id,
             base_dir=base_dir,
-            stale_files=tuple(f for f in current.stale_files if f != file_path),
+            stale_files=tuple(stale for stale in current.stale_files if stale != file_path),
         )
 
     @classmethod
@@ -287,5 +345,5 @@ def touch_open_files(
     FollowerState.set enforces stale-is-a-subset-of-open on every write. That
     chokepoint also covers the writers that never see this function (notably
     cmd_toggle's un-mute, which zeroes open_files directly)."""
-    files = (*(f for f in open_files if f != file_path), file_path)
+    files = (*(open_file for open_file in open_files if open_file != file_path), file_path)
     return files[-max_tabs:], files[:-max_tabs]

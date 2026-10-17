@@ -2709,3 +2709,65 @@ def test_an_rpc_timeout_outside_the_typing_skips_in_one_line(
     assert after is not None
     assert after.stale_files == ((str(target),) if tool_name == "Edit" else ())
     assert refresh.called is (tool_name == "Edit")
+
+
+# --- a stopped window stays stopped: auto-open honours the tombstone (T17) --
+
+
+def _auto_open_payload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"open_policy": "always"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    target = tmp_path / "f.txt"
+    target.write_text("hello\n")
+    return {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+
+
+def test_auto_open_does_not_reopen_a_stopped_window_and_says_so_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = _auto_open_payload(tmp_path, monkeypatch)
+    state.mark_stopped("@1", 4242)
+    with (
+        patch(
+            "vim_ai_follower.tmux.subprocess.run",
+            side_effect=_mock_tmux_run(other_panes=("%1",)),
+        ) as run,
+        patch("vim_ai_follower.binding.tmux_server_pid", return_value=4242),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+    assert not any(c.args[0][:2] == ["tmux", "split-window"] for c in run.call_args_list)
+    assert state.FollowerState.read("@1") is None
+    log = hooks.LOG_PATH.read_text()
+    assert log.count("claude-follow stop") == 1, log
+
+
+def test_auto_open_ignores_a_tombstone_from_another_tmux_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = _auto_open_payload(tmp_path, monkeypatch)
+    state.mark_stopped("@1", 4242)
+    with (
+        patch(
+            "vim_ai_follower.tmux.subprocess.run",
+            side_effect=_mock_tmux_run(other_panes=("%1",)),
+        ) as run,
+        patch("vim_ai_follower.binding.tmux_server_pid", return_value=70001),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+    assert any(c.args[0][:2] == ["tmux", "split-window"] for c in run.call_args_list)
+    assert state.FollowerState.read("@1") is not None
+
+
+def test_auto_open_does_not_reopen_a_stopped_standalone_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"backend": "nvim", "nvim_window": "auto", "open_policy": "always"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    state.mark_stopped("term-x", None)
+    standalone = Session(window_id="term-x", origin=None, in_tmux=False)
+    with patch("vim_ai_follower.hooks.launch_standalone_nvim") as launch:
+        assert hooks._maybe_auto_open(standalone, "/tmp/f.txt", config.load()) is None
+    launch.assert_not_called()

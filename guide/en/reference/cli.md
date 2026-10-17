@@ -14,11 +14,11 @@
 |---|---|
 | `claude-follow start` | Open a follower pane (or adopt an existing Vim). |
 | `claude-follow status` | Show the active follower and the file it is showing. |
-| `claude-follow stop` | Tear the follower down and remove the keybindings. |
+| `claude-follow stop` | Tear the follower down and remove the keybindings. It stays stopped for this window until `start` (or toggle) — auto-open does not reopen it. It always returns promptly: an nvim that is busy, frozen or waiting at a prompt is sent nothing (one line in `hook.log` says so), and a follower nvim that does not quit has its own pane closed. |
 | `claude-follow pause` | Pause or resume a running animation (bound to `prefix` `P`). |
 | `claude-follow interrupt` | Hand the buffer over to you, or discard your hand-off edits (bound to `prefix` `S`). |
 | `claude-follow speed-up` / `speed-down` | Step the animation pace (bound to `prefix` `+` / `prefix` `_`). |
-| `claude-follow toggle` | Mute/unmute the follower (bound to `prefix` `F`). |
+| `claude-follow toggle` | Mute/unmute the follower (bound to `prefix` `F`). After a `stop`, it turns auto-open back on for the window without opening anything. |
 | `claude-follow hook pre` / `hook post` / `hook failure` | The hook handler Claude Code calls; reads the hook payload as JSON on stdin. `hook failure` runs when an edit fails or is denied, so a Read of that file is no longer held back. |
 
 The keys are described in [Keybindings](keybindings.md).
