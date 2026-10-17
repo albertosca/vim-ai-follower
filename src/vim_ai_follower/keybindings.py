@@ -13,6 +13,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from vim_ai_follower import cache
+from vim_ai_follower.tmux import literal_argument
 
 _KEYBINDINGS: tuple[tuple[str, str], ...] = (
     ("P", "pause"),
@@ -375,7 +376,10 @@ def unregister() -> None:
     for key, _ in _KEYBINDINGS:
         previous = saved.get(key)
         if previous and "claude-follow" not in previous:
-            subprocess.run(["tmux", *shlex.split(previous)], check=False)
+            # shlex turns list-keys' chain separator `\;` into a bare `;`,
+            # which would end bind-key there (see tmux.literal_argument).
+            restored = [literal_argument(token) for token in shlex.split(previous)]
+            subprocess.run(["tmux", *restored], check=False)
         else:
             subprocess.run(["tmux", "unbind-key", "-T", "prefix", key], check=False)
     saved_path.unlink(missing_ok=True)

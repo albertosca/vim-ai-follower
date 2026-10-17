@@ -8,6 +8,20 @@ import subprocess
 from dataclasses import dataclass
 
 
+def literal_argument(text: str) -> str:
+    """`text` as one tmux argv argument that reaches the command whole. tmux
+    reads any argument that ends in `;` as the end of its command and drops
+    that `;` (`int a = 1;` typed as `int a = 1`, a lone `;` as nothing, a
+    pane title `vim x;` set as `vim x`). Where the `;` is dropped, a
+    backslash left at the end becomes the `;`, so a final `;` sent as `\\;`
+    comes out as exactly one `;`, whatever comes before it (measured on
+    tmux 3.8, 2026-10-17). In a `bind-key` argv the same `\\;` keeps a
+    chain's separator inside the bound command."""
+    if text.endswith(";"):
+        return text[:-1] + "\\;"
+    return text
+
+
 @dataclass(frozen=True)
 class TmuxPane:
     pane_id: str
@@ -26,18 +40,12 @@ class TmuxPane:
         return None
 
     def send_text(self, text: str) -> None:
-        """Type `text` byte-exact. tmux reads any argument that ends in `;`
-        as the end of its command and drops that `;` (`int a = 1;` typed as
-        `int a = 1`, a lone `;` as nothing; a final `\\;` became `;`), and
-        an interrupted Write's `:w` then saved the damaged lines. Where the
-        `;` is dropped, a backslash left at the end becomes the `;`, so a
-        final `;` sent as `\\;` comes out as exactly one `;`, whatever comes
-        before it (measured in Vim on tmux 3.8, 2026-10-17: `-H` hex was
-        exact too, but costs one argument per byte)."""
-        if text.endswith(";"):
-            text = text[:-1] + "\\;"
+        """Type `text` byte-exact, through literal_argument: a final `;`
+        typed as nothing made an interrupted Write's `:w` save the damaged
+        lines (measured in Vim on tmux 3.8, 2026-10-17: `-H` hex was exact
+        too, but costs one argument per byte)."""
         subprocess.run(
-            ["tmux", "send-keys", "-t", self.pane_id, "-l", "--", text],
+            ["tmux", "send-keys", "-t", self.pane_id, "-l", "--", literal_argument(text)],
             check=True,
         )
 
@@ -78,7 +86,11 @@ class TmuxPane:
         return result.stdout.rstrip("\n")
 
     def set_title(self, title: str) -> None:
-        subprocess.run(["tmux", "select-pane", "-t", self.pane_id, "-T", title], check=False)
+        # The user's own title comes back through here (StatusSurface.clear).
+        subprocess.run(
+            ["tmux", "select-pane", "-t", self.pane_id, "-T", literal_argument(title)],
+            check=False,
+        )
 
     def window_option(self, name: str) -> str | None:
         """The window-local option's value, or None when unset (shown empty)."""

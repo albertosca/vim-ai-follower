@@ -49,6 +49,18 @@ def test_send_text_reaches_tmux_as_exactly_the_text(text: str) -> None:
     assert _tmux_argument(argv[6]) == (text, False)
 
 
+@pytest.mark.parametrize("title", ["vim x;", "a;;", ";", "x \\;", "plain", "é;"])
+def test_set_title_reaches_tmux_as_exactly_the_title(title: str) -> None:
+    # `select-pane -T 'vim x;'` set the title `vim x` (measured, tmux 3.8):
+    # the pane title a hand-off cue saved came back without its `;`.
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        TmuxPane("%3").set_title(title)
+    argv = run.call_args.args[0]
+    assert argv[:5] == ["tmux", "select-pane", "-t", "%3", "-T"]
+    assert len(argv) == 6
+    assert _tmux_argument(argv[5]) == (title, False)
+
+
 def test_send_key_calls_tmux_send_keys_named() -> None:
     pane = TmuxPane(pane_id="%3")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:

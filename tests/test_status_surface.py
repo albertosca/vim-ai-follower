@@ -95,6 +95,18 @@ def test_set_state_saves_prior_title_and_status_then_clear_restores_them() -> No
     assert not any("pane-border-style" in c for c in cmds)
 
 
+def test_clear_restores_a_saved_title_that_ends_in_a_semicolon() -> None:
+    # T23 re-review m-a: the user's `vim x;` came back as `vim x`.
+    surface = TmuxStatusSurface(pane_id="%2")
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        run.return_value = MagicMock(returncode=0, stdout="vim x;\n")
+        surface.set_state("Claude waiting")
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        surface.clear()
+    cmds = [c.args[0] for c in run.call_args_list]
+    assert ["tmux", "select-pane", "-t", "%2", "-T", "vim x\\;"] in cmds
+
+
 def test_set_state_twice_keeps_the_first_saved_title_for_clear_to_restore() -> None:
     # The des-interrupt calls set_state a second time ("Writing...") over the
     # handoff cue; the second call must NOT re-save (clobbering the original the

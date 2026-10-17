@@ -63,6 +63,22 @@ def test_register_records_the_owner_and_unregister_deletes_it(
     assert not keybindings._owner_path().exists()
 
 
+def test_unregister_restores_a_chained_user_binding_whole() -> None:
+    # list-keys prints a chain as `\;`, which shlex turns into a bare `;`:
+    # passed as is, tmux ended bind-key there, bound only `send-keys x`, and
+    # ran `send-keys y` as a command of its own at stop time (measured, tmux 3.8).
+    path = keybindings._saved_bindings_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    previous = "bind-key  -T prefix P send-keys x \\; send-keys y"
+    path.write_text(json.dumps({"P": previous}))
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        keybindings.unregister()
+    restores = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "bind-key"]]
+    assert restores == [
+        ["tmux", "bind-key", "-T", "prefix", "P", "send-keys", "x", "\\;", "send-keys", "y"]
+    ]
+
+
 @pytest.mark.parametrize("content", ["", "{not json", "[]", '{"executable": "/x"}'])
 def test_a_malformed_owner_record_reads_as_absent(content: str) -> None:
     path = keybindings._owner_path()
