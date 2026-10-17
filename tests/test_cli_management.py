@@ -118,6 +118,7 @@ def test_stop_standalone_stops_the_backend_but_skips_tmux_side_effects() -> None
         patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session),
         patch("pynvim.attach", return_value=MagicMock()) as attach,
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
         patch("vim_ai_follower.commands.keybindings.unregister") as mock_unregister,
     ):
@@ -143,6 +144,7 @@ def test_speed_standalone_updates_speed_but_skips_the_tmux_status_line() -> None
         patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session),
         patch("pynvim.attach", return_value=MagicMock()),
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.commands.tmux.show_status") as show_status,
     ):
         assert commands.cmd_speed({}, "up") == 0
@@ -843,6 +845,7 @@ def test_stop_on_adopted_nvim_closes_tabs_over_rpc_not_tmux_send_keys(
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
         patch("pynvim.attach", return_value=nvim_mock) as attach,
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
     ):
         exit_code = commands.cmd_stop({"TMUX_PANE": "%1"})
     assert exit_code == 0
@@ -1145,3 +1148,374 @@ def test_status_marks_an_nvim_follower_that_does_not_answer(
     assert ("not answering (busy in a command, or stopped)" in mine) is marked
     assert "@7: nvim /tmp/theirs.sock, showing /tmp/b.py" in others
     assert ("/tmp/b.py — not answering" in others) is marked
+
+
+# --- stop: state first, bounded teardown, and it sticks (sweep-4 T17) -------
+
+_DEDICATED_SOCKET = "/tmp/nvim-@1.sock"
+
+
+def _hook_log() -> str:
+    from vim_ai_follower import hooks
+
+    return hooks.LOG_PATH.read_text() if hooks.LOG_PATH.exists() else ""
+
+
+def _nvim_follower(adopted: bool, open_files: tuple[str, ...] = ()) -> None:
+    state.FollowerState.set(
+        "@1",
+        "nvim",
+        _DEDICATED_SOCKET,
+        origin="%1",
+        adopted=adopted,
+        open_files=open_files,
+        shown_any=True,
+    )
+
+
+def _tmux_with_panes(listing: str, children: str = "") -> Callable[..., MagicMock]:
+    """A tmux whose `list-panes -t` answers `listing` (id, pid and start
+    command, tab-separated) and whose `pgrep -P` answers `children`."""
+    base = make_mock_tmux_run()
+
+    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
+        if cmd[:3] == ["tmux", "list-panes", "-t"]:
+            return MagicMock(returncode=0, stdout=listing)
+        if cmd[:2] == ["pgrep", "-P"]:
+            return MagicMock(returncode=0 if children else 1, stdout=children)
+        if cmd[:2] == ["ps", "-o"]:
+            return MagicMock(returncode=0, stdout=f"nvim --embed --listen {_DEDICATED_SOCKET}\n")
+        return base(cmd, **kwargs)
+
+    return _run
+
+
+def test_stop_clears_the_state_before_a_teardown_that_fails() -> None:
+    _nvim_follower(adopted=False)
+    control.mark_animating("@1")
+    control.request_pause("@1")
+    assert (cache.CACHE_DIR / "@1.pause").exists()
+    control.save_pending_apply_edit("@1", [], 0.0)
+    seen_at_teardown: list[bool] = []
+
+    def frozen_stop(*_args: object, **_kwargs: object) -> None:
+        seen_at_teardown.append((cache.CACHE_DIR / "@1.pane").exists())
+        raise nvim_connect.RpcTimeout("nvim did not answer within 10 s")
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.binding.tmux_server_pid", return_value=4242),
+        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
+        patch("vim_ai_follower.backends.nvim.NvimFollower.stop", side_effect=frozen_stop),
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    assert seen_at_teardown == [False]
+    assert not (cache.CACHE_DIR / "@1.pane").exists()
+    assert control.check_signal("@1") is None
+    assert control.has_pending_animation("@1") is False
+    assert "nvim did not answer within 10 s" in _hook_log()
+
+
+def test_stop_clears_a_state_a_racing_hook_wrote_during_the_teardown() -> None:
+    _nvim_follower(adopted=False)
+
+    def racing_write(*_args: object, **_kwargs: object) -> None:
+        # A set that passed its tombstone check before the stop wrote it.
+        (cache.CACHE_DIR / "@1.pane").write_text((cache.CACHE_DIR / "kept.json").read_text())
+
+    (cache.CACHE_DIR / "kept.json").write_text((cache.CACHE_DIR / "@1.pane").read_text())
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.binding.tmux_server_pid", return_value=4242),
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
+        patch("vim_ai_follower.status_surface.NvimStatusSurface.clear"),
+        patch("vim_ai_follower.backends.nvim.NvimFollower.stop", side_effect=racing_write),
+        patch("vim_ai_follower.commands.keybindings.unregister") as unregister,
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    assert not (cache.CACHE_DIR / "@1.pane").exists()
+    unregister.assert_called_once_with()
+
+
+def test_stop_of_an_adopted_nvim_at_a_prompt_sends_nothing_and_logs_one_line() -> None:
+    _nvim_follower(adopted=True, open_files=("/tmp/a.py", "/tmp/b.py"))
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+        patch("pynvim.attach") as attach,
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
+        patch("vim_ai_follower.commands.nvim_connect.last_probe_blocking", return_value=True),
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    attach.assert_not_called()
+    assert not any(c.args[0][:2] == ["tmux", "kill-pane"] for c in run.call_args_list)
+    lines = [line for line in _hook_log().splitlines() if _DEDICATED_SOCKET in line]
+    assert len(lines) == 1, _hook_log()
+    assert "waiting on its user" in lines[0]
+    assert state.FollowerState.read("@1") is None
+
+
+@pytest.mark.parametrize("verdict", ["silent", "garbled", "absent"])
+def test_stop_of_an_unreachable_adopted_nvim_never_touches_its_pane(verdict: str) -> None:
+    _nvim_follower(adopted=True, open_files=("/tmp/a.py",))
+    listing = f"%1\t100\tzsh\n%5\t200\tnvim --listen {_DEDICATED_SOCKET}\n"
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_tmux_with_panes(listing)) as run,
+        patch("pynvim.attach") as attach,
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value=verdict),
+        patch("vim_ai_follower.commands._send_signal") as send_signal,
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    attach.assert_not_called()
+    assert not any(c.args[0][:2] == ["tmux", "kill-pane"] for c in run.call_args_list)
+    send_signal.assert_not_called()
+    lines = [line for line in _hook_log().splitlines() if _DEDICATED_SOCKET in line]
+    assert len(lines) == 1, _hook_log()
+
+
+def test_stop_of_a_silent_dedicated_nvim_closes_its_pane_and_reaps_what_survives() -> None:
+    _nvim_follower(adopted=False)
+    listing = f"%1\t100\tzsh\n%5\t200\tnvim --listen {_DEDICATED_SOCKET}\n"
+    alive = {200: False, 201: True}
+    with (
+        patch(
+            "vim_ai_follower.tmux.subprocess.run",
+            side_effect=_tmux_with_panes(listing, children="201\n"),
+        ) as run,
+        patch("pynvim.attach") as attach,
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="silent"),
+        patch("vim_ai_follower.commands._process_alive", side_effect=lambda pid: alive[pid]),
+        patch("vim_ai_follower.commands._REAP_GRACE_SECONDS", 0.05),
+        patch("vim_ai_follower.commands._send_signal") as send_signal,
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    attach.assert_not_called()
+    kills = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "kill-pane"]]
+    assert kills == [["tmux", "kill-pane", "-t", "%5"]]
+    import signal
+
+    send_signal.assert_called_once_with(201, signal.SIGKILL)
+    assert "did not answer" in _hook_log()
+
+
+def test_stop_never_kills_a_survivor_that_is_not_the_followers_nvim() -> None:
+    _nvim_follower(adopted=False)
+    listing = f"%5\t200\tnvim --listen {_DEDICATED_SOCKET}\n"
+    base = _tmux_with_panes(listing, children="201\n")
+
+    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
+        if cmd[:2] == ["ps", "-o"]:
+            return MagicMock(returncode=0, stdout="some-other-process\n")
+        return base(cmd, **kwargs)
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_run),
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="silent"),
+        patch("vim_ai_follower.commands._process_alive", return_value=True),
+        patch("vim_ai_follower.commands._REAP_GRACE_SECONDS", 0.05),
+        patch("vim_ai_follower.commands._send_signal") as send_signal,
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    send_signal.assert_not_called()
+
+
+def test_stop_of_a_silent_dedicated_nvim_without_its_pane_kills_nothing() -> None:
+    # The follower nvim is not in a pane of the origin's window (a
+    # standalone window opened from tmux, or a pane already gone).
+    _nvim_follower(adopted=False)
+    listing = "%1\t100\tzsh\n%6\t300\tnvim --listen /tmp/someone-else.sock\n"
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_tmux_with_panes(listing)) as run,
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="silent"),
+        patch("vim_ai_follower.commands._send_signal") as send_signal,
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    assert not any(c.args[0][:2] == ["tmux", "kill-pane"] for c in run.call_args_list)
+    send_signal.assert_not_called()
+
+
+def test_stop_of_an_answering_dedicated_nvim_quits_it_and_kills_no_pane_that_closed() -> None:
+    _nvim_follower(adopted=False)
+    nvim_mock = MagicMock()
+    nvim_mock.api.get_mode.return_value = {"mode": "n", "blocking": False}
+    listings = iter(
+        [f"%1\t100\tzsh\n%5\t200\tnvim --listen {_DEDICATED_SOCKET}\n", "%1\t100\tzsh\n"]
+    )
+    base = _tmux_with_panes("")
+
+    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
+        if cmd[:3] == ["tmux", "list-panes", "-t"]:
+            return MagicMock(returncode=0, stdout=next(listings, "%1\t100\tzsh\n"))
+        return base(cmd, **kwargs)
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_run) as run,
+        patch("pynvim.attach", return_value=nvim_mock),
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
+        patch("vim_ai_follower.commands._send_signal") as send_signal,
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    nvim_mock.command.assert_any_call("qall!")
+    assert not any(c.args[0][:2] == ["tmux", "kill-pane"] for c in run.call_args_list)
+    send_signal.assert_not_called()
+
+
+def test_stop_kills_the_pane_of_a_dedicated_nvim_that_did_not_quit() -> None:
+    _nvim_follower(adopted=False)
+    listing = f"%1\t100\tzsh\n%5\t200\tnvim --listen {_DEDICATED_SOCKET}\n"
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_tmux_with_panes(listing)) as run,
+        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
+        patch("vim_ai_follower.commands._QUIT_GRACE_SECONDS", 0.05),
+        patch("vim_ai_follower.commands._process_alive", return_value=False),
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    kills = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "kill-pane"]]
+    assert kills == [["tmux", "kill-pane", "-t", "%5"]]
+
+
+def test_stop_gives_up_the_rest_of_the_teardown_after_a_timeout() -> None:
+    _nvim_follower(adopted=True, open_files=("/tmp/a.py", "/tmp/b.py"))
+    closed: list[str] = []
+
+    def frozen_close(file_path: str, **_kwargs: object) -> None:
+        closed.append(file_path)
+        raise nvim_connect.RpcTimeout("nvim did not answer within 10 s")
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
+        patch("vim_ai_follower.status_surface.NvimStatusSurface.clear"),
+        patch("vim_ai_follower.backends.nvim.NvimFollower.close_tab", side_effect=frozen_close),
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    assert closed == ["/tmp/a.py"]
+    assert "gave up" in _hook_log()
+
+
+def test_stop_skips_the_teardown_once_its_budget_is_spent() -> None:
+    _nvim_follower(adopted=True, open_files=("/tmp/a.py",))
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
+        patch("vim_ai_follower.commands.nvim_connect.CONNECT_TIMEOUT_SECONDS", 0.0),
+        patch("vim_ai_follower.commands.nvim_connect.RPC_TIMEOUT_SECONDS", 0.0),
+        patch("vim_ai_follower.status_surface.NvimStatusSurface.clear") as clear,
+        patch("vim_ai_follower.backends.nvim.NvimFollower.close_tab") as close_tab,
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    clear.assert_not_called()
+    close_tab.assert_not_called()
+    assert "gave up" in _hook_log()
+
+
+def test_stop_passes_the_adopted_flag_it_read_to_close_tab() -> None:
+    _nvim_follower(adopted=True, open_files=("/tmp/a.py",))
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
+        patch("vim_ai_follower.status_surface.NvimStatusSurface.clear"),
+        patch("vim_ai_follower.backends.nvim.NvimFollower.close_tab") as close_tab,
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    close_tab.assert_called_once_with("/tmp/a.py", dedicated=False)
+
+
+def test_stop_survives_an_unreadable_state() -> None:
+    (cache.CACHE_DIR).mkdir(parents=True, exist_ok=True)
+    (cache.CACHE_DIR / "@1.pane").write_text("{not json")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    assert not (cache.CACHE_DIR / "@1.pane").exists()
+
+
+def test_stop_logs_a_tmux_teardown_step_that_fails_and_carries_on() -> None:
+    state.FollowerState.set(
+        "@1", "tmux", "%2", origin="%1", adopted=True, open_files=("/tmp/a.py", "/tmp/b.py")
+    )
+    closed: list[str] = []
+
+    def failing_close(file_path: str, **_kwargs: object) -> None:
+        closed.append(file_path)
+        raise subprocess.CalledProcessError(1, ["tmux", "send-keys"])
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch(
+            "vim_ai_follower.backends.tmux_vim.TmuxVimFollower.close_tab",
+            side_effect=failing_close,
+        ),
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    assert closed == ["/tmp/a.py", "/tmp/b.py"]
+    assert "stop: closing /tmp/b.py failed" in _hook_log()
+    assert state.FollowerState.read("@1") is None
+
+
+def test_stop_logs_an_nvim_step_that_fails_without_a_timeout_and_carries_on() -> None:
+    _nvim_follower(adopted=True, open_files=("/tmp/a.py", "/tmp/b.py"))
+    closed: list[str] = []
+
+    def failing_close(file_path: str, **_kwargs: object) -> None:
+        closed.append(file_path)
+        raise RuntimeError("nvim said no")
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
+        patch("vim_ai_follower.status_surface.NvimStatusSurface.clear"),
+        patch("vim_ai_follower.backends.nvim.NvimFollower.close_tab", side_effect=failing_close),
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    assert closed == ["/tmp/a.py", "/tmp/b.py"]
+    assert "stop: closing /tmp/a.py failed: nvim said no" in _hook_log()
+
+
+@pytest.mark.parametrize(
+    "listing",
+    [
+        None,  # list-panes failed: the origin's window is gone
+        "%5\t200\tnvim --listen 'unterminated\n",  # a start command shlex cannot split
+        "%5\tnot-a-pid\tnvim --listen /tmp/nvim-@1.sock\n",
+        "%5\t200\n",  # a line without a start command
+        "%1\t100\tnvim --listen /tmp/nvim-@1.sock\n",  # the origin itself: never
+    ],
+)
+def test_stop_finds_no_follower_pane_in_a_listing_it_cannot_trust(listing: str | None) -> None:
+    _nvim_follower(adopted=False)
+    base = _tmux_with_panes(listing or "")
+
+    def _run(command: list[str], **kwargs: object) -> MagicMock:
+        if listing is None and command[:3] == ["tmux", "list-panes", "-t"]:
+            return MagicMock(returncode=1, stdout="")
+        return base(command, **kwargs)
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_run) as run,
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="silent"),
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    assert not any(call.args[0][:2] == ["tmux", "kill-pane"] for call in run.call_args_list)
+
+
+def test_process_alive_and_send_signal_against_real_processes() -> None:
+    import signal
+
+    sleeper = subprocess.Popen(["sleep", "30"])
+    try:
+        assert commands._process_alive(sleeper.pid) is True
+        commands._send_signal(sleeper.pid, signal.SIGKILL)
+        sleeper.wait(timeout=5)
+        assert commands._process_alive(sleeper.pid) is False
+        commands._send_signal(sleeper.pid, signal.SIGKILL)  # gone: no error
+    finally:
+        sleeper.kill()
+        sleeper.wait()
+    assert commands._process_alive(1) is True  # launchd: alive, not ours to signal
+
+
+def test_tmux_stop_never_kills_an_adopted_pane() -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        tmux_vim.TmuxVimFollower(pane_id="%2").stop(dedicated=False)
+    run.assert_not_called()

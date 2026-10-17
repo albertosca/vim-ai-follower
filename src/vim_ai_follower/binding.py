@@ -51,7 +51,7 @@ def _binding_path(session_id: str) -> Path:
     return _bindings_dir() / f"{_sanitize_session_id(session_id)}.json"
 
 
-def _tmux_server_pid() -> int | None:
+def tmux_server_pid() -> int | None:
     """The attached tmux server's pid, or None on ANY failure: tmux missing,
     non-zero exit, or unparseable output. Verified 2026-09-22 to answer
     correctly even with TMUX_PANE unset."""
@@ -86,7 +86,7 @@ def remember(session_id: str, window_id: str) -> None:
     recall, and storing one risks a future recall treating "no pid" as "a
     match", which is exactly the wrong-window hole this module exists to
     close."""
-    pid = _tmux_server_pid()
+    pid = tmux_server_pid()
     if pid is None:
         return
     path = _binding_path(session_id)
@@ -121,7 +121,7 @@ def recall(session_id: str) -> str | None:
     data = _read_binding(path)
     if data is None:
         return None
-    current_pid = _tmux_server_pid()
+    current_pid = tmux_server_pid()
     if current_pid is None:
         return None
     if data.get("tmux_server_pid") != current_pid:

@@ -3,19 +3,26 @@
 from __future__ import annotations
 
 import contextlib
+import functools
+import os
+import shlex
+import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from typing import Literal
 
 from vim_ai_follower import cache, config, control, hooks, keybindings, snapshot, tmux
 from vim_ai_follower.backends import NavigationFailed, get_follower, nvim_connect, nvim_prompt
 from vim_ai_follower.backends.nvim_connect import (
     NvimNeverListened,
+    RpcTimeout,
     StandaloneLaunchFailed,
     clear_launch_backoff,
     launch_standalone_nvim,
     resolve_nvim_target,
+    rpc_deadline,
 )
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.session import Session, other_live_followers, resolve_session
@@ -221,9 +228,11 @@ def cmd_start(
     return 0
 
 
-def _other_live_follower(window_id: str) -> bool:
+def _other_live_follower() -> bool:
     """True when any OTHER window still has a live follower — the keys are
-    server-global, so only the last stop may unregister them. Dead
+    server-global, so only the last stop may unregister them. Called after
+    cmd_stop has cleared its own window's state, so every .pane left is
+    another window's. Dead
     candidates found on the way are collected (state, signals, pending,
     animating marker, snapshots) so a stale .pane can never hold the keys
     hostage. Keys are window ids (@N) since the window-scoping change;
@@ -232,8 +241,6 @@ def _other_live_follower(window_id: str) -> bool:
     found_live = False
     for path in sorted(cache.CACHE_DIR.glob("*.pane")):
         key = path.stem
-        if key == window_id:
-            continue
         if key.startswith("@") and FollowerState.get(key) is not None:
             found_live = True
             continue
@@ -245,7 +252,26 @@ def _other_live_follower(window_id: str) -> bool:
     return found_live
 
 
+_QUIT_GRACE_SECONDS = 1.0
+_REAP_GRACE_SECONDS = 1.0
+_POLL_SECONDS = 0.05
+_UNREADABLE_STATE_ERRORS = (OSError, ValueError, KeyError, TypeError, AttributeError)
+
+
 def cmd_stop(env: dict[str, str]) -> int:
+    """Stop this window's follower, in an order that cannot be left half done.
+
+    The state goes FIRST, before anything talks to the editor: a teardown
+    that hangs or fails (a frozen nvim, one at a hit-enter prompt) used to
+    exit 1 with the `.pane` still there, so the follower was still "running"
+    and the next hook drove it again.
+
+    The teardown is then best-effort and bounded, every step logged in
+    hook.log rather than raised: an nvim gets one liveness probe and at most
+    CONNECT_TIMEOUT_SECONDS + RPC_TIMEOUT_SECONDS for all its steps, and is
+    sent nothing at all when it is busy, absent, or (adopted) waiting on its
+    user. A DEDICATED nvim that does not quit gets its pane closed, since the
+    pane is the follower's own; an adopted one's pane is never touched."""
     with contextlib.suppress(OSError):
         nvim_prompt.sweep_answer_locks()
     with contextlib.suppress(OSError):
@@ -254,40 +280,24 @@ def cmd_stop(env: dict[str, str]) -> int:
     if session is None:
         print(_unresolvable_pane(env), file=sys.stderr)
         return 1
-    existing = FollowerState.get(session.window_id)
+    window_id = session.window_id
+    try:
+        existing = FollowerState.read(window_id)
+    except _UNREADABLE_STATE_ERRORS:
+        existing = None  # unreadable: nothing to tear down, still cleared below
+    FollowerState.clear(window_id)
+    control.clear_signals(window_id)
+    control.discard_pending_animation(window_id)
     if existing is not None:
-        # Restore the border BEFORE teardown, while the pane is still alive:
-        # a non-adopted stop kills the follower pane, and pane-border-status
-        # is a WINDOW option — `set-option -wu` aimed at the killed pane
-        # fails to resolve its target, leaving the whole window's
-        # pane-border-status stuck on "top". Unsetting it (and the per-pane
-        # color) while the pane still exists lands cleanly. This dispatches
-        # on existing.backend (TmuxStatusSurface vs NvimStatusSurface), so a
-        # standalone nvim follower's floating status window is still cleared
-        # here without touching tmux — no separate in_tmux gate needed.
-        status_surface_for(existing).clear()
-        if existing.adopted:
-            # Adoption never took ownership of the pane — killing the
-            # user's own Vim on stop would be destructive. Only close the
-            # tabs the follower itself opened there, and never discard the
-            # user's work: close_tab leaves a modified buffer, or one the user
-            # had open, where it is, and says so in hook.log.
-            hooks._configure_logging()
-            follower = get_follower(existing.backend, existing.target, window_id=session.window_id)
-            for path in existing.open_files:
-                follower.close_tab(path)
+        hooks._configure_logging()
+        if existing.backend == "nvim":
+            _tear_down_nvim(existing, session)
         else:
-            # Runs standalone too: nvim's stop() is an RPC `qall!`, not a
-            # tmux operation, so it must fire regardless of session.in_tmux.
-            get_follower(existing.backend, existing.target, window_id=session.window_id).stop()
-    # Scan before clearing this window's own state: FollowerState.clear
-    # below deletes this window's .pane, and scanning after that would make
-    # the "skip my own key" check below unreachable — the glob would never
-    # see it in the first place.
-    other_live = _other_live_follower(session.window_id)
-    FollowerState.clear(session.window_id)
-    control.clear_signals(session.window_id)
-    control.discard_pending_animation(session.window_id)
+            _tear_down_tmux(existing, window_id)
+        # A hook that read the state before the clear above may have written
+        # it back during the teardown.
+        FollowerState.clear(window_id)
+    other_live = _other_live_follower()
     if session.in_tmux and not other_live:
         # Keybindings are tmux prefix-key bindings — standalone never
         # registered them (cmd_start skips registration outside tmux), so
@@ -297,6 +307,197 @@ def cmd_stop(env: dict[str, str]) -> int:
         keybindings.unregister()
     print("claude-follow: stopped")
     return 0
+
+
+def _teardown_step(what: str, action: Callable[[], object]) -> bool:
+    """One best-effort teardown step: False, and one hook.log line, when it
+    raised. `stop` has already cleared the state, so nothing is left to
+    retry, and a failure must not turn into an exit status."""
+    try:
+        action()
+    except Exception as error:
+        hooks.logger.warning("stop: %s failed: %s", what, error)
+        return False
+    return True
+
+
+def _tear_down_tmux(existing: FollowerState, window_id: str) -> None:
+    follower = get_follower("tmux", existing.target, window_id=window_id)
+    # Restore the border BEFORE the pane goes: pane-border-status is a
+    # WINDOW option, and `set-option -wu` aimed at a killed pane fails to
+    # resolve its target, leaving the whole window's border status stuck on
+    # "top". The state is already cleared, so the surface works from the
+    # copy read above.
+    _teardown_step("restoring the pane border", status_surface_for(existing).clear)
+    if existing.adopted:
+        # Adoption never took ownership of the pane: only close the tabs the
+        # follower opened, and never the user's work (close_tab leaves a
+        # modified buffer, or one the user had open, and says so in hook.log).
+        for path in existing.open_files:
+            _teardown_step(
+                f"closing {path}", functools.partial(follower.close_tab, path, dedicated=False)
+            )
+        return
+    _teardown_step("closing the follower pane", functools.partial(follower.stop, dedicated=True))
+
+
+def _tear_down_nvim(existing: FollowerState, session: Session) -> None:
+    """Bounded: the probe plus every step within CONNECT + RPC timeouts."""
+    socket_path = existing.target
+    ends_at = time.monotonic() + (
+        nvim_connect.CONNECT_TIMEOUT_SECONDS + nvim_connect.RPC_TIMEOUT_SECONDS
+    )
+    verdict = nvim_connect.probe_nvim(socket_path)
+    quit_sent = False
+    if verdict != "answers":
+        hooks.logger.warning(
+            "stop: nvim %s did not answer (%s); nothing was sent to it", socket_path, verdict
+        )
+    elif existing.adopted and nvim_connect.last_probe_blocking(socket_path):
+        # The user's own nvim at a hit-enter prompt or a question: a request
+        # would wait behind it, and pressing keys to clear it is not ours to
+        # do in the user's editor. Its tabs stay; the state is already gone.
+        hooks.logger.warning(
+            "stop: nvim %s is waiting on its user (a hit-enter prompt or a question); "
+            "the follower's tabs there are left open",
+            socket_path,
+        )
+    else:
+        quit_sent = _run_nvim_teardown(existing, session.window_id, ends_at)
+    if not existing.adopted and session.in_tmux and existing.origin:
+        _close_dedicated_nvim_pane(existing.origin, socket_path, wait_for_quit=quit_sent)
+
+
+def _run_nvim_teardown(existing: FollowerState, window_id: str, ends_at: float) -> bool:
+    """The RPC steps, each under what is left of the budget; the first
+    timeout or lost connection gives up the rest (the nvim stopped answering
+    mid-teardown). True when a dedicated follower's `qall!` went out."""
+    follower = get_follower("nvim", existing.target, window_id=window_id)
+    steps: list[tuple[str, Callable[[], object]]] = [
+        ("clearing the status float", status_surface_for(existing).clear)
+    ]
+    if existing.adopted:
+        steps += [
+            (f"closing {path}", functools.partial(follower.close_tab, path, dedicated=False))
+            for path in existing.open_files
+        ]
+    else:
+        steps.append(("quitting nvim", functools.partial(follower.stop, dedicated=True)))
+    for what, action in steps:
+        remaining = ends_at - time.monotonic()
+        if remaining <= 0:
+            hooks.logger.warning(
+                "stop: gave up on nvim %s before %s: out of time", existing.target, what
+            )
+            return False
+        try:
+            with rpc_deadline(remaining):
+                action()
+        except (OSError, RpcTimeout) as error:
+            hooks.logger.warning("stop: gave up on nvim %s at %s: %s", existing.target, what, error)
+            return False
+        except Exception as error:
+            hooks.logger.warning("stop: %s failed: %s", what, error)
+            continue
+    return not existing.adopted
+
+
+def _close_dedicated_nvim_pane(origin: str, socket_path: str, wait_for_quit: bool) -> None:
+    """Close the dedicated follower nvim's own tmux pane when its `qall!` did
+    not land (busy in `:!cmd`, frozen, or never sent). The pane is found by
+    its start command, exactly the `nvim --listen <socket>` resolve_nvim_target
+    launches, in the origin's window; the origin itself, and any other pane,
+    are never touched.
+
+    Closing the pane is not always enough: an nvim busy in `:!cmd` leaves its
+    `--embed` server running when its terminal goes (measured: it outlived
+    SIGHUP and SIGTERM). So the pane's processes are recorded before the
+    kill and any survivor whose command line names the follower's socket is
+    SIGKILLed after a short grace."""
+    pane = _pane_running(origin, socket_path)
+    if pane is not None and wait_for_quit:
+        give_up_at = time.monotonic() + _QUIT_GRACE_SECONDS
+        while pane is not None and time.monotonic() < give_up_at:
+            time.sleep(_POLL_SECONDS)
+            pane = _pane_running(origin, socket_path)
+    if pane is None:
+        return
+    pane_id, pane_pid = pane
+    processes = [pane_pid, *_child_pids(pane_pid)]
+    hooks.logger.warning(
+        "stop: closing the follower's own pane %s (nvim %s did not quit)", pane_id, socket_path
+    )
+    TmuxPane(pane_id=pane_id).kill()
+    give_up_at = time.monotonic() + _REAP_GRACE_SECONDS
+    survivors = [pid for pid in processes if _process_alive(pid)]
+    while survivors and time.monotonic() < give_up_at:
+        time.sleep(_POLL_SECONDS)
+        survivors = [pid for pid in survivors if _process_alive(pid)]
+    for pid in survivors:
+        if socket_path in _command_line(pid):
+            hooks.logger.warning(
+                "stop: killing nvim process %d, left running by its closed pane", pid
+            )
+            _send_signal(pid, signal.SIGKILL)
+
+
+def _pane_running(origin: str, socket_path: str) -> tuple[str, int] | None:
+    """(pane id, pane pid) of the pane in origin's window whose start command
+    is the follower's `nvim --listen <socket_path>`, else None."""
+    listing = subprocess.run(
+        [
+            "tmux",
+            "list-panes",
+            "-t",
+            origin,
+            "-F",
+            "#{pane_id}\t#{pane_pid}\t#{pane_start_command}",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if listing.returncode != 0:
+        return None
+    for line in listing.stdout.splitlines():
+        fields = line.split("\t", 2)
+        if len(fields) != 3 or fields[0] == origin:
+            continue
+        pane_id, pane_pid, command = fields
+        try:
+            words = shlex.split(command)
+        except ValueError:
+            continue
+        if words == ["nvim", "--listen", socket_path] and pane_pid.isdigit():
+            return pane_id, int(pane_pid)
+    return None
+
+
+def _child_pids(pid: int) -> list[int]:
+    found = subprocess.run(["pgrep", "-P", str(pid)], capture_output=True, text=True, check=False)
+    return [int(word) for word in found.stdout.split() if word.isdigit()]
+
+
+def _command_line(pid: int) -> str:
+    found = subprocess.run(
+        ["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True, check=False
+    )
+    return found.stdout.strip() if found.returncode == 0 else ""
+
+
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _send_signal(pid: int, signal_number: signal.Signals) -> None:
+    with contextlib.suppress(OSError):
+        os.kill(pid, signal_number)
 
 
 def _answering_note(backend: str, target: str) -> str:

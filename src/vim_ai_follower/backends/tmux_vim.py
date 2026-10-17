@@ -1834,7 +1834,7 @@ class TmuxVimFollower:
         # `:%d` above wiped the buffer, so this rebuild starts from nothing.
         return run_lines(pane, self.window_id, lines, 0.0, file_path=file_path, base_content="")
 
-    def close_tab(self, file_path: str) -> None:
+    def close_tab(self, file_path: str, dedicated: bool | None = None) -> None:
         """Evict `file_path`: wipe its buffer, which closes the tab it was
         the only window of. On the last remaining tab the wipe just leaves
         an empty buffer, which is fine.
@@ -1855,20 +1855,25 @@ class TmuxVimFollower:
         functions. Skipping it left an adopted Vim's own buffer locked for
         good after `claude-follow stop`, which clears the state right after,
         and each dedicated eviction left a tab no bookkeeping knew (review of
-        T6+T7, I1 and m4). A blocked Vim runs it once it is free."""
+        T6+T7, I1 and m4). A blocked Vim runs it once it is free.
+
+        `dedicated` is the caller's word for what the follower is (cmd_stop
+        clears the state before it tears down); None reads the state."""
         backoff = _backoff_reason(self.pane_id)
         pane = TmuxPane(pane_id=self.pane_id)
         self._normal_mode(pane)
         if backoff is None:
             self._define(pane)
-        if self._is_dedicated():
+        if self._is_dedicated() if dedicated is None else dedicated:
             self._send_wipe(pane, file_path)
             return
         # The user's own Vim, or one whose state is gone (a racing `stop`:
         # nothing proves it is not the user's): never wipe their work
         # (s:evict), and wait for the verdict so hook.log says what was left
         # where.
-        if not self.window_id or owned_state(self.window_id, "tmux", self.pane_id) is None:
+        if dedicated is None and (
+            not self.window_id or owned_state(self.window_id, "tmux", self.pane_id) is None
+        ):
             log_state_gone(self.window_id, file_path)
         answer = _evict_answer_path(self.pane_id)
         answer.parent.mkdir(parents=True, exist_ok=True)
@@ -2248,7 +2253,11 @@ class TmuxVimFollower:
         pane.send_text(f":{offset}")
         pane.send_key("Enter")
 
-    def stop(self) -> None:
+    def stop(self, dedicated: bool | None = None) -> None:
+        # The follower's own pane, killed; an adopted Vim's pane is the
+        # user's and is never killed (cmd_stop routes those to close_tab).
+        if dedicated is False:
+            return
         TmuxPane(pane_id=self.pane_id).kill()
 
     @classmethod

@@ -163,7 +163,7 @@ def test_a_window_remembered_by_a_healthy_hook_is_recovered_by_a_blind_one(
     of the feature that is worth anything: the two halves are the feature."""
     _register_fake_follower("@18", "%23", shown_any=True)
     target = _live_file(tmp_path)
-    with patch("vim_ai_follower.binding._tmux_server_pid", return_value=64091):
+    with patch("vim_ai_follower.binding.tmux_server_pid", return_value=64091):
         with (
             patch(
                 "vim_ai_follower.tmux.subprocess.run",

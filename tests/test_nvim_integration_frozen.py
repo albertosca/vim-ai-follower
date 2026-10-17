@@ -26,6 +26,7 @@ from pathlib import Path
 import pytest
 from e2e_harness import CLI, E2EFollower, e2e_world, payload
 
+from vim_ai_follower.backends.nvim_connect import CONNECT_TIMEOUT_SECONDS, RPC_TIMEOUT_SECONDS
 from vim_ai_follower.state import FollowerState
 
 pytestmark = pytest.mark.integration
@@ -125,7 +126,10 @@ def test_status_and_stop_return_promptly_with_a_frozen_nvim(world: E2EFollower) 
 
         stop, stop_seconds = _timed_cli(world, "stop", pane_id=frozen_pane)
         assert stop.returncode == 0, stop.stderr
-        assert stop_seconds < 15.0, f"stop took {stop_seconds:.1f} s"
+        # The probe, then at most the connect and RPC deadlines for every
+        # step together (commands._tear_down_nvim's budget), plus startup.
+        stop_bound = CONNECT_TIMEOUT_SECONDS + RPC_TIMEOUT_SECONDS + 2
+        assert stop_seconds < stop_bound, f"stop took {stop_seconds:.1f} s"
         assert not (world.cache_dir / f"{frozen_window}.pane").exists()
         # The live follower in the other window is untouched by any of it.
         assert (world.cache_dir / f"{world.window_id}.pane").exists()

@@ -1447,7 +1447,7 @@ class NvimFollower:
         if nvim.exec_lua(_IS_CLEAN_LUA, buf):
             self._exec(nvim, "silent edit!")
 
-    def close_tab(self, file_path: str) -> None:
+    def close_tab(self, file_path: str, dedicated: bool | None = None) -> None:
         # Wipe by the number _buffer_number resolves, never by name: bwipeout
         # takes a PATTERN, so a raw name can miss the buffer or hit a
         # pattern-sibling (see _buffer_number). goto_file
@@ -1462,11 +1462,16 @@ class NvimFollower:
         # state is GONE (a `claude-follow stop` racing a Read: the hook read
         # the state before its eviction, this re-reads it): only a state that
         # proves a dedicated follower gets the wipe (review of sweep-4 T4+T5,
-        # C1: the fail-open check wiped the user's unsaved buffer).
+        # C1: the fail-open check wiped the user's unsaved buffer). A caller
+        # that already knows (`claude-follow stop`, which clears the state
+        # before its teardown) says so in `dedicated`, and is trusted.
         nvim = self._connect()
         with self._guarded(nvim, "close_tab"):
-            if not self._is_dedicated():
-                if owned_state(self.window_id, "nvim", self.socket_path) is None:
+            if not (self._is_dedicated() if dedicated is None else dedicated):
+                if (
+                    dedicated is None
+                    and owned_state(self.window_id, "nvim", self.socket_path) is None
+                ):
                     log_state_gone(self.window_id, file_path)
                 bufnr = _buffer_number(nvim, file_path)
                 if bufnr != -1:
@@ -1505,22 +1510,24 @@ class NvimFollower:
         with self._guarded(nvim, "goto_line"):
             nvim.current.window.cursor = (min(offset, nvim.api.buf_line_count(0)), 0)
 
-    def stop(self) -> None:
+    def stop(self, dedicated: bool | None = None) -> None:
         # Quit the dedicated nvim this follower launched — its tmux split
         # closes with it. cmd_stop only routes a NON-adopted follower here (an
-        # adopted nvim goes to close_tab), and calls this BEFORE it clears the
-        # window's FollowerState. Guard anyway, failing CLOSED: qall! only
-        # when the state proves a dedicated follower (_is_dedicated) — an
-        # adopted nvim, or one whose state is gone, may be the user's own
-        # editor, and quitting it would be hostile. Best-effort — qall!
-        # tears down the RPC channel, so the call itself may raise as the
-        # socket drops.
+        # adopted nvim goes to close_tab) and, having cleared the window's
+        # FollowerState first, says what it read in `dedicated`, which is
+        # trusted. Without it the guard fails CLOSED: qall! only when the
+        # state proves a dedicated follower (_is_dedicated) — an adopted
+        # nvim, or one whose state is gone, may be the user's own editor,
+        # and quitting it would be hostile.
         # A prompt left on screen would hold qall! in the queue behind it, so
         # sweep it first (fast requests only; no watchdog — its connection
-        # would only drop with the process).
-        if not self._is_dedicated():
+        # would only drop with the process). A connect or sweep that fails
+        # raises, for the caller to log; only the qall! itself is quiet,
+        # because it tears down the RPC channel and the call may raise as
+        # the socket drops.
+        if not (self._is_dedicated() if dedicated is None else dedicated):
             return
+        nvim = self._connect()
+        dismiss_prompt(nvim, self.socket_path)
         with contextlib.suppress(Exception):
-            nvim = self._connect()
-            dismiss_prompt(nvim, self.socket_path)
             nvim.command("qall!")
