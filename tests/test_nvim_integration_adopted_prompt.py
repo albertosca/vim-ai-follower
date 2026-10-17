@@ -1,7 +1,8 @@
-"""While the follower drives an animation, waiting for the user is right: a
-hit-enter prompt raised mid-animation in an adopted nvim (a plugin's message,
-the user's own `:ls`) holds the typing until Enter, and then it finishes —
-the requests that type are not cut at the RPC deadline (review I2).
+"""An adopted nvim's hit-enter prompt meets the follower the way a Vim's
+meets its Escape pair (decision (a)): raised mid-animation (a plugin's
+message), the watchdog answers it and the typing finishes; already up when a
+hook starts, the hook sweeps it and goes on. Blocked in any other way (keys
+pending), the hook skips in one line and types nothing.
 
 Real CLI, real tmux, real nvims in tmux panes, `HOME` isolated by the e2e
 harness; every CLI run has a subprocess timeout so a regression FAILS."""
@@ -73,7 +74,41 @@ def _nvim_window(world: E2EFollower, socket_path: Path, *files: Path) -> tuple[s
     return window_id, pane_id
 
 
-def test_a_hit_enter_prompt_mid_animation_holds_the_typing_until_enter(
+def _hook_log(world: E2EFollower) -> str:
+    log_path = world.cache_dir / "hook.log"
+    return log_path.read_text() if log_path.exists() else ""
+
+
+def _adopted_state(
+    world: E2EFollower,
+    window_id: str,
+    pane_id: str,
+    socket_path: Path,
+    target: Path,
+    speed: str = "rapido",
+) -> None:
+    FollowerState.set(
+        window_id,
+        "nvim",
+        str(socket_path),
+        origin=pane_id,
+        server_pid=world.server_pid,
+        adopted=True,
+        shown_any=True,
+        # The hook names the file by its realpath (/tmp is /private/tmp).
+        open_files=(os.path.realpath(target),),
+        speed=speed,
+        base_dir=world.cache_dir,
+    )
+
+
+def _buffer_lines(world: E2EFollower, socket_path: Path, target: Path) -> list[str]:
+    observer = world._nvim(str(socket_path))
+    lines: list[str] = observer.api.buf_get_lines(observer.call("bufnr", str(target)), 0, -1, False)
+    return lines
+
+
+def test_a_hit_enter_prompt_mid_animation_is_answered_and_the_typing_finishes(
     world: E2EFollower,
 ) -> None:
     socket_path = world.cache_dir / "nvim-adopted.sock"
@@ -86,95 +121,46 @@ def test_a_hit_enter_prompt_mid_animation_holds_the_typing_until_enter(
     )
     target.write_text(before)
     window_id, pane_id = _nvim_window(world, socket_path, target)
-    FollowerState.set(
-        window_id,
-        "nvim",
-        str(socket_path),
-        origin=pane_id,
-        server_pid=world.server_pid,
-        adopted=True,
-        shown_any=True,
-        open_files=(str(target),),
-        speed="lento",
-        base_dir=world.cache_dir,
-    )
+    _adopted_state(world, window_id, pane_id, socket_path, target, speed="lento")
     edit = payload("Edit", target)
     pre, _seconds = _timed_cli(world, "hook", "pre", pane_id=pane_id, stdin=edit)
     assert pre.returncode == 0, pre.stderr
     target.write_text(after)
     # A plugin's multi-line message 1.5 s into the animation: a hit-enter
-    # prompt that blocks every request but nvim_get_mode until Enter.
+    # prompt that blocks every request but nvim_get_mode until answered.
     world._nvim(str(socket_path)).exec_lua(
         "vim.defer_fn(function() vim.cmd('echo \"plugin says\\\\nsomething\\\\nlong\"') end, 1500)",
         [],
     )
-    hook = subprocess.Popen(
-        [str(CLI), "hook", "post"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=world.env_with(TMUX_PANE=pane_id),
-    )
-    try:
-        assert hook.stdin is not None
-        hook.stdin.write(edit.encode())
-        hook.stdin.close()
-        # Hold the prompt well past the RPC deadline, then answer it.
-        world.wait_until(
-            lambda: world._nvim(str(socket_path)).api.get_mode()["blocking"],
-            "the hit-enter prompt",
-            timeout=10.0,
-        )
-        time.sleep(12.0)
-        assert hook.poll() is None, "the hook gave up while the user had a prompt up"
-        world.tmux("send-keys", "-t", pane_id, "Enter")
-        hook.wait(timeout=_HANG_GUARD_SECONDS)
-    finally:
-        if hook.poll() is None:
-            hook.kill()
-            hook.wait(timeout=10)
-    assert hook.returncode == 0
+    post, _seconds = _timed_cli(world, "hook", "post", pane_id=pane_id, stdin=edit)
+    assert post.returncode == 0, post.stderr
+    log = _hook_log(world)
+    assert "dismissed a hit-enter prompt during" in log, log
+    assert "Traceback" not in log, log
+    assert "crash" not in log.lower(), log
+    assert _buffer_lines(world, socket_path, target) == after.splitlines()
+    assert world._nvim(str(socket_path)).api.get_mode()["mode"] == "n"
     observer = world._nvim(str(socket_path))
-    buffer_number = observer.call("bufnr", str(target))
-    lines = observer.api.buf_get_lines(buffer_number, 0, -1, False)
-    assert lines == after.splitlines()
     floats = [
         observer.api.buf_get_lines(observer.api.win_get_buf(window), 0, -1, False)
         for window in observer.api.list_wins()
         if observer.api.win_get_config(window).get("relative")
     ]
     assert not any("Writing" in line for text in floats for line in text), floats
-    log_path = world.cache_dir / "hook.log"
-    log = log_path.read_text() if log_path.exists() else ""
-    assert "crash" not in log.lower(), log
-    assert "Traceback" not in log, log
 
 
-def test_a_prompt_already_up_when_the_hook_starts_skips_the_edit_in_one_line(
+def test_a_prompt_already_up_when_the_hook_starts_is_swept_and_the_edit_goes_on(
     world: E2EFollower,
 ) -> None:
-    # Review m1 of T16: the user's nvim shows a hit-enter prompt before the
-    # hook connects. The probe's answer says `blocking: true`, so the hook
-    # skips at once, logs one line and marks the file stale — not three
-    # 10 s timeouts (cue, base probe, cue refresh) and a traceback.
+    # Was T16 review m1's skip: a hit-enter prompt up before the hook
+    # connects. Now the hook answers it first (as the Vim's Escape pair
+    # would), raises the cue and types the edit — no 10 s timeouts.
     socket_path = world.cache_dir / "nvim-adopted.sock"
     world.cache_dir.mkdir(parents=True, exist_ok=True)
     target = world.workdir / "file.py"
-    before = "one\ntwo\n"
-    target.write_text(before)
+    target.write_text("one\ntwo\n")
     window_id, pane_id = _nvim_window(world, socket_path, target)
-    FollowerState.set(
-        window_id,
-        "nvim",
-        str(socket_path),
-        origin=pane_id,
-        server_pid=world.server_pid,
-        adopted=True,
-        shown_any=True,
-        # The hook names the file by its realpath (/tmp is /private/tmp).
-        open_files=(os.path.realpath(target),),
-        base_dir=world.cache_dir,
-    )
+    _adopted_state(world, window_id, pane_id, socket_path, target)
     edit = payload("Edit", target)
     pre, _seconds = _timed_cli(world, "hook", "pre", pane_id=pane_id, stdin=edit)
     assert pre.returncode == 0, pre.stderr
@@ -188,18 +174,51 @@ def test_a_prompt_already_up_when_the_hook_starts_skips_the_edit_in_one_line(
         timeout=10.0,
     )
     post, seconds = _timed_cli(world, "hook", "post", pane_id=pane_id, stdin=edit)
+    assert post.returncode == 0, post.stderr
+    assert seconds < 8.0, f"the hook waited {seconds:.1f} s on a prompt already up"
+    log = _hook_log(world)
+    assert "Traceback" not in log, log
+    assert "is waiting on its user" not in log, log
+    assert "left before the hook (sweep)" in log, log
+    assert _buffer_lines(world, socket_path, target) == ["one", "TWO"]
+    state = FollowerState.read(window_id, base_dir=world.cache_dir)
+    assert state is not None and state.stale_files == ()
+
+
+def test_an_nvim_blocked_in_a_key_sequence_skips_the_edit_in_one_line(
+    world: E2EFollower,
+) -> None:
+    # `q` waiting for its register: blocking, mode "n" — nothing the
+    # follower answers. The hook skips at once (T16 review m1), logs one
+    # line, marks the file stale and types nothing.
+    socket_path = world.cache_dir / "nvim-adopted.sock"
+    world.cache_dir.mkdir(parents=True, exist_ok=True)
+    target = world.workdir / "file.py"
+    before = "one\ntwo\n"
+    target.write_text(before)
+    window_id, pane_id = _nvim_window(world, socket_path, target)
+    _adopted_state(world, window_id, pane_id, socket_path, target)
+    edit = payload("Edit", target)
+    pre, _seconds = _timed_cli(world, "hook", "pre", pane_id=pane_id, stdin=edit)
+    assert pre.returncode == 0, pre.stderr
+    target.write_text("one\nTWO\n")
+    world.tmux("send-keys", "-t", pane_id, "q")
+    world.wait_until(
+        lambda: world._nvim(str(socket_path)).api.get_mode() == {"mode": "n", "blocking": True},
+        "the pending q",
+        timeout=10.0,
+    )
     try:
+        post, seconds = _timed_cli(world, "hook", "post", pane_id=pane_id, stdin=edit)
         assert post.returncode == 0, post.stderr
-        assert seconds < 8.0, f"the hook waited {seconds:.1f} s on a prompt already up"
-        log_path = world.cache_dir / "hook.log"
-        log = log_path.read_text() if log_path.exists() else ""
+        assert seconds < 8.0, f"the hook waited {seconds:.1f} s on a pending key"
+        log = _hook_log(world)
         assert "Traceback" not in log, log
         skipped = [line for line in log.splitlines() if "is waiting on its user" in line]
         assert len(skipped) == 1, log
-        after = FollowerState.read(window_id, base_dir=world.cache_dir)
-        assert after is not None and after.stale_files == (os.path.realpath(target),)
+        assert "(sweep)" not in log, log
+        state = FollowerState.read(window_id, base_dir=world.cache_dir)
+        assert state is not None and state.stale_files == (os.path.realpath(target),)
     finally:
-        world.tmux("send-keys", "-t", pane_id, "Enter")
-    observer = world._nvim(str(socket_path))
-    lines = observer.api.buf_get_lines(observer.call("bufnr", str(target)), 0, -1, False)
-    assert lines == before.splitlines()  # nothing typed into the user's buffer
+        world.tmux("send-keys", "-t", pane_id, "Escape")
+    assert _buffer_lines(world, socket_path, target) == before.splitlines()

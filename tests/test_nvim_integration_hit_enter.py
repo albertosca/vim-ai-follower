@@ -343,10 +343,10 @@ import pynvim
 from vim_ai_follower import cache
 from vim_ai_follower.backends import nvim_prompt
 
-sock, cache_dir, barriers, me, peers = sys.argv[1:6]
+sock, cache_dir, barriers, me, peers, kind = sys.argv[1:7]
 cache.CACHE_DIR = Path(cache_dir)
 seen, send = Path(barriers, "seen"), Path(barriers, "send")
-real = pynvim.attach("socket", path=sock)
+sent = []
 
 def wait_for(directory):
     deadline = time.monotonic() + 10
@@ -355,38 +355,61 @@ def wait_for(directory):
         time.sleep(0.005)
 
 class Spy:
-    def __init__(self):
+    # Holds both processes at the prompt (seen) and at the key (send), so
+    # each one decides with the other in the same place. Only the guard's
+    # own connection holds; a watchdog's counts its keys and nothing more.
+    def __init__(self, connection, hold):
+        self.connection = connection
         self.api = self
-        self.sent = 0
-        self.held = False
+        self.hold = hold
+        self.held = not hold
+    def __getattr__(self, name):
+        return getattr(self.connection.api, name)
     def get_mode(self):
-        mode = real.api.get_mode()
+        mode = self.connection.api.get_mode()
         if mode["blocking"] and not self.held:
             self.held = True
             (seen / me).touch()
             wait_for(seen)
         return mode
     def input(self, key):
-        (send / me).touch()
-        wait_for(send)
-        self.sent += 1
-        return real.api.input(key)
+        if self.hold and not sent:
+            (send / me).touch()
+            wait_for(send)
+        sent.append(key)
+        return self.connection.api.input(key)
+    def close(self):
+        self.connection.close()
 
+real = pynvim.attach("socket", path=sock)
 deadline = time.monotonic() + 10
 while not real.api.get_mode()["blocking"]:
     assert time.monotonic() < deadline, "no prompt"
     time.sleep(0.01)
-spy = Spy()
-nvim_prompt.dismiss_prompt(spy, sock)
+spy = Spy(real, hold=True)
+if kind == "adopted":
+    # An adopted follower's acting guard: its sweep, then its watchdog for
+    # an empty body, on a connection of its own.
+    with nvim_prompt.prompt_guard(
+        spy,
+        lambda: Spy(pynvim.attach("socket", path=sock), hold=False),
+        key=sock,
+        adopted=True,
+        label="guard",
+    ):
+        pass
+else:
+    nvim_prompt.dismiss_prompt(spy, sock)
 (send / me).touch()  # gave up (or already sent): release a peer waiting to send
-print(spy.sent)
+print(len(sent))
 """
 
 
 @pytest.mark.integration
+@pytest.mark.parametrize("kind", ["dedicated-sweep", "adopted"])
 @pytest.mark.parametrize("message", ["hit-enter", "more"])
 def test_two_guard_processes_seeing_one_prompt_send_exactly_one_answer(
-    ui_nvim: Callable[[str], str], tmp_path: Path, message: str
+    ui_nvim: Callable[[str], str], tmp_path: Path, message: str, kind: str
 ) -> None:
     sock = ui_nvim("remapping")
     probe = pynvim.attach("socket", path=sock)
@@ -401,7 +424,7 @@ def test_two_guard_processes_seeing_one_prompt_send_exactly_one_answer(
         probe.api.buf_set_lines(0, 0, -1, True, ["keep"])
         guards = [
             subprocess.Popen(
-                [sys.executable, str(script), sock, str(cache_dir), str(barriers), name, "2"],
+                [sys.executable, str(script), sock, str(cache_dir), str(barriers), name, "2", kind],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -473,3 +496,226 @@ def test_an_unusable_answer_lock_still_answers_the_prompt(
         lock.parent.chmod(0o700)
         with contextlib.suppress(FileNotFoundError):
             lock.chmod(0o600)
+
+
+# --- an ADOPTED nvim (decision (a), 2026-10-05) -------------------------------
+#
+# The user's own editor answers hit-enter and more-prompts the way the tmux
+# backend's Vim does: its Escape pair dismisses a prompt the user has up when
+# the follower is about to act (measured 2026-10-17, Vim 9.2 at 49 columns:
+# normal mode, buffer untouched), and the follower's keystrokes answer one
+# raised while it acts. Never while the follower is idle, paused, or waiting
+# for the user's save — the Vim follower sends nothing then — and never a
+# confirm() or input(): those are the user's choices (Alberto's answer A).
+
+
+def _adopted_follower(sock: str) -> NvimFollower:
+    state.FollowerState.set("@1", "nvim", sock, adopted=True)
+    return NvimFollower(socket_path=sock, window_id="@1", pace_seconds=0.05)
+
+
+def _type_into(session: str, keys: str) -> None:
+    """What the user types into their own nvim (the pane of the private
+    server the `ui_nvim` fixture started)."""
+    subprocess.run(["tmux", "send-keys", "-t", session, keys, "Enter"], check=True)
+
+
+def _users_hit_enter_prompt(session: str, probe: Any) -> None:
+    _type_into(session, ":echo repeat('x', 400)")
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and probe.api.get_mode() != {"mode": "r", "blocking": True}:
+        time.sleep(0.05)
+    assert probe.api.get_mode() == {"mode": "r", "blocking": True}
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("trigger", ["deferred", "tall"])
+@pytest.mark.parametrize("entry", ["show_fresh", "ensure_showing"])
+def test_an_adopted_nvim_answers_a_plugin_prompt_while_the_follower_acts(
+    ui_nvim: Callable[[str], str],
+    tmp_path: Path,
+    trigger: str,
+    entry: str,
+    watchdog_channels: list[int],
+    wait_until: Callable[..., bool],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from vim_ai_follower import hooks
+    from vim_ai_follower.backends import nvim_connect
+
+    sock = ui_nvim(trigger)
+    probe = pynvim.attach("socket", path=sock)
+    target = tmp_path / "a.py"
+    target.write_text(_CONTENT)
+    follower = _adopted_follower(sock)
+    try:
+        if entry == "show_fresh":
+            finished, box = _in_thread(lambda: follower.show_fresh(str(target), _CONTENT))
+        else:
+            finished, box = _in_thread(lambda: follower.ensure_showing(str(target)))
+        assert finished, f"{entry} froze on a hit-enter prompt: {probe.api.get_mode()}"
+        assert "error" not in box, box.get("error")
+
+        # The next hook, in a hook's own order: the liveness probe, the
+        # busy check (which sweeps an adopted nvim's prompt before the cue),
+        # the status cue (non-acting in an adopted nvim), then the follower.
+        time.sleep(0.8)
+
+        def next_hook() -> tuple[bool, str | None, str]:
+            alive = follower.is_alive()
+            current = state.FollowerState.read("@1")
+            assert current is not None
+            busy = hooks._busy_nvim(current)
+            NvimStatusSurface(socket_path=sock, adopted=True).set_state("Writing...")
+            return alive, busy, follower.probe_buffer(str(target), _CONTENT)
+
+        finished, box = _in_thread(next_hook)
+        assert finished, f"the next hook froze on a hit-enter prompt: {probe.api.get_mode()}"
+        assert box.get("value") == (True, None, "holds"), box
+        assert nvim_connect.last_probe_verdict(sock) == "answers"
+
+        assert probe.api.get_mode()["blocking"] is False
+        assert _buffer_bytes(probe, str(target)) == [b"x = 1", "y = 'é'".encode()]
+        logged = " ".join(r.getMessage() for r in caplog.records if r.name == "vim_ai_follower")
+        assert "vaf-probe" in logged, logged
+        assert "dismissed a" in logged, logged
+
+        assert not [t for t in threading.enumerate() if t.name == nvim_prompt.WATCHDOG_THREAD_NAME]
+        assert wait_until(
+            lambda: not {c["id"] for c in probe.api.list_chans()} & set(watchdog_channels)
+        ), (watchdog_channels, probe.api.list_chans())
+    finally:
+        _unfreeze(probe)
+
+
+def _session_of(tmux_session: str) -> str:
+    return f"{tmux_session}-nv"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("moment", ["idle", "paused", "handoff"])
+def test_an_idle_or_paused_adopted_nvim_keeps_the_users_prompt(
+    ui_nvim: Callable[[str], str],
+    tmux_session: str,
+    tmp_path: Path,
+    moment: str,
+    wait_until: Callable[..., bool],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from vim_ai_follower import control
+    from vim_ai_follower.diff import compute_edit_script
+
+    sock = ui_nvim("none")
+    session = _session_of(tmux_session)
+    probe = pynvim.attach("socket", path=sock)
+    target = tmp_path / "a.py"
+    before = "one\ntwo\n"
+    after = "one\n" + "".join(f"new line number {index}\n" for index in range(8)) + "two\n"
+    target.write_text(before)
+    follower = _adopted_follower(sock)
+    worker: threading.Thread | None = None
+    box: dict[str, Any] = {}
+    try:
+        follower.ensure_showing(str(target))
+        if moment != "idle":
+            target.write_text(after)
+
+            def edit() -> None:
+                box["result"] = follower.apply_edit(
+                    str(target), compute_edit_script(before, after), before
+                )
+
+            worker = threading.Thread(target=edit, daemon=True)
+            worker.start()
+            assert wait_until(lambda: control.animating_state("@1") == "running", timeout=5.0)
+            time.sleep(0.3)  # a few characters typed
+            if moment == "paused":
+                assert control.request_pause("@1")
+                assert wait_until(lambda: control.animating_state("@1") == "paused", timeout=5.0)
+            else:
+                # The hand-off: an interrupt ends the entry point, and the hook
+                # then only polls the file for the user's save.
+                assert control.request_interrupt("@1")
+                worker.join(_JOIN_SECONDS)
+                assert not worker.is_alive()
+                assert box["result"].outcome == "interrupted"
+
+        with caplog.at_level(logging.WARNING, logger="vim_ai_follower"):
+            _users_hit_enter_prompt(session, probe)
+            time.sleep(2.0)
+            # The user's prompt is still theirs to read.
+            assert probe.api.get_mode() == {"mode": "r", "blocking": True}
+            assert "dismissed" not in caplog.text
+
+            if moment == "paused":
+                # The follower acts again: now it answers the prompt, and the
+                # animation finishes.
+                assert control.request_pause("@1")
+                assert worker is not None
+                worker.join(_JOIN_SECONDS)
+                assert not worker.is_alive(), probe.api.get_mode()
+                assert box["result"].outcome == "completed"
+                assert probe.api.get_mode()["blocking"] is False
+                assert "during apply_edit (watchdog)" in caplog.text
+                assert [line.decode() for line in _buffer_bytes(probe, str(target))] == (
+                    after.splitlines()
+                )
+    finally:
+        _unfreeze(probe)
+        if worker is not None and worker.is_alive():
+            control.request_interrupt("@1")
+            worker.join(_JOIN_SECONDS)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("question", "mode"),
+    [
+        (":call confirm('Save?', \"&Yes\\n&No\")", "r?"),
+        (":call input('Name: ')", "c"),
+    ],
+    ids=["confirm", "input"],
+)
+def test_an_adopted_nvim_leaves_a_confirm_prompt_alone(
+    ui_nvim: Callable[[str], str],
+    tmux_session: str,
+    tmp_path: Path,
+    question: str,
+    mode: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Alberto's answer A: a confirm (or an input()) is the user's choice, so
+    # the follower never answers it — the Vim's Escape pair would cancel it.
+    # Measured 2026-10-17 on nvim 0.12.6: neither is `blocking`, and an
+    # ordinary request completes while one is up, so the follower acts
+    # around it.
+    from vim_ai_follower import hooks
+    from vim_ai_follower.backends import nvim_connect
+
+    sock = ui_nvim("none")
+    session = _session_of(tmux_session)
+    probe = pynvim.attach("socket", path=sock)
+    target = tmp_path / "a.py"
+    target.write_text(_CONTENT)
+    follower = _adopted_follower(sock)
+    try:
+        _type_into(session, question)
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and probe.api.get_mode()["mode"] != mode:
+            time.sleep(0.05)
+        assert probe.api.get_mode() == {"mode": mode, "blocking": False}
+
+        with caplog.at_level(logging.WARNING, logger="vim_ai_follower"):
+            assert nvim_connect.probe_nvim(sock) == "answers"
+            current = state.FollowerState.read("@1")
+            assert current is not None
+            assert hooks._busy_nvim(current) is None
+            finished, box = _in_thread(lambda: follower.ensure_showing(str(target)))
+            assert finished, probe.api.get_mode()
+            assert "error" not in box, box.get("error")
+            time.sleep(0.5)  # many watchdog polls' worth, had one run on
+        assert probe.api.get_mode() == {"mode": mode, "blocking": False}
+        assert "dismissed" not in caplog.text
+    finally:
+        _unfreeze(probe)
+        subprocess.run(["tmux", "send-keys", "-t", session, "Escape"], check=False)

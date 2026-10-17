@@ -1060,6 +1060,88 @@ def test_probe_nvim_remembers_whether_the_nvim_is_waiting_on_its_user(
         assert nvim_connect.last_probe_blocking(str(path)) is blocking
 
 
+@pytest.mark.parametrize(
+    ("reply", "mode"),
+    [
+        ("mode", "n"),
+        (bytes([0x94, 0x01, 0x01, 0xC0, 0x82]) + b"\xa4mode\xa1r\xa8blocking\xc3", "r"),
+        (bytes([0x94, 0x01, 0x01, 0xC0, 0x82]) + b"\xa4mode\xa2rm\xa8blocking\xc3", "rm"),
+        (bytes([0x94, 0x01, 0x01, 0xC0, 0x82]) + b"\xa8blocking\xc2\xa4mode\xa2r?", "r?"),
+        # The dictionary cut off inside the mode's string: no mode known.
+        (bytes([0x94, 0x01, 0x01, 0xC0, 0x82]) + b"\xa4mode\xa2r", None),
+        # Not a fixstr where the mode should be.
+        (bytes([0x94, 0x01, 0x01, 0xC0, 0x82]) + b"\xa4mode\xc0\xa8blocking\xc3", None),
+        # A reply with no mode at all, and one cut off right after the key:
+        # the probe waits for the rest until the deadline, then knows none.
+        (bytes([0x94, 0x01, 0x01, 0xC0, 0x81]) + b"\xa8blocking\xc3", None),
+        (bytes([0x94, 0x01, 0x01, 0xC0, 0x82]) + b"\xa8blocking\xc3\xa4mode", None),
+    ],
+    ids=[
+        "idle",
+        "hit-enter",
+        "more",
+        "confirm-blocking-first",
+        "cut-short",
+        "not-a-string",
+        "no-mode-key",
+        "cut-after-the-key",
+    ],
+)
+def test_probe_nvim_remembers_the_mode_it_answered(reply: Any, mode: str | None) -> None:
+    # Which prompt holds a blocking nvim: a hit-enter ("r") or more-prompt
+    # ("rm") is one the follower answers when it acts; anything else is not.
+    with _short_socket_dir() as directory:
+        path = directory / "nvim-@1.sock"
+        assert nvim_connect.last_probe_mode(str(path)) is None
+        with fake_nvim(path, reply=reply):
+            assert nvim_connect.probe_nvim(str(path), timeout=0.3) == "answers"
+        assert nvim_connect.last_probe_mode(str(path)) == mode
+
+
+@pytest.mark.parametrize(("rest", "mode"), [(b"\xa4mode\xa2rm", "rm"), (b"", None)])
+def test_probe_nvim_reads_a_mode_that_arrives_in_a_later_piece(
+    rest: bytes, mode: str | None
+) -> None:
+    # A reply split after `blocking`: the probe keeps reading until the mode
+    # has arrived too, or until the nvim hangs up without one.
+    head = bytes([0x94, 0x01, 0x01, 0xC0, 0x82]) + b"\xa8blocking\xc3"
+    with _short_socket_dir() as directory:
+        path = directory / "nvim-@1.sock"
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(str(path))
+        server.listen()
+
+        def serve() -> None:
+            client, _address = server.accept()
+            with client:
+                client.recv(4096)
+                client.sendall(head)
+                time.sleep(0.05)
+                if rest:
+                    client.sendall(rest)
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        try:
+            assert nvim_connect.probe_nvim(str(path), timeout=2.0) == "answers"
+        finally:
+            thread.join(timeout=5)
+            server.close()
+        assert nvim_connect.last_probe_blocking(str(path)) is True
+        assert nvim_connect.last_probe_mode(str(path)) == mode
+
+
+def test_probe_nvim_forgets_the_mode_of_an_nvim_that_stopped_answering() -> None:
+    with _short_socket_dir() as directory:
+        path = directory / "nvim-@1.sock"
+        with fake_nvim(path):
+            nvim_connect.probe_nvim(str(path))
+        assert nvim_connect.last_probe_mode(str(path)) == "n"
+        path.unlink(missing_ok=True)
+        assert nvim_connect.probe_nvim(str(path)) == "absent"
+        assert nvim_connect.last_probe_mode(str(path)) is None
+
+
 def test_sweep_stale_sockets_with_no_cache_dir_removes_nothing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

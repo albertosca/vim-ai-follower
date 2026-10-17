@@ -5,8 +5,10 @@ Two shapes the T16 review left open, against real nvims in a private tmux:
 - an ADOPTED nvim sitting at a hit-enter prompt (the user's own `:ls`, a
   plugin's message): `stop` used to wait 10 s on the status float, 10 s more
   on `close_tab`, then exit 1 with a traceback and leave the `.pane` behind
-  (M1). Now it sends nothing to an nvim that is waiting on its user, logs one
-  line, clears the state and exits 0 at once;
+  (M1). Now it answers the prompt first, as any acting step does (decision
+  (a), the Vim follower's Escape pair), then tears down; an adopted nvim
+  blocked in any other way (keys pending) gets nothing sent, one log line,
+  and the state cleared, at once;
 - a DEDICATED follower nvim busy in `:!cmd`: nothing answers its socket, so
   the `qall!` never lands, and `stop` used to clear the state and leave the
   follower's pane in the user's window (M4). That pane is the follower's own,
@@ -70,14 +72,11 @@ def _pane_ids(world: E2EFollower) -> list[str]:
     return listing.stdout.split()
 
 
-def test_stop_of_an_adopted_nvim_at_a_prompt_exits_at_once_and_clears_the_state(
-    world: E2EFollower,
-) -> None:
-    socket_path = world.cache_dir / "nvim-u.sock"
+def _adopted_user_nvim(world: E2EFollower, socket_path: Path, tracked: Path) -> str:
+    """The user's own nvim, in the origin's window, adopted by a state: its
+    pane id, once it answers."""
     world.cache_dir.mkdir(parents=True, exist_ok=True)
-    tracked = world.workdir / "file.py"
     tracked.write_text("line 1\nline 2\n")
-    # The user's own nvim, in the origin's window, adopted by the state below.
     created = world.tmux(
         "split-window",
         "-h",
@@ -111,7 +110,22 @@ def test_stop_of_an_adopted_nvim_at_a_prompt_exits_at_once_and_clears_the_state(
         open_files=(str(tracked.resolve()),),
         base_dir=world.cache_dir,
     )
-    # A multi-line echo raises a hit-enter prompt: blocking, until Enter.
+    return user_pane
+
+
+def _socket_lines(world: E2EFollower, socket_path: Path) -> list[str]:
+    log_path = world.cache_dir / "hook.log"
+    log = log_path.read_text() if log_path.exists() else ""
+    return [line for line in log.splitlines() if str(socket_path) in line]
+
+
+def test_stop_of_an_adopted_nvim_at_a_hit_enter_prompt_answers_it_then_tears_down(
+    world: E2EFollower,
+) -> None:
+    socket_path = world.cache_dir / "nvim-u.sock"
+    tracked = world.workdir / "file.py"
+    user_pane = _adopted_user_nvim(world, socket_path, tracked)
+    # A multi-line echo raises a hit-enter prompt: blocking, until answered.
     world.tmux("send-keys", "-t", user_pane, "-l", ':echo "one\\ntwo\\nthree"\r')
     world.wait_until(
         lambda: _blocking(world, socket_path), "the user's nvim at a prompt", timeout=10.0
@@ -123,16 +137,41 @@ def test_stop_of_an_adopted_nvim_at_a_prompt_exits_at_once_and_clears_the_state(
     assert "Traceback" not in stop.stderr, stop.stderr
     assert stop_seconds < _STOP_BOUND_SECONDS, f"stop took {stop_seconds:.1f} s"
     assert not (world.cache_dir / f"{world.window_id}.pane").exists()
-    lines = [
-        line
-        for line in (world.cache_dir / "hook.log").read_text().splitlines()
-        if str(socket_path) in line
-    ]
-    assert len(lines) == 1, lines
-    assert "waiting on its user" in lines[0]
-    # The user's editor is theirs: still there, prompt and all.
+    log_path = world.cache_dir / "hook.log"
+    log = log_path.read_text() if log_path.exists() else ""
+    assert "dismissed a hit-enter prompt left before stop (sweep)" in log, log
+    assert "waiting on its user" not in log, log
+    # The user's editor is theirs: still there, prompt gone, file still open.
     assert user_pane in _pane_ids(world)
-    assert _blocking(world, socket_path)
+    assert probe_nvim(str(socket_path)) == "answers"
+    assert not _blocking(world, socket_path)
+    observer = world._nvim(str(socket_path))
+    assert observer.call("bufloaded", str(tracked)) == 1
+
+
+def test_stop_of_an_adopted_nvim_blocked_in_a_key_sequence_sends_nothing(
+    world: E2EFollower,
+) -> None:
+    socket_path = world.cache_dir / "nvim-u.sock"
+    tracked = world.workdir / "file.py"
+    user_pane = _adopted_user_nvim(world, socket_path, tracked)
+    # `q` waiting for its register: blocking in normal mode, nothing to answer.
+    world.tmux("send-keys", "-t", user_pane, "q")
+    world.wait_until(lambda: _blocking(world, socket_path), "the pending q", timeout=10.0)
+    try:
+        stop, stop_seconds = _timed_cli(world, "stop")
+
+        assert stop.returncode == 0, stop.stderr
+        assert "Traceback" not in stop.stderr, stop.stderr
+        assert stop_seconds < _STOP_BOUND_SECONDS, f"stop took {stop_seconds:.1f} s"
+        assert not (world.cache_dir / f"{world.window_id}.pane").exists()
+        lines = _socket_lines(world, socket_path)
+        assert len(lines) == 1, lines
+        assert "waiting on its user" in lines[0]
+        assert user_pane in _pane_ids(world)
+        assert _blocking(world, socket_path)  # the pending key is still the user's
+    finally:
+        world.tmux("send-keys", "-t", user_pane, "Escape")
 
 
 def _blocking(world: E2EFollower, socket_path: Path) -> bool:

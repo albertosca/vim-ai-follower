@@ -2591,17 +2591,20 @@ def test_an_unreachable_edit_after_a_concurrent_stop_touches_no_surface(
     assert "skipped the animation of /tmp/a.py: x" in caplog.text
 
 
-_SILENT = ("silent", False)
-_ADOPTED_AT_A_PROMPT = ("answers", True)
+_SILENT = ("silent", False, None)
+# Blocking, but not at a prompt the follower answers: keys pending (a `q`
+# waiting for its register, half of a mapping). Nothing to sweep there.
+_ADOPTED_BLOCKED = ("answers", True, "n")
+_ADOPTED_AT_A_PROMPT = ("answers", True, "r")
 
 
 @pytest.mark.parametrize(
     ("probe_answer", "adopted", "why"),
     [
         (_SILENT, False, "did not answer within 1 s"),
-        (_ADOPTED_AT_A_PROMPT, True, "is waiting on its user"),
+        (_ADOPTED_BLOCKED, True, "is waiting on its user"),
     ],
-    ids=["silent", "adopted-at-a-prompt"],
+    ids=["silent", "adopted-blocked"],
 )
 @pytest.mark.parametrize("tool_name", ["Edit", "Read"])
 def test_a_hook_skips_a_busy_nvim_follower_and_keeps_it(
@@ -2664,10 +2667,76 @@ def test_a_dedicated_nvim_at_a_prompt_is_not_skipped() -> None:
         speed="normal",
         adopted=False,
     )
-    with patch("vim_ai_follower.backends.nvim_connect._probe", return_value=_ADOPTED_AT_A_PROMPT):
+    with patch("vim_ai_follower.backends.nvim_connect._probe", return_value=_ADOPTED_BLOCKED):
         nvim_connect.probe_nvim("/tmp/own.sock")
     assert hooks._busy_nvim(current) is None
     assert hooks._busy_nvim(dataclasses.replace(current, adopted=True)) is not None
+
+
+@pytest.mark.parametrize("mode", ["r", "rm"])
+def test_an_adopted_nvim_at_a_hit_enter_or_more_prompt_is_swept_not_skipped(
+    mode: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Decision (a): the Vim follower's Escape pair dismisses a prompt the
+    # user has up when it is about to act; so does this sweep, before the
+    # cue is raised (a non-acting request that would wait on the prompt).
+    current = state.FollowerState(
+        backend="nvim",
+        target="/tmp/user.sock",
+        current_file=None,
+        origin="%9",
+        on_failure="silent",
+        speed="normal",
+        adopted=True,
+    )
+    connection = MagicMock()
+    prompt = {"mode": mode, "blocking": True}
+    modes = iter([prompt, prompt])
+    connection.api.get_mode.side_effect = lambda: next(modes, {"mode": "n", "blocking": False})
+    connection.api.exec2.return_value = {"output": "plugin says\n"}
+    # The second connection is the watchdog's, over the `:messages` read.
+    watchdog = MagicMock()
+    watchdog.api.get_mode.return_value = {"mode": "n", "blocking": False}
+    with (
+        caplog.at_level(logging.WARNING, logger="vim_ai_follower"),
+        patch("vim_ai_follower.backends.nvim_connect._probe", return_value=("answers", True, mode)),
+        patch(
+            "vim_ai_follower.backends.nvim_connect.bounded_attach",
+            side_effect=[connection, watchdog],
+        ) as attach,
+    ):
+        nvim_connect.probe_nvim("/tmp/user.sock")
+        assert hooks._busy_nvim(current) is None
+    assert attach.call_args_list == [mock_call("/tmp/user.sock")] * 2
+    watchdog.api.input.assert_not_called()
+    connection.api.input.assert_called_once_with("<CR>" if mode == "r" else "<Esc>")
+    assert "left before the hook (sweep)" in caplog.text
+    assert "waiting on its user" not in caplog.text
+
+
+def test_an_adopted_prompt_that_cannot_be_reached_is_skipped(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    current = state.FollowerState(
+        backend="nvim",
+        target="/tmp/user.sock",
+        current_file=None,
+        origin="%9",
+        on_failure="silent",
+        speed="normal",
+        adopted=True,
+    )
+    with (
+        patch("vim_ai_follower.backends.nvim_connect._probe", return_value=("answers", True, "r")),
+        patch(
+            "vim_ai_follower.backends.nvim_connect.bounded_attach",
+            side_effect=nvim_connect.RpcTimeout("nvim did not answer within 3 s"),
+        ),
+    ):
+        nvim_connect.probe_nvim("/tmp/user.sock")
+        busy = hooks._busy_nvim(current)
+    assert busy is not None
+    assert "could not be answered" in busy and "did not answer within 3 s" in busy
 
 
 def test_a_base_probe_that_times_out_logs_one_line(caplog: pytest.LogCaptureFixture) -> None:

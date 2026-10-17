@@ -1,4 +1,4 @@
-"""Keep a plugin's hit-enter prompt from freezing a DEDICATED nvim follower.
+"""Keep a plugin's hit-enter prompt from freezing an nvim follower.
 
 The follower's nvim loads the user's whole config on purpose (it is where
 gruvbox comes from), so every FileType/BufRead the follower fires runs the
@@ -57,8 +57,23 @@ Residual, not solvable here: the USER pressing a key at the very instant a
 guard answers. Their key then lands spare in normal mode, through their own
 mappings, exactly as they typed it.
 
-Never used on an ADOPTED nvim: that is the user's own editor, and its prompts
-are the user's to read — an automatic Enter would eat them.
+An ADOPTED nvim (the user's own editor) answers the same two prompts the way
+the tmux backend's Vim does (decision (a), 2026-10-05). That Vim gets an
+Escape pair at the start of every entry point that acts, which dismisses a
+hit-enter or more-prompt the user has up (measured 2026-10-17, Vim 9.2 at 49
+columns: normal mode, buffer untouched — what <CR> and <Esc> leave here), and
+its keystrokes answer one raised while it acts. So an adopted nvim gets the
+sweep and the watchdog too, but only while the follower ACTS (`acting`): the
+status float is not acting (the tmux cue is a tmux border and sends nothing
+into Vim), so its guard stays a no-op there. And only while it is not PAUSED
+(`paused`): the Vim follower sends nothing during a pause, and the user may be
+reading their own `:ls` in their own editor. Idle and during the hand-off wait
+no guard is held at all. A confirm prompt or an input() is never answered
+(Alberto's answer A): measured 2026-10-17 on nvim 0.12.6, they answer get_mode
+`{"mode": "r?"}` and `{"mode": "c"}` with `blocking: false`, and an ordinary
+request completes while one is up, so the follower acts around them. A
+DEDICATED follower's watchdog ignores the pause: its prompts are never the
+user's.
 
 pynvim is never imported here: the caller hands in its own `connect`, which
 keeps status_surface (imported by hooks) importable without the nvim extra."""
@@ -96,6 +111,11 @@ _SETTLE_POLL_SECONDS = 0.02
 _ANSWERS = {"r": "<CR>", "rm": "<Esc>"}
 _NAMES = {"r": "hit-enter prompt", "rm": "more-prompt"}
 WATCHDOG_THREAD_NAME = "vaf-hit-enter-watchdog"
+
+# Sockets whose animation is paused right now, in this process (`paused`): an
+# ADOPTED watchdog answers nothing while its socket's event is set.
+_pauses: dict[str, threading.Event] = {}
+_pauses_guard = threading.Lock()
 
 # Sockets with a guard already active in THIS thread: an entry point that calls
 # another (apply_edit -> goto_file) must not start a second watchdog, which
@@ -228,6 +248,36 @@ def _answer_for(mode: dict[str, Any]) -> str | None:
     return _ANSWERS.get(mode.get("mode", "")) if mode.get("blocking") else None
 
 
+def answerable(mode: str | None) -> bool:
+    """Whether a blocking nvim in `mode` is at a prompt this module answers:
+    the hit-enter prompt ("r") or the more-prompt ("rm"). Never a confirm
+    ("r?"), an input() or keys pending in normal mode."""
+    return mode in _ANSWERS
+
+
+def _pause_event(key: str) -> threading.Event:
+    with _pauses_guard:
+        return _pauses.setdefault(key, threading.Event())
+
+
+def is_paused(key: str) -> bool:
+    """Whether an animation on socket `key` is paused in this process."""
+    return _pause_event(key).is_set()
+
+
+@contextlib.contextmanager
+def paused(key: str) -> Iterator[None]:
+    """Mark socket `key`'s animation paused for the body: an ADOPTED watchdog
+    on it answers nothing meanwhile (a dedicated one ignores this). Cleared on
+    every exit path."""
+    event = _pause_event(key)
+    event.set()
+    try:
+        yield
+    finally:
+        event.clear()
+
+
 def dismiss_prompt(
     nvim: Any,
     socket_path: str,
@@ -287,8 +337,10 @@ def close_connection(nvim: Any) -> None:
 class Watchdog:
     """Polls a second connection and dismisses hit-enter and more-prompts until
     stop(). It stays alive for the whole guarded call, a pause included: a
-    user's own `:ls` in a PAUSED dedicated follower is dismissed too. Every
-    failure — the connection refused, a poll raising — is
+    user's own `:ls` in a PAUSED dedicated follower is dismissed too. While
+    `suspended` is set it answers nothing — an ADOPTED guard hands it its
+    socket's pause event (`paused`); a dedicated one keeps its own, never set.
+    Every failure — the connection refused, a poll raising — is
     logged and ends the thread; nothing is ever raised to the hook. The
     connection is closed by the thread itself, on every exit path."""
 
@@ -297,6 +349,7 @@ class Watchdog:
         self._label = label
         self._key = key
         self._stop = threading.Event()
+        self.suspended = threading.Event()
         self.dismissals = 0
         self._thread = threading.Thread(target=self._run, name=WATCHDOG_THREAD_NAME, daemon=True)
 
@@ -321,7 +374,8 @@ class Watchdog:
             return
         try:
             while not self._stop.is_set():
-                dismiss_prompt(nvim, self._key, self._answered)
+                if not self.suspended.is_set():
+                    dismiss_prompt(nvim, self._key, self._answered)
                 self._stop.wait(POLL_SECONDS)
         except Exception as exc:
             if not self._stop.is_set():
@@ -347,12 +401,53 @@ def _log_messages_tail(nvim: Any, label: str) -> None:
         logger.warning("nvim follower: could not read :messages after %s: %s", label, exc)
 
 
+def _log_sweep(seen: dict[str, Any], label: str) -> None:
+    logger.warning(
+        "nvim follower: dismissed a %s left before %s (sweep)", _NAMES[seen["mode"]], label
+    )
+
+
+def sweep_socket(connect: Callable[[], Any], key: str, label: str) -> dict[str, Any] | None:
+    """One sweep on a connection of its own, closed after: what a hook runs
+    before the status cue when its probe found an ADOPTED nvim at a hit-enter
+    or more-prompt, since the cue (not acting) would wait behind it. Returns
+    the mode answered, or None. Connection errors propagate (the caller
+    skips, as for any nvim it cannot reach).
+
+    As in prompt_guard, the `:messages` tail is read under a watchdog: a
+    plugin's message queued behind the one answered (two FileType callbacks,
+    say) raises its own prompt the moment the first is gone, and the read
+    would wait behind it."""
+    nvim = connect()
+    try:
+        seen = dismiss_prompt(nvim, key)
+        if seen is not None:
+            _log_sweep(seen, label)
+            watchdog = Watchdog(connect, label, key)
+            watchdog.start()
+            try:
+                _log_messages_tail(nvim, label)
+            finally:
+                watchdog.stop()
+        return seen
+    finally:
+        close_connection(nvim)
+
+
 @contextlib.contextmanager
 def prompt_guard(
-    nvim: Any, connect: Callable[[], Any], *, key: str, adopted: bool, label: str
+    nvim: Any,
+    connect: Callable[[], Any],
+    *,
+    key: str,
+    adopted: bool,
+    label: str,
+    acting: bool = True,
 ) -> Iterator[None]:
     """Sweep, then run the body under a watchdog. A no-op for an adopted nvim
-    and for a guard nested inside another on the same socket (`key`).
+    whose caller does not act on it (`acting=False`: the status float) and for
+    a guard nested inside another on the same socket (`key`). An adopted
+    guard's watchdog answers nothing while the socket is `paused`.
 
     The sweep runs on the caller's own connection and its errors propagate
     like any first RPC would (a dead socket must fail the same way it always
@@ -361,7 +456,7 @@ def prompt_guard(
     prompt landing at that very moment cannot hang the read — and only then
     is the watchdog stopped, in a finally, whether or not the body raised."""
     guarded: set[str] = getattr(_active, "keys", set())
-    if adopted or key in guarded:
+    if (adopted and not acting) or key in guarded:
         yield
         return
     _active.keys = guarded | {key}
@@ -369,12 +464,10 @@ def prompt_guard(
         seen = dismiss_prompt(nvim, key)
         swept = seen is not None
         if seen is not None:
-            logger.warning(
-                "nvim follower: dismissed a %s left before %s (sweep)",
-                _NAMES[seen["mode"]],
-                label,
-            )
+            _log_sweep(seen, label)
         watchdog = Watchdog(connect, label, key)
+        if adopted:
+            watchdog.suspended = _pause_event(key)
         watchdog.start()
         try:
             yield

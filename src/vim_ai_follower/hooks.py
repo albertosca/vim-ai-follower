@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import functools
 import json
 import logging
 import os
@@ -23,6 +24,7 @@ from vim_ai_follower.backends import (
     NavigationFailed,
     get_follower,
     nvim_connect,
+    nvim_prompt,
     without_bom,
 )
 from vim_ai_follower.backends.nvim_connect import (
@@ -1144,13 +1146,21 @@ def _busy_nvim(current: FollowerState) -> str | None:
     """Why this hook must leave an nvim follower alone, or None: the liveness
     probe FollowerState.get just ran found it accepting and SILENT — busy in
     `:!make`, `system()` or a Lua loop, or stopped — or found an ADOPTED nvim
-    answering `blocking: true`, waiting on its user at a hit-enter prompt,
-    confirm() or input(), which holds every other request until answered (a
-    dedicated follower's prompt watchdog dismisses its own prompts; the
-    user's nvim has none). Either is alive (so nothing reopens or replaces
-    it), but every request would wait out the RPC deadline — the cue, the
-    base probe and the cue's refresh cost 30 s against a prompt already up;
-    the hook skips instead, before raising any cue."""
+    answering `blocking: true` in a mode the follower does not answer (keys
+    pending in normal mode, half of a mapping), which holds every other
+    request until the user finishes it. Either is alive (so nothing reopens or
+    replaces it), but every request would wait out the RPC deadline — the
+    cue, the base probe and the cue's refresh cost 30 s; the hook skips
+    instead, before raising any cue.
+
+    An adopted nvim blocking at a hit-enter or more-prompt is swept here
+    instead, and the hook goes on (decision (a)): the hook is about to act,
+    and the Vim follower's Escape pair dismisses a prompt the user has up at
+    that moment. It has to be here, before the cue, because the cue does not
+    act (no sweep of its own) and would wait behind the prompt. A dedicated
+    follower's prompts are its guard's to sweep. A confirm() or input() is
+    not blocking (measured, nvim 0.12.6): the hook goes on and answers
+    neither."""
     if current.backend != "nvim":
         return None
     if nvim_connect.last_probe_verdict(current.target) == "silent":
@@ -1159,7 +1169,25 @@ def _busy_nvim(current: FollowerState) -> str | None:
             f"{nvim_connect.LIVENESS_TIMEOUT_SECONDS:g} s (busy in a command, or stopped)"
         )
     if current.adopted and nvim_connect.last_probe_blocking(current.target):
-        return f"nvim at {current.target} is waiting on its user (a hit-enter prompt or a question)"
+        if not nvim_prompt.answerable(nvim_connect.last_probe_mode(current.target)):
+            return (
+                f"nvim at {current.target} is waiting on its user (in the middle of a key sequence)"
+            )
+        return sweep_adopted_prompt(current.target, "the hook")
+    return None
+
+
+def sweep_adopted_prompt(socket_path: str, label: str) -> str | None:
+    """Answer the hit-enter or more-prompt an ADOPTED nvim at `socket_path`
+    has up, on a bounded connection of its own, before `label` acts there.
+    None when done (or when another guard answered it first); otherwise why
+    the prompt could not be answered, for the caller to skip with."""
+    try:
+        nvim_prompt.sweep_socket(
+            functools.partial(nvim_connect.bounded_attach, socket_path), socket_path, label
+        )
+    except (OSError, EOFError) as error:  # RpcTimeout is an OSError
+        return f"nvim at {socket_path} is at a prompt that could not be answered: {error}"
     return None
 
 

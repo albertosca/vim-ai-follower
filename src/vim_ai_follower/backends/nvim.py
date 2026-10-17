@@ -27,6 +27,7 @@ from vim_ai_follower.backends import (
     log_adopted_close,
     log_state_gone,
     nvim_connect,
+    nvim_prompt,
     typed_form,
 )
 from vim_ai_follower.backends.nvim_connect import bounded_attach, probe_nvim
@@ -106,6 +107,7 @@ def _animate_lines(
     ns: int,
     base_dir: Path | None = None,
     save_pending: Callable[[int], None] | None = None,
+    prompt_key: str = "",
 ) -> AnimationResult:
     """Type `lines` into `buf` from `start_row`, one CHARACTER at a time over
     the API, checking for a pause/interrupt signal before every character (not
@@ -130,7 +132,10 @@ def _animate_lines(
     character) or interrupts. The pace is re-read per line so a live Ctrl+a
     +/- takes effect at the next line; a zero pace types the whole line at
     once (the pace-0 catch-up must not animate).
-    `save_pending(index)` persists the crash-fallback remainder while paused."""
+    `save_pending(index)` persists the crash-fallback remainder while paused.
+    Every pause is waited out under nvim_prompt.paused(`prompt_key`), the
+    socket, so an adopted nvim's watchdog leaves the user's prompts alone
+    while nothing is being typed."""
     # Static default (2026-09-15, Alberto's request): his real nvim config
     # loads gruvbox via ~/.vimrc, but that config's own plugin loading can
     # still be mid-flight when typing starts, so force it explicitly and
@@ -164,7 +169,9 @@ def _animate_lines(
         if signal == "interrupt":
             return AnimationResult("interrupted", index)
         if signal == "pause":
-            if not _wait_while_paused(window_id, _bind_save(save_pending, index), base_dir):
+            with nvim_prompt.paused(prompt_key):
+                resumed = _wait_while_paused(window_id, _bind_save(save_pending, index), base_dir)
+            if not resumed:
                 return AnimationResult("interrupted", index)
             continue  # resumed: retype this line from its clean boundary
         row = start_row + index
@@ -196,7 +203,11 @@ def _animate_lines(
                 interrupted = True
                 break
             if signal == "pause":
-                if not _wait_while_paused(window_id, _bind_save(save_pending, index), base_dir):
+                with nvim_prompt.paused(prompt_key):
+                    resumed = _wait_while_paused(
+                        window_id, _bind_save(save_pending, index), base_dir
+                    )
+                if not resumed:
                     interrupted = True
                     break
                 continue  # resumed: retype from the same character
@@ -568,8 +579,9 @@ class NvimFollower:
         adopted?": with the state gone (a concurrent `claude-follow stop`
         between two entry points of one hook, or no window id) nothing proves
         the nvim isn't the user's own editor, so each fails closed onto the
-        user's side: no lock (_locks_buffers), no key pressed (_guarded), no
-        message captured (_exec), swap back on, the readonly asked about, and
+        user's side: no lock (_locks_buffers), only the adopted prompt
+        answers (_guarded: at a hit-enter or more-prompt while acting, never
+        while paused), no message captured (_exec), swap back on, the readonly asked about, and
         the eviction rules instead of a wipe (close_tab; review of sweep-4
         T4+T5, C1). The state must also be readable and name THIS socket
         (owned_state): a racing `stop` + `start` writes a dedicated state for
@@ -606,9 +618,11 @@ class NvimFollower:
     @contextlib.contextmanager
     def _guarded(self, nvim: pynvim.Nvim, label: str) -> Iterator[None]:
         """Run an entry point's body under nvim_prompt's sweep + watchdog, so
-        a plugin message raising a hit-enter prompt cannot freeze it. A no-op
-        on an adopted nvim, and when an outer entry point already guards this
-        socket."""
+        a plugin message raising a hit-enter prompt cannot freeze it. Every
+        entry point here ACTS, so an adopted nvim is guarded too (the
+        counterpart of the tmux backend's Escape pair, decision (a)), its
+        watchdog suspended while an animation is paused; a no-op when an
+        outer entry point already guards this socket."""
         with prompt_guard(
             nvim, self._connect, key=self.socket_path, adopted=not self._is_dedicated(), label=label
         ):
@@ -674,8 +688,10 @@ class NvimFollower:
 
         Every request in here runs without the RPC deadline
         (nvim_connect.unbounded_requests): mid-animation, an nvim that stops
-        answering is waiting on its user — a hit-enter prompt in an adopted
-        nvim holds the typing until Enter, then it finishes. Cutting it
+        answering is waiting on its user — a hit-enter prompt is answered by
+        the watchdog (adopted included, since decision (a)), but keys pending
+        in normal mode or a half-typed mapping are not, and they hold the
+        typing until the user finishes them, then it finishes. Cutting it
         crashed the hook, left a half-typed line and the "Writing..." float
         up, and the abandoned request still landed at Enter."""
         with nvim_connect.unbounded_requests(nvim):
@@ -761,6 +777,7 @@ class NvimFollower:
                     self.window_id,
                     ns,
                     save_pending=save_pending,
+                    prompt_key=self.socket_path,
                 )
                 if result.outcome == "completed" and lines:
                     # Drop the seed blank line the retype pushed to the bottom, so
@@ -880,7 +897,9 @@ class NvimFollower:
             if signal == "interrupt":
                 return AnimationResult("interrupted", index)
             if signal == "pause":
-                if not _wait_while_paused(self.window_id, save_pending, None):
+                with nvim_prompt.paused(self.socket_path):
+                    resumed = _wait_while_paused(self.window_id, save_pending, None)
+                if not resumed:
                     return AnimationResult("interrupted", index)
                 continue  # resumed: retry this op from its clean boundary
             # start_line-1/end_line are the 0-indexed, end-exclusive range
@@ -922,6 +941,7 @@ class NvimFollower:
                     self.window_id,
                     ns,
                     save_pending=save_pending,
+                    prompt_key=self.socket_path,
                 )
                 if result.outcome == "interrupted":
                     # Roll the op back so the buffer the user takes over is
@@ -1090,6 +1110,7 @@ class NvimFollower:
             self.window_id,
             ns,
             save_pending=save_pending,
+            prompt_key=self.socket_path,
         )
         if result.outcome == "completed" and seeded:
             # Drop the seed blank the retype pushed to the bottom.
@@ -1431,9 +1452,9 @@ class NvimFollower:
         (_IS_CLEAN_LUA); leave it alone otherwise. Never writes.
 
         Prompt-free: `silent` keeps the "file" line and any autocommand's
-        message from raising a hit-enter prompt in an adopted nvim, whose
-        prompts nothing answers; a dedicated one also captures and logs the
-        output (_exec).
+        message from raising a hit-enter prompt in an adopted nvim, where
+        the watchdog would answer it and the user would never read it; a
+        dedicated one also captures and logs the output (_exec).
 
         Swap-safe as it stands, measured 2026-09-28: unlike Vim (see the tmux
         backend's _VIM_RELOAD), nvim's `:edit!` of a buffer that already

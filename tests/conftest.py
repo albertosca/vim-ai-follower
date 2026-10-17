@@ -39,6 +39,7 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[N
     # test left behind must never make the next one's follower read as busy.
     monkeypatch.setattr(nvim_connect, "_last_verdicts", {})
     monkeypatch.setattr(nvim_connect, "_last_blocking", {})
+    monkeypatch.setattr(nvim_connect, "_last_modes", {})
     yield
     hooks.logger.handlers.clear()
 

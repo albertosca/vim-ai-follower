@@ -65,6 +65,11 @@ _MAP_MARKERS = frozenset(range(0x80, 0x90)) | {0xDE, 0xDF}
 # blocking true, and holds every other request until the user answers.
 _BLOCKING_KEY = b"\xa8blocking"
 _MSGPACK_TRUE = 0xC3
+# The dictionary's `"mode"` key (fixstr(4)); nvim's mode names are all short
+# enough for a fixstr (0xa0 + length) value: "r" is the hit-enter prompt,
+# "rm" the more-prompt, "r?" a confirm, "c" an input() (measured 2026-10-17).
+_MODE_KEY = b"\xa4mode"
+_FIXSTR_FIRST, _FIXSTR_LAST = 0xA0, 0xBF
 # The process scan that tells a full listen queue from a dead socket file:
 # one `ps`, bounded; a scan that fails or runs out counts as a live listener.
 PROCESS_SCAN_TIMEOUT_SECONDS = 2.0
@@ -355,8 +360,8 @@ _BOUNDS_ATTRIBUTE = "_vaf_bounds"
 def unbounded_requests(nvim: Any) -> Iterator[None]:
     """Lift bounded_attach's request deadline for the body, on this
     connection: the requests that TYPE an animation. There an nvim that stops
-    answering is, far more often than not, an nvim waiting on its user (a
-    hit-enter prompt in an adopted nvim, which no watchdog dismisses), and
+    answering is, far more often than not, an nvim waiting on its user (keys
+    pending, or a prompt raised where no watchdog answers it), and
     cutting a request at RPC_TIMEOUT_SECONDS crashed the hook with a
     half-typed line and "Writing..." left up — while the abandoned request
     still landed at Enter. The outer bound is the hook's own timeout. The
@@ -379,6 +384,8 @@ def unbounded_requests(nvim: Any) -> Iterator[None]:
 _last_verdicts: dict[str, str] = {}
 # Whether that answer said the nvim is BLOCKING, waiting on its user.
 _last_blocking: dict[str, bool] = {}
+# The mode that answer named, None when it named none (or nothing answered).
+_last_modes: dict[str, str | None] = {}
 
 
 def last_probe_verdict(sock: str) -> str | None:
@@ -394,6 +401,14 @@ def last_probe_blocking(sock: str) -> bool:
     return _last_blocking.get(sock, False)
 
 
+def last_probe_mode(sock: str) -> str | None:
+    """The `mode` probe_nvim's latest answer on `sock` named in this process:
+    with last_probe_blocking, it tells a hit-enter ("r") or more-prompt
+    ("rm") — which the follower answers when it acts — from anything else
+    that blocks. None when the latest probe got no answer, or none named."""
+    return _last_modes.get(sock)
+
+
 def probe_nvim(sock: str, timeout: float = LIVENESS_TIMEOUT_SECONDS) -> str:
     """Ask whatever listens on `sock` for nvim_get_mode, raw, within `timeout`.
 
@@ -405,10 +420,12 @@ def probe_nvim(sock: str, timeout: float = LIVENESS_TIMEOUT_SECONDS) -> str:
     while a live process listens there (a queue full of probes it never
     accepted). "garbled": something answered that is not an nvim's reply, or hung
     up. Thread-safe, no pynvim. The verdict is remembered (last_probe_verdict),
-    and so is whether an answer said `blocking: true` (last_probe_blocking)."""
-    verdict, blocking = _probe(sock, timeout)
+    and so are whether an answer said `blocking: true` (last_probe_blocking)
+    and the mode it named (last_probe_mode)."""
+    verdict, blocking, mode = _probe(sock, timeout)
     _last_verdicts[sock] = verdict
     _last_blocking[sock] = blocking
+    _last_modes[sock] = mode
     return verdict
 
 
@@ -427,21 +444,40 @@ def _blocking(received: bytes) -> bool | None:
     return received[value_offset] == _MSGPACK_TRUE
 
 
-def _probe(sock: str, timeout: float) -> tuple[str, bool]:
-    """(verdict, blocking): see probe_nvim. After a well-formed start it
-    keeps reading for the `blocking` value; a reply that ends, stalls or runs
-    long without one is an answer from an nvim not known to be blocking."""
+def _mode(received: bytes) -> tuple[bool, str | None]:
+    """(settled, the reply's `mode`): unsettled while the key or its value
+    has not fully arrived; settled with None when the value is not a fixstr."""
+    key_offset = received.find(_MODE_KEY)
+    if key_offset == -1:
+        return False, None
+    marker_offset = key_offset + len(_MODE_KEY)
+    if len(received) <= marker_offset:
+        return False, None
+    marker = received[marker_offset]
+    if not _FIXSTR_FIRST <= marker <= _FIXSTR_LAST:
+        return True, None
+    value = received[marker_offset + 1 : marker_offset + 1 + marker - _FIXSTR_FIRST]
+    if len(value) < marker - _FIXSTR_FIRST:
+        return False, None
+    return True, value.decode("utf-8", "replace")
+
+
+def _probe(sock: str, timeout: float) -> tuple[str, bool, str | None]:
+    """(verdict, blocking, mode): see probe_nvim. After a well-formed start
+    it keeps reading for the `blocking` and `mode` values; a reply that ends,
+    stalls or runs long without them is an answer from an nvim not known to
+    be blocking, in no known mode."""
     probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     probe.settimeout(timeout)
     try:
         try:
             probe.connect(sock)
         except TimeoutError:
-            return "silent", False
+            return "silent", False, None
         except FileNotFoundError:
-            return "absent", False
+            return "absent", False, None
         except OSError:  # refused: a dead nvim's file, or a full listen queue
-            return ("silent" if refused_by_a_live_nvim(sock) else "absent"), False
+            return ("silent" if refused_by_a_live_nvim(sock) else "absent"), False, None
         deadline = time.monotonic() + timeout
         received = b""
         try:
@@ -449,20 +485,22 @@ def _probe(sock: str, timeout: float) -> tuple[str, bool]:
             while len(received) < len(_GET_MODE_REPLY_PREFIX) + 1:
                 left = deadline - time.monotonic()
                 if left <= 0:
-                    return "silent", False
+                    return "silent", False, None
                 probe.settimeout(left)
                 chunk = probe.recv(64)
                 if not chunk:
-                    return "garbled", False
+                    return "garbled", False, None
                 received += chunk
         except TimeoutError:
-            return "silent", False
+            return "silent", False, None
         except OSError:
-            return "garbled", False
+            return "garbled", False, None
         if not _well_formed(received):
-            return "garbled", False
+            return "garbled", False, None
         try:
-            while _blocking(received) is None and len(received) < _REPLY_READ_LIMIT:
+            while (_blocking(received) is None or not _mode(received)[0]) and len(
+                received
+            ) < _REPLY_READ_LIMIT:
                 left = deadline - time.monotonic()
                 if left <= 0:
                     break
@@ -475,7 +513,7 @@ def _probe(sock: str, timeout: float) -> tuple[str, bool]:
             pass
     finally:
         probe.close()
-    return "answers", bool(_blocking(received))
+    return "answers", bool(_blocking(received)), _mode(received)[1]
 
 
 def nvim_answers(sock: str, timeout: float = LIVENESS_TIMEOUT_SECONDS) -> bool:

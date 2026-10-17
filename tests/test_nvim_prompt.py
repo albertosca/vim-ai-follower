@@ -5,6 +5,7 @@ test_nvim_integration_hit_enter.py; here each rule is pinned on its own."""
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import logging
 import os
@@ -329,15 +330,162 @@ def test_the_log_once_set_is_guarded() -> None:
 # --- prompt_guard -------------------------------------------------------------
 
 
-def test_an_adopted_nvim_gets_no_sweep_and_no_watchdog() -> None:
-    # The user's own editor: its prompts are the user's to read.
+def test_a_non_acting_adopted_guard_gets_no_sweep_and_no_watchdog() -> None:
+    # The status float in the user's own editor: it does not act on a buffer
+    # (the tmux cue is a border and sends nothing into Vim), so the user's
+    # prompts stay theirs to read.
     nvim = _nvim(_PROMPT, _PROMPT)
     connect = MagicMock()
-    with prompt_guard(nvim, connect, key="/s", adopted=True, label="x"):
+    with prompt_guard(nvim, connect, key="/s", adopted=True, label="x", acting=False):
         pass
     nvim.api.get_mode.assert_not_called()
     nvim.api.input.assert_not_called()
     connect.assert_not_called()
+
+
+def test_an_acting_adopted_guard_sweeps_and_watches(caplog: pytest.LogCaptureFixture) -> None:
+    # The counterpart of the tmux backend's Escape pair: when the follower is
+    # about to act in the user's own editor, a hit-enter prompt left up is
+    # dismissed, and one raised while it acts is answered by the watchdog.
+    main = _nvim(_PROMPT, _PROMPT)
+    dog = _nvim(_IDLE, _PROMPT, _PROMPT)
+    with (
+        caplog.at_level(logging.WARNING, logger="vim_ai_follower"),
+        prompt_guard(main, lambda: dog, key="/s", adopted=True, label="apply_edit"),
+    ):
+        main.api.input.assert_called_once_with("<CR>")  # the sweep, before the body
+        assert _wait_for(lambda: dog.api.input.called)
+    dog.api.input.assert_called_once_with("<CR>")
+    assert "left before apply_edit (sweep)" in caplog.text
+    assert "during apply_edit (watchdog)" in caplog.text
+
+
+def test_an_acting_guard_is_the_default() -> None:
+    main = _nvim(_PROMPT, _PROMPT)
+    with prompt_guard(main, lambda: _nvim(), key="/s", adopted=True, label="x"):
+        pass
+    main.api.input.assert_called_once_with("<CR>")
+
+
+@pytest.mark.parametrize(
+    "prompt", [{"mode": "r?", "blocking": False}, {"mode": "c", "blocking": False}]
+)
+def test_an_acting_adopted_guard_never_answers_a_confirm_or_an_input(
+    prompt: dict[str, Any],
+) -> None:
+    # What nvim 0.12 answers at confirm() and input() (measured 2026-10-17):
+    # a choice the user is making, never ours to make.
+    main = _nvim(prompt, prompt)
+    dog = MagicMock()
+    dog.api.get_mode.return_value = prompt
+    with prompt_guard(main, lambda: dog, key="/s", adopted=True, label="x"):
+        assert _wait_for(lambda: dog.api.get_mode.call_count >= 3)
+    main.api.input.assert_not_called()
+    dog.api.input.assert_not_called()
+
+
+def test_an_adopted_watchdog_answers_nothing_while_paused_then_answers_on_resume() -> None:
+    # A pause in the user's own editor: the Vim follower sends nothing while
+    # paused, and the user may be reading their own `:ls`.
+    # The pause is entered before the guard, so the watchdog's very first
+    # poll already sees it (the sweep goes to the follower's own connection,
+    # which shows no prompt).
+    dog = MagicMock()
+    dog.api.get_mode.return_value = _PROMPT
+    with contextlib.ExitStack() as pause:
+        pause.enter_context(nvim_prompt.paused("/s"))
+        with (
+            patch.object(nvim_prompt, "_SETTLE_SECONDS", 0.05),
+            prompt_guard(_nvim(), lambda: dog, key="/s", adopted=True, label="x"),
+        ):
+            time.sleep(0.3)
+            dog.api.input.assert_not_called()
+            pause.close()
+            assert nvim_prompt.is_paused("/s") is False
+            assert _wait_for(lambda: dog.api.input.called)
+    dog.api.input.assert_any_call("<CR>")
+
+
+def test_a_dedicated_watchdog_answers_even_while_paused() -> None:
+    # Its prompts are never the user's (sweep-3 behaviour, unchanged).
+    dog = _nvim(_IDLE, _PROMPT, _PROMPT)
+    with (
+        prompt_guard(_nvim(), lambda: dog, key="/s", adopted=False, label="x"),
+        nvim_prompt.paused("/s"),
+    ):
+        assert _wait_for(lambda: dog.api.input.called)
+    dog.api.input.assert_called_once_with("<CR>")
+
+
+def test_a_pause_is_per_socket_and_ends_with_its_block() -> None:
+    with nvim_prompt.paused("/a"):
+        assert nvim_prompt.is_paused("/a") is True
+        assert nvim_prompt.is_paused("/b") is False
+    assert nvim_prompt.is_paused("/a") is False
+
+
+def test_a_pause_ends_even_when_its_body_raises() -> None:
+    with pytest.raises(ValueError, match="boom"), nvim_prompt.paused("/a"):
+        raise ValueError("boom")
+    assert nvim_prompt.is_paused("/a") is False
+
+
+# --- sweep_socket: the hook's sweep before it raises the cue -----------------
+
+
+def test_sweep_socket_answers_a_prompt_logs_the_tail_and_closes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    nvim = _nvim(_PROMPT, _PROMPT)
+    nvim.api.exec2.return_value = {"output": "one\ntwo\n"}
+    dog = _nvim()
+    connections = iter([nvim, dog])
+    with caplog.at_level(logging.WARNING, logger="vim_ai_follower"):
+        assert nvim_prompt.sweep_socket(lambda: next(connections), "/s", "the Edit hook") == _PROMPT
+    nvim.api.input.assert_called_once_with("<CR>")
+    nvim.close.assert_called_once_with()
+    dog.api.input.assert_not_called()
+    assert "dismissed a hit-enter prompt left before the Edit hook (sweep)" in caplog.text
+    assert ":messages after the Edit hook: one | two" in caplog.text
+
+
+def test_sweep_socket_answers_a_prompt_queued_behind_the_one_it_answered() -> None:
+    # Measured with a real nvim whose FileType callback ran twice: the second
+    # deferred message raised its prompt as soon as the sweep answered the
+    # first, and the `:messages` read waited behind it. The read runs under a
+    # watchdog, which answers it.
+    nvim = _nvim(_PROMPT, _PROMPT)
+    dog = MagicMock()
+    dog.api.get_mode.side_effect = [_PROMPT, _PROMPT] + [_IDLE] * 1000
+
+    def read_behind_the_second_prompt(*_arguments: Any) -> dict[str, str]:
+        assert _wait_for(lambda: dog.api.input.called)
+        return {"output": "first\nsecond\n"}
+
+    nvim.api.exec2.side_effect = read_behind_the_second_prompt
+    connections = iter([nvim, dog])
+    assert nvim_prompt.sweep_socket(lambda: next(connections), "/s", "the hook") == _PROMPT
+    nvim.api.input.assert_called_once_with("<CR>")
+    dog.api.input.assert_called_once_with("<CR>")
+
+
+def test_sweep_socket_with_nothing_up_sends_nothing_and_closes(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    nvim = _nvim()
+    with caplog.at_level(logging.WARNING, logger="vim_ai_follower"):
+        assert nvim_prompt.sweep_socket(lambda: nvim, "/s", "x") is None
+    nvim.api.input.assert_not_called()
+    nvim.api.exec2.assert_not_called()
+    nvim.close.assert_called_once_with()
+    assert caplog.records == []
+
+
+def test_answerable_names_only_the_hit_enter_and_more_prompts() -> None:
+    assert nvim_prompt.answerable("r") is True
+    assert nvim_prompt.answerable("rm") is True
+    for mode in ("r?", "c", "n", "i", None):
+        assert nvim_prompt.answerable(mode) is False
 
 
 def test_the_sweep_dismisses_a_leftover_prompt_and_logs_the_messages_tail(
@@ -601,15 +749,16 @@ def test_a_dedicated_follower_sweeps_and_watches_its_entry_points() -> None:
     assert attach.call_count == 2  # the entry point's connection + the watchdog's
 
 
-def test_an_adopted_follower_never_sweeps_or_watches() -> None:
+def test_an_adopted_follower_sweeps_and_watches_its_entry_points() -> None:
+    # Decision (a), 2026-10-05: an adopted nvim answers hit-enter prompts
+    # the way the Vim does — when the follower acts.
     state.FollowerState.set("@1", backend="nvim", target="/tmp/x.sock", adopted=True)
     nvim = _follower_nvim()
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim) as attach:
         assert follower.probe_buffer("/tmp/f.py", "x\n") == "absent"
-    nvim.api.get_mode.assert_not_called()
-    nvim.api.input.assert_not_called()
-    assert attach.call_count == 1
+    nvim.api.input.assert_called_once_with("<CR>")
+    assert attach.call_count == 2  # the entry point's connection + the watchdog's
 
 
 def test_is_alive_asks_a_fast_request_that_a_prompt_cannot_block() -> None:
@@ -624,18 +773,47 @@ def test_is_alive_asks_a_fast_request_that_a_prompt_cannot_block() -> None:
     attach.assert_not_called()
 
 
-def test_a_follower_with_no_state_fails_closed_no_sweep_no_watchdog() -> None:
+def test_a_follower_with_no_state_acts_as_adopted_and_still_sweeps() -> None:
     # No FollowerState (a concurrent `claude-follow stop` removed it between
     # two entry points, or no window id at all) cannot prove the nvim is a
-    # DEDICATED one — and pressing Enter in the user's own nvim is the one
-    # thing this must never do.
+    # DEDICATED one, so it takes the adopted rules — which, since decision
+    # (a), still sweep an acting entry point: the sweep presses a key only AT
+    # a hit-enter or more-prompt, under the answer lock.
     nvim = _follower_nvim()
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim) as attach:
         assert follower.probe_buffer("/tmp/f.py", "x\n") == "absent"
-    nvim.api.get_mode.assert_not_called()
-    nvim.api.input.assert_not_called()
-    assert attach.call_count == 1
+    nvim.api.input.assert_called_once_with("<CR>")
+    assert attach.call_count == 2
+
+
+@pytest.mark.parametrize("adopted", [True, False])
+def test_an_nvim_pause_waits_under_the_sockets_pause(adopted: bool) -> None:
+    # Every pause the nvim backend waits out is marked for its socket, so an
+    # adopted watchdog stops answering for its duration.
+    from vim_ai_follower.backends import nvim as nvim_backend
+
+    state.FollowerState.set("@1", backend="nvim", target="/tmp/x.sock", adopted=adopted)
+    seen: list[bool] = []
+
+    def waiting(*_arguments: Any) -> bool:
+        seen.append(nvim_prompt.is_paused("/tmp/x.sock"))
+        return False  # interrupted while paused
+
+    signals = iter(["pause"])
+    with (
+        patch.object(nvim_backend, "_wait_while_paused", side_effect=waiting),
+        patch(
+            "vim_ai_follower.control.check_signal",
+            side_effect=lambda *_arguments: next(signals, None),
+        ),
+    ):
+        result = nvim_backend._animate_lines(
+            MagicMock(), 1, ("abc",), 0, lambda: 0.0, "@1", 1, prompt_key="/tmp/x.sock"
+        )
+    assert result.outcome == "interrupted"
+    assert seen == [True]
+    assert nvim_prompt.is_paused("/tmp/x.sock") is False
 
 
 def test_the_sweep_names_a_more_prompt_in_the_log(caplog: pytest.LogCaptureFixture) -> None:

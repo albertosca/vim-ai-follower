@@ -1166,7 +1166,7 @@ def test_status_marks_an_nvim_follower_that_does_not_answer(
     # both as this identity's follower and as another identity's.
     state.FollowerState.set("term-x", "nvim", "/tmp/mine.sock", current_file="/tmp/a.py")
     state.FollowerState.set("@7", "nvim", "/tmp/theirs.sock", current_file="/tmp/b.py")
-    with patch("vim_ai_follower.backends.nvim_connect._probe", return_value=(verdict, False)):
+    with patch("vim_ai_follower.backends.nvim_connect._probe", return_value=(verdict, False, None)):
         assert commands.cmd_status({"TERM_SESSION_ID": "x"}) == 0
         mine = capsys.readouterr().out
         assert commands.cmd_status({"TERM_SESSION_ID": "y"}) == 0
@@ -1320,13 +1320,16 @@ def test_toggle_on_clears_a_tombstone_before_writing() -> None:
     assert result.enabled is True
 
 
-def test_stop_of_an_adopted_nvim_at_a_prompt_sends_nothing_and_logs_one_line() -> None:
+def test_stop_of_an_adopted_nvim_blocked_off_a_prompt_sends_nothing_and_logs_one_line() -> None:
+    # Blocking but not at a hit-enter or more-prompt (keys pending): nothing
+    # the follower may answer, and every request would wait behind it.
     _nvim_follower(adopted=True, open_files=("/tmp/a.py", "/tmp/b.py"))
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
         patch("pynvim.attach") as attach,
         patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.commands.nvim_connect.last_probe_blocking", return_value=True),
+        patch("vim_ai_follower.commands.nvim_connect.last_probe_mode", return_value="n"),
     ):
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
     attach.assert_not_called()
@@ -1335,6 +1338,54 @@ def test_stop_of_an_adopted_nvim_at_a_prompt_sends_nothing_and_logs_one_line() -
     assert len(lines) == 1, _hook_log()
     assert "waiting on its user" in lines[0]
     assert state.FollowerState.read("@1") is None
+
+
+def test_stop_of_an_adopted_nvim_at_a_hit_enter_prompt_sweeps_then_tears_down() -> None:
+    # Decision (a): the stop acts in the user's editor (its float, the tabs
+    # the follower opened), so a hit-enter prompt left up is dismissed first,
+    # as the Vim follower's Escape pair would.
+    _nvim_follower(adopted=True, open_files=("/tmp/a.py",))
+    sweeper = MagicMock()
+    prompt = {"mode": "r", "blocking": True}
+    modes = iter([prompt, prompt])
+    sweeper.api.get_mode.side_effect = lambda: next(modes, {"mode": "n", "blocking": False})
+    sweeper.api.exec2.return_value = {"output": ""}
+    teardown = MagicMock(return_value=False)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
+        patch("vim_ai_follower.commands.nvim_connect.last_probe_blocking", return_value=True),
+        patch("vim_ai_follower.commands.nvim_connect.last_probe_mode", return_value="r"),
+        patch("vim_ai_follower.commands.nvim_connect.bounded_attach", return_value=sweeper),
+        patch("vim_ai_follower.commands._run_nvim_teardown", teardown),
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    sweeper.api.input.assert_called_once_with("<CR>")
+    teardown.assert_called_once()
+    assert "waiting on its user" not in _hook_log()
+    assert "dismissed a hit-enter prompt left before stop (sweep)" in _hook_log()
+    assert state.FollowerState.read("@1") is None
+
+
+def test_stop_of_an_adopted_nvim_whose_prompt_cannot_be_reached_sends_nothing_more() -> None:
+    _nvim_follower(adopted=True, open_files=("/tmp/a.py",))
+    teardown = MagicMock(return_value=False)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
+        patch("vim_ai_follower.commands.nvim_connect.last_probe_blocking", return_value=True),
+        patch("vim_ai_follower.commands.nvim_connect.last_probe_mode", return_value="rm"),
+        patch(
+            "vim_ai_follower.commands.nvim_connect.bounded_attach",
+            side_effect=ConnectionRefusedError("refused"),
+        ),
+        patch("vim_ai_follower.commands._run_nvim_teardown", teardown),
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    teardown.assert_not_called()
+    lines = [line for line in _hook_log().splitlines() if _DEDICATED_SOCKET in line]
+    assert len(lines) == 1, _hook_log()
+    assert "could not be answered" in lines[0] and "refused" in lines[0]
 
 
 @pytest.mark.parametrize("verdict", ["silent", "garbled", "absent"])

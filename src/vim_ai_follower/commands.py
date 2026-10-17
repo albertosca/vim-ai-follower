@@ -449,14 +449,7 @@ def _tear_down_nvim(existing: FollowerState, session: Session) -> None:
             "stop: nvim %s did not answer (%s); nothing was sent to it", socket_path, verdict
         )
     elif existing.adopted and nvim_connect.last_probe_blocking(socket_path):
-        # The user's own nvim at a hit-enter prompt or a question: a request
-        # would wait behind it, and pressing keys to clear it is not ours to
-        # do in the user's editor. Its tabs stay; the state is already gone.
-        hooks.logger.warning(
-            "stop: nvim %s is waiting on its user (a hit-enter prompt or a question); "
-            "the follower's tabs there are left open",
-            socket_path,
-        )
+        quit_sent = _tear_down_blocked_adopted_nvim(existing, session.window_id, rpc_ends_at)
     else:
         quit_sent = _run_nvim_teardown(existing, session.window_id, rpc_ends_at)
     if existing.adopted or not session.in_tmux or not existing.origin:
@@ -471,6 +464,32 @@ def _tear_down_nvim(existing: FollowerState, session: Session) -> None:
         )
         return
     _close_dedicated_nvim_pane(existing.origin, socket_path, wait_for_quit=quit_sent)
+
+
+def _tear_down_blocked_adopted_nvim(
+    existing: FollowerState, window_id: str, ends_at: float
+) -> bool:
+    """The user's own nvim answered `blocking: true`. At a hit-enter or
+    more-prompt the stop acts like any hook (decision (a)): it dismisses the
+    prompt, as the Vim follower's Escape pair would, then tears down. Blocked
+    in any other mode (keys pending), every request would wait behind it and
+    nothing there is ours to answer: nothing is sent, and the follower's tabs
+    stay. A prompt that cannot be answered leaves the same. The state is
+    already gone either way."""
+    socket_path = existing.target
+    if not nvim_prompt.answerable(nvim_connect.last_probe_mode(socket_path)):
+        hooks.logger.warning(
+            "stop: nvim %s is waiting on its user (in the middle of a key sequence); "
+            "the follower's tabs there are left open",
+            socket_path,
+        )
+        return False
+    with rpc_deadline(max(ends_at - time.monotonic(), 0.001)):
+        failure = hooks.sweep_adopted_prompt(socket_path, "stop")
+    if failure is not None:
+        hooks.logger.warning("stop: %s; the follower's tabs there are left open", failure)
+        return False
+    return _run_nvim_teardown(existing, window_id, ends_at)
 
 
 def _run_nvim_teardown(existing: FollowerState, window_id: str, ends_at: float) -> bool:

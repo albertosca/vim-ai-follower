@@ -219,7 +219,15 @@ class NvimStatusSurface:
     def _guarded(self) -> Iterator[pynvim.Nvim]:
         nvim = self._connect()
         with prompt_guard(
-            nvim, self._connect, key=self.socket_path, adopted=self.adopted, label="status cue"
+            nvim,
+            self._connect,
+            key=self.socket_path,
+            adopted=self.adopted,
+            label="status cue",
+            # The cue does not act on the user's buffer (the tmux cue is a
+            # border and sends nothing into Vim): an adopted nvim gets no
+            # sweep from it.
+            acting=False,
         ):
             yield nvim
 
