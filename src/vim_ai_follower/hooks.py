@@ -1020,15 +1020,24 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
 def _busy_nvim(current: FollowerState) -> str | None:
     """Why this hook must leave an nvim follower alone, or None: the liveness
     probe FollowerState.get just ran found it accepting and SILENT — busy in
-    `:!make`, `system()` or a Lua loop, or stopped. It is alive (so nothing
-    reopens or replaces it), but every request would wait out the RPC
-    deadline; the hook skips instead, before raising any cue."""
-    if current.backend != "nvim" or nvim_connect.last_probe_verdict(current.target) != "silent":
+    `:!make`, `system()` or a Lua loop, or stopped — or found an ADOPTED nvim
+    answering `blocking: true`, waiting on its user at a hit-enter prompt,
+    confirm() or input(), which holds every other request until answered (a
+    dedicated follower's prompt watchdog dismisses its own prompts; the
+    user's nvim has none). Either is alive (so nothing reopens or replaces
+    it), but every request would wait out the RPC deadline — the cue, the
+    base probe and the cue's refresh cost 30 s against a prompt already up;
+    the hook skips instead, before raising any cue."""
+    if current.backend != "nvim":
         return None
-    return (
-        f"nvim at {current.target} did not answer within "
-        f"{nvim_connect.LIVENESS_TIMEOUT_SECONDS:g} s (busy in a command, or stopped)"
-    )
+    if nvim_connect.last_probe_verdict(current.target) == "silent":
+        return (
+            f"nvim at {current.target} did not answer within "
+            f"{nvim_connect.LIVENESS_TIMEOUT_SECONDS:g} s (busy in a command, or stopped)"
+        )
+    if current.adopted and nvim_connect.last_probe_blocking(current.target):
+        return f"nvim at {current.target} is waiting on its user (a hit-enter prompt or a question)"
+    return None
 
 
 def _skip_unreachable_edit(
@@ -1118,6 +1127,10 @@ def _probe_base(follower: Follower, file_path: str, before: str) -> BufferProbe:
     raises is "unknown": hooks never fail the tool call."""
     try:
         return follower.probe_buffer(file_path, before)
+    except nvim_connect.RpcTimeout as timeout:
+        # A prompt raised after the liveness probe: one line, not a traceback.
+        logger.warning("could not ask the follower what %s's buffer holds: %s", file_path, timeout)
+        return "unknown"
     except Exception:
         logger.exception("could not ask the follower what %s's buffer holds", file_path)
         return "unknown"

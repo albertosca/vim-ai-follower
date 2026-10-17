@@ -1135,7 +1135,7 @@ def test_status_marks_an_nvim_follower_that_does_not_answer(
     # both as this identity's follower and as another identity's.
     state.FollowerState.set("term-x", "nvim", "/tmp/mine.sock", current_file="/tmp/a.py")
     state.FollowerState.set("@7", "nvim", "/tmp/theirs.sock", current_file="/tmp/b.py")
-    with patch("vim_ai_follower.backends.nvim_connect._probe", return_value=verdict):
+    with patch("vim_ai_follower.backends.nvim_connect._probe", return_value=(verdict, False)):
         assert commands.cmd_status({"TERM_SESSION_ID": "x"}) == 0
         mine = capsys.readouterr().out
         assert commands.cmd_status({"TERM_SESSION_ID": "y"}) == 0

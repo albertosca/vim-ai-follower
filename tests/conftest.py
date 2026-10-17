@@ -38,6 +38,7 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[N
     # The probe verdicts this process remembers, by socket: a "silent" one
     # test left behind must never make the next one's follower read as busy.
     monkeypatch.setattr(nvim_connect, "_last_verdicts", {})
+    monkeypatch.setattr(nvim_connect, "_last_blocking", {})
     yield
     hooks.logger.handlers.clear()
 

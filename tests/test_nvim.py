@@ -509,6 +509,35 @@ def test_drive_keeps_a_pause_pressed_after_the_hook_announced() -> None:
     assert seen == ["pause"]
 
 
+def test_drive_runs_every_request_of_the_animation_without_the_deadline() -> None:
+    # A hit-enter prompt in an adopted nvim mid-animation must hold the
+    # typing, not cut it at RPC_TIMEOUT_SECONDS (review I2 of T16): the
+    # unlock, the run, the stamp and the relock all see the deadline lifted.
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
+    nvim = MagicMock()
+    bounds = {"lifted": 0}
+    nvim._session._vaf_bounds = bounds
+    lifted_at: list[tuple[str, int]] = []
+    nvim.api.buf_set_option.side_effect = lambda *_args: lifted_at.append(
+        ("buf_set_option", bounds["lifted"])
+    )
+    nvim.exec_lua.side_effect = lambda *_args: lifted_at.append(("exec_lua", bounds["lifted"]))
+
+    def run() -> AnimationResult:
+        lifted_at.append(("run", bounds["lifted"]))
+        return AnimationResult("completed", 1)
+
+    with patch.object(NvimFollower, "_locks_buffers", return_value=True):
+        follower._drive(nvim, 7, run, ["x"])
+    assert lifted_at == [
+        ("buf_set_option", 1),
+        ("run", 1),
+        ("exec_lua", 1),
+        ("buf_set_option", 1),
+    ]
+    assert bounds["lifted"] == 0
+
+
 def test_drive_skips_relock_for_an_adopted_follower(tmp_path: Path) -> None:
     from vim_ai_follower import state
 

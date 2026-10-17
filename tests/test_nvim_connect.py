@@ -748,6 +748,33 @@ def test_unbounded_requests_is_a_no_op_on_a_connection_it_did_not_bound() -> Non
     nvim.api.get_mode.assert_called_once_with()
 
 
+def test_unbounded_requests_puts_the_deadline_back_after_an_exception_inside() -> None:
+    # An animation that raises (a goto that fails mid-resume, a dead socket)
+    # must not leave the connection unbounded: the next request on it — a
+    # navigation, the cue — would then wait on a silent nvim for good.
+    from types import SimpleNamespace
+
+    def slow_request(*_args: Any, **_kwargs: Any) -> str:
+        time.sleep(1.0)
+        return "late"
+
+    attached = SimpleNamespace(_session=SimpleNamespace(request=slow_request))
+    with (
+        patch("pynvim.attach", return_value=attached),
+        patch("vim_ai_follower.backends.nvim_connect.RPC_TIMEOUT_SECONDS", 0.1),
+    ):
+        connected = nvim_connect.bounded_attach("/unused.sock")
+        with (
+            pytest.raises(ValueError, match="mid-animation"),
+            nvim_connect.unbounded_requests(connected),
+        ):
+            raise ValueError("mid-animation")
+        started = time.monotonic()
+        with pytest.raises(nvim_connect.RpcTimeout):
+            connected._session.request("nvim_get_mode")
+    assert time.monotonic() - started < 0.8
+
+
 def _age(path: Path, seconds: float) -> None:
     """Backdate a socket file's mtime (os.utime follows the path; a socket
     file takes it like any other)."""
@@ -819,6 +846,30 @@ def test_probe_nvim_remembers_its_last_verdict_per_socket() -> None:
         with fake_nvim(path):
             assert nvim_connect.probe_nvim(str(path)) == "answers"
             assert nvim_connect.last_probe_verdict(str(path)) == "answers"
+
+
+@pytest.mark.parametrize(
+    ("reply", "blocking"),
+    [
+        ("mode", False),
+        (bytes([0x94, 0x01, 0x01, 0xC0, 0x82]) + b"\xa4mode\xa1r\xa8blocking\xc3", True),
+        # The dictionary cut off before its `blocking` value: an answer all
+        # the same, from an nvim not known to be blocking.
+        (bytes([0x94, 0x01, 0x01, 0xC0, 0x82]) + b"\xa4mode\xa1r\xa8blocking", False),
+    ],
+    ids=["idle", "at-a-prompt", "cut-short"],
+)
+def test_probe_nvim_remembers_whether_the_nvim_is_waiting_on_its_user(
+    reply: Any, blocking: bool
+) -> None:
+    # A hit-enter prompt answers get_mode `{"mode": "r", "blocking": true}`
+    # and holds every other request: the hooks skip an ADOPTED one at once.
+    with _short_socket_dir() as directory:
+        path = directory / "nvim-@1.sock"
+        assert nvim_connect.last_probe_blocking(str(path)) is False
+        with fake_nvim(path, reply=reply):
+            assert nvim_connect.probe_nvim(str(path), timeout=0.3) == "answers"
+        assert nvim_connect.last_probe_blocking(str(path)) is blocking
 
 
 def test_sweep_stale_sockets_with_no_cache_dir_removes_nothing(

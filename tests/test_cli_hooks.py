@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import logging
@@ -2588,16 +2589,34 @@ def test_an_unreachable_edit_after_a_concurrent_stop_touches_no_surface(
     assert "skipped the animation of /tmp/a.py: x" in caplog.text
 
 
+_SILENT = ("silent", False)
+_ADOPTED_AT_A_PROMPT = ("answers", True)
+
+
+@pytest.mark.parametrize(
+    ("probe_answer", "adopted", "why"),
+    [
+        (_SILENT, False, "did not answer within 1 s"),
+        (_ADOPTED_AT_A_PROMPT, True, "is waiting on its user"),
+    ],
+    ids=["silent", "adopted-at-a-prompt"],
+)
 @pytest.mark.parametrize("tool_name", ["Edit", "Read"])
 def test_a_hook_skips_a_busy_nvim_follower_and_keeps_it(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
     tool_name: str,
+    probe_answer: tuple[str, bool],
+    adopted: bool,
+    why: str,
 ) -> None:
-    # The probe found it accepting and silent (`:!make`, `system()`): alive,
-    # so no reopen and no "no follower"; but every request would wait out the
-    # deadline, so the hook sends nothing — an Edit marks the file stale.
+    # The probe found it accepting and silent (`:!make`, `system()`), or
+    # found the user's own nvim answering `blocking: true` (a hit-enter
+    # prompt already up when the hook starts: no watchdog there): alive, so
+    # no reopen and no "no follower"; but every request would wait out the
+    # deadline (cue, base probe, cue refresh: 30 s and a traceback), so the
+    # hook sends nothing — an Edit marks the file stale.
     target = tmp_path / "f.txt"
     target.write_text("hello\n")
     state.FollowerState.set(
@@ -2608,6 +2627,7 @@ def test_a_hook_skips_a_busy_nvim_follower_and_keeps_it(
         shown_any=True,
         on_failure="reopen",
         origin="%9",
+        adopted=adopted,
     )
     get_follower = MagicMock()
     monkeypatch.setattr(hooks, "get_follower", get_follower)
@@ -2615,7 +2635,7 @@ def test_a_hook_skips_a_busy_nvim_follower_and_keeps_it(
     payload: dict[str, object] = {"tool_name": tool_name, "tool_input": {"file_path": str(target)}}
     with (
         caplog.at_level(logging.WARNING, logger="vim_ai_follower"),
-        patch("vim_ai_follower.backends.nvim_connect._probe", return_value="silent"),
+        patch("vim_ai_follower.backends.nvim_connect._probe", return_value=probe_answer),
         patch("vim_ai_follower.hooks.resolve_nvim_target") as relaunch,
     ):
         assert hooks.cmd_hook_post({"TERM_SESSION_ID": "x"}, payload) == 0
@@ -2624,9 +2644,39 @@ def test_a_hook_skips_a_busy_nvim_follower_and_keeps_it(
     after = state.FollowerState.read("term-x")
     assert after is not None and after.target == "/tmp/busy.sock"
     assert after.stale_files == ((str(target),) if tool_name == "Edit" else ())
-    skipped = [line for line in caplog.text.splitlines() if "did not answer within 1 s" in line]
+    skipped = [line for line in caplog.text.splitlines() if why in line]
     assert len(skipped) == 1, caplog.text
     assert "/tmp/busy.sock" in skipped[0] and str(target) in skipped[0]
+    assert "Traceback" not in caplog.text
+
+
+def test_a_dedicated_nvim_at_a_prompt_is_not_skipped() -> None:
+    # Its prompt watchdog dismisses the follower's own prompts, so a blocking
+    # answer from a DEDICATED nvim is no reason to skip.
+    current = state.FollowerState(
+        backend="nvim",
+        target="/tmp/own.sock",
+        current_file=None,
+        origin="%9",
+        on_failure="silent",
+        speed="normal",
+        adopted=False,
+    )
+    with patch("vim_ai_follower.backends.nvim_connect._probe", return_value=_ADOPTED_AT_A_PROMPT):
+        nvim_connect.probe_nvim("/tmp/own.sock")
+    assert hooks._busy_nvim(current) is None
+    assert hooks._busy_nvim(dataclasses.replace(current, adopted=True)) is not None
+
+
+def test_a_base_probe_that_times_out_logs_one_line(caplog: pytest.LogCaptureFixture) -> None:
+    # A prompt raised after the liveness probe: the base probe's timeout is
+    # one line, not a traceback.
+    follower = MagicMock()
+    follower.probe_buffer.side_effect = nvim_connect.RpcTimeout("nvim did not answer within 10 s")
+    with caplog.at_level(logging.WARNING, logger="vim_ai_follower"):
+        assert hooks._probe_base(follower, "/tmp/a.py", "x\n") == "unknown"
+    assert caplog.text.count("\n") == 1, caplog.text
+    assert "/tmp/a.py" in caplog.text and "did not answer within 10 s" in caplog.text
 
 
 @pytest.mark.parametrize("tool_name", ["Edit", "Read"])

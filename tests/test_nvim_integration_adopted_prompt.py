@@ -8,6 +8,7 @@ harness; every CLI run has a subprocess timeout so a regression FAILS."""
 
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from collections.abc import Iterator
@@ -146,3 +147,57 @@ def test_a_hit_enter_prompt_mid_animation_holds_the_typing_until_enter(
     log = log_path.read_text() if log_path.exists() else ""
     assert "crash" not in log.lower(), log
     assert "Traceback" not in log, log
+
+
+def test_a_prompt_already_up_when_the_hook_starts_skips_the_edit_in_one_line(
+    world: E2EFollower,
+) -> None:
+    # Review m1 of T16: the user's nvim shows a hit-enter prompt before the
+    # hook connects. The probe's answer says `blocking: true`, so the hook
+    # skips at once, logs one line and marks the file stale — not three
+    # 10 s timeouts (cue, base probe, cue refresh) and a traceback.
+    socket_path = world.cache_dir / "nvim-adopted.sock"
+    world.cache_dir.mkdir(parents=True, exist_ok=True)
+    target = world.workdir / "file.py"
+    before = "one\ntwo\n"
+    target.write_text(before)
+    window_id, pane_id = _nvim_window(world, socket_path, target)
+    FollowerState.set(
+        window_id,
+        "nvim",
+        str(socket_path),
+        origin=pane_id,
+        adopted=True,
+        shown_any=True,
+        # The hook names the file by its realpath (/tmp is /private/tmp).
+        open_files=(os.path.realpath(target),),
+        base_dir=world.cache_dir,
+    )
+    edit = payload("Edit", target)
+    pre, _seconds = _timed_cli(world, "hook", "pre", pane_id=pane_id, stdin=edit)
+    assert pre.returncode == 0, pre.stderr
+    target.write_text("one\nTWO\n")
+    world._nvim(str(socket_path)).exec_lua(
+        "vim.schedule(function() vim.cmd('echo \"plugin says\\\\nsomething\\\\nlong\"') end)", []
+    )
+    world.wait_until(
+        lambda: world._nvim(str(socket_path)).api.get_mode()["blocking"],
+        "the hit-enter prompt",
+        timeout=10.0,
+    )
+    post, seconds = _timed_cli(world, "hook", "post", pane_id=pane_id, stdin=edit)
+    try:
+        assert post.returncode == 0, post.stderr
+        assert seconds < 8.0, f"the hook waited {seconds:.1f} s on a prompt already up"
+        log_path = world.cache_dir / "hook.log"
+        log = log_path.read_text() if log_path.exists() else ""
+        assert "Traceback" not in log, log
+        skipped = [line for line in log.splitlines() if "is waiting on its user" in line]
+        assert len(skipped) == 1, log
+        after = FollowerState.read(window_id, base_dir=world.cache_dir)
+        assert after is not None and after.stale_files == (os.path.realpath(target),)
+    finally:
+        world.tmux("send-keys", "-t", pane_id, "Enter")
+    observer = world._nvim(str(socket_path))
+    lines = observer.api.buf_get_lines(observer.call("bufnr", str(target)), 0, -1, False)
+    assert lines == before.splitlines()  # nothing typed into the user's buffer
