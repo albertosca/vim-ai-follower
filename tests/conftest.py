@@ -43,11 +43,18 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[N
     hooks.logger.handlers.clear()
 
 
-_NO_TMUX_SERVER_DIR = tempfile.mkdtemp(prefix="cf-none-")
+@pytest.fixture(scope="session")
+def no_tmux_server_dir() -> Iterator[str]:
+    """A short private directory (a tmux socket path must fit sun_path, so
+    not pytest's long tmp_path), removed when the run ends: created at
+    import, one was left behind by every pytest run."""
+    directory = tempfile.mkdtemp(prefix="cf-none-")
+    yield directory
+    shutil.rmtree(directory, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)
-def no_real_tmux_server(monkeypatch: pytest.MonkeyPatch) -> None:
+def no_real_tmux_server(monkeypatch: pytest.MonkeyPatch, no_tmux_server_dir: str) -> None:
     """An unmocked in-process tmux call reaches no server at all. pytest run
     from a tmux pane inherits $TMUX, and code that asks the server for its
     pid (binding.tmux_server_pid, which FollowerState.set calls to record
@@ -60,7 +67,7 @@ def no_real_tmux_server(monkeypatch: pytest.MonkeyPatch) -> None:
     FollowerState.set there must name world.server_pid itself."""
     monkeypatch.delenv("TMUX", raising=False)
     monkeypatch.delenv("TMUX_PANE", raising=False)
-    monkeypatch.setenv("TMUX_TMPDIR", _NO_TMUX_SERVER_DIR)
+    monkeypatch.setenv("TMUX_TMPDIR", no_tmux_server_dir)
 
 
 @pytest.fixture(autouse=True)
