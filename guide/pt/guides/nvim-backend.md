@@ -18,6 +18,8 @@ O backend `nvim` controla um Neovim de verdade inteiramente via msgpack-RPC — 
 
 **Adotar ou lançar:** com `adopt_existing: true` (ou `start --backend nvim` numa janela que já tem um nvim rodando), ele adota esse nvim — o seu próprio editor, nunca travado como somente-leitura; senão, lança um nvim headless dedicado pra aquela janela.
 
+**Quando o nvim lançado não sobe:** um nvim dedicado precisa responder por RPC e terminar de iniciar em até 3 s (10 s no `start`). Um que não faz isso (uma config que para num erro de "Press ENTER", uma que trava, um crash) não é registrado como follower: o pane dele fica aberto pra você ler o erro do próprio nvim, a mensagem diz isso (o `start` sai com código diferente de zero e nunca diz "attached"), e a abertura automática não divide outro nvim pra aquela janela por 5 minutos. O `start` tenta de novo na hora; se nesse meio-tempo você apertar Enter naquele erro, a próxima edição se conecta a esse mesmo pane.
+
 O Neovim também abre abas de verdade — a mesma experiência de ciclar abas do tmux, mantida em sincronia pela API de RPC; a evicção por arquivo continua valendo (`max_tabs`, veja [Abas multi-arquivo](multi-file-tabs.md)).
 
 Por que dois backends, e o que a rota RPC custou, está na página de [Engenharia](../engineering.md).

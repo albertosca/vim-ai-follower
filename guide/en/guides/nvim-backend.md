@@ -18,6 +18,8 @@ The `nvim` backend drives a real Neovim entirely over msgpack-RPC — no `send-k
 
 **Adopt-or-launch:** with `adopt_existing: true` (or `start --backend nvim` in a window that already has a running nvim) it adopts that nvim — your own editor, never locked read-only; otherwise it launches a dedicated headless nvim for the window.
 
+**When the launched nvim never comes up:** a dedicated nvim must answer over RPC and finish starting within 3 s (10 s for `start`). One that does not (a config that stops at a "Press ENTER" error, one that hangs, a crash) is not recorded as the follower: its pane is left open so you can read nvim's own error, the message says so (`start` exits non-zero and never says "attached"), and auto-open does not split another nvim for that window for 5 minutes. `start` retries at once; if you press Enter on that error in the meantime, the next edit attaches to the same pane.
+
 Neovim opens real tabs too — the same tab-cycling experience as tmux, kept in sync via its RPC API; per-file eviction still applies (`max_tabs`, see [Multi-file tabs](multi-file-tabs.md)).
 
 Why two backends, and what the RPC route cost, is on the [Engineering](../engineering.md) page.

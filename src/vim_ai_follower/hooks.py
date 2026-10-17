@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import subprocess
+import sys
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -104,11 +105,10 @@ def _get_active_follower(window_id: str) -> FollowerState | None:
         # Recovery never re-adopts: relaunch a fresh dedicated nvim (adopt=
         # False) so a user who closed their own editor is not silently taken
         # over again.
-        try:
-            sock, _launched = resolve_nvim_target(raw.origin, window_id, adopt=False)
-        except subprocess.CalledProcessError as exc:
-            logger.warning("failed to relaunch nvim from origin %s: %s", raw.origin, exc)
+        target = _split_nvim_or_log(raw.origin, window_id, adopt=False)
+        if target is None:
             return None
+        sock, _launched = target
         recorded = FollowerState.set(
             window_id,
             "nvim",
@@ -386,6 +386,40 @@ def _launch_standalone_or_log(window_id: str) -> str | None:
         return None
 
 
+def _split_nvim_or_log(origin: str, window_id: str, adopt: bool) -> tuple[str, bool] | None:
+    """resolve_nvim_target from a hook, or log the failure and return None.
+
+    A split whose nvim never answers keeps its pane (nvim's error is on it)
+    and backs the window off for LAUNCH_BACKOFF_SECONDS, the standalone
+    launch's backoff: without it every hook split one more pane next to the
+    first, each costing the tool call the whole wait. The backoff holds back
+    only a SPLIT — adopting the user's nvim, or a split that answered after
+    its caller gave up, opens nothing. A failing `tmux split-window` itself
+    is quick and is only logged, as before."""
+    if nvim_connect.launch_backoff_active(window_id):
+        adoptable = adopt and nvim_connect.discover_adopt_socket(origin) is not None
+        if not adoptable and nvim_connect.ready_split_socket(window_id) is None:
+            return None  # a recent split failed: already logged, not retried yet
+    try:
+        target = resolve_nvim_target(origin, window_id, adopt=adopt)
+    except subprocess.CalledProcessError as exc:
+        logger.warning("nvim auto-open failed from origin %s: %s", origin, exc)
+        return None
+    except (nvim_connect.SplitNvimNeverAnswered, StandaloneLaunchFailed) as exc:
+        nvim_connect.record_launch_failure(window_id)
+        logger.warning(
+            "%s — not auto-opening %s again for %d minutes (`claude-follow start` retries at once)",
+            exc,
+            window_id,
+            nvim_connect.LAUNCH_BACKOFF_SECONDS // 60,
+        )
+        print(f"claude-follow: {exc}", file=sys.stderr)
+        return None
+    if target[1]:
+        nvim_connect.clear_launch_backoff(window_id)
+    return target
+
+
 def _stopped_window(session: Session) -> bool:
     """True when `claude-follow stop` silenced this window (state.is_stopped,
     under this tmux server): auto-open must not undo an explicit stop. Said
@@ -466,13 +500,10 @@ def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> Fo
             )
             return _launched_follower(session.window_id, "nvim", sock, recorded)
         # Same adopt-or-launch selection as cmd_start, but from the hook path.
-        try:
-            sock, launched = resolve_nvim_target(
-                origin, session.window_id, adopt=cfg.adopt_existing
-            )
-        except subprocess.CalledProcessError as exc:
-            logger.warning("nvim auto-open failed from origin %s: %s", origin, exc)
+        target = _split_nvim_or_log(origin, session.window_id, adopt=cfg.adopt_existing)
+        if target is None:
             return None
+        sock, launched = target
         recorded = FollowerState.set(
             session.window_id,
             "nvim",

@@ -67,6 +67,26 @@ def _launch_standalone_or_report(window_id: str) -> str | None:
         return None
 
 
+def _split_nvim_or_report(origin: str, window_id: str, adopt: bool) -> tuple[str, bool] | None:
+    """resolve_nvim_target for `start`, or print why and return None. An
+    explicit start is the retry a failed split's backoff waits for, as for a
+    standalone window: it splits at once and gives nvim the patient
+    START_SPLIT_WAIT_SECONDS. A split that still never answers keeps its pane
+    (nvim's error is on it), records nothing, and backs auto-open off again,
+    so the next hook does not split a second pane beside it."""
+    clear_launch_backoff(window_id)
+    try:
+        return resolve_nvim_target(
+            origin, window_id, adopt=adopt, wait_seconds=nvim_connect.START_SPLIT_WAIT_SECONDS
+        )
+    except (nvim_connect.SplitNvimNeverAnswered, StandaloneLaunchFailed) as exc:
+        nvim_connect.record_launch_failure(window_id)
+        hooks._configure_logging()
+        hooks.logger.warning("start: %s", exc)
+        print(f"claude-follow: {exc}", file=sys.stderr)
+        return None
+
+
 def _unresolvable_pane(env: dict[str, str]) -> str:
     """The message for a `resolve_session` that came back None.
 
@@ -188,9 +208,10 @@ def cmd_start(
         # Adopt a running nvim's socket, or launch a dedicated one; either way
         # persist the socket to drive and whether we adopted (adopted nvims are
         # never relocked or killed).
-        sock, launched = resolve_nvim_target(
-            origin, session.window_id, adopt=defaults.adopt_existing
-        )
+        target = _split_nvim_or_report(origin, session.window_id, defaults.adopt_existing)
+        if target is None:
+            return 1
+        sock, launched = target
         _record_start(
             session.window_id,
             "nvim",

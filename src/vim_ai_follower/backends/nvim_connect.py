@@ -58,17 +58,25 @@ _MAP_MARKERS = frozenset(range(0x80, 0x90)) | {0xDE, 0xDF}
 # blocking true, and holds every other request until the user answers.
 _BLOCKING_KEY = b"\xa8blocking"
 _MSGPACK_TRUE = 0xC3
+# msgpack-RPC `[0, 1, "nvim_get_vvar", ["vim_did_enter"]]`, hand-encoded like
+# the probe: fixarray(4), request 0, msgid 1, fixstr(13), fixarray(1) of a
+# fixstr(13). Its answer once nvim has started is `[1, 1, nil, 1]`.
+_DID_ENTER_REQUEST = b"\x94\x00\x01\xadnvim_get_vvar\x91\xadvim_did_enter"
+_DID_ENTER_REPLY = b"\x94\x01\x01\xc0\x01"
 # Read at most this much of the reply looking for the key: get_mode's whole
 # answer is about 30 bytes.
 _REPLY_READ_LIMIT = 256
 
-# Bounded wait for the launched nvim to bind its RPC socket before we return
-# control to the caller. The socket file's mere existence is a sound
-# readiness proxy for a unix-domain listening socket. Heavy configs can take
-# a while to boot, hence the generous ceiling; if the tmux split times out we
-# still return (no worse than the old unconditional-return behavior) and the
-# subsequent pynvim.attach() raises the same clear OSError as before.
+# Bounded wait, in a hook, for a tmux split's nvim to ANSWER on its socket
+# and be started (nvim_ready: real RPC replies). The socket file is no readiness proof: an
+# nvim spinning in its init binds it and never answers, and one that exits
+# leaves nothing — both were recorded as the follower and `start` said
+# "attached". Past the wait the split is an error (SplitNvimNeverAnswered),
+# its pane left open so its own error stays readable.
 _SOCKET_WAIT_SECONDS = 3.0
+# `claude-follow start` is the user waiting at a prompt for the answer: it
+# gives a heavy config the standalone launch's patient ceiling.
+START_SPLIT_WAIT_SECONDS = 10.0
 # A standalone window is a GUI app's or a terminal app's cold launch, slower
 # than a tmux split, and here the wait is also the verdict: past it the launch
 # is reported as failed (NvimNeverListened) instead of attached. The number is
@@ -111,6 +119,24 @@ class NvimNeverListened(StandaloneLaunchFailed):
         self.launcher = launcher
 
 
+class SplitNvimNeverAnswered(Exception):
+    """The tmux split ran `nvim --listen <sock>`, but no nvim answered on the
+    socket before the deadline: nothing to attach to. The pane is never
+    closed for it — nvim's own error is on it (Alberto's answer B,
+    2026-10-16) — so the message says where to read why, or that the pane is
+    already gone because nvim exited."""
+
+    def __init__(self, sock: str, waited: float, pane_id: str, *, pane_open: bool) -> None:
+        fate = (
+            "its pane is left open so you can read why"
+            if pane_open
+            else "its pane has closed (nvim exited)"
+        )
+        super().__init__(f"nvim did not answer on {sock} within {waited:g} s; {fate}")
+        self.sock = sock
+        self.pane_id = pane_id
+
+
 def launch_socket_path(window_id: str, base_dir: Path | None = None) -> Path:
     return state.nvim_socket_path(window_id, base_dir)
 
@@ -137,18 +163,40 @@ def discover_adopt_socket(pane_id: str) -> str | None:
     return str(matches[0]) if matches else None
 
 
-def resolve_nvim_target(origin_pane: str, window_id: str, adopt: bool) -> tuple[str, bool]:
+def resolve_nvim_target(
+    origin_pane: str, window_id: str, adopt: bool, wait_seconds: float = _SOCKET_WAIT_SECONDS
+) -> tuple[str, bool]:
+    """(socket, launched): the user's nvim in the origin pane when `adopt`
+    finds one, else this window's dedicated split. Raises
+    SplitNvimNeverAnswered when the split's nvim does not answer within
+    `wait_seconds`, SocketPathBlocked when the socket path cannot be
+    cleared for it, CalledProcessError when tmux cannot split."""
     if adopt:
         found = discover_adopt_socket(origin_pane)
         if found is not None:
             return found, False
     sock = str(_socket_path_in_existing_dir(window_id))
-    subprocess.run(
-        ["tmux", "split-window", "-h", "-t", origin_pane, "nvim", "--listen", sock],
+    if nvim_ready(sock):
+        # A split whose nvim came up after its caller stopped waiting (its
+        # pane was left open): attach. A second split's nvim would die on
+        # "address already in use" next to it.
+        return sock, True
+    _remove_dead_socket(sock)
+    split = subprocess.run(
+        [
+            "tmux", "split-window", "-h", "-P", "-F", "#{pane_id}", "-t", origin_pane,
+            "nvim", "--listen", sock,
+        ],
+        capture_output=True,
+        text=True,
         check=True,
-    )
-    deadline = time.monotonic() + _SOCKET_WAIT_SECONDS
-    while not Path(sock).exists() and time.monotonic() < deadline:
+    )  # fmt: skip
+    pane_id = split.stdout.strip()
+    deadline = time.monotonic() + wait_seconds
+    while not nvim_ready(sock):
+        if time.monotonic() >= deadline:
+            pane_open = TmuxPane(pane_id=pane_id).running_command() is not None
+            raise SplitNvimNeverAnswered(sock, wait_seconds, pane_id, pane_open=pane_open)
         time.sleep(_SOCKET_POLL_INTERVAL_SECONDS)
     return sock, True
 
@@ -395,6 +443,50 @@ def nvim_answers(sock: str, timeout: float = LIVENESS_TIMEOUT_SECONDS) -> bool:
     """True only when an nvim answers on `sock` within `timeout`: a protocol
     check, not "something accepted a connection"."""
     return probe_nvim(sock, timeout) == "answers"
+
+
+def nvim_ready(sock: str, timeout: float = LIVENESS_TIMEOUT_SECONDS) -> bool:
+    """True only when an nvim answers on `sock` AND has finished starting
+    (`v:vim_did_enter`): the readiness of a split nvim launched for the
+    follower. An answer alone is not enough — measured 2026-10-17, a TUI
+    nvim answers get_mode for a few ms after binding its socket, before its
+    init runs (the embedded server waits for its UI), and one whose init then
+    spins never answers again; an init that errors leaves nvim at a startup
+    hit-enter prompt, which answers get_mode and holds every other request,
+    so its error stays on screen instead of being swept as a follower prompt."""
+    return nvim_answers(sock, timeout) and _did_enter(sock, timeout)
+
+
+def _did_enter(sock: str, timeout: float) -> bool:
+    """Ask for `v:vim_did_enter`, raw like _probe: True only on the exact
+    `[1, 1, nil, 1]` answer within `timeout`."""
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(timeout)
+    deadline = time.monotonic() + timeout
+    received = b""
+    try:
+        probe.connect(sock)
+        probe.sendall(_DID_ENTER_REQUEST)
+        while len(received) < len(_DID_ENTER_REPLY):
+            # 0 s past the deadline is non-blocking: a recv with nothing
+            # waiting raises BlockingIOError, an OSError like the timeout.
+            probe.settimeout(max(deadline - time.monotonic(), 0.0))
+            chunk = probe.recv(64)
+            if not chunk:
+                return False
+            received += chunk
+    except OSError:  # TimeoutError included: held at a prompt, busy, or gone
+        return False
+    finally:
+        probe.close()
+    return received.startswith(_DID_ENTER_REPLY)
+
+
+def ready_split_socket(window_id: str) -> str | None:
+    """This window's launch socket when a STARTED nvim answers on it — a
+    split whose nvim came up after its caller stopped waiting."""
+    sock = str(launch_socket_path(window_id))
+    return sock if nvim_ready(sock) else None
 
 
 def _accepts(sock: str) -> bool:

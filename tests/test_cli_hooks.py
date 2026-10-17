@@ -2886,3 +2886,154 @@ def test_a_window_never_stopped_costs_auto_open_no_tmux_spawn() -> None:
     with patch("vim_ai_follower.binding.tmux_server_pid") as server_pid:
         assert hooks._stopped_window(session) is False
     server_pid.assert_not_called()
+
+
+# --- a tmux split nvim that never answers (T19, answer B) -----------------
+
+
+def _split_never_answered(pane_open: bool = True) -> nvim_connect.SplitNvimNeverAnswered:
+    return nvim_connect.SplitNvimNeverAnswered("/c/nvim-@1.sock", 3.0, "%7", pane_open=pane_open)
+
+
+def _tmux_nvim_auto_open(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> config.Config:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"backend": "nvim", "open_policy": "always"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    return config.load()
+
+
+def test_a_split_nvim_that_never_answers_is_not_recorded_and_backs_off(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    cfg = _tmux_nvim_auto_open(tmp_path, monkeypatch)
+    in_tmux = Session(window_id="@1", origin="%1", in_tmux=True)
+    with (
+        caplog.at_level(logging.WARNING, logger="vim_ai_follower"),
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+        patch("vim_ai_follower.hooks._stopped_window", return_value=False),
+        patch(
+            "vim_ai_follower.hooks.resolve_nvim_target", side_effect=_split_never_answered()
+        ) as resolve,
+    ):
+        assert hooks._maybe_auto_open(in_tmux, "/tmp/f.txt", cfg) is None
+        # Within the backoff the next hook does not split another pane next
+        # to the one still showing nvim's error.
+        assert hooks._maybe_auto_open(in_tmux, "/tmp/g.txt", cfg) is None
+    resolve.assert_called_once_with("%1", "@1", adopt=False)
+    assert state.FollowerState.read("@1") is None
+    assert nvim_connect.launch_backoff_active("@1")
+    assert not [c for c in run.call_args_list if c.args[0][:2] == ["tmux", "kill-pane"]]
+    message = (
+        "nvim did not answer on /c/nvim-@1.sock within 3 s; "
+        "its pane is left open so you can read why"
+    )
+    assert caplog.text.count(message) == 1
+    assert "not auto-opening @1 again for 5 minutes" in caplog.text
+    assert capsys.readouterr().err == f"claude-follow: {message}\n"
+
+
+def test_the_split_backoff_expires(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _tmux_nvim_auto_open(tmp_path, monkeypatch)
+    in_tmux = Session(window_id="@1", origin="%1", in_tmux=True)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.hooks._stopped_window", return_value=False),
+        patch(
+            "vim_ai_follower.hooks.resolve_nvim_target", side_effect=_split_never_answered()
+        ) as resolve,
+    ):
+        hooks._maybe_auto_open(in_tmux, "/tmp/f.txt", cfg)
+        marker = nvim_connect.launch_backoff_path("@1")
+        stale = time.time() - nvim_connect.LAUNCH_BACKOFF_SECONDS - 1
+        os.utime(marker, (stale, stale))
+        hooks._maybe_auto_open(in_tmux, "/tmp/g.txt", cfg)
+    assert resolve.call_count == 2
+
+
+def test_the_split_backoff_never_keeps_a_window_from_adopting_the_users_nvim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The backoff is about SPLITTING: an nvim the user runs in the window is
+    # adopted as before, since adopting opens nothing.
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"backend": "nvim", "open_policy": "always", "adopt_existing": true}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    nvim_connect.record_launch_failure("@1")
+    in_tmux = Session(window_id="@1", origin="%1", in_tmux=True)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.hooks._stopped_window", return_value=False),
+        patch("vim_ai_follower.hooks.nvim_connect.discover_adopt_socket", return_value="/u.sock"),
+        patch(
+            "vim_ai_follower.hooks.resolve_nvim_target", return_value=("/u.sock", False)
+        ) as resolve,
+    ):
+        hooks._maybe_auto_open(in_tmux, "/tmp/f.txt", config.load())
+    resolve.assert_called_once_with("%1", "@1", adopt=True)
+    recorded = state.FollowerState.read("@1")
+    assert recorded is not None
+    assert recorded.adopted is True
+
+
+def test_a_split_that_answers_late_is_attached_despite_the_backoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _tmux_nvim_auto_open(tmp_path, monkeypatch)
+    nvim_connect.record_launch_failure("@1")
+    in_tmux = Session(window_id="@1", origin="%1", in_tmux=True)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.hooks._stopped_window", return_value=False),
+        patch("vim_ai_follower.hooks.nvim_connect.ready_split_socket", return_value="/c/n.sock"),
+        patch(
+            "vim_ai_follower.hooks.resolve_nvim_target", return_value=("/c/n.sock", True)
+        ) as resolve,
+    ):
+        hooks._maybe_auto_open(in_tmux, "/tmp/f.txt", cfg)
+    resolve.assert_called_once_with("%1", "@1", adopt=False)
+    assert not nvim_connect.launch_backoff_active("@1")
+    recorded = state.FollowerState.read("@1")
+    assert recorded is not None
+    assert recorded.target == "/c/n.sock"
+
+
+def test_a_split_blocked_by_a_silent_listener_backs_off_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The pane a failed split left open still holds the socket while its nvim
+    # spins: the next attempt cannot bind it either.
+    cfg = _tmux_nvim_auto_open(tmp_path, monkeypatch)
+    in_tmux = Session(window_id="@1", origin="%1", in_tmux=True)
+    blocked = nvim_connect.SocketPathBlocked("/c/nvim-@1.sock", OSError("a listener"))
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.hooks._stopped_window", return_value=False),
+        patch("vim_ai_follower.hooks.resolve_nvim_target", side_effect=blocked),
+    ):
+        assert hooks._maybe_auto_open(in_tmux, "/tmp/f.txt", cfg) is None
+    assert nvim_connect.launch_backoff_active("@1")
+    assert "cannot clear /c/nvim-@1.sock: a listener" in capsys.readouterr().err
+
+
+def test_a_reopen_whose_split_never_answers_keeps_the_old_state_and_backs_off(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    state.FollowerState.set("@1", "nvim", "/tmp/old.sock", origin="%1", on_failure="reopen")
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", side_effect=OSError("dead")),
+        patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="absent"),
+        patch(
+            "vim_ai_follower.hooks.resolve_nvim_target", side_effect=_split_never_answered()
+        ) as resolve,
+    ):
+        assert hooks._get_active_follower("@1") is None
+        assert hooks._get_active_follower("@1") is None
+    resolve.assert_called_once_with("%1", "@1", adopt=False)
+    unchanged = state.FollowerState.read("@1")
+    assert unchanged is not None
+    assert unchanged.target == "/tmp/old.sock"
+    assert nvim_connect.launch_backoff_active("@1")
+    assert "nvim did not answer on /c/nvim-@1.sock" in capsys.readouterr().err

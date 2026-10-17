@@ -18,7 +18,17 @@ from helpers import (
 )
 from helpers import register_fake_follower as _register_fake_follower
 
-from vim_ai_follower import cache, commands, config, control, keybindings, session, snapshot, state
+from vim_ai_follower import (
+    cache,
+    commands,
+    config,
+    control,
+    hooks,
+    keybindings,
+    session,
+    snapshot,
+    state,
+)
 from vim_ai_follower.backends import nvim_connect, tmux_vim
 from vim_ai_follower.backends.nvim import _FIND_BUFFER_LUA
 from vim_ai_follower.backends.nvim_connect import NvimNeverListened
@@ -250,7 +260,9 @@ def test_start_nvim_launches_dedicated_and_records_not_adopted() -> None:
         ) as resolve,
     ):
         assert commands.cmd_start({"TMUX_PANE": "%1"}, backend="nvim") == 0
-    resolve.assert_called_once_with("%1", "@1", adopt=False)
+    resolve.assert_called_once_with(
+        "%1", "@1", adopt=False, wait_seconds=nvim_connect.START_SPLIT_WAIT_SECONDS
+    )
     result = state.FollowerState.read("@1")
     assert result is not None
     assert result.backend == "nvim"
@@ -272,7 +284,9 @@ def test_start_nvim_adopts_existing_and_records_adopted(
         ) as resolve,
     ):
         assert commands.cmd_start({"TMUX_PANE": "%1"}, backend="nvim") == 0
-    resolve.assert_called_once_with("%1", "@1", adopt=True)
+    resolve.assert_called_once_with(
+        "%1", "@1", adopt=True, wait_seconds=nvim_connect.START_SPLIT_WAIT_SECONDS
+    )
     result = state.FollowerState.read("@1")
     assert result is not None
     assert result.adopted is True  # adopted the user's own nvim; never relocked
@@ -1812,3 +1826,56 @@ def test_toggle_ignores_a_state_left_by_another_tmux_server(
         assert commands.cmd_toggle({"TMUX_PANE": "%1"}) == 0
     assert "no follower to toggle" in capsys.readouterr().out
     assert not any(c.args[0][:2] == ["tmux", "resize-pane"] for c in run.call_args_list)
+
+
+# --- a tmux split nvim that never answers (T19, answer B) -----------------
+
+
+def test_start_reports_a_split_nvim_that_never_answers_and_records_nothing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    never = nvim_connect.SplitNvimNeverAnswered("/c/nvim-@1.sock", 10.0, "%7", pane_open=True)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+        patch("vim_ai_follower.commands.resolve_nvim_target", side_effect=never),
+    ):
+        assert commands.cmd_start({"TMUX_PANE": "%1"}, backend="nvim") == 1
+    captured = capsys.readouterr()
+    assert "attached" not in captured.out
+    assert captured.err == (
+        "claude-follow: nvim did not answer on /c/nvim-@1.sock within 10 s; "
+        "its pane is left open so you can read why\n"
+    )
+    assert state.FollowerState.read("@1") is None
+    assert not [c for c in run.call_args_list if c.args[0][:2] == ["tmux", "kill-pane"]]
+    # The next hook must not split a second pane next to this one at once.
+    assert nvim_connect.launch_backoff_active("@1")
+    assert "nvim did not answer on /c/nvim-@1.sock" in hooks.LOG_PATH.read_text()
+
+
+def test_start_splits_at_once_despite_a_backoff_and_waits_ten_seconds() -> None:
+    # `start` is the user's explicit retry: it bypasses the backoff a failed
+    # auto-open left, as for a standalone window, with the patient deadline.
+    nvim_connect.record_launch_failure("@1")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch(
+            "vim_ai_follower.commands.resolve_nvim_target", return_value=("/tmp/nvim.sock", True)
+        ) as resolve,
+    ):
+        assert commands.cmd_start({"TMUX_PANE": "%1"}, backend="nvim") == 0
+    resolve.assert_called_once_with(
+        "%1", "@1", adopt=False, wait_seconds=nvim_connect.START_SPLIT_WAIT_SECONDS
+    )
+    assert not nvim_connect.launch_backoff_active("@1")
+
+
+def test_start_reports_a_split_socket_it_cannot_clear(capsys: pytest.CaptureFixture[str]) -> None:
+    blocked = nvim_connect.SocketPathBlocked("/c/nvim-@1.sock", OSError("a listener"))
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.commands.resolve_nvim_target", side_effect=blocked),
+    ):
+        assert commands.cmd_start({"TMUX_PANE": "%1"}, backend="nvim") == 1
+    assert capsys.readouterr().err == "claude-follow: cannot clear /c/nvim-@1.sock: a listener\n"
+    assert state.FollowerState.read("@1") is None
