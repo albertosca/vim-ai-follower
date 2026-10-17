@@ -262,3 +262,42 @@ def test_a_failed_split_whose_queue_filled_is_never_split_beside(
     assert _spinning_nvim(nvim_socket) == spinning
     assert nvim_connect.launch_backoff_active(window_id)
     assert f"cannot clear {nvim_socket}" in capsys.readouterr().err
+
+
+def test_a_stopped_adopted_nvims_full_queue_still_reads_alive(tmp_path: Path) -> None:
+    """An adopted nvim's socket is nvim's default one (`$TMPDIR/nvim.$USER/
+    <random>/nvim.<pid>.0`, what discover_adopt_socket globs) and carries no
+    `--listen` argument. SIGSTOPped (Ctrl-Z in the user's pane), it refuses
+    connects after 32 probes; it must stay "silent" and alive, or another
+    window's `stop` or hook would collect a live follower's state."""
+    from vim_ai_follower.backends.nvim import NvimFollower
+
+    directory = Path(tempfile.mkdtemp(prefix="vaf19a", dir="/tmp"))
+    name_file = directory / "servername"
+    nvim = subprocess.Popen(
+        ["nvim", "--headless", "-u", "NONE", "-i", "NONE", "-n",
+         "--cmd", f"call writefile([v:servername], '{name_file}')"],
+        env={**os.environ, "TMPDIR": f"{directory}/"},
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )  # fmt: skip
+    try:
+        deadline = time.monotonic() + 5.0
+        while not name_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        sock = Path(name_file.read_text().strip())
+        assert sock.name == f"nvim.{nvim.pid}.0"
+        assert sock.parent.parent.name.startswith("nvim.")
+        os.kill(nvim.pid, signal.SIGSTOP)
+        _fill_the_listen_queue(sock)
+        refused = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        with pytest.raises(ConnectionRefusedError):
+            refused.connect(str(sock))
+        refused.close()
+        assert nvim_connect.probe_nvim(str(sock)) == "silent"
+        assert NvimFollower(socket_path=str(sock)).is_alive()
+        assert sock.is_socket()
+    finally:
+        os.kill(nvim.pid, signal.SIGCONT)
+        nvim.kill()
+        nvim.wait()
+        shutil.rmtree(directory, ignore_errors=True)

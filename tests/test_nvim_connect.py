@@ -84,7 +84,7 @@ def _patched_split(sock_path: Path, run: Any = _split_run) -> AbstractContextMan
     # subprocess.run this helper stands in for: nobody listens here.
     stack.enter_context(
         patch(
-            "vim_ai_follower.backends.nvim_connect.is_listened_on_by_a_live_process",
+            "vim_ai_follower.backends.nvim_connect.refused_by_a_live_nvim",
             return_value=False,
         )
     )
@@ -269,7 +269,7 @@ def _patched_launcher(sock_path: Path, run: Any) -> AbstractContextManager[Any]:
     # subprocess.run this helper stands in for: nobody listens here.
     stack.enter_context(
         patch(
-            "vim_ai_follower.backends.nvim_connect.is_listened_on_by_a_live_process",
+            "vim_ai_follower.backends.nvim_connect.refused_by_a_live_nvim",
             return_value=False,
         )
     )
@@ -587,7 +587,7 @@ def test_launch_standalone_nvim_creates_the_socket_directory_first(tmp_path: Pat
         ),
         patch("vim_ai_follower.backends.nvim_connect.subprocess.run", side_effect=run),
         patch(
-            "vim_ai_follower.backends.nvim_connect.is_listened_on_by_a_live_process",
+            "vim_ai_follower.backends.nvim_connect.refused_by_a_live_nvim",
             return_value=False,
         ),
         patch("vim_ai_follower.backends.nvim_connect.time.sleep"),
@@ -1292,3 +1292,83 @@ def test_the_split_wait_never_runs_past_the_seconds_it_reports(tmp_path: Path) -
         nvim_connect._SOCKET_POLL_INTERVAL_SECONDS,
         pytest.approx(0.02),
     ]
+
+
+# --- the same, on an adopted nvim's default socket (T19 fix round 2) ------
+
+
+def _no_listening_process() -> AbstractContextManager[Any]:
+    """`ps` lists nobody launched with `--listen`: an adopted nvim's own
+    socket never carries one, so only its name can prove it alive."""
+    return patch(
+        "vim_ai_follower.backends.nvim_connect.subprocess.run", return_value=_listing("zsh")
+    )
+
+
+def _gone_pid() -> int:
+    finished = subprocess.Popen(["true"])
+    finished.wait()
+    return finished.pid
+
+
+def test_a_refused_default_socket_whose_nvim_lives_is_silent() -> None:
+    """nvim names its default server `…/nvim.<user>/<random>/nvim.<pid>.<n>`
+    (measured 2026-10-17 on 0.12.6: the pid is the nvim's own), and a
+    SIGSTOPped adopted nvim refuses connects after 32 probes like any other.
+    Its pid alive → silent, so another window's `stop` or hook never reads a
+    live follower as gone."""
+    with _short_socket_dir() as directory:
+        sock = directory / f"nvim.{os.getpid()}.0"
+        _dead_nvims_socket(sock)
+        with _no_listening_process():
+            assert nvim_connect.probe_nvim(str(sock)) == "silent"
+
+
+def test_a_refused_default_socket_whose_pid_is_gone_is_absent() -> None:
+    with _short_socket_dir() as directory:
+        sock = directory / f"nvim.{_gone_pid()}.0"
+        _dead_nvims_socket(sock)
+        with _no_listening_process():
+            assert nvim_connect.probe_nvim(str(sock)) == "absent"
+
+
+def test_a_default_socket_whose_pid_we_may_not_signal_is_silent() -> None:
+    # EPERM: the process exists (another user's): alive, not gone.
+    with _short_socket_dir() as directory:
+        sock = directory / "nvim.4242.1"
+        _dead_nvims_socket(sock)
+        with (
+            _no_listening_process(),
+            patch(
+                "vim_ai_follower.backends.nvim_connect.os.kill", side_effect=PermissionError
+            ) as kill,
+        ):
+            assert nvim_connect.probe_nvim(str(sock)) == "silent"
+        kill.assert_called_once_with(4242, 0)
+
+
+@pytest.mark.parametrize(
+    "name", ["nvim-@1.sock", "nvim.0.0", "nvim.12x.0", "nvim.12.0.old", "xnvim.12.0"]
+)
+def test_only_nvims_default_socket_name_with_a_real_pid_is_signalled(name: str) -> None:
+    # pid 0 would signal our own process group and read as alive.
+    with _short_socket_dir() as directory:
+        sock = directory / name
+        _dead_nvims_socket(sock)
+        with (
+            _no_listening_process(),
+            patch("vim_ai_follower.backends.nvim_connect.os.kill") as kill,
+        ):
+            assert nvim_connect.probe_nvim(str(sock)) == "absent"
+        kill.assert_not_called()
+
+
+def test_a_live_default_socket_owner_is_enough_even_when_ps_fails() -> None:
+    with _short_socket_dir() as directory:
+        sock = directory / f"nvim.{_gone_pid()}.0"
+        _dead_nvims_socket(sock)
+        with patch(
+            "vim_ai_follower.backends.nvim_connect.subprocess.run",
+            return_value=subprocess.CompletedProcess(args=[], returncode=1, stdout=""),
+        ):
+            assert nvim_connect.probe_nvim(str(sock)) == "silent"  # still fails closed

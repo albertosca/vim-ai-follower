@@ -15,9 +15,11 @@ absent socket is ever unlinked. A REFUSED connect is not proof of absence
 either: on macOS a connection its client closed keeps its slot in the listen
 queue, so after 32 probes of an nvim that never accepts, connect is refused
 exactly as on a dead nvim's file; a refusal reads "absent" only when no live
-process was launched with `--listen <that socket>`. The requests that type an animation are
-exempt from the request deadline (unbounded_requests): there, an nvim
-waiting on its user is to be waited for.
+process was launched with `--listen <that socket>` and, for nvim's default
+socket name (`nvim.<pid>.<n>`, an adopted nvim's), its pid is gone. The
+requests that type an animation are exempt from the request deadline
+(unbounded_requests): there, an nvim waiting on its user is to be waited
+for.
 
 pynvim is never imported at module level here: hooks.py imports this module
 and must stay importable without the optional `nvim` extra."""
@@ -26,6 +28,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import shutil
 import signal
 import socket
@@ -65,6 +68,11 @@ _MSGPACK_TRUE = 0xC3
 # The process scan that tells a full listen queue from a dead socket file:
 # one `ps`, bounded; a scan that fails or runs out counts as a live listener.
 PROCESS_SCAN_TIMEOUT_SECONDS = 2.0
+# nvim's default server name, `…/nvim.<user>/<random>/nvim.<pid>.<n>` on
+# macOS ($TMPDIR) and Linux ($XDG_RUNTIME_DIR or the same $TMPDIR form):
+# the pid is the nvim's own (measured 2026-10-17, nvim 0.12.6). An adopted
+# nvim's socket has this name and no `--listen` on its command line.
+_DEFAULT_SOCKET_NAME = re.compile(r"nvim\.([1-9][0-9]*)\.[0-9]+")
 # msgpack-RPC `[0, 1, "nvim_get_vvar", ["vim_did_enter"]]`, hand-encoded like
 # the probe: fixarray(4), request 0, msgid 1, fixstr(13), fixarray(1) of a
 # fixstr(13). Its answer once nvim has started is `[1, 1, nil, 1]`.
@@ -433,7 +441,7 @@ def _probe(sock: str, timeout: float) -> tuple[str, bool]:
         except FileNotFoundError:
             return "absent", False
         except OSError:  # refused: a dead nvim's file, or a full listen queue
-            return ("silent" if is_listened_on_by_a_live_process(sock) else "absent"), False
+            return ("silent" if refused_by_a_live_nvim(sock) else "absent"), False
         deadline = time.monotonic() + timeout
         received = b""
         try:
@@ -524,6 +532,29 @@ def ready_split_socket(window_id: str) -> str | None:
     return sock if nvim_ready(sock) else None
 
 
+def refused_by_a_live_nvim(sock: str) -> bool:
+    """For a socket whose connect was refused: True when an nvim may still
+    own it — its default name's pid lives, or a live process listens there
+    (is_listened_on_by_a_live_process, failing closed). Either proves life."""
+    return _default_socket_owner_lives(sock) or is_listened_on_by_a_live_process(sock)
+
+
+def _default_socket_owner_lives(sock: str) -> bool:
+    """`kill -0` on the pid in nvim's default socket name: True when it
+    succeeds or is refused (EPERM: the process exists), False on ESRCH or
+    for any other name."""
+    named = _DEFAULT_SOCKET_NAME.fullmatch(Path(sock).name)
+    if named is None:
+        return False
+    try:
+        os.kill(int(named.group(1)), 0)
+    except PermissionError:
+        return True
+    except (ProcessLookupError, OverflowError):
+        return False
+    return True
+
+
 def is_listened_on_by_a_live_process(sock: str) -> bool:
     """True when a live process's command line has `--listen <sock>`, the
     path a whole argument (an nvim launched to listen there, or the `--embed`
@@ -609,7 +640,7 @@ def _remove_dead_socket(sock: str) -> None:
     path = Path(sock)
     if not path.exists():
         return
-    if _accepts(sock) or is_listened_on_by_a_live_process(sock):
+    if _accepts(sock) or refused_by_a_live_nvim(sock):
         # Someone listens there but did not answer as an nvim (the caller
         # asked first) — a busy nvim (`:!make`) is silent too, and one that
         # never accepts refuses once its queue is full: neither adopted nor
