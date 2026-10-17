@@ -95,21 +95,22 @@ _CUT = AnimationResult("interrupted", 0)
 @pytest.mark.parametrize(
     ("rebuilt", "resumed", "partial", "expected"),
     [
-        (_DONE, _DONE, "a\n", True),
-        (_DONE, _CUT, "a\n", False),
-        (_CUT, _DONE, "a\n", False),
-        (None, _DONE, None, True),
-        (None, _CUT, None, False),
+        (_DONE, _DONE, "a\n", hooks._CatchUp("completed")),
+        (_DONE, _CUT, "a\n", hooks._CatchUp("interrupted", "a\n")),
+        (_CUT, _DONE, "a\n", hooks._CatchUp("interrupted", "a\n")),
+        (None, _DONE, None, hooks._CatchUp("completed")),
+        (None, _CUT, None, hooks._CatchUp("interrupted", "")),
     ],
 )
 def test_catchup_reports_whether_it_ran_to_the_end(
     rebuilt: AnimationResult | None,
     resumed: AnimationResult,
     partial: str | None,
-    expected: bool,
+    expected: hooks._CatchUp,
 ) -> None:
-    """True only when the buffer now holds nothing but follower text, which is
-    what lets _animate_edit reload it from disk after an outside change."""
+    """ "completed" only when the buffer now holds nothing but follower text,
+    which is what lets _animate_edit reload it from disk after an outside
+    change; "interrupted" carries what the buffer holds for the hand-off."""
     follower = _fake_follower()
     if rebuilt is not None:
         follower.rewrite_buffer.return_value = rebuilt
@@ -118,7 +119,23 @@ def test_catchup_reports_whether_it_ran_to_the_end(
         ops=[_OP], pace_seconds=0.2, file_path="/tmp/f.py", partial=partial
     )
 
-    assert hooks._consume_pending_catchup(follower, "/tmp/f.py", pending) is expected
+    assert hooks._consume_pending_catchup(follower, "/tmp/f.py", pending) == expected
+    if rebuilt is _CUT:
+        # The S was the rebuild's: the replay would type on past it.
+        follower.resume.assert_not_called()
+
+
+def test_an_interrupted_apply_edit_catch_up_counts_the_ops_it_applied() -> None:
+    follower = _fake_follower()
+    second = EditOp(kind="replace", start_line=1, end_line=1, new_lines=("A",))
+    follower.resume.return_value = AnimationResult("interrupted", 1)
+    pending = control.PendingApplyEdit(
+        ops=[_OP, second], pace_seconds=0.2, file_path="/tmp/f.py", partial="a\nb\n"
+    )
+
+    assert hooks._consume_pending_catchup(follower, "/tmp/f.py", pending) == hooks._CatchUp(
+        "interrupted", "a\nB\n"
+    )
 
 
 # --- _catch_up_end ---------------------------------------------------------
@@ -393,3 +410,178 @@ def test_catchup_rebuild_is_backend_agnostic_for_tmux(tmp_path: Path) -> None:
     ]
     assert sends.index(":%d") < sends.index("PARTIAL") < sends.index("leftover")
     assert sends.index("leftover") < sends.index("NEW")  # ...all before the new edit
+
+
+# --- an S pressed DURING the catch-up (final review M5) ---------------------
+
+
+def _orphaned_remainder_and_edit(
+    tmp_path: Path, adopted: bool = False
+) -> tuple[str, dict[str, object]]:
+    """A file the follower already shows, a crash-orphaned show_fresh
+    remainder for it (partial "a\\n", three lines left), and the NEW edit
+    already on disk with its pre-hook snapshot: the catch-up runs first."""
+    target = tmp_path / "f.txt"
+    target.write_text("a\nx\ny\nz\nNEW\n")
+    resolved = os.path.realpath(str(target))
+    state.FollowerState.set(
+        "@1",
+        "nvim",
+        "/tmp/x.sock",
+        current_file=resolved,
+        open_files=(resolved,),
+        shown_any=True,
+        adopted=adopted,
+    )
+    snapshot.save("@1", resolved, "a\nx\ny\nz\n")
+    control.save_pending_show_fresh(
+        "@1", ("x", "y", "z"), 0.03, continuation=True, file_path=resolved, partial="a\n"
+    )
+    payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": resolved}}
+    return resolved, payload
+
+
+def _run_post_hook(payload: dict[str, object], signal: str | None) -> None:
+    with (
+        patch("vim_ai_follower.control.check_signal", return_value=signal),
+        patch("vim_ai_follower.hooks.time.sleep"),
+        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+
+@pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
+@pytest.mark.parametrize(
+    ("rebuilt", "resumed", "expected_partial"),
+    [
+        # Cut inside the replay: the partial plus the one line it typed.
+        (_DONE, AnimationResult("interrupted", 1), "a\nx\n"),
+        # Cut inside the rebuild: nothing of the remainder ran, and the
+        # replay must not run either (it would type on past the S).
+        (_CUT, _DONE, "a\n"),
+    ],
+    ids=["during-the-replay", "during-the-rebuild"],
+)
+def test_s_during_a_catch_up_hands_the_buffer_over_as_it_is(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    rebuilt: AnimationResult,
+    resumed: AnimationResult,
+    expected_partial: str,
+    adopted: bool,
+) -> None:
+    """Alberto's answer A (Task 20): the S is obeyed. This edit's hand-off
+    wait runs with the catch-up's partial, no remainder is saved, and the new
+    edit is not animated (the user holds the buffer now). Adopted too: there
+    the catch-up runs once the probe finds the partial ("holds")."""
+    resolved, payload = _orphaned_remainder_and_edit(tmp_path, adopted)
+    follower = _fake_follower()
+    follower.rewrite_buffer.return_value = rebuilt
+    follower.resume.return_value = resumed
+    monkeypatch.setattr(hooks, "get_follower", lambda *a, **k: follower)
+    monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: MagicMock())
+    seen: dict[str, object] = {}
+
+    def fake_wait(
+        current: object,
+        session: object,
+        file_path: str,
+        after: str,
+        partial_content: str,
+        surface: object = None,
+        raw_after: bytes | None = None,
+    ) -> None:
+        seen["file_path"] = file_path
+        seen["after"] = after
+        seen["partial"] = partial_content
+        seen["raw_after"] = raw_after
+        seen["pending"] = control.has_pending_animation("@1")
+
+    monkeypatch.setattr(hooks, "_await_user_handoff", fake_wait)
+
+    _run_post_hook(payload, None)
+
+    assert seen == {
+        "file_path": resolved,
+        "after": "a\nx\ny\nz\nNEW\n",
+        "partial": expected_partial,
+        "raw_after": b"a\nx\ny\nz\nNEW\n",
+        "pending": False,
+    }
+    if rebuilt.outcome == "interrupted":
+        follower.resume.assert_not_called()
+    follower.hand_over.assert_called_once_with()
+    follower.apply_edit.assert_not_called()
+    follower.show_fresh.assert_not_called()
+    assert not control.has_pending_animation("@1")
+
+
+def test_s_again_after_an_interrupted_catch_up_shows_claudes_finished_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The second S of answer A: no remainder was saved, so the des-interrupt
+    takes _replay_remainder's `pending is None` path and reloads the file
+    Claude wrote, with no animation."""
+    resolved, payload = _orphaned_remainder_and_edit(tmp_path)
+    follower = _fake_follower()
+    follower.resume.return_value = AnimationResult("interrupted", 1)
+    monkeypatch.setattr(hooks, "get_follower", lambda *a, **k: follower)
+    monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(hooks, "show_popup", lambda *a, **k: None)
+
+    # "interrupt" on every poll: the hand-off wait des-interrupts at once.
+    _run_post_hook(payload, "interrupt")
+
+    follower.reload_and_relock.assert_called_once_with(resolved)
+    follower.rewrite_buffer.assert_called_once_with(resolved, "a\n")  # the catch-up's only
+    follower.resume.assert_called_once()
+    follower.apply_edit.assert_not_called()
+    follower.show_fresh.assert_not_called()
+    current = state.FollowerState.read("@1")
+    assert current is not None
+    assert current.current_file == resolved
+
+
+def test_a_remainder_a_pause_saved_during_the_catch_up_is_not_replayed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A P then S during the catch-up: the pause re-saved the OLD edit's
+    remainder (the crash fallback), and answer A drops it, so the second S
+    reloads Claude's file instead of replaying the old edit on top."""
+    resolved, payload = _orphaned_remainder_and_edit(tmp_path)
+    follower = _fake_follower()
+
+    def paused_then_interrupted(*args: object, **kwargs: object) -> AnimationResult:
+        control.save_pending_show_fresh(
+            "@1", ("y", "z"), 0.0, continuation=True, file_path=resolved, partial="a\nx\n"
+        )
+        return AnimationResult("interrupted", 1)
+
+    follower.resume.side_effect = paused_then_interrupted
+    monkeypatch.setattr(hooks, "get_follower", lambda *a, **k: follower)
+    monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(hooks, "show_popup", lambda *a, **k: None)
+    presses = {"count": 0}
+
+    def interrupt_with_a_hang_guard(*args: object, **kwargs: object) -> str:
+        # A replayed remainder re-arms on every "interrupt" (the mock resume
+        # always cuts), so without the fix this would loop forever.
+        presses["count"] += 1
+        if presses["count"] > 30:
+            raise RuntimeError("hang guard: the hand-off kept replaying a remainder")
+        return "interrupt"
+
+    with (
+        patch("vim_ai_follower.control.check_signal", side_effect=interrupt_with_a_hang_guard),
+        patch("vim_ai_follower.hooks.time.sleep"),
+        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    follower.reload_and_relock.assert_called_once_with(resolved)
+    follower.rewrite_buffer.assert_called_once_with(resolved, "a\n")  # the catch-up's only
+    assert not control.has_pending_animation("@1")

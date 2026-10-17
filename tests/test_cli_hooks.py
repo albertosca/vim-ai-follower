@@ -1343,6 +1343,9 @@ def test_pace0_consume_routes_resume_to_the_nvim_follower(
 
     fake = MagicMock()
     fake.apply_edit.return_value = AnimationResult("completed", 1)
+    # A real outcome: a bare MagicMock's is neither, and a catch-up that is not
+    # "completed" is an S's hand-off, which would wait for a save forever.
+    fake.resume.return_value = AnimationResult("completed", 1)
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
 
     with (

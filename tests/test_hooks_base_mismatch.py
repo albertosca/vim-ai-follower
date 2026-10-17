@@ -568,22 +568,33 @@ def test_a_dedicated_catch_up_whose_base_probe_goes_unanswered_still_retypes(
 def test_a_catch_up_that_did_not_complete_is_never_grounded(
     stopped: str, adopted: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An interrupted catch-up is not a buffer of follower text only: the
-    usual policy applies (adopted: left alone with the cue; dedicated:
-    retyped)."""
+    """An interrupted catch-up is not a buffer of follower text only, so it is
+    never reloaded from disk. It was cut by an S, which is this edit's
+    hand-off (Alberto's answer A, sweep-4 T20): the buffer is handed over as
+    it is, with no probe, no retype and no leave-alone cue. Before T20 this
+    test pinned the defect (final review M5): the S was ignored, an adopted
+    buffer got the cue and a dedicated one was retyped."""
     target, resolved = _setup(tmp_path, adopted=adopted)
     _pending_apply_edit(resolved, "a\nb\nc\n")
     follower = _caught_up_follower(adopted, "differs")
     getattr(
         follower, f"{stopped}_buffer" if stopped == "rewrite" else stopped
     ).return_value = AnimationResult("interrupted", 0)
+    handed: list[str] = []
+    monkeypatch.setattr(
+        hooks,
+        "_await_user_handoff",
+        lambda current, session, file_path, after, partial, *rest, **options: handed.append(
+            partial
+        ),
+    )
     surface = _run_hook(target, follower, monkeypatch)
 
     assert follower.reload_from_disk.call_args_list == []
-    if adopted:
-        assert surface.method_calls[-1] == call.set_state(hooks.BASE_DIFFERS_CUE)
-    else:
-        assert follower.show_fresh.call_args == call(resolved, AFTER, in_new_tab=True)
+    assert handed == ["a\nb\nc\n"]
+    assert follower.show_fresh.call_args_list == []
+    assert follower.apply_edit.call_args_list == []
+    assert call.set_state(hooks.BASE_DIFFERS_CUE) not in surface.method_calls
 
 
 def test_a_reload_that_raises_never_fails_the_hook(

@@ -1147,11 +1147,22 @@ def _skip_unreachable_edit(
         _refresh_writer_cue(window_id, current.target, payload)
 
 
+@dataclasses.dataclass(frozen=True)
+class _CatchUp:
+    """How a pre-edit catch-up ended. "interrupted" is an S the catch-up's
+    driver consumed, and `partial` is then what the buffer holds: the
+    persisted partial plus whatever of the remainder the replay typed, in the
+    terminated form every partial uses."""
+
+    outcome: Literal["completed", "interrupted"]
+    partial: str = ""
+
+
 def _consume_pending_catchup(
     follower: Follower,
     file_path: str,
     pending: control.PendingApplyEdit | control.PendingShowFresh,
-) -> bool:
+) -> _CatchUp:
     """Silently fast-forward a crash-fallback remainder so the buffer holds
     the state the new edit's ops were computed against.
 
@@ -1193,16 +1204,67 @@ def _consume_pending_catchup(
     holds the new edit, so a relock that re-reads it (tmux's `:e!`) would
     show the finished file and make the base probe below answer "differs".
 
-    True means the catch-up ran to the end, so the buffer holds only follower
-    text, unless the user typed into an adopted editor while it ran
-    (_caught_up_buffer_held asks before _animate_edit reloads it from disk)."""
-    rebuilt = True
+    "completed" means the catch-up ran to the end, so the buffer holds only
+    follower text, unless the user typed into an adopted editor while it ran
+    (_caught_up_buffer_held asks before _animate_edit reloads it from disk).
+    "interrupted" is an S pressed while it ran (final review M5): the rebuild
+    or the replay consumed it, so nothing more is typed (an interrupted
+    rebuild skips the replay, which would type on past the S) and the caller
+    hands the buffer over (_hand_over_interrupted_catch_up). A legacy
+    remainder without a partial counts from an empty one: its prefix is not
+    known, and the partial only feeds the notification text."""
+    base = pending.partial or ""
     if pending.partial is not None:
-        rebuilt = follower.rewrite_buffer(file_path, pending.partial).outcome == "completed"
+        rebuilt = follower.rewrite_buffer(file_path, pending.partial)
+        if rebuilt.outcome != "completed":
+            return _CatchUp("interrupted", base)
     result = follower.resume(
         dataclasses.replace(pending, pace_seconds=0.0), seeded=not pending.partial, reload=False
     )
-    return rebuilt and result.outcome == "completed"
+    if result.outcome == "completed":
+        return _CatchUp("completed")
+    if isinstance(pending, control.PendingShowFresh):
+        shown = base + _terminated(pending.lines[: result.completed_count])
+    else:
+        shown = diff_module.apply_ops(base, pending.ops[: result.completed_count])
+    return _CatchUp("interrupted", shown)
+
+
+def _hand_over_interrupted_catch_up(
+    current: FollowerState,
+    session: Session,
+    follower: Follower,
+    file_path: str,
+    raw_after: bytes,
+    partial: str,
+) -> int:
+    """An S pressed during the pre-edit catch-up (Alberto's answer A,
+    2026-10-17, final review M5): hand the buffer over as it is now. It used
+    to be consumed by the catch-up's driver and then ignored: no hand-off,
+    the new edit animated anyway (or, adopted, the buffer was left alone),
+    and the remainder was gone.
+
+    The hand-off is THIS edit's: the normal wait, with the catch-up's partial
+    as the partial and NO saved remainder (a pause during the catch-up may
+    have written one; it is the OLD edit's, superseded by the file Claude has
+    just written). So `:w` releases Claude with the user's version, and S
+    again takes _replay_remainder's `pending is None` path: the finished file
+    is reloaded, nothing replayed. hand_over unlocks a rebuild cut short, as
+    _rearm_handoff does for a replay's."""
+    window_id = session.window_id
+    # The driver returned: an S from here on is the des-interrupt.
+    control.mark_animating(window_id, state="handoff")
+    control.discard_pending_animation(window_id)
+    follower.hand_over()
+    FollowerState.update_current_file(window_id, None)
+    surface = status_surface_for(current)
+    # As before an animation: an earlier leave-alone cue is not this hand-off's
+    # to restore when it ends.
+    surface.retire_state(BASE_DIFFERS_CUE, PROBE_UNKNOWN_CUE)
+    after = raw_after.decode("utf-8", errors="replace")
+    _await_user_handoff(current, session, file_path, after, partial, surface, raw_after=raw_after)
+    _mark_finishing(window_id)
+    return 0
 
 
 def _probe_base(follower: Follower, file_path: str, before: str) -> BufferProbe:
@@ -1496,7 +1558,7 @@ def _animate_edit(
     # buffer ("absent") has nothing to lose and nothing to replay onto: the
     # probe below sends the new edit to the retype.
     pending = control.load_pending_animation(session.window_id)
-    caught_up = False
+    catch_up: _CatchUp | None = None
     if (
         pending is not None
         and (pending.file_path == file_path or pending.file_path == "")
@@ -1504,7 +1566,7 @@ def _animate_edit(
         and not binary
     ):
         if not current.adopted:
-            caught_up = _consume_pending_catchup(follower, file_path, pending)
+            catch_up = _consume_pending_catchup(follower, file_path, pending)
         elif pending.partial is None:
             _leave_adopted_buffer_alone(
                 current,
@@ -1517,7 +1579,7 @@ def _animate_edit(
         else:
             held = _probe_base(follower, file_path, pending.partial)
             if held == "holds":
-                caught_up = _consume_pending_catchup(follower, file_path, pending)
+                catch_up = _consume_pending_catchup(follower, file_path, pending)
             elif held != "absent":
                 _leave_adopted_buffer_alone(
                     current,
@@ -1527,6 +1589,11 @@ def _animate_edit(
                     f"{_WHY[held]} (a leftover remainder's partial); dropped the remainder",
                 )
                 return 0
+    if catch_up is not None and catch_up.outcome == "interrupted":
+        return _hand_over_interrupted_catch_up(
+            current, session, follower, file_path, raw_after, catch_up.partial
+        )
+    caught_up = catch_up is not None and catch_up.outcome == "completed"
 
     if binary:
         # Binary files are never animated, so it's safe to just navigate to

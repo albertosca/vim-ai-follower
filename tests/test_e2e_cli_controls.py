@@ -15,12 +15,16 @@ nvims and animates at human pace, so it is slow by nature and CI runs
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 from e2e_harness import E2EFollower, e2e_world, payload
+
+from vim_ai_follower import control
+from vim_ai_follower.hooks import HANDOFF_CUE
 
 pytestmark = pytest.mark.integration
 
@@ -551,3 +555,139 @@ def test_stop_never_kills_or_types_into_a_pane_a_stale_state_names(
     log = (world.cache_dir / "hook.log").read_text()
     reason = "no longer runs vim" if recorded == "this" else "is not proven to be the follower's"
     assert reason in log, log
+
+
+# ------------------------------------- an S during a catch-up (sweep-4 T20)
+
+CATCH_UP_BASE = _text("def base():", "    return 'BASE_MARK'")
+USER_LINE = "USER_MARK = 1"
+# Long enough that a pace-0 catch-up is still typing when the S lands: tmux
+# sends one batch per line (400 lines take seconds), nvim sets a whole line in
+# two requests (400 lines were done before the first poll saw one).
+_CATCH_UP_LENGTH = {"tmux": 400, "nvim": 30000}
+
+
+def _catch_up_lines(backend: str) -> tuple[str, ...]:
+    return tuple(
+        f"catchup_line_{index:05d} = {index}" for index in range(_CATCH_UP_LENGTH[backend])
+    )
+
+
+def _catch_up_edit(backend: str) -> str:
+    return CATCH_UP_BASE + _text(*_catch_up_lines(backend)) + _text("NEW_EDIT_MARK = True")
+
+
+def _interrupt_a_catch_up(
+    world: E2EFollower, backend: str
+) -> tuple[str, Path, subprocess.Popen[bytes], bytes]:
+    """Show a file, orphan a 400-line remainder for it the way a killed hook
+    leaves one, fire the next edit and press S while its catch-up replays the
+    remainder. Returns (target, path, hook, the buffer as handed over)."""
+    path = world.workdir / "catchup_s.py"
+    world.start(backend, "muito_rapido")
+    target = world.follower_target()
+    world.cli("hook", "pre", stdin=payload("Write", path))
+    path.write_text(CATCH_UP_BASE)
+    world.cli("hook", "post", stdin=payload("Write", path))
+    assert world.buffer_bytes(backend, target, path) == CATCH_UP_BASE.encode()
+
+    lines = _catch_up_lines(backend)
+    control.save_pending_show_fresh(
+        world.window_id,
+        lines,
+        0.08,
+        continuation=True,
+        base_dir=world.cache_dir,
+        file_path=os.path.realpath(path),
+        partial=CATCH_UP_BASE,
+    )
+    world.cli("hook", "pre", stdin=payload("Edit", path))
+    path.write_text(_catch_up_edit(backend))
+    proc = world.cli_background("hook", "post", stdin=payload("Edit", path))
+    world.wait_until(
+        lambda: "catchup_line_0002" in world.visible_progress(backend, target, path),
+        "the catch-up to be typing the remainder",
+        timeout=60.0,
+    )
+    assert world.cli("interrupt").stdout == "claude-follow: interrupt requested\n"
+    world.wait_until(
+        lambda: world.animating_state() == "handoff",
+        "the hand-off after an S during the catch-up",
+        timeout=20.0,
+    )
+    held = world.buffer_bytes(backend, target, path)
+    assert held is not None
+    assert held.startswith(CATCH_UP_BASE.encode()), "the rebuild was disturbed"
+    assert lines[-1].encode() not in held, "the S landed after the catch-up, measuring nothing"
+    assert b"NEW_EDIT_MARK" not in held, "the new edit was animated over the user's hand-off"
+    # Answer A: no remainder is saved, so the second S reloads Claude's file.
+    assert not world.pending_path.exists(), "an interrupted catch-up saved a remainder"
+    # The cue goes up just after the marker turns "handoff".
+    if backend == "tmux":
+        world.wait_until(
+            lambda: (
+                world.tmux("display-message", "-p", "-t", target, "#{pane_title}").stdout.strip()
+                == HANDOFF_CUE
+            ),
+            "the hand-off cue on the pane border",
+        )
+    else:
+        world.wait_until(
+            lambda: HANDOFF_CUE in (_status_float_body(world, target) or []),
+            "the hand-off cue in the status float",
+        )
+    return target, path, proc, held
+
+
+@pytest.mark.parametrize("backend", ["tmux", "nvim"])
+def test_an_s_during_a_catch_up_hands_over_and_w_releases_the_users_version(
+    world: E2EFollower, backend: str
+) -> None:
+    """Final review M5, answer A — both backends.
+
+    The S used to be consumed by the catch-up's driver and then ignored: no
+    hand-off, the new edit animated anyway and the remainder was dropped. Now
+    the hand-off cue is up for THIS edit, and a save releases Claude with the
+    user's version on disk."""
+    target, path, proc, held = _interrupt_a_catch_up(world, backend)
+
+    if backend == "tmux":
+        world.tmux("send-keys", "-t", target, "Escape", "Escape")
+        world.tmux("send-keys", "-t", target, "-l", "--", f":call append('$', '{USER_LINE}')")
+        world.tmux("send-keys", "-t", target, "Enter")
+        world.tmux("send-keys", "-t", target, "-l", "--", ":w")
+        world.tmux("send-keys", "-t", target, "Enter")
+        # Claude wrote the file after the buffer was last read, so Vim asks
+        # "changed since reading it" (W11), as it does after ANY interrupted
+        # Edit (measured 2026-10-17, not this task's): answer it as a user would.
+        world.wait_until(
+            lambda: (
+                "changed since reading" in world.capture_pane(target) or proc.poll() is not None
+            ),
+            "the save to ask or to release Claude",
+        )
+        if proc.poll() is None:
+            world.tmux("send-keys", "-t", target, "y")
+    else:
+        nvim = world._nvim(target)
+        nvim.command(f"call append('$', '{USER_LINE}')")
+        # The same W11 question would block a bare `:w` sent over RPC.
+        nvim.command("write!")
+
+    world.wait_for_hook_exit(proc, timeout=30.0)
+    assert path.read_bytes() == held + (USER_LINE + "\n").encode()
+    assert "SAVED their own version" in world.background_log(proc)
+
+
+@pytest.mark.parametrize("backend", ["tmux", "nvim"])
+def test_a_second_s_after_an_interrupted_catch_up_shows_claudes_file(
+    world: E2EFollower, backend: str
+) -> None:
+    """Answer A's other half: S again discards the hand-off and shows the
+    file Claude wrote (a reload, nothing replayed)."""
+    target, path, proc, _ = _interrupt_a_catch_up(world, backend)
+
+    assert world.cli("interrupt").stdout.startswith("claude-follow: hand-off cancelled")
+    world.wait_for_hook_exit(proc, timeout=30.0)
+    assert world.buffer_bytes(backend, target, path) == _catch_up_edit(backend).encode()
+    assert path.read_text() == _catch_up_edit(backend)
