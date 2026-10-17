@@ -2626,6 +2626,20 @@ _ADOPTED_ON_THE_CMDLINE = ("answers", False, "c")
         (("answers", False, "Rv"), True, "is waiting on its user (in replace mode)"),
         (("answers", False, "t"), True, "is waiting on its user (in terminal mode)"),
         (("answers", False, "ntT"), True, "is waiting on its user (in terminal mode)"),
+        (("answers", False, "niR"), True, "is waiting on its user (in replace mode)"),
+        (("answers", False, "niV"), True, "is waiting on its user (in replace mode)"),
+        # Visual and select: a navigation leaves the user in Normal mode in
+        # Claude's buffer, and their next `x`/`d` acted there (review I1 of
+        # T24a, measured on nvim 0.12.6; Alberto 2026-10-17).
+        (("answers", False, "v"), True, "is waiting on its user (in visual mode)"),
+        (("answers", False, "V"), True, "is waiting on its user (in visual mode)"),
+        (("answers", False, "\x16"), True, "is waiting on its user (in visual mode)"),
+        (("answers", False, "vs"), True, "is waiting on its user (in select mode)"),
+        (("answers", False, "Vs"), True, "is waiting on its user (in select mode)"),
+        (("answers", False, "\x16s"), True, "is waiting on its user (in select mode)"),
+        (("answers", False, "s"), True, "is waiting on its user (in select mode)"),
+        (("answers", False, "S"), True, "is waiting on its user (in select mode)"),
+        (("answers", False, "\x13"), True, "is waiting on its user (in select mode)"),
     ],
     ids=[
         "silent",
@@ -2644,6 +2658,17 @@ _ADOPTED_ON_THE_CMDLINE = ("answers", False, "c")
         "adopted-virtual-replace",
         "adopted-terminal",
         "adopted-terminal-ctrl-o",
+        "adopted-replace-ctrl-o",
+        "adopted-virtual-replace-ctrl-o",
+        "adopted-visual",
+        "adopted-visual-line",
+        "adopted-visual-block",
+        "adopted-visual-ctrl-o-from-select",
+        "adopted-visual-line-ctrl-o-from-select",
+        "adopted-visual-block-ctrl-o-from-select",
+        "adopted-select",
+        "adopted-select-line",
+        "adopted-select-block",
     ],
 )
 @pytest.mark.parametrize("tool_name", ["Edit", "Read"])
@@ -2720,9 +2745,9 @@ def test_a_dedicated_nvim_at_a_prompt_is_not_skipped() -> None:
         assert hooks._busy_nvim(dataclasses.replace(current, adopted=True)) is not None
 
 
-# Insert, replace and terminal mode are skipped since Alberto's 2026-10-17
-# answer ("pula e marca"); visual, select and Terminal-Normal (`nt`) are not.
-@pytest.mark.parametrize("mode", ["n", "v", "V", "s", "nt", None])
+# Insert, replace, terminal, visual and select mode are skipped since
+# Alberto's 2026-10-17 answers; Normal and Terminal-Normal (`nt`) are not.
+@pytest.mark.parametrize("mode", ["n", "nt", None])
 def test_an_adopted_nvim_in_an_ordinary_mode_is_not_skipped(mode: str | None) -> None:
     current = state.FollowerState(
         backend="nvim",

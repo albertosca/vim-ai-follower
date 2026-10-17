@@ -1194,7 +1194,11 @@ def adopted_user_pending(socket_path: str) -> str | None:
     re-review I2), insert, replace or terminal mode (`i…`, `R…`, `t…`, and
     the `niI`/`niR`/`niV`/`ntT` of a CTRL-O from one: a navigation keeps
     the mode, so the user's next keys were typed into Claude's buffer,
-    measured on nvim 0.12.6; Alberto 2026-10-17), or a blocking key
+    measured on nvim 0.12.6; Alberto 2026-10-17), visual or select mode
+    (`v`/`V`/CTRL-V, `s`/`S`/CTRL-S and the `vs`/`Vs`/CTRL-V `s` of a
+    CTRL-O from select: a navigation leaves the user in Normal mode in
+    Claude's buffer and their next `x`/`d` acted there, review I1 of
+    T24a), or a blocking key
     sequence (`q` waiting for its register reads `n`, blocking). An nvim
     that answered not blocking is also asked whether its command-line
     window is open (`q:` reads "n", and every
@@ -1209,12 +1213,16 @@ def adopted_user_pending(socket_path: str) -> str | None:
         return "on the command line"
     if mode is not None and mode.startswith("no"):
         return "an operator pending"
-    if mode is not None and mode.startswith(("i", "niI", "niV")):
+    if mode is not None and mode.startswith(("i", "niI")):
         return "in insert mode"
-    if mode is not None and mode.startswith(("R", "niR")):
+    if mode is not None and mode.startswith(("R", "niR", "niV")):
         return "in replace mode"
     if mode is not None and mode.startswith(("t", "ntT")):
         return "in terminal mode"
+    if mode in ("vs", "Vs", "\x16s") or (mode is not None and mode.startswith(("s", "S", "\x13"))):
+        return "in select mode"
+    if mode is not None and mode.startswith(("v", "V", "\x16")):
+        return "in visual mode"
     if nvim_connect.last_probe_blocking(socket_path):
         if not nvim_prompt.answerable(mode):
             return "in the middle of a key sequence"
