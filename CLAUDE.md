@@ -8,7 +8,7 @@ Live "follower" editor for Claude Code: `PreToolUse`/`PostToolUse` hooks (`claud
 uv sync --extra dev --extra nvim            # a bare `uv sync` leaves pytest/mypy/pynvim missing
 uv run ruff check src tests && uv run ruff format --check src tests
 uv run mypy                                  # bare — pyproject's files = src + tests; CI runs the same
-bash scripts/full_suite.sh   # full suite, real tmux+vim+nvim, 100% gate; 1468 tests took 27–28 min at load 7–22 (2026-10-05) — wait for load < 10, false timeouts above
+bash scripts/full_suite.sh   # runs scripts/validate_plugin.sh first; full suite, real tmux+vim+nvim, 100% gate; 1468 tests took 27–28 min at load 7–22 (2026-10-05) — wait for load < 10, false timeouts above
 uv run pytest -q -m "not integration"        # what CI runs (~1 min); coverage floor there is 98 (unit-only is ~99%)
 uv run pytest -q -m "not integration" --junitxml=/tmp/u.xml && uv run python scripts/check_readme_facts.py --junit /tmp/u.xml   # facts check needs the unit JUnit; a "1100+"-style claim must be ≤ the real count and within 100
 bash scripts/build_docs.sh && uv run python scripts/preview_docs.py 8000   # docs site at http://localhost:8000/vim-ai-follower/ (prod URLs rewritten to the working copy)
@@ -66,6 +66,7 @@ The project's bar is 100% branch coverage on the full suite; the coverage gate l
 
 `claude plugin update` is gated on `.claude-plugin/plugin.json`'s `version`, not on git. Every user-visible fix: bump the version, commit, then `claude plugin tag --push` (creates `vim-ai-follower--vX.Y.Z`; refuses a dirty tree — never `--force`). CI is `ci.yml` (unit suite + coverage floor) and `lint.yml` (ruff + mypy); the README coverage badge is static — update it in the same commit when the measured number moves.
 
+- `scripts/validate_plugin.sh` (run first by `full_suite.sh`, skipped without `claude` on PATH) is `claude plugin validate --strict .` tolerating exactly one warning: "CLAUDE.md at the plugin root is not loaded as project context" — this file is the repo's notes for Claude Code, not plugin context, so it stays. Any error or other warning fails. Not in CI: it needs the Claude Code CLI.
 - `git fetch` before pushing main: Dependabot/deps PRs merge on GitHub (`uv.lock` bumps), so origin/main moves without you; merge it, rerun lint + unit on the merged tree, then push.
 - `docs.yml` builds with `uv run`, and `[tool.uv] python-preference = "only-system"` + `.python-version` (3.14) means the job must install THAT Python (`python-version-file`); with 3.11 every `uv run` failed. Pages is enabled with `gh api -X POST repos/albertosca/vim-ai-follower/pages -f build_type=workflow` (done 2026-10-05).
 - The GitHub runner is slower than the Mac: a thread race the local suite never lost failed CI (the nvim watchdog counted a dismissal after its settle wait, c6b0dc5). A timing-dependent unit test must make the slow interleaving deterministic, not hope for the fast one.
