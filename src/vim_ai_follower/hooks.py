@@ -1191,9 +1191,13 @@ def adopted_user_pending(socket_path: str) -> str | None:
     confirm (`r?`), the command line (any `c…` mode: `input()`, a `:`
     command or a search being typed), an operator waiting for its motion
     (any `no…` mode: the user's second `d` deleted Claude's line, T22
-    re-review I2), or a blocking key sequence (`q` waiting for its register
-    reads `n`, blocking). An nvim that answered not blocking is also asked
-    whether its command-line window is open (`q:` reads "n", and every
+    re-review I2), insert, replace or terminal mode (`i…`, `R…`, `t…`, and
+    the `niI`/`niR`/`niV`/`ntT` of a CTRL-O from one: a navigation keeps
+    the mode, so the user's next keys were typed into Claude's buffer,
+    measured on nvim 0.12.6; Alberto 2026-10-17), or a blocking key
+    sequence (`q` waiting for its register reads `n`, blocking). An nvim
+    that answered not blocking is also asked whether its command-line
+    window is open (`q:` reads "n", and every
     window change in it raises E11: show_fresh crashed the hook, re-review
     m2) — one more bounded raw request; no answer counts as not open. None
     for an idle nvim or one at a hit-enter or more-prompt, which the
@@ -1205,6 +1209,12 @@ def adopted_user_pending(socket_path: str) -> str | None:
         return "on the command line"
     if mode is not None and mode.startswith("no"):
         return "an operator pending"
+    if mode is not None and mode.startswith(("i", "niI", "niV")):
+        return "in insert mode"
+    if mode is not None and mode.startswith(("R", "niR")):
+        return "in replace mode"
+    if mode is not None and mode.startswith(("t", "ntT")):
+        return "in terminal mode"
     if nvim_connect.last_probe_blocking(socket_path):
         if not nvim_prompt.answerable(mode):
             return "in the middle of a key sequence"

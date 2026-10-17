@@ -2617,6 +2617,15 @@ _ADOPTED_ON_THE_CMDLINE = ("answers", False, "c")
         (("answers", False, "nov"), True, "is waiting on its user (an operator pending)"),
         (("answers", False, "noV"), True, "is waiting on its user (an operator pending)"),
         (("answers", False, "no\x16"), True, "is waiting on its user (an operator pending)"),
+        # The user is typing: a navigation keeps the mode, so their next keys
+        # land in Claude's buffer (measured, nvim 0.12.6; Alberto 2026-10-17).
+        (("answers", False, "i"), True, "is waiting on its user (in insert mode)"),
+        (("answers", False, "ic"), True, "is waiting on its user (in insert mode)"),
+        (("answers", False, "niI"), True, "is waiting on its user (in insert mode)"),
+        (("answers", False, "R"), True, "is waiting on its user (in replace mode)"),
+        (("answers", False, "Rv"), True, "is waiting on its user (in replace mode)"),
+        (("answers", False, "t"), True, "is waiting on its user (in terminal mode)"),
+        (("answers", False, "ntT"), True, "is waiting on its user (in terminal mode)"),
     ],
     ids=[
         "silent",
@@ -2628,6 +2637,13 @@ _ADOPTED_ON_THE_CMDLINE = ("answers", False, "c")
         "adopted-operator-v",
         "adopted-operator-V",
         "adopted-operator-ctrl-v",
+        "adopted-insert",
+        "adopted-insert-completion",
+        "adopted-insert-ctrl-o",
+        "adopted-replace",
+        "adopted-virtual-replace",
+        "adopted-terminal",
+        "adopted-terminal-ctrl-o",
     ],
 )
 @pytest.mark.parametrize("tool_name", ["Edit", "Read"])
@@ -2691,14 +2707,22 @@ def test_a_dedicated_nvim_at_a_prompt_is_not_skipped() -> None:
         speed="normal",
         adopted=False,
     )
-    for answer in (_ADOPTED_BLOCKED, _ADOPTED_AT_A_CONFIRM, _ADOPTED_ON_THE_CMDLINE):
+    for answer in (
+        _ADOPTED_BLOCKED,
+        _ADOPTED_AT_A_CONFIRM,
+        _ADOPTED_ON_THE_CMDLINE,
+        ("answers", False, "i"),
+        ("answers", False, "t"),
+    ):
         with patch("vim_ai_follower.backends.nvim_connect._probe", return_value=answer):
             nvim_connect.probe_nvim("/tmp/own.sock")
         assert hooks._busy_nvim(current) is None
         assert hooks._busy_nvim(dataclasses.replace(current, adopted=True)) is not None
 
 
-@pytest.mark.parametrize("mode", ["n", "i", "v", "t", None])
+# Insert, replace and terminal mode are skipped since Alberto's 2026-10-17
+# answer ("pula e marca"); visual, select and Terminal-Normal (`nt`) are not.
+@pytest.mark.parametrize("mode", ["n", "v", "V", "s", "nt", None])
 def test_an_adopted_nvim_in_an_ordinary_mode_is_not_skipped(mode: str | None) -> None:
     current = state.FollowerState(
         backend="nvim",

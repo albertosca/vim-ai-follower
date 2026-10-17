@@ -366,3 +366,56 @@ def test_an_nvim_whose_user_is_in_the_command_line_window_is_skipped(
     finally:
         world.tmux("send-keys", "-t", pane_id, "C-c")
         world.tmux("send-keys", "-t", pane_id, "Escape")
+
+
+@pytest.mark.parametrize("mode_key", ["A", "R"], ids=["insert", "replace"])
+def test_an_nvim_whose_user_is_typing_is_skipped_and_the_edit_marked_stale(
+    world: E2EFollower, mode_key: str
+) -> None:
+    # A navigation keeps insert or replace mode: the user's next keys were
+    # typed into Claude's buffer (measured, nvim 0.12.6). Alberto 2026-10-17:
+    # skip and mark. The user's half-typed text and their mode survive, and
+    # the Edit marks the file stale.
+    socket_path = world.cache_dir / "nvim-adopted.sock"
+    world.cache_dir.mkdir(parents=True, exist_ok=True)
+    users_file = world.workdir / "a.txt"
+    users_file.write_text("aaa\n")
+    claudes_file = world.workdir / "file.py"
+    claudes_file.write_text("one\ntwo\n")
+    window_id, pane_id = _nvim_window(world, socket_path, users_file, claudes_file)
+    _adopted_state(world, window_id, pane_id, socket_path, claudes_file)
+    hook = payload("Edit", claudes_file)
+    pre, _seconds = _timed_cli(world, "hook", "pre", pane_id=pane_id, stdin=hook)
+    assert pre.returncode == 0, pre.stderr
+    claudes_file.write_text("one\nTWO\n")
+    world.tmux("send-keys", "-t", pane_id, mode_key)
+    world.tmux("send-keys", "-t", pane_id, "-l", "half")
+    mode = "i" if mode_key == "A" else "R"
+    _wait_for_mode(world, socket_path, mode)
+    world.wait_until(
+        lambda: _buffer_lines(world, socket_path, users_file) != ["aaa"],
+        "the user's half-typed text",
+        timeout=10.0,
+    )
+    typed = _buffer_lines(world, socket_path, users_file)
+    try:
+        claudes_lines_before = _buffer_lines(world, socket_path, claudes_file)
+        post, seconds = _timed_cli(world, "hook", "post", pane_id=pane_id, stdin=hook)
+        assert post.returncode == 0, post.stderr
+        assert seconds < 8.0, f"the hook took {seconds:.1f} s"
+        observer = world._nvim(str(socket_path))
+        assert observer.api.get_mode() == {"mode": mode, "blocking": False}
+        assert os.path.realpath(observer.call("bufname", "%")) == os.path.realpath(users_file)
+        assert _buffer_lines(world, socket_path, users_file) == typed
+        assert _buffer_lines(world, socket_path, claudes_file) == claudes_lines_before
+        log = _hook_log(world)
+        assert "Traceback" not in log, log
+        skipped = [line for line in log.splitlines() if "is waiting on its user" in line]
+        assert len(skipped) == 1, log
+        named = "in insert mode" if mode_key == "A" else "in replace mode"
+        assert f"({named})" in skipped[0], skipped
+        state = FollowerState.read(window_id, base_dir=world.cache_dir)
+        assert state is not None
+        assert state.stale_files == (os.path.realpath(claudes_file),)
+    finally:
+        world.tmux("send-keys", "-t", pane_id, "Escape")

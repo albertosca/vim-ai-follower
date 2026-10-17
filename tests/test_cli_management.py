@@ -1331,6 +1331,10 @@ def test_toggle_on_clears_a_tombstone_before_writing() -> None:
         (False, "nov", "an operator pending"),
         (False, "noV", "an operator pending"),
         (False, "no\x16", "an operator pending"),
+        (False, "i", "in insert mode"),
+        (False, "niI", "in insert mode"),
+        (False, "R", "in replace mode"),
+        (False, "t", "in terminal mode"),
     ],
     ids=[
         "keys-pending",
@@ -1341,6 +1345,10 @@ def test_toggle_on_clears_a_tombstone_before_writing() -> None:
         "operator-v",
         "operator-V",
         "operator-ctrl-v",
+        "insert",
+        "insert-ctrl-o",
+        "replace",
+        "terminal",
     ],
 )
 def test_stop_of_an_adopted_nvim_waiting_on_its_user_sends_nothing_and_logs_one_line(
