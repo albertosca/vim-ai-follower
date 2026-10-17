@@ -48,22 +48,24 @@ Depois conecte os hooks manualmente: adicione isto ao `~/.claude/settings.json` 
   "hooks": {
     "PreToolUse": [
       { "matcher": "Edit|MultiEdit|Write",
-        "hooks": [{ "type": "command", "command": "claude-follow hook pre" }] }
+        "hooks": [{ "type": "command", "command": "claude-follow hook pre", "timeout": 30 }] }
     ],
     "PostToolUse": [
       { "matcher": "Edit|MultiEdit|Write",
-        "hooks": [{ "type": "command", "command": "claude-follow hook post" }] },
+        "hooks": [{ "type": "command", "command": "claude-follow hook post", "timeout": 600 }] },
       { "matcher": "Read",
-        "hooks": [{ "type": "command", "command": "claude-follow hook post" }] }
+        "hooks": [{ "type": "command", "command": "claude-follow hook post", "timeout": 60 }] }
     ],
     "PostToolUseFailure": [
       { "matcher": "Edit|MultiEdit|Write",
-        "hooks": [{ "type": "command", "command": "claude-follow hook failure" }] }
+        "hooks": [{ "type": "command", "command": "claude-follow hook failure", "timeout": 30 }] }
     ],
     "PermissionDenied": [
       { "matcher": "Edit|MultiEdit|Write",
-        "hooks": [{ "type": "command", "command": "claude-follow hook failure" }] }
+        "hooks": [{ "type": "command", "command": "claude-follow hook failure", "timeout": 30 }] }
     ]
   }
 }
 ```
+
+Os valores de `timeout` são em segundos, e o `hooks/hooks.json` do próprio plugin usa os mesmos. Toda espera que o follower faz por conta própria termina bem antes deles; só o hook post de Edit/Write pode durar de fato, enquanto uma animação está pausada (`P`) ou esperando o seu `:w` depois de uma interrupção (`S`), por isso ele fica com 600 s (o padrão do Claude Code). Se um hook chega ao timeout, o Claude Code o cancela e a chamada da ferramenta segue; uma animação pausada é então terminada pelo teclado na retomada após queda.
