@@ -485,9 +485,18 @@ def _is_scratch(nvim: pynvim.Nvim, buffer: pynvim.api.Buffer) -> bool:
 def _wipe_if_scratch(nvim: pynvim.Nvim, scratch: pynvim.api.Buffer, kept: int) -> None:
     """Wipe `scratch` when it is a `:tabnew`'s empty buffer (_is_scratch)
     shown in no window, and not `kept`. Anything else may be the user's and
-    is left alone."""
+    is left alone.
+
+    A buffer that is already gone is left gone, never asked anything: a
+    'bufhidden=wipe' buffer is wiped by nvim the moment it leaves its last
+    window, and a start screen (`:enew` reuses the empty startup buffer 1,
+    then `setlocal bufhidden=wipe buftype=nofile`) is exactly that, so the
+    first show_fresh in a dedicated nvim whose config draws one asked
+    `buf_get_name` of a wiped buffer and crashed the hook with "Invalid
+    buffer id: 1" (Task 24 item 1 of backlog-sweep-4)."""
     if (
         scratch.handle != kept
+        and nvim.api.buf_is_valid(scratch.handle)
         and _is_scratch(nvim, scratch)
         and not nvim.funcs.win_findbuf(scratch.handle)
     ):

@@ -247,3 +247,17 @@ def test_only_a_proven_dedicated_follower_types_a_first_file_in_place(
     ):
         _follower().show_fresh("/tmp/f.py", "a\n", in_new_tab=False)
     assert (call("tabnew") in nvim.command.call_args_list) is opens_a_tab
+
+
+def test_a_replaced_buffer_its_own_bufhidden_wiped_is_left_alone() -> None:
+    """Task 24 item 1: a start screen's buffer carries bufhidden=wipe, so nvim
+    wipes it the moment show_fresh replaces it in the window, and asking a
+    wiped buffer its name raised "Invalid buffer id" out of the first Edit.
+    A buffer that is already gone is not inspected and not wiped again."""
+    nvim, _buffer = _mock()
+    nvim.api.win_get_buf.return_value = MagicMock(handle=1)
+    nvim.api.buf_is_valid.return_value = False
+    nvim.api.buf_get_name.side_effect = pynvim.NvimError("Invalid buffer id: 1")
+    assert _follower()._fresh_buffer(nvim, "/tmp/f.py", False) == 7
+    nvim.api.buf_is_valid.assert_any_call(1)
+    assert call("silent! bwipeout 1") not in nvim.command.call_args_list
