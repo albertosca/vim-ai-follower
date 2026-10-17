@@ -141,7 +141,10 @@ def _exit_insert_mode(pane: TmuxPane) -> None:
     """Two Escapes before the rollback undo. A completion popup (CoC/Copilot)
     maps the first <Esc> to close the popup and STAY in insert mode, so a
     single Escape followed by `u` would type the `u` literally into the
-    buffer (empirically "banu"; see scripts/repro-stray-u.sh). The second
+    buffer (empirically "banu"; scripts/repro-stray-u.sh reproduces it with
+    a built-in popup and shows two Escapes clear it, typing the keys itself
+    rather than through this function; the full suite runs it in
+    tests/test_integration_repro_stray_u.py). The second
     Escape lands as a real Escape whatever consumed the first — the same
     guarantee TmuxVimFollower._normal_mode relies on (kept separate here to
     avoid coupling animate to the follower; a shared helper is a follow-up)."""

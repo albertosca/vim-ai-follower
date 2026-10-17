@@ -612,8 +612,10 @@ def test_paste_is_on_for_the_whole_animation_and_off_after_the_relock(
     Escape and leave the `u` typed as text (`banu`). The animation runs
     under 'paste', which disables every insert-mode mapping and
     abbreviation, so that map cannot fire while the follower types; the two
-    Escapes are the belt to that brace (scripts/repro-stray-u.sh proves the
-    Escape half with a real popup).
+    Escapes are the belt to that brace (scripts/repro-stray-u.sh checks the
+    two-Escape sequence against a built-in popup with that map — it types
+    the keys itself, not through animate — and
+    tests/test_integration_repro_stray_u.py runs it).
 
     Sampled mid-animation by a key-free timer, not at the end: 'paste' is on
     at the first typed line and at every later state up to the finished
