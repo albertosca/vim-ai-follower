@@ -284,11 +284,15 @@ def test_every_typed_call_fits_two_screen_rows(
     ):
         context.setattr(cache, "CACHE_DIR", _cache_with_script_path_of_length(short_root, 88))
         lines.append(tmux_vim._define_line(pane))
-    # And the plain lines typed whole, with no call.
+    # And the plain lines typed whole, with no call, as they are typed: the
+    # ones that can end an entry point carry the command-line clear.
     lines += [
         tmux_vim._UNLOCK_FOR_ANIMATION,
-        tmux_vim._RELOCK_READONLY + tmux_vim._OUR_READONLY_CLAIM,
-        tmux_vim._RESTORE_PASTE,
+        tmux_vim._RELOCK_READONLY_PLAIN.line(adopted=True),
+        tmux_vim._RELOCK_READONLY_PLAIN.line(adopted=False),
+        tmux_vim._cleared(tmux_vim._ADOPTED_LOCK_READONLY),
+        tmux_vim._cleared(tmux_vim._RESTORE_PASTE),
+        tmux_vim._cleared(":exe 999999"),
     ]
     too_long = [line for line in lines if len(line) > MAXIMUM_LINE_LENGTH]
     assert too_long == []

@@ -49,15 +49,18 @@ _RELOCK_READONLY_SYNCED = call_spelled("relock", 1, 0)
 _UNLOCK_FOR_ANIMATION = (
     ":let g:vaf_user_paste = get(g:, 'vaf_user_paste', &paste)|setlocal noreadonly modifiable paste"
 )
+# The tail every plain line that can end an entry point carries: it clears
+# Vim's command line (tmux_vim._CLEAR_COMMAND_LINE).
+_CLEARED = "|redraw|echo ''"
 # What every exit that hands the buffer to the user sends: the user's 'paste'.
-_RESTORE_PASTE = ":let &paste = get(g:, 'vaf_user_paste', 0)|unlet! g:vaf_user_paste"
+_RESTORE_PASTE = ":let &paste = get(g:, 'vaf_user_paste', 0)|unlet! g:vaf_user_paste" + _CLEARED
 # hand_over's unlock, which gives it back only from a record (s:hand_over).
 _HAND_OVER = call_spelled("hand_over", 0)
 # An ADOPTED Vim's readonly bookkeeping (s:note_user_readonly): the unlock
 # that notes the user's readonly and claims the option, the lock's claim, and
 # the restore every animation exit sends (its answer for pane %2).
 _ADOPTED_UNLOCK = call_spelled("unlock")
-_ADOPTED_LOCK_READONLY = ":setlocal readonly nomodifiable | let b:vaf_ro_ours = 1"
+_ADOPTED_LOCK_READONLY = ":setlocal readonly nomodifiable | let b:vaf_ro_ours = 1" + _CLEARED
 
 
 # The token every readonly restore in this file carries (see the autouse
@@ -500,11 +503,11 @@ def test_resume_show_fresh_replays_remaining_lines_and_relocks_with_readonly(
                 ops=[EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))],
                 pace_seconds=0.0,
             ),
-            ":setlocal nomodifiable nopaste|unlet! g:vaf_user_paste",
+            ":setlocal nomodifiable nopaste|unlet! g:vaf_user_paste" + _CLEARED,
         ),
         (
             control.PendingShowFresh(lines=("b", "c"), pace_seconds=0.0),
-            ":setlocal readonly nomodifiable nopaste|unlet! g:vaf_user_paste",
+            ":setlocal readonly nomodifiable nopaste|unlet! g:vaf_user_paste" + _CLEARED,
         ),
     ],
     ids=["apply_edit", "show_fresh"],
@@ -660,7 +663,7 @@ def test_ensure_showing_navigates_by_tab_drop_and_locks() -> None:
         ("Enter", False),
         (_RELOAD_IF_CLEAN, True),
         ("Enter", False),
-        (":setlocal readonly nomodifiable", True),
+        (":setlocal readonly nomodifiable" + _CLEARED, True),
         ("Enter", False),
     ]
     assert (":e /tmp/a.py", True) not in commands
@@ -684,7 +687,7 @@ def test_reload_and_relock_navigates_then_reloads_and_relocks() -> None:
         ("Enter", False),
         (_RELOAD_DISCARDING, True),
         ("Enter", False),
-        (":setlocal readonly nomodifiable", True),
+        (":setlocal readonly nomodifiable" + _CLEARED, True),
         ("Enter", False),
     ]
 
@@ -710,7 +713,7 @@ def test_reload_from_disk_discards_under_the_swap_answer_and_locks() -> None:
         ("Enter", False),
         (_RELOAD_DISCARDING, True),
         ("Enter", False),
-        (":setlocal readonly nomodifiable", True),
+        (":setlocal readonly nomodifiable" + _CLEARED, True),
         ("Enter", False),
     ]
 

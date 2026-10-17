@@ -136,6 +136,16 @@ _RELOCK_READONLY = f":setlocal readonly nomodifiable nopaste|{_FORGET_USER_PASTE
 _GIVE_BACK_PASTE = f"let &paste = get(g:, 'vaf_user_paste', 0)|{_FORGET_USER_PASTE}"
 _RESTORE_PASTE = f":{_GIVE_BACK_PASTE}"
 _ADOPTED_LOCK_READONLY = _LOCK_READONLY + " | let b:vaf_ro_ours = 1"
+# Vim leaves a typed Ex command on its bottom row until something redraws
+# it: after every Read the lock line stayed there, and in a pane wide enough
+# for a call to fit one row, every call did (review I1 of T23, 2026-10-17: 12
+# of 12 at 200 columns). `redraw` alone keeps the line, a bare `echo ''`
+# after a command that printed raised a hit-enter prompt (`:1|echo ''`), and
+# `redraw!` repaints the whole screen; `redraw|echo ''` cleared every case
+# measured. The dispatcher ends with it, and so does every plain line that
+# can be the last one an entry point types (_cleared). An error stops the
+# line first, so an error message still shows.
+_CLEAR_COMMAND_LINE = "|redraw|echo ''"
 _OUR_READONLY_CLAIM = " | let b:vaf_ro_ours = 1"
 # The restore also leaves its answer for user_readonly (the hand-off cue) in
 # `readonly-<pane>.txt`: whether the buffer is now readonly by the user's
@@ -1075,7 +1085,10 @@ _VIM_SCRIPT = (
     + r"""
 if @HELPERS@
 function! @NAME@(op, ...) abort
-  return call('s:' . a:op, a:000)
+  let l:result = call('s:' . a:op, a:000)
+  redraw
+  echo ''
+  return l:result
 endfunction
 endif
 
@@ -1671,6 +1684,12 @@ def _case_folds(file_path: str) -> int:
         return 0
 
 
+def _cleared(line: str) -> str:
+    """A plain typed line that also clears Vim's command line once it has
+    run (see _CLEAR_COMMAND_LINE)."""
+    return line + _CLEAR_COMMAND_LINE
+
+
 @dataclass(frozen=True)
 class _Relock:
     """How a completed animation relocks its buffer (see the lock protocol at
@@ -1686,7 +1705,12 @@ class _Relock:
         if self.synced:
             return _call_line("relock", int(self.readonly), int(claim))
         plain = _RELOCK_READONLY if self.readonly else _RELOCK
-        return plain + (_OUR_READONLY_CLAIM if claim else "")
+        if adopted:
+            # Never the last line: an adopted Vim's readonly restore, a
+            # dispatcher call (which clears the command line), always follows
+            # it, and the claim with the clear would pass two screen rows.
+            return plain + (_OUR_READONLY_CLAIM if claim else "")
+        return _cleared(plain)
 
 
 _RELOCK_SYNCED = _Relock(synced=True, readonly=False)
@@ -1771,7 +1795,7 @@ class TmuxVimFollower:
         s:note_user_readonly)."""
         adopted = self._is_adopted()
         pane.send_line(_call_line("reload", int(discard), int(adopted)))
-        pane.send_line(_ADOPTED_LOCK_READONLY if adopted else _LOCK_READONLY)
+        pane.send_line(_cleared(_ADOPTED_LOCK_READONLY if adopted else _LOCK_READONLY))
 
     def goto_file(self, file_path: str) -> None:
         """The defensive preamble: land on the tab showing file_path (by
@@ -2059,7 +2083,7 @@ class TmuxVimFollower:
             result = run(pane)
         except NavigationFailed:
             self._normal_mode(pane)
-            pane.send_line(_RESTORE_PASTE)
+            pane.send_line(_cleared(_RESTORE_PASTE))
             if adopted and file_path:
                 handle = _path_handle(self.pane_id, file_path)
                 pane.send_line(_call_line("give_back", handle.name, _case_folds(file_path)))
@@ -2073,7 +2097,7 @@ class TmuxVimFollower:
             pane.send_line(relock.line(adopted))
         else:
             # No relock to turn 'paste' off: give the user's back.
-            pane.send_line(_RESTORE_PASTE)
+            pane.send_line(_cleared(_RESTORE_PASTE))
         if adopted:
             # After the relock, whose `:e!` resets 'readonly' (and on an
             # interrupt, which hands over the buffer without one).
@@ -2258,7 +2282,8 @@ class TmuxVimFollower:
 
     def goto_line(self, offset: int) -> None:
         pane = TmuxPane(pane_id=self.pane_id)
-        pane.send_line(f":{offset}")
+        # `:exe N`, not `:N|…`: a range before a bar prints that line.
+        pane.send_line(_cleared(f":exe {offset}"))
 
     def stop(self, dedicated: bool | None = None) -> None:
         # The follower's own pane, killed; an adopted Vim's pane is the

@@ -256,7 +256,7 @@ def test_hook_post_skips_binary_files_on_first_open(tmp_path: Path) -> None:
         _goto(target),
         landed_line(),
         _RELOAD_IF_CLEAN,
-        ":setlocal readonly nomodifiable",
+        ":setlocal readonly nomodifiable|redraw|echo ''",
     ]
 
 
@@ -280,7 +280,7 @@ def test_hook_post_shows_a_rewritten_binary_on_subsequent_edit(tmp_path: Path) -
         _goto(target),
         landed_line(),
         _RELOAD_IF_CLEAN,
-        ":setlocal readonly nomodifiable",
+        ":setlocal readonly nomodifiable|redraw|echo ''",
     ]
 
 
@@ -301,7 +301,7 @@ def test_hook_post_read_without_offset_does_not_navigate(tmp_path: Path) -> None
         _goto(target),
         landed_line(),
         _RELOAD_IF_CLEAN,
-        ":setlocal readonly nomodifiable",
+        ":setlocal readonly nomodifiable|redraw|echo ''",
     ]
 
 
@@ -343,8 +343,8 @@ def test_hook_post_read_navigates_to_file_and_offset(tmp_path: Path) -> None:
         _goto(target),
         landed_line(),
         _RELOAD_IF_CLEAN,
-        ":setlocal readonly nomodifiable",
-        ":2",
+        ":setlocal readonly nomodifiable|redraw|echo ''",
+        ":exe 2|redraw|echo ''",
     ]
 
 
@@ -368,8 +368,8 @@ def test_hook_post_read_navigates_even_when_file_already_current(tmp_path: Path)
         _goto(target),
         landed_line(),
         _RELOAD_IF_CLEAN,
-        ":setlocal readonly nomodifiable",
-        ":2",
+        ":setlocal readonly nomodifiable|redraw|echo ''",
+        ":exe 2|redraw|echo ''",
     ]
 
 
@@ -1256,7 +1256,7 @@ def test_hook_post_des_interrupt_without_a_remainder_falls_back_to_reload(
     sends = _literal_sends(run)
     # the reload of the finished file, under the scoped (E)dit-anyway answer
     assert _RELOAD_DISCARDING in sends
-    assert ":setlocal readonly nomodifiable" in sends
+    assert ":setlocal readonly nomodifiable|redraw|echo ''" in sends
     assert capsys.readouterr().out == ""
 
 
@@ -2570,7 +2570,7 @@ def test_a_read_the_follower_cannot_reach_moves_no_cursor(
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
-    assert ":2" not in _literal_sends(run)
+    assert ":exe 2|redraw|echo ''" not in _literal_sends(run)
     lines = _hook_log_lines()
     assert [line for line in lines if "skipped the Read" in line and "did not land" in line]
     assert not any("Traceback" in line for line in lines), lines

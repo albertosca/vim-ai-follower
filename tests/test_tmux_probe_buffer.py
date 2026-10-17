@@ -12,14 +12,18 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Literal
 from unittest.mock import MagicMock, patch
 
 import pytest
 from helpers import define_line, probe_spelled, resolve_typed_paths, vim_function
 
-from vim_ai_follower import cache
+from vim_ai_follower import cache, control
+from vim_ai_follower.animate import ApplyResult
 from vim_ai_follower.backends import buffer_forms, tmux_vim, typed_form
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
+from vim_ai_follower.diff import EditOp
+from vim_ai_follower.state import FollowerState
 
 # The random part of the probe's handle name, which is also its nonce.
 HANDLE_HEX = "abc123"
@@ -221,33 +225,63 @@ def test_the_probe_line_and_its_enter_go_in_one_send_keys(
     assert ["tmux", "send-keys", "-t", "%3", "Enter"] not in send_keys
 
 
+_EDIT = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))]
+
+# Every entry point that types a line, by name. The animation's own keys
+# (send_paced) are stubbed out: its `:Nd` and its Enter are paced apart on
+# purpose (see TmuxPane.send_line).
+_ENTRY_POINTS: dict[str, Callable[[TmuxVimFollower], object]] = {
+    "goto_file": lambda follower: follower.goto_file("/w/f.py"),
+    "ensure_showing": lambda follower: follower.ensure_showing("/w/f.py"),
+    "reload_and_relock": lambda follower: follower.reload_and_relock("/w/f.py"),
+    "close_tab": lambda follower: follower.close_tab("/w/f.py", dedicated=True),
+    "close_tab adopted": lambda follower: follower.close_tab("/w/f.py", dedicated=False),
+    "hand_over": lambda follower: follower.hand_over(),
+    "goto_line": lambda follower: follower.goto_line(3),
+    "show_fresh": lambda follower: follower.show_fresh("/w/f.py", "a\n"),
+    "show_fresh in a new tab": lambda follower: follower.show_fresh(
+        "/w/f.py", "a\n", in_new_tab=True
+    ),
+    "apply_edit": lambda follower: follower.apply_edit("/w/f.py", _EDIT, ""),
+    "rewrite_buffer": lambda follower: follower.rewrite_buffer("/w/f.py", "a\nb\n"),
+    "resume": lambda follower: follower.resume(
+        control.PendingApplyEdit(ops=_EDIT, pace_seconds=0.0, file_path="/w/f.py", partial="")
+    ),
+}
+
+
 @pytest.mark.real_send_line
-@pytest.mark.parametrize(
-    "call",
-    [
-        lambda follower: follower.goto_file("/w/f.py"),
-        lambda follower: follower.ensure_showing("/w/f.py"),
-        lambda follower: follower.close_tab("/w/f.py", dedicated=True),
-        lambda follower: follower.hand_over(),
-        lambda follower: follower.goto_line(3),
-    ],
-    ids=["goto_file", "ensure_showing", "close_tab", "hand_over", "goto_line"],
-)
+@pytest.mark.parametrize("dedicated", [True, False], ids=["dedicated", "adopted"])
+@pytest.mark.parametrize("outcome", ["completed", "interrupted"])
+@pytest.mark.parametrize("entry_point", list(_ENTRY_POINTS))
 def test_no_typed_line_waits_for_a_separate_enter(
-    call: Callable[[TmuxVimFollower], object], monkeypatch: pytest.MonkeyPatch
+    entry_point: str,
+    outcome: Literal["completed", "interrupted"],
+    dedicated: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The backend's other entry points type their lines the same way: no
-    `send-keys Enter` of its own anywhere, every `:` line closed by its CR
-    in the same `send-keys`."""
+    """Every entry point types its lines the same way: no `send-keys Enter`
+    of its own anywhere, every `:` line closed by its CR in the same
+    `send-keys`, completed or interrupted (the interrupt's give-backs),
+    dedicated or adopted (the adopted readonly bookkeeping)."""
     monkeypatch.setattr(tmux_vim, "_PROBE_TIMEOUT_SECONDS", 0.05)
+    FollowerState.set("@1", backend="tmux", target="%3", adopted=not dedicated)
     commands: list[list[str]] = []
 
     def run(command: list[str], **_options: object) -> MagicMock:
         commands.append(command)
         return MagicMock(returncode=0, stdout="")
 
-    with patch("vim_ai_follower.tmux.subprocess.run", run):
-        call(TmuxVimFollower(pane_id="%3"))
+    def paced(
+        _pane: object, sequences: list[object], *_arguments: object, **_options: object
+    ) -> ApplyResult:
+        return ApplyResult(outcome, 0 if outcome == "interrupted" else len(sequences))
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", run),
+        patch("vim_ai_follower.animate.send_paced", paced),
+    ):
+        _ENTRY_POINTS[entry_point](TmuxVimFollower(pane_id="%3", window_id="@1"))
     send_keys = [command for command in commands if command[:2] == ["tmux", "send-keys"]]
     lines = [command[-1] for command in send_keys if "-l" in command]
     assert lines, send_keys
