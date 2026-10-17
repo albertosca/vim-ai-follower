@@ -192,6 +192,55 @@ def test_an_empty_temporary_is_not_a_mode() -> None:
     assert tmux_vim._recorded_mode(_VimProcess(pid=202, started=time.time() - 60)) is None
 
 
+def _temporary(pid: int, text: str, modified: float | None = None) -> Path:
+    cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    path = cache.CACHE_DIR / f".mode-{pid}.txt.tmp"
+    path.write_text(text)
+    if modified is not None:
+        os.utime(path, (modified, modified))
+    return path
+
+
+def test_the_file_is_read_before_its_temporary() -> None:
+    # The temporary is only the fallback for a file caught mid-rename: a
+    # temporary left by a failed rename is older than the file beside it.
+    started = time.time() - 60
+    _temporary(202, "202 i\n")
+    _mode_file(202, "202 n\n")
+    assert tmux_vim._recorded_mode(_VimProcess(pid=202, started=started)) == "n"
+
+
+def test_a_temporary_naming_another_pid_is_none() -> None:
+    _temporary(202, "303 i\n")
+    assert tmux_vim._recorded_mode(_VimProcess(pid=202, started=time.time() - 60)) is None
+
+
+def test_a_stale_temporary_under_a_reused_pid_is_none() -> None:
+    # A Vim SIGKILLed between its writefile() and its rename() left the
+    # temporary; a new Vim got the same pid and has no mode file yet.
+    started = time.time() - 60
+    _temporary(202, "202 i\n", modified=started - 3600)
+    assert tmux_vim._recorded_mode(_VimProcess(pid=202, started=started)) is None
+
+
+def test_an_empty_temporary_ends_the_reads_even_if_the_file_then_appears() -> None:
+    # An empty temporary is a writefile() in progress: the answer is
+    # unknown (the screen decides), never the file's next read.
+    started = time.time() - 60
+    _temporary(202, "")
+    original = Path.read_text
+
+    def read_text(self: Path, *args: object, **kwargs: object) -> str:
+        if self.name == ".mode-202.txt.tmp":
+            content = original(self, *args, **kwargs)  # type: ignore[arg-type]
+            _mode_file(202, "202 i\n")
+            return content
+        return original(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    with patch.object(Path, "read_text", read_text):
+        assert tmux_vim._recorded_mode(_VimProcess(pid=202, started=started)) is None
+
+
 _COMPLETION = "in insert mode (completion)"
 
 
