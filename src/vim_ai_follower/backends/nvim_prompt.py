@@ -71,7 +71,9 @@ reading their own `:ls` in their own editor. Idle and during the hand-off wait
 no guard is held at all. A confirm prompt or an input() is never answered
 (Alberto's answer A): measured 2026-10-17 on nvim 0.12.6, they answer get_mode
 `{"mode": "r?"}` and `{"mode": "c"}` with `blocking: false`, and an ordinary
-request completes while one is up, so the follower acts around them. A
+request completes while one is up, but the user's answer then lands on
+whatever buffer is current, so the hook skips an adopted nvim at either
+(`hooks.adopted_user_pending`) instead of acting under it. A
 DEDICATED follower's watchdog ignores the pause: its prompts are never the
 user's.
 
@@ -258,11 +260,6 @@ def answerable(mode: str | None) -> bool:
 def _pause_event(key: str) -> threading.Event:
     with _pauses_guard:
         return _pauses.setdefault(key, threading.Event())
-
-
-def is_paused(key: str) -> bool:
-    """Whether an animation on socket `key` is paused in this process."""
-    return _pause_event(key).is_set()
 
 
 @contextlib.contextmanager

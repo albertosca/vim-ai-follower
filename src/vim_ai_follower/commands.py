@@ -448,7 +448,10 @@ def _tear_down_nvim(existing: FollowerState, session: Session) -> None:
         hooks.logger.warning(
             "stop: nvim %s did not answer (%s); nothing was sent to it", socket_path, verdict
         )
-    elif existing.adopted and nvim_connect.last_probe_blocking(socket_path):
+    elif existing.adopted and (
+        nvim_connect.last_probe_blocking(socket_path)
+        or hooks.adopted_user_pending(socket_path) is not None
+    ):
         quit_sent = _tear_down_blocked_adopted_nvim(existing, session.window_id, rpc_ends_at)
     else:
         quit_sent = _run_nvim_teardown(existing, session.window_id, rpc_ends_at)
@@ -469,19 +472,22 @@ def _tear_down_nvim(existing: FollowerState, session: Session) -> None:
 def _tear_down_blocked_adopted_nvim(
     existing: FollowerState, window_id: str, ends_at: float
 ) -> bool:
-    """The user's own nvim answered `blocking: true`. At a hit-enter or
-    more-prompt the stop acts like any hook (decision (a)): it dismisses the
-    prompt, as the Vim follower's Escape pair would, then tears down. Blocked
-    in any other mode (keys pending), every request would wait behind it and
-    nothing there is ours to answer: nothing is sent, and the follower's tabs
-    stay. A prompt that cannot be answered leaves the same. The state is
-    already gone either way."""
+    """The user's own nvim answered `blocking: true`, or is at a confirm or
+    on the command line. At a hit-enter or more-prompt the stop acts like any
+    hook (decision (a)): it dismisses the prompt, as the Vim follower's
+    Escape pair would, then tears down. In the middle of anything else (a
+    confirm, a command line, keys pending) nothing there is ours to answer,
+    and closing a tab under it would move the user's command onto another
+    buffer: nothing is sent, and the follower's tabs stay. A prompt that
+    cannot be answered leaves the same. The state is already gone either
+    way."""
     socket_path = existing.target
-    if not nvim_prompt.answerable(nvim_connect.last_probe_mode(socket_path)):
+    pending = hooks.adopted_user_pending(socket_path)
+    if pending is not None:
         hooks.logger.warning(
-            "stop: nvim %s is waiting on its user (in the middle of a key sequence); "
-            "the follower's tabs there are left open",
+            "stop: nvim %s is waiting on its user (%s); the follower's tabs there are left open",
             socket_path,
+            pending,
         )
         return False
     with rpc_deadline(max(ends_at - time.monotonic(), 0.001)):

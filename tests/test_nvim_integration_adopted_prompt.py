@@ -2,7 +2,8 @@
 meets its Escape pair (decision (a)): raised mid-animation (a plugin's
 message), the watchdog answers it and the typing finishes; already up when a
 hook starts, the hook sweeps it and goes on. Blocked in any other way (keys
-pending), the hook skips in one line and types nothing.
+pending), or with its user at a confirm or on the command line, the hook
+skips in one line and types nothing.
 
 Real CLI, real tmux, real nvims in tmux panes, `HOME` isolated by the e2e
 harness; every CLI run has a subprocess timeout so a regression FAILS."""
@@ -222,3 +223,80 @@ def test_an_nvim_blocked_in_a_key_sequence_skips_the_edit_in_one_line(
     finally:
         world.tmux("send-keys", "-t", pane_id, "Escape")
     assert _buffer_lines(world, socket_path, target) == before.splitlines()
+
+
+# The user in the middle of a confirm or a command line (task 22 review I1).
+# Neither is `blocking` (measured 2026-10-17, nvim 0.12.6: requests complete
+# while one is up), but the user's answer or Enter runs against whatever buffer
+# is current WHEN it lands: a follower that opened Claude's file meanwhile had
+# the user's `:s///c` substitute Claude's buffer, and their `:let` read Claude's
+# name. Alberto's answer A: the edit is skipped, the file marked stale.
+_USER_PENDING = {
+    # (keys typed into the user's nvim, "Enter" after them?, mode it waits in,
+    #  keys that finish it, what the log names)
+    "substitute-confirm": (":%s/aaa/ZZZ/gc", True, "r?", "a", "a confirm prompt"),
+    "half-typed-command": (":let g:who = bufname('%')", False, "c", "Enter", "on the command line"),
+    "input": (":let g:who = input('Name: ')", True, "c", "bob Enter", "on the command line"),
+}
+
+
+def _wait_for_mode(world: E2EFollower, socket_path: Path, mode: str) -> None:
+    world.wait_until(
+        lambda: world._nvim(str(socket_path)).api.get_mode() == {"mode": mode, "blocking": False},
+        f"the user's nvim in mode {mode}",
+        timeout=10.0,
+    )
+
+
+@pytest.mark.parametrize("tool", ["Write", "Read"])
+@pytest.mark.parametrize("pending", sorted(_USER_PENDING))
+def test_an_nvim_whose_user_is_mid_confirm_or_command_line_is_skipped(
+    world: E2EFollower, pending: str, tool: str
+) -> None:
+    keys, enter, mode, finish, named = _USER_PENDING[pending]
+    socket_path = world.cache_dir / "nvim-adopted.sock"
+    world.cache_dir.mkdir(parents=True, exist_ok=True)
+    users_file = world.workdir / "a.txt"
+    users_file.write_text("aaa\nbbb aaa\nccc\n")
+    claudes_file = world.workdir / "new.py"
+    claudes_file.write_text("def aaa():\n    return aaa\n")
+    window_id, pane_id = _nvim_window(world, socket_path, users_file)
+    _adopted_state(world, window_id, pane_id, socket_path, users_file)
+    hook = payload(tool, claudes_file)
+    if tool == "Write":
+        pre, _seconds = _timed_cli(world, "hook", "pre", pane_id=pane_id, stdin=hook)
+        assert pre.returncode == 0, pre.stderr
+    world.tmux("send-keys", "-t", pane_id, keys, *(["Enter"] if enter else []))
+    _wait_for_mode(world, socket_path, mode)
+    try:
+        post, seconds = _timed_cli(world, "hook", "post", pane_id=pane_id, stdin=hook)
+        assert post.returncode == 0, post.stderr
+        assert seconds < 8.0, f"the hook took {seconds:.1f} s"
+        log = _hook_log(world)
+        assert "Traceback" not in log, log
+        skipped = [line for line in log.splitlines() if "is waiting on its user" in line]
+        assert len(skipped) == 1, log
+        assert f"({named})" in skipped[0], skipped
+        observer = world._nvim(str(socket_path))
+        # The follower did not act: still the user's prompt, no buffer for
+        # Claude's file, the user's buffer still current.
+        assert observer.api.get_mode() == {"mode": mode, "blocking": False}
+        assert observer.call("bufnr", str(claudes_file)) == -1
+        world.tmux("send-keys", "-t", pane_id, *finish.split())
+        world.wait_until(
+            lambda: world._nvim(str(socket_path)).api.get_mode()["mode"] == "n",
+            "the user's command finished",
+            timeout=10.0,
+        )
+        observer = world._nvim(str(socket_path))
+        if pending == "substitute-confirm":
+            assert _buffer_lines(world, socket_path, users_file) == ["ZZZ", "bbb ZZZ", "ccc"]
+        elif pending == "half-typed-command":
+            assert os.path.realpath(observer.eval("g:who")) == os.path.realpath(users_file)
+        else:
+            assert observer.eval("g:who") == "bob"
+            assert os.path.realpath(observer.call("bufname", "%")) == os.path.realpath(users_file)
+        assert claudes_file.read_text() == "def aaa():\n    return aaa\n"
+    finally:
+        world.tmux("send-keys", "-t", pane_id, "Escape")
+        world.tmux("send-keys", "-t", pane_id, "Escape")

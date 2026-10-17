@@ -92,6 +92,15 @@ _TRIGGERS = {
 
 _CONTENT = "x = 1\ny = 'é'\n"
 _TRIGGERS["none"] = ""
+# The echo scheduled for nvim's next loop turn: it lands BETWEEN two of the
+# follower's requests, so the prompt meets the entry point itself, not the
+# next hook (task 22 review M1: a 300 ms defer outlived ensure_showing, and
+# the hook's sweep answered it instead of the guard).
+_TRIGGERS["scheduled"] = (
+    "vim.api.nvim_create_autocmd('FileType', { pattern = 'python', callback = function()\n"
+    f"  vim.schedule(function() {_ECHO} end)\n"
+    "end })\n"
+)
 
 
 @pytest.fixture
@@ -588,6 +597,36 @@ def test_an_adopted_nvim_answers_a_plugin_prompt_while_the_follower_acts(
         _unfreeze(probe)
 
 
+@pytest.mark.integration
+@pytest.mark.parametrize("entry", ["show_fresh", "ensure_showing"])
+def test_an_adopted_entry_point_answers_a_prompt_raised_between_its_requests(
+    ui_nvim: Callable[[str], str],
+    tmp_path: Path,
+    entry: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # No hook around it and no sweep before it: only the entry point's own
+    # guard can answer a prompt raised in the middle of it.
+    sock = ui_nvim("scheduled")
+    probe = pynvim.attach("socket", path=sock)
+    target = tmp_path / "a.py"
+    target.write_text(_CONTENT)
+    follower = _adopted_follower(sock)
+    try:
+        with caplog.at_level(logging.WARNING, logger="vim_ai_follower"):
+            if entry == "show_fresh":
+                finished, box = _in_thread(lambda: follower.show_fresh(str(target), _CONTENT))
+            else:
+                finished, box = _in_thread(lambda: follower.ensure_showing(str(target)))
+        assert finished, f"{entry} froze on a hit-enter prompt: {probe.api.get_mode()}"
+        assert "error" not in box, box.get("error")
+        assert f"during {entry}" in caplog.text, caplog.text
+        assert probe.api.get_mode()["blocking"] is False
+        assert _buffer_bytes(probe, str(target)) == [b"x = 1", "y = 'é'".encode()]
+    finally:
+        _unfreeze(probe)
+
+
 def _session_of(tmux_session: str) -> str:
     return f"{tmux_session}-nv"
 
@@ -686,18 +725,17 @@ def test_an_adopted_nvim_leaves_a_confirm_prompt_alone(
 ) -> None:
     # Alberto's answer A: a confirm (or an input()) is the user's choice, so
     # the follower never answers it — the Vim's Escape pair would cancel it.
-    # Measured 2026-10-17 on nvim 0.12.6: neither is `blocking`, and an
-    # ordinary request completes while one is up, so the follower acts
-    # around it.
+    # Neither is `blocking` (measured 2026-10-17, nvim 0.12.6), but the user's
+    # answer runs on whatever buffer is current when it lands, so the hook
+    # skips the edit instead of acting around it (task 22 review I1; the
+    # hook-level proof is in test_nvim_integration_adopted_prompt.py).
     from vim_ai_follower import hooks
     from vim_ai_follower.backends import nvim_connect
 
     sock = ui_nvim("none")
     session = _session_of(tmux_session)
     probe = pynvim.attach("socket", path=sock)
-    target = tmp_path / "a.py"
-    target.write_text(_CONTENT)
-    follower = _adopted_follower(sock)
+    _adopted_follower(sock)
     try:
         _type_into(session, question)
         deadline = time.monotonic() + 5.0
@@ -709,11 +747,9 @@ def test_an_adopted_nvim_leaves_a_confirm_prompt_alone(
             assert nvim_connect.probe_nvim(sock) == "answers"
             current = state.FollowerState.read("@1")
             assert current is not None
-            assert hooks._busy_nvim(current) is None
-            finished, box = _in_thread(lambda: follower.ensure_showing(str(target)))
-            assert finished, probe.api.get_mode()
-            assert "error" not in box, box.get("error")
-            time.sleep(0.5)  # many watchdog polls' worth, had one run on
+            busy = hooks._busy_nvim(current)
+            assert busy is not None and "is waiting on its user" in busy, busy
+            time.sleep(0.5)
         assert probe.api.get_mode() == {"mode": mode, "blocking": False}
         assert "dismissed" not in caplog.text
     finally:

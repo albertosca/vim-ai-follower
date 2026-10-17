@@ -2596,15 +2596,23 @@ _SILENT = ("silent", False, None)
 # waiting for its register, half of a mapping). Nothing to sweep there.
 _ADOPTED_BLOCKED = ("answers", True, "n")
 _ADOPTED_AT_A_PROMPT = ("answers", True, "r")
+# Not blocking, but the user's answer (a confirm: `confirm()`, `:s///c`) or
+# Enter (the command line: `input()`, a half-typed `:` command) lands on
+# whatever buffer is current then (task 22 review I1).
+_ADOPTED_AT_A_CONFIRM = ("answers", False, "r?")
+_ADOPTED_ON_THE_CMDLINE = ("answers", False, "c")
 
 
 @pytest.mark.parametrize(
     ("probe_answer", "adopted", "why"),
     [
         (_SILENT, False, "did not answer within 1 s"),
-        (_ADOPTED_BLOCKED, True, "is waiting on its user"),
+        (_ADOPTED_BLOCKED, True, "is waiting on its user (in the middle of a key sequence)"),
+        (_ADOPTED_AT_A_CONFIRM, True, "is waiting on its user (a confirm prompt)"),
+        (_ADOPTED_ON_THE_CMDLINE, True, "is waiting on its user (on the command line)"),
+        (("answers", False, "cv"), True, "is waiting on its user (on the command line)"),
     ],
-    ids=["silent", "adopted-blocked"],
+    ids=["silent", "adopted-blocked", "adopted-confirm", "adopted-cmdline", "adopted-cmdline-ex"],
 )
 @pytest.mark.parametrize("tool_name", ["Edit", "Read"])
 def test_a_hook_skips_a_busy_nvim_follower_and_keeps_it(
@@ -2667,10 +2675,30 @@ def test_a_dedicated_nvim_at_a_prompt_is_not_skipped() -> None:
         speed="normal",
         adopted=False,
     )
-    with patch("vim_ai_follower.backends.nvim_connect._probe", return_value=_ADOPTED_BLOCKED):
-        nvim_connect.probe_nvim("/tmp/own.sock")
+    for answer in (_ADOPTED_BLOCKED, _ADOPTED_AT_A_CONFIRM, _ADOPTED_ON_THE_CMDLINE):
+        with patch("vim_ai_follower.backends.nvim_connect._probe", return_value=answer):
+            nvim_connect.probe_nvim("/tmp/own.sock")
+        assert hooks._busy_nvim(current) is None
+        assert hooks._busy_nvim(dataclasses.replace(current, adopted=True)) is not None
+
+
+@pytest.mark.parametrize("mode", ["n", "i", "v", "t", None])
+def test_an_adopted_nvim_in_an_ordinary_mode_is_not_skipped(mode: str | None) -> None:
+    current = state.FollowerState(
+        backend="nvim",
+        target="/tmp/user.sock",
+        current_file=None,
+        origin="%9",
+        on_failure="silent",
+        speed="normal",
+        adopted=True,
+    )
+    with patch(
+        "vim_ai_follower.backends.nvim_connect._probe", return_value=("answers", False, mode)
+    ):
+        nvim_connect.probe_nvim("/tmp/user.sock")
+    assert hooks.adopted_user_pending("/tmp/user.sock") is None
     assert hooks._busy_nvim(current) is None
-    assert hooks._busy_nvim(dataclasses.replace(current, adopted=True)) is not None
 
 
 @pytest.mark.parametrize("mode", ["r", "rm"])

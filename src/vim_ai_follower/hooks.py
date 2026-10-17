@@ -1158,9 +1158,16 @@ def _busy_nvim(current: FollowerState) -> str | None:
     and the Vim follower's Escape pair dismisses a prompt the user has up at
     that moment. It has to be here, before the cue, because the cue does not
     act (no sweep of its own) and would wait behind the prompt. A dedicated
-    follower's prompts are its guard's to sweep. A confirm() or input() is
-    not blocking (measured, nvim 0.12.6): the hook goes on and answers
-    neither."""
+    follower's prompts are its guard's to sweep.
+
+    An adopted nvim at a confirm (`r?`: `confirm()`, `:s///c`) or on the
+    command line (`c…`: `input()`, a half-typed `:` command, a search) is
+    skipped too, though neither blocks (measured, nvim 0.12.6): the user's
+    answer or Enter runs against whatever buffer is current when it lands,
+    and a follower that opened Claude's file meanwhile had the user's
+    substitute, or their `:let g:who = bufname('%')`, run on Claude's buffer
+    (task 22 review I1). Answering them is the user's choice (Alberto's
+    answer A), so the edit is skipped and the file marked stale."""
     if current.backend != "nvim":
         return None
     if nvim_connect.last_probe_verdict(current.target) == "silent":
@@ -1168,12 +1175,30 @@ def _busy_nvim(current: FollowerState) -> str | None:
             f"nvim at {current.target} did not answer within "
             f"{nvim_connect.LIVENESS_TIMEOUT_SECONDS:g} s (busy in a command, or stopped)"
         )
-    if current.adopted and nvim_connect.last_probe_blocking(current.target):
-        if not nvim_prompt.answerable(nvim_connect.last_probe_mode(current.target)):
-            return (
-                f"nvim at {current.target} is waiting on its user (in the middle of a key sequence)"
-            )
+    if not current.adopted:
+        return None
+    pending = adopted_user_pending(current.target)
+    if pending is not None:
+        return f"nvim at {current.target} is waiting on its user ({pending})"
+    if nvim_connect.last_probe_blocking(current.target):
         return sweep_adopted_prompt(current.target, "the hook")
+    return None
+
+
+def adopted_user_pending(socket_path: str) -> str | None:
+    """What the user of an ADOPTED nvim is in the middle of, by the last
+    probe's mode, when it is something the follower must not act under: a
+    confirm (`r?`), the command line (any `c…` mode: `input()`, a `:`
+    command or a search being typed), or a blocking key sequence (`q` waiting
+    for its register reads `n`, blocking). None for an idle nvim or one at a
+    hit-enter or more-prompt, which the follower answers when it acts."""
+    mode = nvim_connect.last_probe_mode(socket_path)
+    if mode == "r?":
+        return "a confirm prompt"
+    if mode is not None and mode.startswith("c"):
+        return "on the command line"
+    if nvim_connect.last_probe_blocking(socket_path) and not nvim_prompt.answerable(mode):
+        return "in the middle of a key sequence"
     return None
 
 

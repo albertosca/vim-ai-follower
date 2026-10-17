@@ -1131,6 +1131,43 @@ def test_probe_nvim_reads_a_mode_that_arrives_in_a_later_piece(
         assert nvim_connect.last_probe_mode(str(path)) == mode
 
 
+def test_probe_nvim_stops_waiting_for_the_mode_once_its_deadline_is_spent() -> None:
+    # `blocking` has arrived, the mode has not, and the nvim keeps the
+    # connection open: the probe answers with what it has when its deadline
+    # runs out between two pieces, instead of reading on (patched clock: the
+    # second piece's wait starts past the deadline).
+    head = bytes([0x94, 0x01, 0x01, 0xC0, 0x82]) + b"\xa8blocking\xc3"
+    readings = iter([0.0, 0.0])
+    with _short_socket_dir() as directory:
+        path = directory / "nvim-@1.sock"
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(str(path))
+        server.listen()
+        probed = threading.Event()
+
+        def serve() -> None:
+            client, _address = server.accept()
+            with client:
+                client.recv(4096)
+                client.sendall(head)
+                probed.wait(5)
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+        try:
+            with patch(
+                "vim_ai_follower.backends.nvim_connect.time.monotonic",
+                side_effect=lambda: next(readings, 1000.0),
+            ):
+                assert nvim_connect.probe_nvim(str(path), timeout=2.0) == "answers"
+        finally:
+            probed.set()
+            thread.join(timeout=5)
+            server.close()
+        assert nvim_connect.last_probe_blocking(str(path)) is True
+        assert nvim_connect.last_probe_mode(str(path)) is None
+
+
 def test_probe_nvim_forgets_the_mode_of_an_nvim_that_stopped_answering() -> None:
     with _short_socket_dir() as directory:
         path = directory / "nvim-@1.sock"

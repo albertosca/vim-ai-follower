@@ -401,7 +401,6 @@ def test_an_adopted_watchdog_answers_nothing_while_paused_then_answers_on_resume
             time.sleep(0.3)
             dog.api.input.assert_not_called()
             pause.close()
-            assert nvim_prompt.is_paused("/s") is False
             assert _wait_for(lambda: dog.api.input.called)
     dog.api.input.assert_any_call("<CR>")
 
@@ -417,17 +416,29 @@ def test_a_dedicated_watchdog_answers_even_while_paused() -> None:
     dog.api.input.assert_called_once_with("<CR>")
 
 
+def _adopted_watchdog_answers(key: str) -> bool:
+    """Whether an adopted guard's watchdog on socket `key` answers a prompt
+    left up for 0.5 s (many polls' worth): a pause on `key` holds it."""
+    dog = MagicMock()
+    dog.api.get_mode.return_value = _PROMPT
+    with (
+        patch.object(nvim_prompt, "_SETTLE_SECONDS", 0.05),
+        prompt_guard(_nvim(), lambda: dog, key=key, adopted=True, label="x"),
+    ):
+        return _wait_for(lambda: dog.api.input.called, timeout=0.5)
+
+
 def test_a_pause_is_per_socket_and_ends_with_its_block() -> None:
     with nvim_prompt.paused("/a"):
-        assert nvim_prompt.is_paused("/a") is True
-        assert nvim_prompt.is_paused("/b") is False
-    assert nvim_prompt.is_paused("/a") is False
+        assert _adopted_watchdog_answers("/a") is False
+        assert _adopted_watchdog_answers("/b") is True
+    assert _adopted_watchdog_answers("/a") is True
 
 
 def test_a_pause_ends_even_when_its_body_raises() -> None:
     with pytest.raises(ValueError, match="boom"), nvim_prompt.paused("/a"):
         raise ValueError("boom")
-    assert nvim_prompt.is_paused("/a") is False
+    assert _adopted_watchdog_answers("/a") is True
 
 
 # --- sweep_socket: the hook's sweep before it raises the cue -----------------
@@ -797,7 +808,7 @@ def test_an_nvim_pause_waits_under_the_sockets_pause(adopted: bool) -> None:
     seen: list[bool] = []
 
     def waiting(*_arguments: Any) -> bool:
-        seen.append(nvim_prompt.is_paused("/tmp/x.sock"))
+        seen.append(_adopted_watchdog_answers("/tmp/x.sock"))
         return False  # interrupted while paused
 
     signals = iter(["pause"])
@@ -812,8 +823,8 @@ def test_an_nvim_pause_waits_under_the_sockets_pause(adopted: bool) -> None:
             MagicMock(), 1, ("abc",), 0, lambda: 0.0, "@1", 1, prompt_key="/tmp/x.sock"
         )
     assert result.outcome == "interrupted"
-    assert seen == [True]
-    assert nvim_prompt.is_paused("/tmp/x.sock") is False
+    assert seen == [False]
+    assert _adopted_watchdog_answers("/tmp/x.sock") is True
 
 
 def test_the_sweep_names_a_more_prompt_in_the_log(caplog: pytest.LogCaptureFixture) -> None:
