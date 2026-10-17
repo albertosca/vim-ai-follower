@@ -11,9 +11,10 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from typing import Literal
+from typing import Any, Literal
 
 from vim_ai_follower import binding, cache, config, control, hooks, keybindings, snapshot, tmux
+from vim_ai_follower import state as state_module
 from vim_ai_follower.backends import NavigationFailed, get_follower, nvim_connect, nvim_prompt
 from vim_ai_follower.backends.nvim_connect import (
     NvimNeverListened,
@@ -106,10 +107,10 @@ def cmd_start(
     if session is None:
         print(_unresolvable_pane(env), file=sys.stderr)
         return 1
-    # An explicit start is what lifts a `stop` (see cmd_stop): before any
-    # write, since FollowerState.set refuses to write under the tombstone.
-    clear_stopped(session.window_id)
     if FollowerState.get(session.window_id) is not None:
+        # A live follower under a tombstone (a stop that raced its start):
+        # this start is the user asking for it, so the stop no longer holds.
+        clear_stopped(session.window_id)
         message = "claude-follow: follower already running for this window"
         if session.in_tmux:
             # The keys are tmux SERVER-global while follower state is
@@ -150,7 +151,7 @@ def cmd_start(
         sock = _launch_standalone_or_report(session.window_id)
         if sock is None:
             return 1
-        FollowerState.set(
+        _record_start(
             session.window_id,
             "nvim",
             sock,
@@ -173,7 +174,7 @@ def cmd_start(
             sock = _launch_standalone_or_report(session.window_id)
             if sock is None:
                 return 1
-            FollowerState.set(
+            _record_start(
                 session.window_id,
                 "nvim",
                 sock,
@@ -190,7 +191,7 @@ def cmd_start(
         sock, launched = resolve_nvim_target(
             origin, session.window_id, adopt=defaults.adopt_existing
         )
-        FollowerState.set(
+        _record_start(
             session.window_id,
             "nvim",
             sock,
@@ -205,7 +206,7 @@ def cmd_start(
     if defaults.adopt_existing:
         adopt = adopt_target(origin)
         if adopt is not None:
-            FollowerState.set(
+            _record_start(
                 session.window_id,
                 "tmux",
                 adopt,
@@ -219,7 +220,7 @@ def cmd_start(
             return 0
 
     started = TmuxVimFollower.start(origin)
-    FollowerState.set(
+    _record_start(
         session.window_id,
         "tmux",
         started.pane_id,
@@ -229,6 +230,15 @@ def cmd_start(
     )
     print(f"claude-follow: started follower in pane {started.pane_id}")
     return 0
+
+
+def _record_start(window_id: str, backend: str, target: str, **fields: Any) -> None:
+    """Record the follower a `start` just attached to. An explicit start is
+    what lifts a `stop` (see cmd_stop), so the tombstone goes here: before
+    the write it would refuse, and only once the start has something to
+    record, since a start that failed must leave auto-open off."""
+    clear_stopped(window_id)
+    FollowerState.set(window_id, backend, target, **fields)
 
 
 def _other_live_follower() -> bool:
@@ -286,11 +296,12 @@ def cmd_stop(env: dict[str, str]) -> int:
         print(_unresolvable_pane(env), file=sys.stderr)
         return 1
     window_id = session.window_id
-    try:
-        existing = FollowerState.read(window_id)
-    except _UNREADABLE_STATE_ERRORS:
-        existing = None  # unreadable: nothing to tear down, still cleared below
-    mark_stopped(window_id, binding.tmux_server_pid() if session.in_tmux else None)
+    existing = _state_to_tear_down(window_id)
+    mark_stopped(
+        window_id,
+        binding.tmux_server_pid_from(env) if session.in_tmux else None,
+        session.in_tmux,
+    )
     FollowerState.clear(window_id)
     control.clear_signals(window_id)
     control.discard_pending_animation(window_id)
@@ -303,6 +314,7 @@ def cmd_stop(env: dict[str, str]) -> int:
         # A writer that passed set()'s tombstone check just before the
         # mark_stopped above may have landed its write during the teardown.
         FollowerState.clear(window_id)
+    state_module.stopping_path(window_id).unlink(missing_ok=True)
     other_live = _other_live_follower()
     if session.in_tmux and not other_live:
         # Keybindings are tmux prefix-key bindings — standalone never
@@ -313,6 +325,28 @@ def cmd_stop(env: dict[str, str]) -> int:
         keybindings.unregister()
     print("claude-follow: stopped")
     return 0
+
+
+def _state_to_tear_down(window_id: str) -> FollowerState | None:
+    """The state this stop tears down. It is copied to the window's
+    `.stopping` record first, which the stop removes only once the teardown
+    is over: the state itself is cleared BEFORE the teardown, so a stop
+    killed mid-teardown (SIGKILL, a closed terminal) would otherwise leave
+    the follower's pane running with nothing naming it, and a second `stop`
+    could not find it. With no state, that record is what a second stop
+    finishes."""
+    record = state_module.stopping_path(window_id)
+    try:
+        existing = FollowerState.read(window_id)
+    except _UNREADABLE_STATE_ERRORS:
+        return None  # unreadable: nothing to tear down, still cleared by the caller
+    if existing is None:
+        try:
+            return FollowerState.read_path(record)
+        except _UNREADABLE_STATE_ERRORS:
+            return None
+    state_module.keep_stopping_record(window_id)
+    return existing
 
 
 def _teardown_step(what: str, action: Callable[[], object]) -> bool:
@@ -328,6 +362,22 @@ def _teardown_step(what: str, action: Callable[[], object]) -> bool:
 
 
 def _tear_down_tmux(existing: FollowerState, window_id: str) -> None:
+    """Nothing reaches the pane unless it is proven to be this follower's
+    pane now (final review of T17, C1 and C2): the `.pane` file outlives a
+    tmux restart, and the new server numbers its panes from %0 again, so a
+    stale state's target can be Claude's own pane or the user's shell, and
+    a kill or typed Vim script would land there. The proof is the server
+    the state was written under (state.proven_here; tmux never reuses a pane
+    id within one server), and then a pane that still runs vim."""
+    if not state_module.proven_here(existing):
+        hooks.logger.warning(
+            "stop: pane %s is not proven to be the follower's: its state was not written "
+            "under this tmux server (recorded %s, this one %s); nothing was sent to it",
+            existing.target,
+            existing.server_pid,
+            state_module.current_server_pid(),
+        )
+        return
     follower = get_follower("tmux", existing.target, window_id=window_id)
     # Restore the border BEFORE the pane goes: pane-border-status is a
     # WINDOW option, and `set-option -wu` aimed at a killed pane fails to
@@ -335,6 +385,11 @@ def _tear_down_tmux(existing: FollowerState, window_id: str) -> None:
     # "top". The state is already cleared, so the surface works from the
     # copy read above.
     _teardown_step("restoring the pane border", status_surface_for(existing).clear)
+    if not follower.is_alive():
+        hooks.logger.warning(
+            "stop: pane %s no longer runs vim; nothing was sent to it", existing.target
+        )
+        return
     if existing.adopted:
         # Adoption never took ownership of the pane: only close the tabs the
         # follower opened, and never the user's work (close_tab leaves a
@@ -348,11 +403,20 @@ def _tear_down_tmux(existing: FollowerState, window_id: str) -> None:
 
 
 def _tear_down_nvim(existing: FollowerState, session: Session) -> None:
-    """Bounded: the probe plus every step within CONNECT + RPC timeouts."""
+    """Bounded: the probe, every RPC step and the pane close all within
+    CONNECT + RPC timeouts. The RPC steps end early enough to leave the pane
+    close its two graces (the wait for a `qall!` to land and the reap).
+
+    The RPC steps go to the state's socket whatever the tmux server: a
+    dedicated socket is the follower's own file in the cache dir, and in an
+    adopted nvim close_tab touches only what the follower created there (an
+    editor variable, gone with the editor). The PANE close is tmux's, so it
+    needs the state to be proven under this server, like the tmux teardown."""
     socket_path = existing.target
     ends_at = time.monotonic() + (
         nvim_connect.CONNECT_TIMEOUT_SECONDS + nvim_connect.RPC_TIMEOUT_SECONDS
     )
+    rpc_ends_at = ends_at - _QUIT_GRACE_SECONDS - _REAP_GRACE_SECONDS
     verdict = nvim_connect.probe_nvim(socket_path)
     quit_sent = False
     if verdict != "answers":
@@ -369,9 +433,19 @@ def _tear_down_nvim(existing: FollowerState, session: Session) -> None:
             socket_path,
         )
     else:
-        quit_sent = _run_nvim_teardown(existing, session.window_id, ends_at)
-    if not existing.adopted and session.in_tmux and existing.origin:
-        _close_dedicated_nvim_pane(existing.origin, socket_path, wait_for_quit=quit_sent)
+        quit_sent = _run_nvim_teardown(existing, session.window_id, rpc_ends_at)
+    if existing.adopted or not session.in_tmux or not existing.origin:
+        return
+    if not state_module.proven_here(existing):
+        hooks.logger.warning(
+            "stop: the pane of nvim %s is left alone: its state was not written under this "
+            "tmux server (recorded %s, this one %s)",
+            socket_path,
+            existing.server_pid,
+            state_module.current_server_pid(),
+        )
+        return
+    _close_dedicated_nvim_pane(existing.origin, socket_path, wait_for_quit=quit_sent)
 
 
 def _run_nvim_teardown(existing: FollowerState, window_id: str, ends_at: float) -> bool:
@@ -831,6 +905,10 @@ def cmd_toggle(env: dict[str, str]) -> int:
         print(_unresolvable_pane(env), file=sys.stderr)
         return 1
     raw = FollowerState.read(session.window_id)
+    if raw is not None and state_module.from_another_server(raw):
+        # Left by a previous tmux server: its origin and target name panes
+        # of this one that are not the follower's (see state.from_another_server).
+        raw = None
     if raw is None:
         if stopped_path(session.window_id).exists():
             # A `stop` silenced auto-open for this window; toggling is the

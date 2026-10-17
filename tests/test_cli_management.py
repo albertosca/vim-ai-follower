@@ -1,14 +1,21 @@
 from __future__ import annotations
 
+import contextlib
 import functools
 import subprocess
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from helpers import evict_spelled, make_mock_tmux_run, resolve_typed_paths, wipe_spelled
+from helpers import (
+    MOCK_SERVER_PID,
+    evict_spelled,
+    make_mock_tmux_run,
+    resolve_typed_paths,
+    wipe_spelled,
+)
 from helpers import register_fake_follower as _register_fake_follower
 
 from vim_ai_follower import cache, commands, config, control, keybindings, session, snapshot, state
@@ -796,7 +803,14 @@ def test_stop_on_adopted_pane_closes_tabs_but_not_the_pane(
         return_value=MagicMock(returncode=0, stdout="%7 vim\n"),
     ):
         state.FollowerState.set(
-            "@1", "tmux", "%7", origin="%1", adopted=True, open_files=(a, b), shown_any=True
+            "@1",
+            "tmux",
+            "%7",
+            origin="%1",
+            adopted=True,
+            open_files=(a, b),
+            shown_any=True,
+            server_pid=MOCK_SERVER_PID,
         )
 
     with patch(
@@ -1170,6 +1184,7 @@ def _nvim_follower(adopted: bool, open_files: tuple[str, ...] = ()) -> None:
         adopted=adopted,
         open_files=open_files,
         shown_any=True,
+        server_pid=MOCK_SERVER_PID,
     )
 
 
@@ -1256,7 +1271,7 @@ def test_stop_clears_a_state_a_racing_hook_wrote_during_the_teardown() -> None:
 
 
 def test_start_clears_the_tombstone() -> None:
-    state.mark_stopped("@1", 4242)
+    state.mark_stopped("@1", 4242, in_tmux=True)
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("vim_ai_follower.binding.tmux_server_pid", return_value=4242),
@@ -1267,7 +1282,7 @@ def test_start_clears_the_tombstone() -> None:
 
 
 def test_toggle_after_stop_turns_auto_open_back_on(capsys: pytest.CaptureFixture[str]) -> None:
-    state.mark_stopped("@1", 4242)
+    state.mark_stopped("@1", 4242, in_tmux=True)
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
         assert commands.cmd_toggle({"TMUX_PANE": "%1"}) == 0
     assert not state.stopped_path("@1").exists()
@@ -1277,7 +1292,7 @@ def test_toggle_after_stop_turns_auto_open_back_on(capsys: pytest.CaptureFixture
 def test_toggle_on_clears_a_tombstone_before_writing() -> None:
     _register_fake_follower("@1", "%2")
     state.FollowerState.update("@1", enabled=False)
-    state.mark_stopped("@1", 4242)
+    state.mark_stopped("@1", 4242, in_tmux=True)
     with (
         patch(
             "vim_ai_follower.tmux.subprocess.run",
@@ -1485,7 +1500,13 @@ def test_stop_survives_an_unreadable_state() -> None:
 
 def test_stop_logs_a_tmux_teardown_step_that_fails_and_carries_on() -> None:
     state.FollowerState.set(
-        "@1", "tmux", "%2", origin="%1", adopted=True, open_files=("/tmp/a.py", "/tmp/b.py")
+        "@1",
+        "tmux",
+        "%9",
+        origin="%1",
+        adopted=True,
+        open_files=("/tmp/a.py", "/tmp/b.py"),
+        server_pid=MOCK_SERVER_PID,
     )
     closed: list[str] = []
 
@@ -1572,3 +1593,222 @@ def test_tmux_stop_never_kills_an_adopted_pane() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         tmux_vim.TmuxVimFollower(pane_id="%2").stop(dedicated=False)
     run.assert_not_called()
+
+
+# --- final review of T17: nothing reaches a pane not proven the follower's --
+#
+# C1/C2: the `.pane` outlives a tmux restart and the new server numbers its
+# panes from %0 again, so a stale state's target can be Claude's own pane
+# (killed) or a shell (typed into). The proof is the server the state was
+# written under (state.proven_here), then a pane that still runs vim.
+
+
+def _touches_the_pane(run: MagicMock, pane_id: str) -> list[list[str]]:
+    """Every call that would act on pane_id: a kill, typed keys, an option."""
+    acting = ("kill-pane", "send-keys", "set-option", "resize-pane", "respawn-pane")
+    return [
+        c.args[0]
+        for c in run.call_args_list
+        if len(c.args[0]) > 1 and c.args[0][1] in acting and pane_id in c.args[0]
+    ]
+
+
+@pytest.mark.parametrize("adopted", [False, True])
+@pytest.mark.parametrize("recorded", [1111, None], ids=["another-server", "no-server-recorded"])
+def test_stop_sends_nothing_to_a_pane_not_proven_under_this_server(
+    adopted: bool, recorded: int | None
+) -> None:
+    # The worst case: the stale target is the caller's own pane, and it is
+    # even running vim (the reviewer's repro: %0, the origin).
+    state.FollowerState.set(
+        "@1",
+        "tmux",
+        "%1",
+        origin="%1",
+        adopted=adopted,
+        open_files=("/tmp/x.py",),
+        shown_any=True,
+        server_pid=recorded,
+    )
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        side_effect=make_mock_tmux_run(pane_id="%1"),
+    ) as run:
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    assert _touches_the_pane(run, "%1") == []
+    assert state.FollowerState.read("@1") is None
+    lines = [line for line in _hook_log().splitlines() if "not proven" in line]
+    assert len(lines) == 1, _hook_log()
+
+
+@pytest.mark.parametrize("adopted", [False, True])
+def test_stop_sends_no_keys_and_no_kill_to_a_pane_that_no_longer_runs_vim(adopted: bool) -> None:
+    # Under this server, but the follower's Vim is gone: the pane is now a
+    # shell (or `cat`), and typed Vim script would run there.
+    state.FollowerState.set(
+        "@1",
+        "tmux",
+        "%9",
+        origin="%1",
+        adopted=adopted,
+        open_files=("/tmp/x.py",),
+        shown_any=True,
+        server_pid=MOCK_SERVER_PID,
+    )
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        side_effect=make_mock_tmux_run(pane_id="%9", pane_exists=False, other_panes=("%9",)),
+    ) as run:
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    calls = [c.args[0] for c in run.call_args_list]
+    assert not any(c[:2] == ["tmux", "kill-pane"] for c in calls)
+    assert not any(c[:2] == ["tmux", "send-keys"] for c in calls)
+    assert "no longer runs vim" in _hook_log()
+
+
+def test_stop_leaves_the_pane_of_a_dedicated_nvim_from_another_server() -> None:
+    state.FollowerState.set(
+        "@1", "nvim", _DEDICATED_SOCKET, origin="%1", adopted=False, server_pid=1111
+    )
+    listing = f"%1\t100\tzsh\n%5\t200\tnvim --listen {_DEDICATED_SOCKET}\n"
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_tmux_with_panes(listing)) as run,
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="silent"),
+        patch("vim_ai_follower.commands._send_signal") as send_signal,
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    assert not any(c.args[0][:2] == ["tmux", "kill-pane"] for c in run.call_args_list)
+    send_signal.assert_not_called()
+    assert "is left alone: its state was not written under this tmux server" in _hook_log()
+
+
+def test_stop_keeps_a_record_of_what_it_tears_down_until_the_teardown_is_over() -> None:
+    # Minor 6: the state goes before the teardown, so a stop killed mid-way
+    # needs something else to name the pane for the next stop.
+    _register_fake_follower("@1", "%9")
+    pane_state = (cache.CACHE_DIR / "@1.pane").read_text()
+    seen: list[str] = []
+
+    def killing(*_args: object, **_kwargs: object) -> None:
+        seen.append(state.stopping_path("@1").read_text())
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.backends.tmux_vim.TmuxVimFollower.stop", side_effect=killing),
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    assert seen == [pane_state]
+    assert not state.stopping_path("@1").exists()
+
+
+def test_a_second_stop_finishes_the_teardown_of_a_stop_that_was_killed() -> None:
+    _register_fake_follower("@1", "%9")
+    state.stopping_path("@1").write_text((cache.CACHE_DIR / "@1.pane").read_text())
+    state.FollowerState.clear("@1")
+    state.mark_stopped("@1", MOCK_SERVER_PID, in_tmux=True)
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    kills = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "kill-pane"]]
+    assert kills == [["tmux", "kill-pane", "-t", "%9"]]
+    assert not state.stopping_path("@1").exists()
+
+
+def test_a_stop_with_an_unreadable_record_tears_down_nothing() -> None:
+    state.stopping_path("@1").parent.mkdir(parents=True, exist_ok=True)
+    state.stopping_path("@1").write_text("{not json")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    assert not any(c.args[0][:2] == ["tmux", "kill-pane"] for c in run.call_args_list)
+    assert not state.stopping_path("@1").exists()
+
+
+def test_the_nvim_teardown_including_its_pane_close_holds_its_budget() -> None:
+    # Minor 1: the RPC steps used the whole CONNECT + RPC budget, then the
+    # pane close added its quit grace and its reap grace on top (~15 s for a
+    # 13 s bound). A fake clock makes the worst case exact: every step runs
+    # until a hair before the deadline it was given (the alarm that would
+    # end it), the pane never goes, and its process never dies.
+    _nvim_follower(adopted=False)
+    clock = [0.0]
+    budget = nvim_connect.CONNECT_TIMEOUT_SECONDS + nvim_connect.RPC_TIMEOUT_SECONDS
+    deadlines: list[float] = []
+
+    def monotonic() -> float:
+        return clock[0]
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    @contextlib.contextmanager
+    def rpc_deadline(seconds: float) -> Iterator[None]:
+        deadlines.append(seconds)
+        yield
+
+    def slow_step(*_args: object, **_kwargs: object) -> None:
+        clock[0] += deadlines[-1] - 0.01
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.commands.time.monotonic", side_effect=monotonic),
+        patch("vim_ai_follower.commands.time.sleep", side_effect=sleep),
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
+        patch("vim_ai_follower.commands.rpc_deadline", side_effect=rpc_deadline),
+        patch("vim_ai_follower.status_surface.NvimStatusSurface.clear", side_effect=slow_step),
+        patch("vim_ai_follower.backends.nvim.NvimFollower.stop", side_effect=slow_step),
+        patch("vim_ai_follower.commands._pane_running", return_value=("%5", 200)),
+        patch("vim_ai_follower.commands._child_pids", return_value=[]),
+        patch("vim_ai_follower.commands.TmuxPane.kill"),
+        patch("vim_ai_follower.commands._process_alive", return_value=True),
+        patch("vim_ai_follower.commands._command_line", return_value=_DEDICATED_SOCKET),
+        patch("vim_ai_follower.commands._send_signal") as send_signal,
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    send_signal.assert_called_once()
+    assert clock[0] <= budget + 0.1, clock[0]
+
+
+def test_stop_names_the_server_from_tmux_variable_when_tmux_does_not_answer() -> None:
+    # Minor 4: a tombstone written with no pid inside tmux held under every
+    # later server; $TMUX carries the pid ("socket,pid,session").
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.binding.tmux_server_pid", return_value=None),
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1", "TMUX": "/tmp/s,777,0"}) == 0
+        assert state.stopped_path("@1").read_text() == "777"
+        assert commands.cmd_stop({"TMUX_PANE": "%1", "TMUX": "garbled"}) == 0
+        assert state.stopped_path("@1").read_text() == "unknown"
+
+
+def test_a_start_that_fails_keeps_the_stop() -> None:
+    # Minor 5: the tombstone used to go before the launch.
+    state.mark_stopped("@1", MOCK_SERVER_PID, in_tmux=True)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch(
+            "vim_ai_follower.commands.TmuxVimFollower.start",
+            side_effect=subprocess.CalledProcessError(1, ["tmux", "split-window"]),
+        ),
+        pytest.raises(subprocess.CalledProcessError),
+    ):
+        commands.cmd_start({"TMUX_PANE": "%1"})
+    assert state.stopped_path("@1").exists()
+
+
+def test_a_start_of_a_running_follower_lifts_a_stop() -> None:
+    _register_fake_follower("@1", "%9")
+    state.mark_stopped("@1", MOCK_SERVER_PID, in_tmux=True)
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
+    assert not state.stopped_path("@1").exists()
+
+
+def test_toggle_ignores_a_state_left_by_another_tmux_server(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _register_fake_follower("@1", "%9", server_pid=1111)
+    state.FollowerState.update("@1", origin="%1")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
+        assert commands.cmd_toggle({"TMUX_PANE": "%1"}) == 0
+    assert "no follower to toggle" in capsys.readouterr().out
+    assert not any(c.args[0][:2] == ["tmux", "resize-pane"] for c in run.call_args_list)

@@ -88,6 +88,7 @@ def test_a_stop_elsewhere_keeps_a_busy_followers_state(world: E2EFollower) -> No
         "nvim",
         str(busy_socket),
         origin=busy_pane,
+        server_pid=world.server_pid,
         adopted=True,
         open_files=(str(tracked),),
         base_dir=world.cache_dir,

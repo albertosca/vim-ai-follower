@@ -101,6 +101,7 @@ def test_status_and_stop_return_promptly_with_a_frozen_nvim(world: E2EFollower) 
             str(frozen_socket),
             origin=frozen_pane,
             adopted=False,
+            server_pid=world.server_pid,
             base_dir=world.cache_dir,
         )
 

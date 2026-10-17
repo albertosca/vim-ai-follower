@@ -161,7 +161,7 @@ def test_a_window_remembered_by_a_healthy_hook_is_recovered_by_a_blind_one(
     binding at all — recall would simply be answering out of a stub. This one
     fails if either half of the wiring goes missing, which is the only version
     of the feature that is worth anything: the two halves are the feature."""
-    _register_fake_follower("@18", "%23", shown_any=True)
+    _register_fake_follower("@18", "%23", shown_any=True, server_pid=64091)
     target = _live_file(tmp_path)
     with patch("vim_ai_follower.binding.tmux_server_pid", return_value=64091):
         with (

@@ -3,12 +3,13 @@ flags) persisted as JSON, plus the tab recency/eviction helper."""
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from vim_ai_follower import cache
 from vim_ai_follower.backends import get_follower
@@ -16,6 +17,10 @@ from vim_ai_follower.backends import get_follower
 _DEFAULT_ORIGIN = ""
 _DEFAULT_ON_FAILURE = "silent"
 _DEFAULT_SPEED = "rapido"
+
+
+def _pid_or_none(value: object) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _state_path(window_id: str, base_dir: Path | None) -> Path:
@@ -33,28 +38,63 @@ def stopped_path(window_id: str, base_dir: Path | None = None) -> Path:
     return directory / f"{window_id}.stopped"
 
 
-def mark_stopped(window_id: str, server_pid: int | None, base_dir: Path | None = None) -> None:
+_UNKNOWN_SERVER = "unknown"
+
+
+def mark_stopped(
+    window_id: str, server_pid: int | None, in_tmux: bool, base_dir: Path | None = None
+) -> None:
+    """Write the tombstone: the tmux server pid the stop ran under, '' for a
+    standalone window, or "unknown" for a stop inside tmux that could not
+    learn its server's pid (see is_stopped for what each one holds)."""
     path = stopped_path(window_id, base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("" if server_pid is None else str(server_pid))
+    if not in_tmux:
+        path.write_text("")
+    else:
+        path.write_text(_UNKNOWN_SERVER if server_pid is None else str(server_pid))
 
 
 def is_stopped(window_id: str, server_pid: int | None, base_dir: Path | None = None) -> bool:
     """True while the window's tombstone holds. A tombstone written under a
     tmux server pid holds only under that same server: window ids are reused
     across tmux restarts, so @4 today is not the @4 a stop under the previous
-    server silenced. One written with no pid (standalone, where the window id
-    is the terminal's own) holds whatever the server."""
+    server silenced. A caller that cannot learn its server's pid (None) is
+    held by it: the stop is the user's word, and an unproven "another
+    server" must not undo it. One written with no pid (standalone, where
+    the window id is the terminal's own) holds whatever the server. One
+    written inside tmux with the pid unknown holds only while the pid stays
+    unknown: it cannot tell this server from a later one, and holding under
+    every later server would silence a window id that tmux has reused."""
     try:
         recorded = stopped_path(window_id, base_dir).read_text().strip()
     except OSError:
         return False
-    return recorded == "" or (server_pid is not None and recorded == str(server_pid))
+    if recorded == "":
+        return True
+    if server_pid is None:
+        return True
+    return recorded == str(server_pid)
 
 
 def clear_stopped(window_id: str, base_dir: Path | None = None) -> None:
     stopped_path(window_id, base_dir).unlink(missing_ok=True)
     stopped_note_path(window_id, base_dir).unlink(missing_ok=True)
+
+
+def stopping_path(window_id: str, base_dir: Path | None = None) -> Path:
+    """A copy of the state a `stop` is tearing down, kept until its teardown
+    is over (commands._state_to_tear_down). Never named "*.pane"."""
+    directory = base_dir if base_dir is not None else cache.CACHE_DIR
+    return directory / f"{window_id}.stopping"
+
+
+def keep_stopping_record(window_id: str, base_dir: Path | None = None) -> None:
+    """Copy the window's state to its stopping_path; best-effort."""
+    with contextlib.suppress(OSError):
+        stopping_path(window_id, base_dir).write_bytes(
+            _state_path(window_id, base_dir).read_bytes()
+        )
 
 
 def stopped_note_path(window_id: str, base_dir: Path | None = None) -> Path:
@@ -69,9 +109,45 @@ def _stopped_here(window_id: str, base_dir: Path | None) -> bool:
     tombstone exists, so an ordinary write costs one stat."""
     if not stopped_path(window_id, base_dir).exists():
         return False
+    return is_stopped(window_id, current_server_pid(), base_dir)
+
+
+def current_server_pid() -> int | None:
+    """The attached tmux server's pid (binding.tmux_server_pid), imported
+    late: binding imports this module."""
     from vim_ai_follower import binding
 
-    return is_stopped(window_id, binding.tmux_server_pid(), base_dir)
+    return binding.tmux_server_pid()
+
+
+def _records_a_server(backend: str, origin: str) -> bool:
+    """Whether a state lives in a tmux server: every tmux-backend state, and
+    an nvim one started from a tmux pane (it has an origin). A standalone
+    nvim's state has neither and no server to record."""
+    return backend == "tmux" or bool(origin)
+
+
+def from_another_server(state: FollowerState) -> bool:
+    """True when the state names the tmux server it was written under and
+    the current server is a different one: after a tmux restart window and
+    pane ids start again from @0/%0, so the state's pane is somebody else's
+    (Claude's own pane, the user's shell or Vim). False when either pid is
+    unknown, which proves nothing either way; `stop`, the one caller that
+    must not act without proof, asks proven_here instead."""
+    if state.server_pid is None:
+        return False
+    current = current_server_pid()
+    return current is not None and current != state.server_pid
+
+
+def proven_here(state: FollowerState) -> bool:
+    """True only when the state was written under the CURRENT tmux server:
+    its recorded pid equals the one measured now. Within one server tmux
+    never reuses a pane id, so that is what proves the state's pane is
+    still the one the follower was started in. A state with no recorded
+    pid (written before the pid was recorded) or a server that does not
+    answer proves nothing."""
+    return state.server_pid is not None and state.server_pid == current_server_pid()
 
 
 def nvim_socket_path(window_id: str, base_dir: Path | None = None) -> Path:
@@ -113,13 +189,21 @@ class FollowerState:
     shown_any: bool = False
     writers: tuple[str, ...] = ()
     writer_labels: tuple[str, ...] = ()
+    # The pid of the tmux server the follower was started under (None for a
+    # standalone nvim, and for a state written before it was recorded). See
+    # from_another_server / proven_here.
+    server_pid: int | None = None
 
     @classmethod
     def read(cls, window_id: str, base_dir: Path | None = None) -> FollowerState | None:
         """Returns the persisted state without checking whether the
         follower is still alive — used by recovery logic that needs the
         origin pane even when the current one has died."""
-        path = _state_path(window_id, base_dir)
+        return cls.read_path(_state_path(window_id, base_dir))
+
+    @classmethod
+    def read_path(cls, path: Path) -> FollowerState | None:
+        """read() of a state file at an explicit path (a stopping record)."""
         if not path.exists():
             return None
         data = json.loads(path.read_text())
@@ -141,12 +225,17 @@ class FollowerState:
             shown_any=data.get("shown_any", False),
             writers=tuple(data.get("writers", [])),
             writer_labels=tuple(data.get("writer_labels", [])),
+            server_pid=_pid_or_none(data.get("server_pid")),
         )
 
     @classmethod
     def get(cls, window_id: str, base_dir: Path | None = None) -> FollowerState | None:
         state = cls.read(window_id, base_dir)
         if state is None:
+            return None
+        if from_another_server(state):
+            # A state left by a previous tmux server: its pane id now names
+            # some other pane of this one, which may well be running vim.
             return None
         if not get_follower(state.backend, state.target).is_alive():
             return None
@@ -170,14 +259,23 @@ class FollowerState:
         writers: tuple[str, ...] = (),
         writer_labels: tuple[str, ...] = (),
         base_dir: Path | None = None,
-    ) -> None:
+        server_pid: int | Literal["measure"] | None = "measure",
+    ) -> bool:
+        """Write the state, and say whether it was written (False under a
+        `stop` tombstone). server_pid "measure", the default every caller
+        that starts or adopts a follower relies on, records the current
+        tmux server's pid for a state that lives in tmux; update() passes
+        the stored one through, so a later write never re-proves a state
+        that was not written under this server."""
         if _stopped_here(window_id, base_dir):
             # `claude-follow stop` ran for this window after this writer read
             # the state: a hook finishing its animation, or an auto-open
             # racing the stop. Writing now would resurrect the follower the
             # user just stopped, so the write is dropped (`start`/toggle
             # clear the tombstone before they write).
-            return
+            return False
+        if server_pid == "measure":
+            server_pid = current_server_pid() if _records_a_server(backend, origin) else None
         path = _state_path(window_id, base_dir)
         path.parent.mkdir(parents=True, exist_ok=True)
         # Enforce stale_files is a subset of open_files here rather than at
@@ -203,6 +301,7 @@ class FollowerState:
                 "shown_any": shown_any,
                 "writers": writers,
                 "writer_labels": writer_labels,
+                "server_pid": server_pid,
             }
         )
         # Atomic write: a follower per window means several hooks can now
@@ -215,6 +314,7 @@ class FollowerState:
         temporary_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
         temporary_path.write_text(payload)
         temporary_path.replace(path)
+        return True
 
     @classmethod
     def update(cls, window_id: str, base_dir: Path | None = None, **changes: Any) -> None:
@@ -240,6 +340,7 @@ class FollowerState:
             writers=updated.writers,
             writer_labels=updated.writer_labels,
             base_dir=base_dir,
+            server_pid=updated.server_pid,
         )
 
     @classmethod

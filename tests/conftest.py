@@ -43,6 +43,26 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[N
     hooks.logger.handlers.clear()
 
 
+_NO_TMUX_SERVER_DIR = tempfile.mkdtemp(prefix="cf-none-")
+
+
+@pytest.fixture(autouse=True)
+def no_real_tmux_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An unmocked in-process tmux call reaches no server at all. pytest run
+    from a tmux pane inherits $TMUX, and code that asks the server for its
+    pid (binding.tmux_server_pid, which FollowerState.set calls to record
+    it) then talked to the developer's REAL server: a read, but enough to
+    make a state's recorded pid depend on where the suite ran, while CI has
+    no server. TMUX_TMPDIR at an empty directory makes the default socket
+    one nobody listens on. Integration tests too: tmux_session (requested
+    after this autouse fixture) points the process at its private server,
+    and the e2e harness isolates only its subprocesses, so an in-process
+    FollowerState.set there must name world.server_pid itself."""
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.setenv("TMUX_TMPDIR", _NO_TMUX_SERVER_DIR)
+
+
 @pytest.fixture(autouse=True)
 def record_path_handles(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Remember every path handle the tmux backend creates, by name, for

@@ -72,6 +72,20 @@ def tmux_server_pid() -> int | None:
         return None
 
 
+def tmux_server_pid_from(env: dict[str, str]) -> int | None:
+    """tmux_server_pid, falling back to the pid tmux writes into $TMUX
+    ("socket,pid,session") when the server cannot be asked: what `stop`
+    records in its tombstone, which must name a server whenever one can be
+    named (an "unknown" one cannot tell this server from a later one)."""
+    asked = tmux_server_pid()
+    if asked is not None:
+        return asked
+    fields = env.get("TMUX", "").split(",")
+    if len(fields) >= 2 and fields[1].isdigit():
+        return int(fields[1])
+    return None
+
+
 def _read_binding(path: Path) -> dict[str, Any] | None:
     try:
         return json.loads(path.read_text())  # type: ignore[no-any-return]

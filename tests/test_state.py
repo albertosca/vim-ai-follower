@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from vim_ai_follower import cache
 from vim_ai_follower.state import FollowerState, nvim_socket_path, touch_open_files
+
+
+def _stored(window_id: str) -> FollowerState:
+    recorded = FollowerState.read(window_id)
+    assert recorded is not None
+    return recorded
 
 
 def test_nvim_socket_path_is_window_scoped(tmp_path: Path) -> None:
@@ -246,7 +256,7 @@ def _set_follower(window_id: str) -> None:
 def test_mark_stopped_records_the_tmux_server_pid() -> None:
     from vim_ai_follower import state
 
-    state.mark_stopped("@4", 64091)
+    state.mark_stopped("@4", 64091, in_tmux=True)
     assert state.stopped_path("@4").read_text() == "64091"
     assert state.is_stopped("@4", 64091) is True
 
@@ -256,15 +266,35 @@ def test_a_tombstone_from_another_tmux_server_does_not_count() -> None:
     # stop under the previous server silenced.
     from vim_ai_follower import state
 
-    state.mark_stopped("@4", 64091)
+    state.mark_stopped("@4", 64091, in_tmux=True)
     assert state.is_stopped("@4", 70001) is False
-    assert state.is_stopped("@4", None) is False
+
+
+def test_a_tombstone_holds_a_caller_that_cannot_learn_its_server() -> None:
+    # Fails closed (final review of T17, Minor 4): the stop is the user's
+    # word, and a hook whose tmux does not answer has not proven it runs
+    # under another server.
+    from vim_ai_follower import state
+
+    state.mark_stopped("@4", 64091, in_tmux=True)
+    assert state.is_stopped("@4", None) is True
+
+
+def test_a_stop_in_tmux_that_could_not_learn_its_server_never_holds_a_known_one() -> None:
+    # Final review of T17, Minor 4: it used to write '' (standalone), which
+    # held under every later server, whose @4 is somebody else's window.
+    from vim_ai_follower import state
+
+    state.mark_stopped("@4", None, in_tmux=True)
+    assert state.stopped_path("@4").read_text() == "unknown"
+    assert state.is_stopped("@4", 99999) is False
+    assert state.is_stopped("@4", None) is True
 
 
 def test_a_standalone_tombstone_holds_whatever_the_server() -> None:
     from vim_ai_follower import state
 
-    state.mark_stopped("term-x", None)
+    state.mark_stopped("term-x", None, in_tmux=False)
     assert state.stopped_path("term-x").read_text() == ""
     assert state.is_stopped("term-x", None) is True
     assert state.is_stopped("term-x", 64091) is True
@@ -280,7 +310,7 @@ def test_clear_stopped_removes_the_tombstone_and_tolerates_none() -> None:
     from vim_ai_follower import state
 
     state.clear_stopped("@4")
-    state.mark_stopped("@4", 64091)
+    state.mark_stopped("@4", 64091, in_tmux=True)
     state.clear_stopped("@4")
     assert not state.stopped_path("@4").exists()
 
@@ -292,7 +322,7 @@ def test_set_and_update_write_nothing_under_a_tombstone_of_this_server() -> None
     held = FollowerState.read("@4")
     assert held is not None
     FollowerState.clear("@4")
-    state.mark_stopped("@4", 64091)
+    state.mark_stopped("@4", 64091, in_tmux=True)
     with patch("vim_ai_follower.binding.tmux_server_pid", return_value=64091):
         _set_follower("@4")
         # A hook that read the state before the stop: update's own read
@@ -306,14 +336,89 @@ def test_set_and_update_write_nothing_under_a_tombstone_of_this_server() -> None
 def test_set_writes_again_under_a_tombstone_of_another_server() -> None:
     from vim_ai_follower import state
 
-    state.mark_stopped("@4", 64091)
+    state.mark_stopped("@4", 64091, in_tmux=True)
     with patch("vim_ai_follower.binding.tmux_server_pid", return_value=70001):
         _set_follower("@4")
     assert FollowerState.read("@4") is not None
 
 
-def test_set_never_asks_tmux_when_there_is_no_tombstone() -> None:
+def test_an_update_never_asks_tmux_when_there_is_no_tombstone() -> None:
+    _set_follower("@4")
     with patch("vim_ai_follower.binding.tmux_server_pid") as server_pid:
-        _set_follower("@4")
+        FollowerState.update("@4", current_file="/tmp/a.py")
     server_pid.assert_not_called()
     assert FollowerState.read("@4") is not None
+
+
+def test_set_records_the_tmux_server_pid_and_update_keeps_it() -> None:
+    with patch("vim_ai_follower.binding.tmux_server_pid", return_value=64091) as server_pid:
+        _set_follower("@4")
+    server_pid.assert_called_once_with()
+    with patch("vim_ai_follower.binding.tmux_server_pid", return_value=70001):
+        FollowerState.update("@4", current_file="/tmp/a.py")
+    recorded = FollowerState.read("@4")
+    assert recorded is not None
+    # Never re-proven by a later write: the pid is the start's.
+    assert recorded.server_pid == 64091
+
+
+def test_a_standalone_nvim_state_records_no_server() -> None:
+    with patch("vim_ai_follower.binding.tmux_server_pid", return_value=64091) as server_pid:
+        FollowerState.set("term-x", "nvim", "/tmp/nvim-x.sock", origin="", adopted=False)
+    server_pid.assert_not_called()
+    recorded = FollowerState.read("term-x")
+    assert recorded is not None
+    assert recorded.server_pid is None
+
+
+@pytest.mark.parametrize("stored", ["64091", "true", "null", "[1]"])
+def test_a_server_pid_that_is_not_a_number_reads_as_none(stored: str) -> None:
+    _set_follower("@4")
+    path = cache.CACHE_DIR / "@4.pane"
+    payload = json.loads(path.read_text())
+    payload["server_pid"] = json.loads(stored)
+    path.write_text(json.dumps(payload))
+    recorded = FollowerState.read("@4")
+    assert recorded is not None
+    assert recorded.server_pid == (64091 if stored == "64091" else None)
+
+
+def test_get_drops_a_state_written_under_another_tmux_server() -> None:
+    # Final review of T17, C1/C2: after a tmux restart the state's pane id
+    # names a pane of the new server, which may well be running vim.
+    from vim_ai_follower import state
+
+    FollowerState.set("@4", "tmux", "%2", origin="%1", server_pid=64091)
+    alive = MagicMock(returncode=0, stdout="%2 vim\n")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", return_value=alive),
+        patch("vim_ai_follower.binding.tmux_server_pid", return_value=70001),
+    ):
+        assert FollowerState.get("@4") is None
+        assert state.from_another_server(_stored("@4")) is True
+        assert state.proven_here(_stored("@4")) is False
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", return_value=alive),
+        patch("vim_ai_follower.binding.tmux_server_pid", return_value=64091),
+    ):
+        assert FollowerState.get("@4") is not None
+        assert state.proven_here(_stored("@4")) is True
+
+
+def test_get_keeps_a_state_when_either_server_pid_is_unknown() -> None:
+    # Unknown proves nothing either way; is_alive still decides for the
+    # hooks. Only `stop` requires the proof (state.proven_here).
+    from vim_ai_follower import state
+
+    FollowerState.set("@4", "tmux", "%2", origin="%1", server_pid=None)
+    FollowerState.set("@5", "tmux", "%3", origin="%1", server_pid=64091)
+    alive = MagicMock(returncode=0, stdout="%2 vim\n%3 vim\n")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", return_value=alive),
+        patch("vim_ai_follower.binding.tmux_server_pid", return_value=None),
+    ):
+        assert FollowerState.get("@4") is not None
+        assert FollowerState.get("@5") is not None
+        assert state.proven_here(_stored("@5")) is False
+    with patch("vim_ai_follower.binding.tmux_server_pid", return_value=64091):
+        assert state.proven_here(_stored("@4")) is False

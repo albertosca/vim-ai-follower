@@ -105,6 +105,7 @@ def test_stop_of_an_adopted_nvim_at_a_prompt_exits_at_once_and_clears_the_state(
         "nvim",
         str(socket_path),
         origin=world.origin_pane,
+        server_pid=world.server_pid,
         adopted=True,
         shown_any=True,
         open_files=(str(tracked.resolve()),),

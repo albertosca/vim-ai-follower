@@ -479,3 +479,75 @@ def test_a_stop_under_another_tmux_server_does_not_hold_this_window(world: E2EFo
     (world.cache_dir / f"{world.window_id}.stopped").write_text("1")
     _write_through_hooks(world, world.workdir / "reused_window.py")
     assert (world.cache_dir / f"{world.window_id}.pane").exists()
+
+
+def _stale_state(world: E2EFollower, target: str, adopted: bool, server_pid: int | None) -> None:
+    """A `.pane` for this window as an earlier follower left it: after a tmux
+    restart the new server numbers its panes from %0 again, so its target
+    names one of THIS server's panes, which is not the follower's."""
+    world.cache_dir.mkdir(parents=True, exist_ok=True)
+    (world.cache_dir / f"{world.window_id}.pane").write_text(
+        json.dumps(
+            {
+                "backend": "tmux",
+                "target": target,
+                "current_file": None,
+                "origin": world.origin_pane,
+                "on_failure": "silent",
+                "speed": "rapido",
+                "open_files": [str(world.workdir / "stale.py")],
+                "stale_files": [],
+                "enabled": True,
+                "adopted": adopted,
+                "shown_any": True,
+                "writers": [],
+                "writer_labels": [],
+                "server_pid": server_pid,
+            }
+        )
+    )
+
+
+def _panes(world: E2EFollower) -> dict[str, str]:
+    listing = world.tmux("list-panes", "-a", "-F", "#{pane_id} #{pane_current_command}").stdout
+    return dict(line.split(" ", 1) for line in listing.splitlines())
+
+
+@pytest.mark.parametrize(
+    ("aim", "adopted", "recorded"),
+    [
+        ("origin", False, "another"),
+        ("cat", False, "another"),
+        ("cat", True, "another"),
+        ("cat", False, "none"),
+        ("cat", False, "this"),
+        ("cat", True, "this"),
+    ],
+)
+def test_stop_never_kills_or_types_into_a_pane_a_stale_state_names(
+    world: E2EFollower, aim: str, adopted: bool, recorded: str
+) -> None:
+    """Final review of T17, C1 and C2: a stale state's target was killed
+    (Claude's own pane, when it named the origin) or typed into (Vim script
+    and Enter, into a shell). "another" is a previous server's pid, "none" a
+    state from before the pid was recorded, and "this" this server's: the
+    state is proven, but the pane runs `cat`, not the follower's Vim."""
+    cat_pane = world.tmux(
+        "split-window", "-t", world.origin_pane, "-P", "-F", "#{pane_id}", "cat"
+    ).stdout.strip()
+    world.wait_until(lambda: _panes(world).get(cat_pane) == "cat", what="the cat pane")
+    target = world.origin_pane if aim == "origin" else cat_pane
+    pids = {"another": 1, "none": None, "this": world.server_pid}
+    _stale_state(world, target, adopted, pids[recorded])
+    before = _panes(world)
+
+    world.cli("stop")
+
+    after = _panes(world)
+    assert after == before, f"a pane was closed or changed: {before} -> {after}"
+    typed = world.tmux("capture-pane", "-p", "-t", cat_pane).stdout.strip()
+    assert typed == "", f"keys reached the cat pane: {typed!r}"
+    assert not (world.cache_dir / f"{world.window_id}.pane").exists()
+    log = (world.cache_dir / "hook.log").read_text()
+    reason = "no longer runs vim" if recorded == "this" else "is not proven to be the follower's"
+    assert reason in log, log

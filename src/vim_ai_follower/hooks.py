@@ -95,6 +95,10 @@ def _get_active_follower(window_id: str) -> FollowerState | None:
     raw = FollowerState.read(window_id)
     if raw is None or raw.on_failure != "reopen" or not raw.origin:
         return None
+    if state_module.from_another_server(raw):
+        # Left by a previous tmux server: its origin names a pane of this
+        # one that is not this window's (see state.from_another_server).
+        return None
 
     if raw.backend == "nvim":
         # Recovery never re-adopts: relaunch a fresh dedicated nvim (adopt=
@@ -105,7 +109,7 @@ def _get_active_follower(window_id: str) -> FollowerState | None:
         except subprocess.CalledProcessError as exc:
             logger.warning("failed to relaunch nvim from origin %s: %s", raw.origin, exc)
             return None
-        FollowerState.set(
+        recorded = FollowerState.set(
             window_id,
             "nvim",
             sock,
@@ -115,7 +119,7 @@ def _get_active_follower(window_id: str) -> FollowerState | None:
             speed=raw.speed,
             adopted=False,
         )
-        return FollowerState.get(window_id)
+        return _launched_follower(window_id, "nvim", sock, recorded)
 
     try:
         started = TmuxVimFollower.start(raw.origin)
@@ -123,7 +127,7 @@ def _get_active_follower(window_id: str) -> FollowerState | None:
         logger.warning("failed to reopen follower pane from origin %s: %s", raw.origin, exc)
         return None
 
-    FollowerState.set(
+    recorded = FollowerState.set(
         window_id,
         "tmux",
         started.pane_id,
@@ -132,7 +136,33 @@ def _get_active_follower(window_id: str) -> FollowerState | None:
         on_failure=raw.on_failure,
         speed=raw.speed,
     )
-    return FollowerState.get(window_id)
+    return _launched_follower(window_id, "tmux", started.pane_id, recorded)
+
+
+def _launched_follower(
+    window_id: str, backend: str, target: str, recorded: bool
+) -> FollowerState | None:
+    """The follower a hook just launched (an auto-open, a reopen), once its
+    state is written. When the write was refused, a `claude-follow stop`
+    landed between the hook's check and its write (final review of T17,
+    Minor 3): the editor it launched has nothing naming it, so no later
+    `stop` would close it and a later adopting `start` would take it for the
+    user's own. It is closed here instead, best-effort, with one log line."""
+    if recorded:
+        return FollowerState.get(window_id)
+    logger.warning(
+        "window %s was stopped while its follower was opening; closing the %s it opened (%s)",
+        window_id,
+        backend,
+        target,
+    )
+    try:
+        get_follower(backend, target, window_id=window_id).stop(dedicated=True)
+    except Exception as error:
+        logger.warning(
+            "could not close the follower %s opened for a stopped window: %s", target, error
+        )
+    return None
 
 
 def _identity_warning_marker(window_id: str) -> Path:
@@ -360,6 +390,8 @@ def _stopped_window(session: Session) -> bool:
     """True when `claude-follow stop` silenced this window (state.is_stopped,
     under this tmux server): auto-open must not undo an explicit stop. Said
     once per window in hook.log, so a quiet window can be explained."""
+    if not state_module.stopped_path(session.window_id).exists():
+        return False  # one stat, no tmux spawn, on every hook of a window never stopped
     server_pid = binding.tmux_server_pid() if session.in_tmux else None
     if not state_module.is_stopped(session.window_id, server_pid):
         return False
@@ -394,7 +426,7 @@ def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> Fo
         sock = _launch_standalone_or_log(session.window_id)
         if sock is None:
             return None
-        FollowerState.set(
+        recorded = FollowerState.set(
             session.window_id,
             "nvim",
             sock,
@@ -403,7 +435,7 @@ def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> Fo
             speed=cfg.speed,
             adopted=False,
         )
-        return FollowerState.get(session.window_id)
+        return _launched_follower(session.window_id, "nvim", sock, recorded)
     origin = session.origin
     assert origin is not None  # in_tmux sessions always carry TMUX_PANE
     # Guarded like _heal_keybindings: a bind-key failure must not escape the
@@ -423,7 +455,7 @@ def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> Fo
             sock = _launch_standalone_or_log(session.window_id)
             if sock is None:
                 return None
-            FollowerState.set(
+            recorded = FollowerState.set(
                 session.window_id,
                 "nvim",
                 sock,
@@ -432,7 +464,7 @@ def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> Fo
                 speed=cfg.speed,
                 adopted=False,
             )
-            return FollowerState.get(session.window_id)
+            return _launched_follower(session.window_id, "nvim", sock, recorded)
         # Same adopt-or-launch selection as cmd_start, but from the hook path.
         try:
             sock, launched = resolve_nvim_target(
@@ -441,7 +473,7 @@ def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> Fo
         except subprocess.CalledProcessError as exc:
             logger.warning("nvim auto-open failed from origin %s: %s", origin, exc)
             return None
-        FollowerState.set(
+        recorded = FollowerState.set(
             session.window_id,
             "nvim",
             sock,
@@ -450,7 +482,10 @@ def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> Fo
             speed=cfg.speed,
             adopted=not launched,
         )
-        return FollowerState.get(session.window_id)
+        if not launched:
+            # Adopted: the user's own nvim, nothing to close if refused.
+            return FollowerState.get(session.window_id) if recorded else None
+        return _launched_follower(session.window_id, "nvim", sock, recorded)
     adopt = adopt_target(origin) if cfg.adopt_existing else None
     if adopt is not None:
         # shown_any=True from the first moment: an adopted Vim's current tab
@@ -471,7 +506,7 @@ def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> Fo
         except subprocess.CalledProcessError as exc:
             logger.warning("auto-open failed from origin %s: %s", origin, exc)
             return None
-        FollowerState.set(
+        recorded = FollowerState.set(
             session.window_id,
             "tmux",
             started.pane_id,
@@ -479,6 +514,7 @@ def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> Fo
             on_failure=cfg.on_failure,
             speed=cfg.speed,
         )
+        return _launched_follower(session.window_id, "tmux", started.pane_id, recorded)
     return FollowerState.get(session.window_id)
 
 

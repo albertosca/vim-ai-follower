@@ -2727,7 +2727,7 @@ def test_auto_open_does_not_reopen_a_stopped_window_and_says_so_once(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     payload = _auto_open_payload(tmp_path, monkeypatch)
-    state.mark_stopped("@1", 4242)
+    state.mark_stopped("@1", 4242, in_tmux=True)
     with (
         patch(
             "vim_ai_follower.tmux.subprocess.run",
@@ -2747,7 +2747,7 @@ def test_auto_open_ignores_a_tombstone_from_another_tmux_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     payload = _auto_open_payload(tmp_path, monkeypatch)
-    state.mark_stopped("@1", 4242)
+    state.mark_stopped("@1", 4242, in_tmux=True)
     with (
         patch(
             "vim_ai_follower.tmux.subprocess.run",
@@ -2766,8 +2766,123 @@ def test_auto_open_does_not_reopen_a_stopped_standalone_window(
     config_path = tmp_path / "config.json"
     config_path.write_text('{"backend": "nvim", "nvim_window": "auto", "open_policy": "always"}')
     monkeypatch.setattr(config, "CONFIG_PATH", config_path)
-    state.mark_stopped("term-x", None)
+    state.mark_stopped("term-x", None, in_tmux=False)
     standalone = Session(window_id="term-x", origin=None, in_tmux=False)
     with patch("vim_ai_follower.hooks.launch_standalone_nvim") as launch:
         assert hooks._maybe_auto_open(standalone, "/tmp/f.txt", config.load()) is None
     launch.assert_not_called()
+
+
+# --- final review of T17: a launch a stop raced, a state from another server -
+
+
+def _kills(run: MagicMock) -> list[list[str]]:
+    return [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "kill-pane"]]
+
+
+def test_auto_open_closes_the_pane_it_opened_when_a_stop_lands_before_the_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Minor 3: the stop lands after _stopped_window said "not stopped" and
+    # before the write, which the tombstone then refuses.
+    payload = _auto_open_payload(tmp_path, monkeypatch)
+    state.mark_stopped("@1", 4242, in_tmux=True)
+    with (
+        patch(
+            "vim_ai_follower.tmux.subprocess.run",
+            side_effect=_mock_tmux_run(other_panes=("%1",)),
+        ) as run,
+        patch("vim_ai_follower.hooks._stopped_window", return_value=False),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+    assert any(c.args[0][:2] == ["tmux", "split-window"] for c in run.call_args_list)
+    assert _kills(run) == [["tmux", "kill-pane", "-t", "%2"]]
+    assert state.FollowerState.read("@1") is None
+    assert "was stopped while its follower was opening" in hooks.LOG_PATH.read_text()
+
+
+def test_auto_open_quits_the_nvim_it_launched_when_a_stop_lands_before_the_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"backend": "nvim", "open_policy": "always"}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    state.mark_stopped("@1", 4242, in_tmux=True)
+    session = Session(window_id="@1", origin="%1", in_tmux=True)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.hooks._stopped_window", return_value=False),
+        patch("vim_ai_follower.hooks.resolve_nvim_target", return_value=("/tmp/n.sock", True)),
+        patch("vim_ai_follower.backends.nvim.NvimFollower.stop") as nvim_stop,
+    ):
+        assert hooks._maybe_auto_open(session, "/tmp/f.txt", config.load()) is None
+    nvim_stop.assert_called_once_with(dedicated=True)
+
+
+def test_auto_open_leaves_an_adopted_nvim_alone_when_a_stop_lands_before_the_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"backend": "nvim", "open_policy": "always", "adopt_existing": true}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    state.mark_stopped("@1", 4242, in_tmux=True)
+    session = Session(window_id="@1", origin="%1", in_tmux=True)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.hooks._stopped_window", return_value=False),
+        patch("vim_ai_follower.hooks.resolve_nvim_target", return_value=("/tmp/u.sock", False)),
+        patch("vim_ai_follower.backends.nvim.NvimFollower.stop") as nvim_stop,
+    ):
+        assert hooks._maybe_auto_open(session, "/tmp/f.txt", config.load()) is None
+    nvim_stop.assert_not_called()
+
+
+def test_a_launch_that_cannot_be_closed_for_a_stopped_window_is_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    state.mark_stopped("@1", 4242, in_tmux=True)
+    with (
+        caplog.at_level(logging.WARNING, logger="vim_ai_follower"),
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch(
+            "vim_ai_follower.backends.tmux_vim.TmuxVimFollower.stop",
+            side_effect=subprocess.CalledProcessError(1, ["tmux", "kill-pane"]),
+        ),
+    ):
+        assert hooks._launched_follower("@1", "tmux", "%2", recorded=False) is None
+    assert "could not close the follower %2 opened" in caplog.text
+
+
+def test_reopen_closes_the_pane_it_opened_when_a_stop_lands_before_the_write() -> None:
+    _register_fake_follower("@1", "%5")
+    state.FollowerState.update("@1", on_failure="reopen", origin="%1")
+    state.mark_stopped("@1", 4242, in_tmux=True)
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        side_effect=_mock_tmux_run(pane_id="%2", pane_exists=False),
+    ) as run:
+        # The dead %5 is not listed, so get() fails and the reopen splits.
+        assert hooks._get_active_follower("@1") is None
+    assert any(c.args[0][:2] == ["tmux", "split-window"] for c in run.call_args_list)
+    assert _kills(run) == [["tmux", "kill-pane", "-t", "%2"]]
+
+
+def test_reopen_never_splits_from_a_state_left_by_another_tmux_server() -> None:
+    # After a tmux restart the recorded origin is a pane of the new server
+    # that is not this window's.
+    _register_fake_follower("@1", "%5", server_pid=1111)
+    state.FollowerState.update("@1", on_failure="reopen", origin="%1")
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        side_effect=_mock_tmux_run(pane_id="%2", pane_exists=False),
+    ) as run:
+        assert hooks._get_active_follower("@1") is None
+    assert not any(c.args[0][:2] == ["tmux", "split-window"] for c in run.call_args_list)
+
+
+def test_a_window_never_stopped_costs_auto_open_no_tmux_spawn() -> None:
+    # Minor 7: one stat, like set()'s check.
+    session = Session(window_id="@1", origin="%1", in_tmux=True)
+    with patch("vim_ai_follower.binding.tmux_server_pid") as server_pid:
+        assert hooks._stopped_window(session) is False
+    server_pid.assert_not_called()

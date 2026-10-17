@@ -91,6 +91,7 @@ def test_a_hit_enter_prompt_mid_animation_holds_the_typing_until_enter(
         "nvim",
         str(socket_path),
         origin=pane_id,
+        server_pid=world.server_pid,
         adopted=True,
         shown_any=True,
         open_files=(str(target),),
@@ -167,6 +168,7 @@ def test_a_prompt_already_up_when_the_hook_starts_skips_the_edit_in_one_line(
         "nvim",
         str(socket_path),
         origin=pane_id,
+        server_pid=world.server_pid,
         adopted=True,
         shown_any=True,
         # The hook names the file by its realpath (/tmp is /private/tmp).

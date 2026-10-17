@@ -14,7 +14,7 @@
 |---|---|
 | `claude-follow start` | Open a follower pane (or adopt an existing Vim). |
 | `claude-follow status` | Show the active follower and the file it is showing. |
-| `claude-follow stop` | Tear the follower down and remove the keybindings. It stays stopped for this window until `start` (or toggle) — auto-open does not reopen it. It always returns promptly: an nvim that is busy, frozen or waiting at a prompt is sent nothing (one line in `hook.log` says so), and a follower nvim that does not quit has its own pane closed. |
+| `claude-follow stop` | Tear the follower down and remove the keybindings. It stays stopped for this window until `start` (or toggle) — auto-open does not reopen it. It is bounded: an nvim that does not answer (busy or frozen) is sent nothing, and neither is an nvim of your own (adopted) waiting at a prompt (one line in `hook.log` says so); the follower's own nvim at a prompt has the prompt dismissed and is quit, an nvim that stops answering mid-teardown holds `stop` for about 13 s at most, and a follower nvim that does not quit has its own pane closed. A pane is closed or typed into only once it is proven to be the follower's: a state left by an earlier tmux server (pane ids start again after a restart), or naming a pane that no longer runs Vim, is cleared with one `hook.log` line and nothing sent. |
 | `claude-follow pause` | Pause or resume a running animation (bound to `prefix` `P`). |
 | `claude-follow interrupt` | Hand the buffer over to you, or discard your hand-off edits (bound to `prefix` `S`). |
 | `claude-follow speed-up` / `speed-down` | Step the animation pace (bound to `prefix` `+` / `prefix` `_`). |

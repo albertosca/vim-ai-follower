@@ -14,6 +14,11 @@ from unittest.mock import MagicMock, patch
 
 from vim_ai_follower import state
 
+# The pid make_mock_tmux_run's server answers to `display-message -p
+# '#{pid}'`, and that register_fake_follower records: the state then proves
+# it was written under this server (state.proven_here), as a real one does.
+MOCK_SERVER_PID = 4242
+
 
 def make_mock_tmux_run(
     window_id: str = "@1",
@@ -36,6 +41,8 @@ def make_mock_tmux_run(
             if pane_exists:
                 lines.append(f"{pane_id} vim")
             result.stdout = "".join(line + "\n" for line in lines)
+        elif cmd == ["tmux", "display-message", "-p", "#{pid}"]:
+            result.stdout = f"{MOCK_SERVER_PID}\n"
         elif cmd[:2] == ["tmux", "display-message"]:
             result.stdout = f"{window_id}\n"
         elif cmd[:2] == ["tmux", "split-window"]:
@@ -58,6 +65,7 @@ def register_fake_follower(
     shown_any: bool = False,
     writers: tuple[str, ...] = (),
     writer_labels: tuple[str, ...] = (),
+    server_pid: int | None = MOCK_SERVER_PID,
 ) -> None:
     with patch(
         "vim_ai_follower.tmux.subprocess.run",
@@ -72,6 +80,7 @@ def register_fake_follower(
             shown_any=shown_any,
             writers=writers,
             writer_labels=writer_labels,
+            server_pid=server_pid,
         )
 
 
