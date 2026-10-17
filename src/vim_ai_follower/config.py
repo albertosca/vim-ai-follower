@@ -17,6 +17,11 @@ DEFAULT_ADOPT_EXISTING = False
 DEFAULT_MAX_TABS = 5
 DEFAULT_BACKEND = "tmux"
 DEFAULT_NVIM_WINDOW = "auto"
+# How long the take-over question waits for an answer (take_over.ask).
+DEFAULT_TAKE_OVER_QUESTION_SECONDS = 10.0
+# Longer would hold the hook, and Claude's turn, for minutes on a question
+# nobody is looking at.
+MAXIMUM_TAKE_OVER_QUESTION_SECONDS = 120.0
 
 _VALID_ON_FAILURE = ("silent", "reopen")
 _VALID_OPEN_POLICY = ("always", "code", "manual")
@@ -76,6 +81,7 @@ class Config:
     max_tabs: int
     backend: str
     nvim_window: str
+    take_over_question_seconds: float = DEFAULT_TAKE_OVER_QUESTION_SECONDS
 
 
 def load(config_path: Path | None = None) -> Config:
@@ -88,6 +94,7 @@ def load(config_path: Path | None = None) -> Config:
     max_tabs = data.get("max_tabs", DEFAULT_MAX_TABS)
     backend = data.get("backend", DEFAULT_BACKEND)
     nvim_window = data.get("nvim_window", DEFAULT_NVIM_WINDOW)
+    question_seconds = data.get("take_over_question_seconds", DEFAULT_TAKE_OVER_QUESTION_SECONDS)
     if on_failure not in _VALID_ON_FAILURE:
         on_failure = DEFAULT_ON_FAILURE
     if speed not in SPEED_PACE_SECONDS:
@@ -102,7 +109,22 @@ def load(config_path: Path | None = None) -> Config:
         backend = DEFAULT_BACKEND
     if nvim_window not in _VALID_NVIM_WINDOW:
         nvim_window = DEFAULT_NVIM_WINDOW
-    return Config(on_failure, speed, open_policy, adopt_existing, max_tabs, backend, nvim_window)
+    if (
+        not isinstance(question_seconds, int | float)
+        or isinstance(question_seconds, bool)
+        or not 0 < question_seconds <= MAXIMUM_TAKE_OVER_QUESTION_SECONDS
+    ):
+        question_seconds = DEFAULT_TAKE_OVER_QUESTION_SECONDS
+    return Config(
+        on_failure,
+        speed,
+        open_policy,
+        adopt_existing,
+        max_tabs,
+        backend,
+        nvim_window,
+        float(question_seconds),
+    )
 
 
 def next_speed(speed: str, direction: Literal["up", "down"]) -> str:

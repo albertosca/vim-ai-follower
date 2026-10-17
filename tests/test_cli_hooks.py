@@ -42,6 +42,7 @@ from vim_ai_follower import (
     keybindings,
     snapshot,
     state,
+    take_over,
     writer_cue,
 )
 from vim_ai_follower.animate import AnimationResult
@@ -2707,10 +2708,18 @@ def test_a_hook_skips_a_busy_nvim_follower_and_keeps_it(
         caplog.at_level(logging.WARNING, logger="vim_ai_follower"),
         patch("vim_ai_follower.backends.nvim_connect._probe", return_value=probe_answer),
         patch("vim_ai_follower.hooks.resolve_nvim_target") as relaunch,
+        patch("vim_ai_follower.take_over.ask", return_value="answered no") as asked,
     ):
         assert hooks.cmd_hook_post({"TERM_SESSION_ID": "x"}, payload) == 0
     get_follower.assert_not_called()
     relaunch.assert_not_called()
+    # Only a user who is typing is asked (Alberto, 2026-10-17); a confirm,
+    # the command line, an operator or keys pending skip without a question.
+    typing = any(f"({mode})" in why for mode in hooks.TYPING_MODES)
+    assert asked.called == typing
+    if typing:
+        asked.assert_called_once_with("%9", "Neovim", config.DEFAULT_TAKE_OVER_QUESTION_SECONDS)
+        assert f"{why}, not taken over (answered no)" in caplog.text
     after = state.FollowerState.read("term-x")
     assert after is not None and after.target == "/tmp/busy.sock"
     assert after.stale_files == ((str(target),) if tool_name == "Edit" else ())
@@ -2741,8 +2750,10 @@ def test_a_dedicated_nvim_at_a_prompt_is_not_skipped() -> None:
     ):
         with patch("vim_ai_follower.backends.nvim_connect._probe", return_value=answer):
             nvim_connect.probe_nvim("/tmp/own.sock")
-        assert hooks._busy_nvim(current) is None
-        assert hooks._busy_nvim(dataclasses.replace(current, adopted=True)) is not None
+        with patch("vim_ai_follower.take_over.ask", return_value="answered no") as asked:
+            assert hooks._busy_nvim(current) is None
+            asked.assert_not_called()
+            assert hooks._busy_nvim(dataclasses.replace(current, adopted=True)) is not None
 
 
 # Insert, replace, terminal, visual and select mode are skipped since
@@ -2768,6 +2779,120 @@ def test_an_adopted_nvim_in_an_ordinary_mode_is_not_skipped(mode: str | None) ->
         assert hooks.adopted_user_pending("/tmp/user.sock") is None
         assert hooks._busy_nvim(current) is None
     cmdwin.assert_called_with("/tmp/user.sock")
+
+
+def _adopted_nvim_state(target: str = "/tmp/user.sock") -> state.FollowerState:
+    return state.FollowerState(
+        backend="nvim",
+        target=target,
+        current_file=None,
+        origin="%9",
+        on_failure="silent",
+        speed="normal",
+        adopted=True,
+    )
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "answered no",
+        "answered timeout",
+        "no answer",
+        "not asked: no tmux client is attached to show the question on",
+        "not asked: the question was never shown (another popup was up)",
+    ],
+)
+def test_a_typing_adopted_nvim_is_skipped_on_any_answer_but_yes(answer: str) -> None:
+    with patch(
+        "vim_ai_follower.backends.nvim_connect._probe", return_value=("answers", False, "i")
+    ):
+        nvim_connect.probe_nvim("/tmp/user.sock")
+    with (
+        patch("vim_ai_follower.take_over.ask", return_value=answer) as asked,
+        patch("vim_ai_follower.hooks._leave_typing_mode") as leave,
+    ):
+        busy = hooks._busy_nvim(_adopted_nvim_state(), 7.5)
+    asked.assert_called_once_with("%9", "Neovim", 7.5)
+    leave.assert_not_called()
+    assert busy == (
+        f"nvim at /tmp/user.sock is waiting on its user (in insert mode), not taken over ({answer})"
+    )
+
+
+def test_a_typing_adopted_nvim_answered_yes_is_taken_over(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with patch(
+        "vim_ai_follower.backends.nvim_connect._probe", return_value=("answers", False, "v")
+    ):
+        nvim_connect.probe_nvim("/tmp/user.sock")
+    with (
+        caplog.at_level(logging.INFO, logger="vim_ai_follower"),
+        patch("vim_ai_follower.take_over.ask", return_value=take_over.YES),
+        patch("vim_ai_follower.hooks._leave_typing_mode", return_value=None) as leave,
+    ):
+        assert hooks._busy_nvim(_adopted_nvim_state()) is None
+    leave.assert_called_once_with("/tmp/user.sock")
+    assert "(in visual mode): taken over (answered y)" in caplog.text
+
+
+def test_a_yes_that_cannot_leave_the_typing_mode_still_skips() -> None:
+    with patch(
+        "vim_ai_follower.backends.nvim_connect._probe", return_value=("answers", False, "i")
+    ):
+        nvim_connect.probe_nvim("/tmp/user.sock")
+    with (
+        patch("vim_ai_follower.take_over.ask", return_value=take_over.YES),
+        patch(
+            "vim_ai_follower.hooks._leave_typing_mode",
+            return_value="it was still in insert mode after 2 s",
+        ),
+    ):
+        busy = hooks._busy_nvim(_adopted_nvim_state())
+    assert busy == (
+        "nvim at /tmp/user.sock is waiting on its user (in insert mode), "
+        "answered y but it was still in insert mode after 2 s"
+    )
+
+
+def test_leaving_the_typing_mode_sends_ctrl_backslash_ctrl_n_and_waits_for_normal() -> None:
+    answers = iter([("answers", False, "i"), ("answers", True, "r"), ("answers", False, "n")])
+    nvim = MagicMock()
+    with (
+        patch("vim_ai_follower.backends.nvim_connect.bounded_attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect._probe", side_effect=lambda *_: next(answers)),
+        patch("vim_ai_follower.backends.nvim_connect.in_command_line_window", return_value=False),
+        patch("vim_ai_follower.hooks.time.sleep"),
+    ):
+        assert hooks._leave_typing_mode("/tmp/user.sock") is None
+    nvim.input.assert_called_once_with("<C-\\><C-N>")
+    nvim.close.assert_called_once_with()
+
+
+@pytest.mark.parametrize(
+    ("answer", "named"),
+    [(("answers", False, "i"), "in insert mode"), (("answers", True, "r"), "blocking")],
+)
+def test_leaving_the_typing_mode_gives_up_after_its_bound(
+    monkeypatch: pytest.MonkeyPatch, answer: tuple[str, bool, str], named: str
+) -> None:
+    monkeypatch.setattr(hooks, "_LEAVE_TYPING_SECONDS", 0.0)
+    with (
+        patch("vim_ai_follower.backends.nvim_connect.bounded_attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim_connect._probe", return_value=answer),
+    ):
+        left = hooks._leave_typing_mode("/tmp/user.sock")
+    assert left == f"it was still {named} after 0 s"
+
+
+def test_leaving_the_typing_mode_reports_a_connection_that_failed() -> None:
+    with patch(
+        "vim_ai_follower.backends.nvim_connect.bounded_attach",
+        side_effect=nvim_connect.RpcTimeout("timed out"),
+    ):
+        left = hooks._leave_typing_mode("/tmp/user.sock")
+    assert left == "it could not be sent CTRL-\\ CTRL-N: timed out"
 
 
 @pytest.mark.parametrize("answer", [True, False, None])

@@ -17,7 +17,14 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from e2e_harness import CLI, E2EFollower, e2e_world, payload
+from e2e_harness import (
+    CLI,
+    E2EFollower,
+    attached_client,
+    e2e_world,
+    payload,
+    wait_for_take_over_question,
+)
 
 from vim_ai_follower.backends.nvim_connect import probe_nvim
 from vim_ai_follower.state import FollowerState
@@ -417,5 +424,80 @@ def test_an_nvim_whose_user_is_typing_is_skipped_and_the_edit_marked_stale(
         state = FollowerState.read(window_id, base_dir=world.cache_dir)
         assert state is not None
         assert state.stale_files == (os.path.realpath(claudes_file),)
+    finally:
+        world.tmux("send-keys", "-t", pane_id, "Escape")
+
+
+def _question_seconds(world: E2EFollower, seconds: float) -> None:
+    config_dir = world.home / ".config" / "claude-vim-follower"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "config.json").write_text(f'{{"take_over_question_seconds": {seconds}}}')
+
+
+@pytest.mark.parametrize("answer", ["y", "n", "none", "y-in-flight"])
+def test_an_nvim_whose_user_is_typing_is_asked_and_only_y_takes_it_over(
+    world: E2EFollower, answer: str
+) -> None:
+    # Alberto 2026-10-17: a user known to be typing is ASKED, in a popup over
+    # the follower's window. `y` takes the editor over (Normal mode, then the
+    # edit animates); `n`, or no answer within the configured time, skips and
+    # marks the file stale, leaving the half-typed text and the mode alone.
+    # A `y` typed as the question opens (the user still typing) is a "no".
+    _question_seconds(world, 3)
+    socket_path = world.cache_dir / "nvim-adopted.sock"
+    world.cache_dir.mkdir(parents=True, exist_ok=True)
+    users_file = world.workdir / "a.txt"
+    users_file.write_text("aaa\n")
+    claudes_file = world.workdir / "file.py"
+    claudes_file.write_text("one\ntwo\n")
+    window_id, pane_id = _nvim_window(world, socket_path, users_file, claudes_file)
+    _adopted_state(world, window_id, pane_id, socket_path, claudes_file, speed="instant")
+    hook = payload("Edit", claudes_file)
+    pre, _seconds = _timed_cli(world, "hook", "pre", pane_id=pane_id, stdin=hook)
+    assert pre.returncode == 0, pre.stderr
+    claudes_file.write_text("one\nTWO\n")
+    world.tmux("send-keys", "-t", pane_id, "A")
+    world.tmux("send-keys", "-t", pane_id, "-l", "half")
+    _wait_for_mode(world, socket_path, "i")
+    world.wait_until(
+        lambda: _buffer_lines(world, socket_path, users_file) == ["aaahalf"],
+        "the user's half-typed text",
+        timeout=10.0,
+    )
+    claudes_lines_before = _buffer_lines(world, socket_path, claudes_file)
+    try:
+        with attached_client(world) as client:
+            started = time.monotonic()
+            post = world.cli_background(
+                "hook", "post", stdin=hook, env=world.env_with(TMUX_PANE=pane_id)
+            )
+            wait_for_take_over_question(world, armed=answer != "y-in-flight")
+            if answer != "none":
+                client.type(answer[0].encode())
+            world.wait_for_hook_exit(post, timeout=30.0)
+            seconds = time.monotonic() - started
+        assert post.returncode == 0, world.background_log(post)
+        log = _hook_log(world)
+        assert "Traceback" not in log, log
+        observer = world._nvim(str(socket_path))
+        state = FollowerState.read(window_id, base_dir=world.cache_dir)
+        assert state is not None
+        if answer == "y":
+            assert "(in insert mode): taken over (answered y)" in log, log
+            assert observer.api.get_mode() == {"mode": "n", "blocking": False}
+            assert _buffer_lines(world, socket_path, claudes_file) == ["one", "TWO"]
+            assert state.stale_files == ()
+        else:
+            named = "answered timeout" if answer == "none" else "answered no"
+            skipped = [line for line in log.splitlines() if "is waiting on its user" in line]
+            assert len(skipped) == 1, log
+            assert f"(in insert mode), not taken over ({named})" in skipped[0], skipped
+            assert observer.api.get_mode() == {"mode": "i", "blocking": False}
+            assert os.path.realpath(observer.call("bufname", "%")) == os.path.realpath(users_file)
+            assert _buffer_lines(world, socket_path, users_file) == ["aaahalf"]
+            assert _buffer_lines(world, socket_path, claudes_file) == claudes_lines_before
+            assert state.stale_files == (os.path.realpath(claudes_file),)
+            if answer == "none":
+                assert seconds >= 3.0, f"the question closed after {seconds:.1f} s"
     finally:
         world.tmux("send-keys", "-t", pane_id, "Escape")

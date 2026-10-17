@@ -14,6 +14,7 @@ JSON opcional em `~/.config/claude-vim-follower/config.json`. Toda chave tem um 
 | `max_tabs`       | inteiro ≥ 1                                                 | `5`        | Quantas abas de arquivo o follower mantém. A aba menos usada recentemente é fechada ao passar desse limite. Veja [Abas multi-arquivo](../guides/multi-file-tabs.md). |
 | `on_failure`     | `silent`, `reopen`                                          | `silent`   | Se o pane do follower morrer, `reopen` abre um novo a partir de onde começou; `silent` só para de acompanhar. |
 | `speed`          | `instant`, `muito_rapido`, `rapido`, `normal`, `lento`      | `rapido`   | Ritmo da animação (segundos por quebra de linha: `0`, `0.01`, `0.03`, `0.08`, `0.15`).    |
+| `take_over_question_seconds` | número, 0 < n ≤ 120 | `10` | Quanto tempo a pergunta de assumir o editor espera por uma resposta. Quando um editor adotado está no meio da digitação (modo insert, replace, terminal, visual ou select), um popup pergunta antes de o follower agir ali; só `y` assume, e qualquer outra coisa (outra tecla, sem resposta a tempo) pula aquela edição. Veja [Adotando um editor](../guides/adopting-an-editor.md). |
 
 ## Exemplo
 

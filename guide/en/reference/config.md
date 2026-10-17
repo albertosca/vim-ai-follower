@@ -14,6 +14,7 @@ Optional JSON at `~/.config/claude-vim-follower/config.json`. Every key has a de
 | `max_tabs`      | integer ≥ 1                                                | `5`        | How many file tabs the follower keeps. The least-recently-touched tab is closed past this limit. See [Multi-file tabs](../guides/multi-file-tabs.md). |
 | `on_failure`    | `silent`, `reopen`                                        | `silent`   | If the follower pane dies, `reopen` re-splits a fresh one from where it started; `silent` just stops following. |
 | `speed`         | `instant`, `muito_rapido`, `rapido`, `normal`, `lento`    | `rapido`   | Animation pace (seconds per line boundary: `0`, `0.01`, `0.03`, `0.08`, `0.15`).         |
+| `take_over_question_seconds` | number, 0 < n ≤ 120 | `10` | How long the take-over question waits for an answer. When an editor the follower adopted is in the middle of typing (insert, replace, terminal, visual or select mode), a popup asks before the follower acts there; only `y` takes it over, and anything else (another key, no answer in time) skips that edit. See [Adopting an editor](../guides/adopting-an-editor.md). |
 
 ## Example
 

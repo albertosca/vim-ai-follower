@@ -1,0 +1,214 @@
+"""The take-over question (take_over.py): only a deliberate `y` is a yes."""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import termios
+import tty
+from collections.abc import Callable, Iterator
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from vim_ai_follower import cache, take_over
+
+
+@pytest.fixture
+def terminal() -> Iterator[tuple[int, int]]:
+    """A pty pair: (the side the prompt reads, the side the user types on),
+    raw as the prompt runs it: a canonical tty holds a key until Enter."""
+    user_side, prompt_side = os.openpty()
+    tty.setraw(prompt_side)
+    try:
+        yield prompt_side, user_side
+    finally:
+        os.close(user_side)
+        os.close(prompt_side)
+
+
+def _clock(*readings: float) -> MagicMock:
+    return MagicMock(side_effect=list(readings))
+
+
+def test_a_lone_y_after_the_arming_time_is_yes(terminal: tuple[int, int]) -> None:
+    prompt_side, user_side = terminal
+    os.write(user_side, b"y")
+    assert take_over.read_key_answer(prompt_side, 10, _clock(0.0, 0.0, 1.0)) == take_over.YES
+
+
+def test_a_y_read_before_the_arming_time_is_no(terminal: tuple[int, int]) -> None:
+    # A key typed while the popup opened (measured: 23 ms in) answers no.
+    prompt_side, user_side = terminal
+    os.write(user_side, b"y")
+    assert take_over.read_key_answer(prompt_side, 10, _clock(0.0, 0.0, 0.1)) == "no"
+
+
+@pytest.mark.parametrize("typed", [b"\r", b" ", b"Y", b"n", b"yy", b"\x1b"])
+def test_any_other_key_or_a_burst_is_no(terminal: tuple[int, int], typed: bytes) -> None:
+    prompt_side, user_side = terminal
+    os.write(user_side, typed)
+    assert take_over.read_key_answer(prompt_side, 10, _clock(0.0, 0.0, 5.0)) == "no"
+
+
+def test_no_key_within_the_time_is_a_timeout(terminal: tuple[int, int]) -> None:
+    prompt_side, _user_side = terminal
+    assert take_over.read_key_answer(prompt_side, 0.05) == "timeout"
+
+
+def test_an_early_wake_with_nothing_to_read_keeps_waiting(terminal: tuple[int, int]) -> None:
+    prompt_side, user_side = terminal
+    os.write(user_side, b"y")
+    with patch(
+        "vim_ai_follower.take_over.select.select", side_effect=[([], [], []), ([1], [], [])]
+    ):
+        answer = take_over.read_key_answer(prompt_side, 10, _clock(0.0, 0.0, 0.5, 1.0))
+    assert answer == take_over.YES
+
+
+def test_a_y_typed_before_the_prompt_went_raw_answers_no(terminal: tuple[int, int]) -> None:
+    # Typed while the popup opened, before the prompt's setraw: a TCSAFLUSH
+    # switch would have discarded it; it must be read, and answer "no".
+    prompt_side, user_side = terminal
+    cooked = termios.tcgetattr(prompt_side)
+    cooked[3] |= termios.ICANON
+    cooked[3] &= ~termios.ECHO
+    termios.tcsetattr(prompt_side, termios.TCSANOW, cooked)
+    os.write(user_side, b"y")
+    assert take_over.run_prompt(prompt_side, lambda _text: None, 3, "Vim") == "no"
+
+
+def test_the_prompt_shows_the_question_and_restores_the_terminal(
+    terminal: tuple[int, int],
+) -> None:
+    prompt_side, user_side = terminal
+    # Back to a cooked terminal, so the restore has something to tell apart.
+    cooked = termios.tcgetattr(prompt_side)
+    cooked[3] |= termios.ICANON
+    cooked[3] &= ~termios.ECHO
+    termios.tcsetattr(prompt_side, termios.TCSANOW, cooked)
+    before = termios.tcgetattr(prompt_side)
+    shown: list[str] = []
+    os.write(user_side, b"n")
+    assert take_over.run_prompt(prompt_side, shown.append, 3, "Vim") == "no"
+    assert "your Vim" in shown[0] and "y = yes" in shown[0] and "(3 s)" in shown[0]
+    assert termios.tcgetattr(prompt_side) == before
+
+
+def test_main_writes_the_answer_with_its_token(tmp_path: Path) -> None:
+    answer_path = tmp_path / "answer.txt"
+    with (
+        patch("vim_ai_follower.take_over.run_prompt", return_value="timeout") as prompt,
+        patch("vim_ai_follower.take_over.sys.stdin"),
+    ):
+        assert take_over.main([str(answer_path), "abc", "4", "Neovim"]) == 0
+    assert prompt.call_args.args[2:] == (4.0, "Neovim")
+    assert answer_path.read_text() == "abc timeout\n"
+    assert list(tmp_path.iterdir()) == [answer_path]
+
+
+def test_show_writes_and_flushes(capsys: pytest.CaptureFixture[str]) -> None:
+    take_over._show("hello")
+    assert capsys.readouterr().out == "hello"
+
+
+_Popup = Callable[[list[str]], "subprocess.CompletedProcess[str] | None"]
+
+
+def _tmux(clients: str = "/dev/ttys001\n", popup: _Popup | None = None) -> MagicMock:
+    """A subprocess.run stand-in: list-clients answers `clients`; the popup
+    call runs `popup(argv)` (writing an answer, raising, failing)."""
+
+    def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        if argv[1] == "list-clients":
+            return subprocess.CompletedProcess(argv, 0, clients, "")
+        assert argv[1] == "display-popup"
+        if popup is not None:
+            result = popup(argv)
+            if result is not None:
+                return result
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    return MagicMock(side_effect=run)
+
+
+def _answering(answer: str, *, token: str | None = None) -> _Popup:
+    def popup(argv: list[str]) -> None:
+        words = argv[-1].split()
+        answer_path, real_token = words[-4], words[-3]
+        Path(answer_path).write_text(f"{token or real_token} {answer}\n")
+
+    return popup
+
+
+def test_ask_is_yes_only_for_its_own_token() -> None:
+    with patch("vim_ai_follower.take_over.subprocess.run", _tmux(popup=_answering("yes"))) as run:
+        assert take_over.ask("%3", "Vim", 10) == take_over.YES
+    popup = run.call_args_list[1].args[0]
+    assert popup[:5] == ["tmux", "display-popup", "-t", "%3", "-E"]
+    assert "vim_ai_follower.take_over" in popup[-1] and popup[-1].endswith(" 10 Vim")
+    assert f"PYTHONPATH={Path(take_over.__file__).resolve().parent.parent}" in popup[-1]
+    assert run.call_args_list[1].kwargs["timeout"] == 15.0
+    assert list(cache.CACHE_DIR.glob("take-over-*")) == []
+
+
+def test_ask_ignores_an_answer_with_another_token() -> None:
+    popup = _answering("yes", token="0123456789abcdef")
+    with patch("vim_ai_follower.take_over.subprocess.run", _tmux(popup=popup)):
+        assert take_over.ask("%3", "Vim", 10) == "no answer"
+
+
+@pytest.mark.parametrize("answer", ["no", "timeout"])
+def test_ask_reports_a_no(answer: str) -> None:
+    with patch("vim_ai_follower.take_over.subprocess.run", _tmux(popup=_answering(answer))):
+        assert take_over.ask("%3", "Vim", 10) == f"answered {answer}"
+
+
+def test_ask_reports_a_popup_tmux_dropped() -> None:
+    with patch("vim_ai_follower.take_over.subprocess.run", _tmux()):
+        assert take_over.ask("%3", "Vim", 10) == (
+            "not asked: the question was never shown (another popup was up)"
+        )
+
+
+def test_ask_without_a_pane_or_a_client_asks_nothing() -> None:
+    with patch("vim_ai_follower.take_over.subprocess.run", _tmux(clients="")) as run:
+        assert take_over.ask("", "Neovim", 10) == "not asked: the editor is not in tmux"
+        run.assert_not_called()
+        assert take_over.ask("%3", "Neovim", 10) == (
+            "not asked: no tmux client is attached to show the question on"
+        )
+    assert len(run.call_args_list) == 1
+
+
+def test_ask_reports_a_popup_tmux_refused() -> None:
+    def refused(argv: list[str]) -> subprocess.CompletedProcess[str] | None:
+        return subprocess.CompletedProcess(argv, 1, "", "can't find pane: %3\n")
+
+    with patch("vim_ai_follower.take_over.subprocess.run", _tmux(popup=refused)):
+        assert take_over.ask("%3", "Vim", 10) == (
+            "not asked: tmux could not show the question (can't find pane: %3)"
+        )
+
+
+def test_ask_gives_up_on_a_popup_that_does_not_close() -> None:
+    def hangs(argv: list[str]) -> None:
+        raise subprocess.TimeoutExpired(argv, 15)
+
+    with patch("vim_ai_follower.take_over.subprocess.run", _tmux(popup=hangs)):
+        assert take_over.ask("%3", "Vim", 10) == "no answer: the question did not close in time"
+
+
+def test_the_prompt_runs_as_a_module() -> None:
+    # The popup runs `python -m vim_ai_follower.take_over`: the module must
+    # import and refuse a wrong argument count without a terminal.
+    result = subprocess.run(
+        [sys.executable, "-c", "import vim_ai_follower.take_over as module; print(module.YES)"],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "PYTHONPATH": str(Path(take_over.__file__).resolve().parent.parent)},
+    )
+    assert result.stdout.strip() == "yes", result.stderr

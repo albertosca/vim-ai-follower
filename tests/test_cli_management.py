@@ -1381,8 +1381,11 @@ def test_stop_of_an_adopted_nvim_waiting_on_its_user_sends_nothing_and_logs_one_
         patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.commands.nvim_connect.last_probe_blocking", return_value=blocking),
         patch("vim_ai_follower.commands.nvim_connect.last_probe_mode", return_value=mode),
+        patch("vim_ai_follower.take_over.ask") as asked,
     ):
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    # A stop never asks to take over (Alberto, 2026-10-17): it sends nothing.
+    asked.assert_not_called()
     attach.assert_not_called()
     assert not any(c.args[0][:2] == ["tmux", "kill-pane"] for c in run.call_args_list)
     lines = [line for line in _hook_log().splitlines() if _DEDICATED_SOCKET in line]

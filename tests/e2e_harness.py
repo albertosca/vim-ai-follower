@@ -765,6 +765,89 @@ def e2e_world() -> Iterator[E2EFollower]:
     world.assert_real_home_untouched()
 
 
+@dataclass
+class AttachedClient:
+    """A tmux client attached to a world's session on a pty: what a popup
+    needs to be shown at all (with none, display-popup fails "no current
+    client"), and the keyboard the test types into it with."""
+
+    pid: int
+    terminal: int
+
+    def type(self, keys: bytes) -> None:
+        os.write(self.terminal, keys)
+
+
+@contextmanager
+def attached_client(
+    world: E2EFollower, columns: int = 120, rows: int = 40
+) -> Iterator[AttachedClient]:
+    """Attach a client to `world`'s session on a pty, read its output away on
+    a thread (a full pty would block the client), and kill it after."""
+    import fcntl
+    import pty
+    import struct
+    import termios
+    import threading
+
+    pid, terminal = pty.fork()
+    if pid == 0:  # pragma: no cover - the child execs
+        os.execvpe("tmux", ["tmux", "attach-session", "-t", world.session], world.env)
+    fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
+    stopping = threading.Event()
+
+    def drain() -> None:
+        import select
+
+        while not stopping.is_set():
+            if select.select([terminal], [], [], 0.1)[0]:
+                try:
+                    if not os.read(terminal, 65536):
+                        return
+                except OSError:
+                    return
+
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+    try:
+        world.wait_until(
+            lambda: bool(world.tmux("list-clients", "-F", "#{client_pid}").stdout.strip()),
+            "an attached tmux client",
+            timeout=10.0,
+        )
+        yield AttachedClient(pid=pid, terminal=terminal)
+    finally:
+        stopping.set()
+        with suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+        with suppress(ChildProcessError):
+            os.waitpid(pid, 0)
+        reader.join(timeout=2.0)
+        os.close(terminal)
+
+
+def wait_for_take_over_question(
+    world: E2EFollower, timeout: float = 15.0, *, armed: bool = True
+) -> None:
+    """Wait until this world's take-over prompt runs in a popup (its command
+    line names the answer file, under this world's HOME), then, when `armed`,
+    past its arming time, so the next key typed is a deliberate answer."""
+    from vim_ai_follower.take_over import ARM_SECONDS
+
+    def asking() -> bool:
+        listed = subprocess.run(
+            ["ps", "-A", "-ww", "-o", "command="], capture_output=True, text=True, check=False
+        ).stdout
+        return any(
+            "vim_ai_follower.take_over" in line and str(world.home) in line
+            for line in listed.splitlines()
+        )
+
+    world.wait_until(asking, "the take-over question", timeout=timeout, interval=0.01)
+    if armed:
+        time.sleep(ARM_SECONDS + 0.4)
+
+
 def _child_env(home: Path, workdir: Path, tmux_tmpdir: str) -> dict[str, str]:
     """Built from scratch, not copied from os.environ: $TMUX must be ABSENT
     (it takes priority over TMUX_TMPDIR and would route every bare `tmux`

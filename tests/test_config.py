@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from vim_ai_follower import config
 
 
@@ -15,6 +17,7 @@ def test_load_returns_defaults_when_no_file(tmp_path: Path) -> None:
         max_tabs=5,
         backend="tmux",
         nvim_window="auto",
+        take_over_question_seconds=10.0,
     )
 
 
@@ -101,3 +104,20 @@ def test_nvim_window_invalid_falls_back_to_auto(tmp_path: Path) -> None:
     p = tmp_path / "c.json"
     p.write_text('{"nvim_window": "sometimes"}')
     assert config.load(p).nvim_window == "auto"
+
+
+def test_load_reads_the_take_over_question_seconds(tmp_path: Path) -> None:
+    path = tmp_path / "config.json"
+    path.write_text('{"take_over_question_seconds": 4}')
+    cfg = config.load(path)
+    assert cfg.take_over_question_seconds == 4.0
+    assert isinstance(cfg.take_over_question_seconds, float)
+
+
+@pytest.mark.parametrize("value", ["true", "0", "-1", "121", '"10"', "null"])
+def test_load_falls_back_on_an_invalid_take_over_question_seconds(
+    tmp_path: Path, value: str
+) -> None:
+    path = tmp_path / "config.json"
+    path.write_text(f'{{"take_over_question_seconds": {value}}}')
+    assert config.load(path).take_over_question_seconds == 10.0

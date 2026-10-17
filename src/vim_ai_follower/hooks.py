@@ -15,7 +15,16 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from vim_ai_follower import binding, cache, config, control, keybindings, snapshot, writer_cue
+from vim_ai_follower import (
+    binding,
+    cache,
+    config,
+    control,
+    keybindings,
+    snapshot,
+    take_over,
+    writer_cue,
+)
 from vim_ai_follower import diff as diff_module
 from vim_ai_follower import state as state_module
 from vim_ai_follower.backends import (
@@ -1142,7 +1151,10 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         control.clear_animating(session.window_id)
 
 
-def _busy_nvim(current: FollowerState) -> str | None:
+def _busy_nvim(
+    current: FollowerState,
+    question_seconds: float = config.DEFAULT_TAKE_OVER_QUESTION_SECONDS,
+) -> str | None:
     """Why this hook must leave an nvim follower alone, or None: the liveness
     probe FollowerState.get just ran found it accepting and SILENT — busy in
     `:!make`, `system()` or a Lua loop, or stopped — or found an ADOPTED nvim
@@ -1167,7 +1179,12 @@ def _busy_nvim(current: FollowerState) -> str | None:
     and a follower that opened Claude's file meanwhile had the user's
     substitute, or their `:let g:who = bufname('%')`, run on Claude's buffer
     (task 22 review I1). Answering them is the user's choice (Alberto's
-    answer A), so the edit is skipped and the file marked stale."""
+    answer A), so the edit is skipped and the file marked stale.
+
+    An adopted nvim whose user is TYPING (insert, replace, terminal, visual
+    or select mode) is asked about instead (Alberto, 2026-10-17): a popup
+    over the follower's window, `question_seconds` long, and only a `y`
+    takes it over (_take_over_nvim); any other answer skips, as above."""
     if current.backend != "nvim":
         return None
     if nvim_connect.last_probe_verdict(current.target) == "silent":
@@ -1178,11 +1195,61 @@ def _busy_nvim(current: FollowerState) -> str | None:
     if not current.adopted:
         return None
     pending = adopted_user_pending(current.target)
+    if pending in TYPING_MODES:
+        return _take_over_nvim(current, pending, question_seconds)
     if pending is not None:
         return f"nvim at {current.target} is waiting on its user ({pending})"
     if nvim_connect.last_probe_blocking(current.target):
         return sweep_adopted_prompt(current.target, "the hook")
     return None
+
+
+# The adopted_user_pending reasons that mean the user is typing: acting under
+# one puts their next keys into Claude's buffer, so the hook asks first.
+TYPING_MODES = frozenset(
+    {"in insert mode", "in replace mode", "in terminal mode", "in visual mode", "in select mode"}
+)
+
+# How long a taken-over nvim may take to leave its typing mode.
+_LEAVE_TYPING_SECONDS = 2.0
+
+
+def _take_over_nvim(current: FollowerState, pending: str, question_seconds: float) -> str | None:
+    """Ask whether to take over an adopted nvim whose user is typing. None
+    once it is taken over (back in Normal mode, as the Vim follower's Escape
+    pair leaves a Vim); otherwise why the hook must skip."""
+    waiting = f"nvim at {current.target} is waiting on its user ({pending})"
+    answer = take_over.ask(current.origin, "Neovim", question_seconds)
+    if answer != take_over.YES:
+        return f"{waiting}, not taken over ({answer})"
+    left = _leave_typing_mode(current.target)
+    if left is not None:
+        return f"{waiting}, answered y but {left}"
+    logger.info("%s: taken over (answered y)", waiting)
+    return None
+
+
+def _leave_typing_mode(socket_path: str) -> str | None:
+    """Send CTRL-\\ CTRL-N (Normal mode from insert, replace, visual, select;
+    Terminal-Normal from terminal) and wait, bounded, for the probe to read a
+    mode the follower may act under. None when it did; otherwise why not."""
+    try:
+        nvim = nvim_connect.bounded_attach(socket_path)
+        try:
+            nvim.input("<C-\\><C-N>")
+        finally:
+            nvim.close()
+    except (OSError, EOFError) as error:  # RpcTimeout is an OSError
+        return f"it could not be sent CTRL-\\ CTRL-N: {error}"
+    deadline = time.monotonic() + _LEAVE_TYPING_SECONDS
+    while True:
+        nvim_connect.probe_nvim(socket_path)
+        still = adopted_user_pending(socket_path)
+        if still is None and not nvim_connect.last_probe_blocking(socket_path):
+            return None
+        if time.monotonic() >= deadline:
+            return f"it was still {still or 'blocking'} after {_LEAVE_TYPING_SECONDS:g} s"
+        time.sleep(0.05)
 
 
 def adopted_user_pending(socket_path: str) -> str | None:
@@ -1642,7 +1709,7 @@ def _animate_edit(
     if current is None:
         _warn_lost_window_identity(session)
         return 0
-    busy = _busy_nvim(current)
+    busy = _busy_nvim(current, cfg.take_over_question_seconds)
     if busy is not None:
         # Skipped like an unreachable edit, minus the cue: none was raised,
         # and taking one down would wait on the same silent nvim.
@@ -2004,7 +2071,7 @@ def _navigate_for_read(
     if current is None:
         _warn_lost_window_identity(session)
         return 0
-    busy = _busy_nvim(current)
+    busy = _busy_nvim(current, cfg.take_over_question_seconds)
     if busy is not None:
         logger.warning("skipped the Read of %s: %s", file_path, busy)
         return 0
