@@ -61,6 +61,53 @@ def test_set_title_reaches_tmux_as_exactly_the_title(title: str) -> None:
     assert _tmux_argument(argv[5]) == (title, False)
 
 
+def _stored_title(argument: str) -> str:
+    """What tmux 3.8 stores for `select-pane -T <argument>` (measured
+    2026-10-17): the argument is format-expanded (`##` is one `#`; a `#`
+    before anything else may start an expansion, `#{pane_id}` or `#S`, so a
+    title that keeps one is refused here) and then vis-encoded (a backslash
+    stored as two), and `#{pane_title}` prints the stored form as it is."""
+    text, _ = _tmux_argument(argument)
+    pieces = text.split("##")
+    assert not any("#" in piece for piece in pieces), f"{argument!r} is format-expanded"
+    return "#".join(pieces).replace("\\", "\\\\")
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [
+        "a\\\\",
+        "a\\\\\\\\",
+        "#{pane_id}",
+        "##",
+        "x;",
+        "é",
+        "100%",
+        "--;",
+        "#",
+        "a#[fg=red]",
+        "\\\\001",
+    ],
+)
+def test_a_saved_title_restores_to_exactly_what_was_stored(stored: str) -> None:
+    # T24a review m3: `a\` came back `a\\` on every save/restore, and
+    # `#{pane_id}` came back as the pane id.
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        run.return_value = MagicMock(returncode=0, stdout=stored + "\n")
+        saved = TmuxPane("%3").title()
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        TmuxPane("%3").set_title(saved)
+    argv = run.call_args.args[0]
+    assert argv[:5] == ["tmux", "select-pane", "-t", "%3", "-T"]
+    assert _stored_title(argv[5]) == stored
+
+
+def test_title_reads_the_stored_backslash_pair_as_one_backslash() -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        run.return_value = MagicMock(returncode=0, stdout="a\\\\b\\\\\\\\c\\001\n")
+        assert TmuxPane("%3").title() == "a\\b\\\\c\\001"
+
+
 def test_send_key_calls_tmux_send_keys_named() -> None:
     pane = TmuxPane(pane_id="%3")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:

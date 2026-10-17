@@ -22,6 +22,14 @@ def literal_argument(text: str) -> str:
     return text
 
 
+def _without_stored_backslash_pairs(stored: str) -> str:
+    """A pane title as tmux stores it, with each backslash pair the store
+    made of one backslash (`a\\\\b` reads `a\\b`), left to right. Any
+    other escape (`\\001`, a control byte tmux encoded) stays as stored:
+    tmux refuses to set the byte itself, which would leave the cue up."""
+    return stored.replace("\\\\", "\\")
+
+
 @dataclass(frozen=True)
 class TmuxPane:
     pane_id: str
@@ -88,12 +96,18 @@ class TmuxPane:
             text=True,
             check=False,
         )
-        return result.stdout.rstrip("\n")
+        return _without_stored_backslash_pairs(result.stdout.rstrip("\n"))
 
     def set_title(self, title: str) -> None:
+        """Set the pane title to exactly `title`, which `title()` reads back.
+        `select-pane -T` format-expands its argument (`#{pane_id}` is set as
+        `%0`, `#S` as the session, a final `#` dropped), so every `#` goes as
+        `##`; tmux then stores the title vis-encoded (a backslash as two), the
+        stored form `title()` decodes (measured on tmux 3.8, 2026-10-17)."""
         # The user's own title comes back through here (StatusSurface.clear).
+        escaped = literal_argument(title.replace("#", "##"))
         subprocess.run(
-            ["tmux", "select-pane", "-t", self.pane_id, "-T", literal_argument(title)],
+            ["tmux", "select-pane", "-t", self.pane_id, "-T", escaped],
             check=False,
         )
 
