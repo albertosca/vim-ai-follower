@@ -34,6 +34,18 @@ class TmuxPane:
     def send_key(self, key_name: str) -> None:
         subprocess.run(["tmux", "send-keys", "-t", self.pane_id, key_name], check=True)
 
+    def send_line(self, text: str) -> None:
+        """Type `text` and its Enter in ONE `send-keys`, so the editor reads
+        the line and the CR together: with the Enter in a second subprocess
+        Vim drew the typed line on its command line and showed it until the
+        Enter came (3-64 ms per call, measured 2026-10-17). The CR goes
+        inside the literal text, never as a separate `;`-joined command: tmux
+        ends a command at any argument that ends in `;`."""
+        subprocess.run(
+            ["tmux", "send-keys", "-t", self.pane_id, "-l", "--", text + "\r"],
+            check=True,
+        )
+
     def pane_pid(self) -> int | None:
         result = subprocess.run(
             ["tmux", "display-message", "-p", "-t", self.pane_id, "#{pane_pid}"],

@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from helpers import define_line, probe_spelled, resolve_typed_paths, vim_function
@@ -194,3 +194,62 @@ def test_buffer_forms(content: str, forms: list[list[str]]) -> None:
 )
 def test_typed_form(content: str, lines: list[str]) -> None:
     assert typed_form(content) == lines
+
+
+@pytest.mark.real_send_line
+def test_the_probe_line_and_its_enter_go_in_one_send_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every typed call reaches Vim with its Enter in one write, so Vim never
+    waits with the line drawn on its command line (TmuxPane.send_line)."""
+    monkeypatch.setattr(tmux_vim, "_PROBE_TIMEOUT_SECONDS", 0.05)
+    commands: list[list[str]] = []
+
+    def run(command: list[str], **_options: object) -> MagicMock:
+        commands.append(command)
+        return MagicMock(returncode=0, stdout="")
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", run),
+        patch("vim_ai_follower.backends.tmux_vim.secrets.token_hex", return_value=HANDLE_HEX),
+    ):
+        TmuxVimFollower(pane_id="%3").probe_buffer("/w/f.py", "a\n")
+    send_keys = [command for command in commands if command[:2] == ["tmux", "send-keys"]]
+    probes = [command for command in send_keys if "('probe'," in command[-1]]
+    assert len(probes) == 1, send_keys
+    assert probes[0][-1].endswith("|endif\r"), probes
+    assert ["tmux", "send-keys", "-t", "%3", "Enter"] not in send_keys
+
+
+@pytest.mark.real_send_line
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda follower: follower.goto_file("/w/f.py"),
+        lambda follower: follower.ensure_showing("/w/f.py"),
+        lambda follower: follower.close_tab("/w/f.py", dedicated=True),
+        lambda follower: follower.hand_over(),
+        lambda follower: follower.goto_line(3),
+    ],
+    ids=["goto_file", "ensure_showing", "close_tab", "hand_over", "goto_line"],
+)
+def test_no_typed_line_waits_for_a_separate_enter(
+    call: Callable[[TmuxVimFollower], object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The backend's other entry points type their lines the same way: no
+    `send-keys Enter` of its own anywhere, every `:` line closed by its CR
+    in the same `send-keys`."""
+    monkeypatch.setattr(tmux_vim, "_PROBE_TIMEOUT_SECONDS", 0.05)
+    commands: list[list[str]] = []
+
+    def run(command: list[str], **_options: object) -> MagicMock:
+        commands.append(command)
+        return MagicMock(returncode=0, stdout="")
+
+    with patch("vim_ai_follower.tmux.subprocess.run", run):
+        call(TmuxVimFollower(pane_id="%3"))
+    send_keys = [command for command in commands if command[:2] == ["tmux", "send-keys"]]
+    lines = [command[-1] for command in send_keys if "-l" in command]
+    assert lines, send_keys
+    assert all(line.startswith(":") and line.endswith("\r") for line in lines), lines
+    assert ["tmux", "send-keys", "-t", "%3", "Enter"] not in send_keys

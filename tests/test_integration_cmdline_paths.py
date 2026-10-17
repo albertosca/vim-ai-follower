@@ -199,8 +199,12 @@ def test_no_absolute_path_ever_reaches_the_command_line(
     for target in (under, outside):
         target.write_text(BEFORE)
         follower.show_fresh(str(target), BEFORE, in_new_tab=True)
-        target.write_text(AFTER)
+        # Probe BEFORE the next write: show_fresh returns once its last line
+        # is sent, and its relock's `:e!` reads the disk when Vim runs it, so a
+        # write right behind it can be what that reload reads (truncated, or
+        # already AFTER). In a hook the next write is a whole tool call later.
         assert follower.probe_buffer(str(target), BEFORE) == "holds"
+        target.write_text(AFTER)
         follower.apply_edit(str(target), compute_edit_script(BEFORE, AFTER), BEFORE)
         follower.goto_file(str(target))
         follower.ensure_showing(str(target))

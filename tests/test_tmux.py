@@ -30,6 +30,20 @@ def test_send_key_calls_tmux_send_keys_named() -> None:
     run.assert_called_once_with(["tmux", "send-keys", "-t", "%3", "Enter"], check=True)
 
 
+@pytest.mark.real_send_line
+def test_send_line_sends_the_text_and_its_enter_in_one_tmux_call() -> None:
+    """One `send-keys` per typed line, the Enter (a CR) in the same write:
+    with the Enter in a second subprocess Vim drew the line on its command
+    line and waited 3-64 ms for it (task 23's echo measurement)."""
+    pane = TmuxPane(pane_id="%3")
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        pane.send_line(":call Fn('x')")
+    run.assert_called_once_with(
+        ["tmux", "send-keys", "-t", "%3", "-l", "--", ":call Fn('x')\r"],
+        check=True,
+    )
+
+
 def test_kill_calls_tmux_kill_pane() -> None:
     pane = TmuxPane(pane_id="%3")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:

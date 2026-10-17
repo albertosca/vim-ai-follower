@@ -1483,8 +1483,7 @@ def _vim_shares_home(pane_id: str, cache_relative: str) -> bool:
         old.unlink(missing_ok=True)
     marker = f"{prefix}{secrets.token_hex(3)}"
     record.write_text(f"{pane_pid} {marker}\n")
-    pane.send_text(_HOME_CHECK.format(marker=_vim_string(f"~/{cache_relative}/{marker}")))
-    pane.send_key("Enter")
+    pane.send_line(_HOME_CHECK.format(marker=_vim_string(f"~/{cache_relative}/{marker}")))
     deadline = time.monotonic() + _PROBE_TIMEOUT_SECONDS
     while not (directory / marker).exists():
         if time.monotonic() >= deadline:
@@ -1573,8 +1572,7 @@ def _confirm_landing(pane: TmuxPane, file_path: str, handle: Path) -> None:
     # Clears a prompt the acting call can leave (see s:landed).
     pane.send_key("Escape")
     pane.send_key("Escape")
-    pane.send_text(_call_line("landed", handle.name))
-    pane.send_key("Enter")
+    pane.send_line(_call_line("landed", handle.name))
     _await_landing(pane.pane_id, answer, handle.name, file_path, handle)
 
 
@@ -1764,8 +1762,7 @@ class TmuxVimFollower:
     def _define(self, pane: TmuxPane) -> None:
         """Make sure this Vim has the functions the call lines run (see the
         comment at the top of this module)."""
-        pane.send_text(_define_line(self.pane_id))
-        pane.send_key("Enter")
+        pane.send_line(_define_line(self.pane_id))
 
     def _send_reload_and_lock(self, pane: TmuxPane, *, discard: bool) -> None:
         """A disk re-read (s:reload, which resets 'readonly'), then the
@@ -1773,10 +1770,8 @@ class TmuxVimFollower:
         noted first and the lock claims the option (see
         s:note_user_readonly)."""
         adopted = self._is_adopted()
-        pane.send_text(_call_line("reload", int(discard), int(adopted)))
-        pane.send_key("Enter")
-        pane.send_text(_ADOPTED_LOCK_READONLY if adopted else _LOCK_READONLY)
-        pane.send_key("Enter")
+        pane.send_line(_call_line("reload", int(discard), int(adopted)))
+        pane.send_line(_ADOPTED_LOCK_READONLY if adopted else _LOCK_READONLY)
 
     def goto_file(self, file_path: str) -> None:
         """The defensive preamble: land on the tab showing file_path (by
@@ -1810,8 +1805,7 @@ class TmuxVimFollower:
         self._normal_mode(pane)
         self._define(pane)
         handle = _path_handle(self.pane_id, file_path)
-        pane.send_text(_call_line("goto", handle.name, _case_folds(file_path)))
-        pane.send_key("Enter")
+        pane.send_line(_call_line("goto", handle.name, _case_folds(file_path)))
         _confirm_landing(pane, file_path, handle)
 
     def reload_and_relock(self, file_path: str) -> None:
@@ -1847,10 +1841,8 @@ class TmuxVimFollower:
         that stub (Task 20 review, I1)."""
         self.goto_file(file_path)
         pane = TmuxPane(pane_id=self.pane_id)
-        pane.send_text(self._unlock_line())
-        pane.send_key("Enter")
-        pane.send_text(":%d")
-        pane.send_key("Enter")
+        pane.send_line(self._unlock_line())
+        pane.send_line(":%d")
         lines = tuple(content.splitlines())
         if not lines:
             return AnimationResult("completed", 0)
@@ -1910,8 +1902,7 @@ class TmuxVimFollower:
         answer.parent.mkdir(parents=True, exist_ok=True)
         answer.unlink(missing_ok=True)
         handle = _path_handle(self.pane_id, file_path)
-        pane.send_text(_call_line("evict", handle.name, _case_folds(file_path)))
-        pane.send_key("Enter")
+        pane.send_line(_call_line("evict", handle.name, _case_folds(file_path)))
         if backoff is not None:
             logger.warning("closing %s without waiting for its verdict: %s", file_path, backoff)
             return
@@ -1923,8 +1914,7 @@ class TmuxVimFollower:
 
     def _send_wipe(self, pane: TmuxPane, file_path: str) -> None:
         handle = _path_handle(self.pane_id, file_path)
-        pane.send_text(_call_line("wipe", handle.name, _case_folds(file_path)))
-        pane.send_key("Enter")
+        pane.send_line(_call_line("wipe", handle.name, _case_folds(file_path)))
 
     def ensure_showing(self, file_path: str) -> None:
         """The Read/binary entry point: show the file as it is ON DISK. It
@@ -1957,8 +1947,7 @@ class TmuxVimFollower:
         self._define(pane)
         # The handle's name is also the answer's nonce (see s:probe).
         handle = _path_handle(self.pane_id, file_path)
-        pane.send_text(_call_line("probe", handle.name, _case_folds(file_path)))
-        pane.send_key("Enter")
+        pane.send_line(_call_line("probe", handle.name, _case_folds(file_path)))
         lines = _await_answer(probe, handle.name, _PROBE_TIMEOUT_SECONDS)
         if lines is None:
             logger.warning(
@@ -2034,8 +2023,7 @@ class TmuxVimFollower:
             logger.warning("could not prepare the readonly answer for %s: %s", self.pane_id, error)
         token = _readonly_token()
         _SENT_READONLY_TOKENS[self.pane_id] = token
-        pane.send_text(_call_line("restore_readonly", int(self.pane_id.lstrip("%")), token))
-        pane.send_key("Enter")
+        pane.send_line(_call_line("restore_readonly", int(self.pane_id.lstrip("%")), token))
         return token
 
     def _with_unlocked(
@@ -2065,20 +2053,16 @@ class TmuxVimFollower:
         on disk (animate._resume) and the error goes on to the caller."""
         adopted = self._is_adopted()
         pane = TmuxPane(pane_id=self.pane_id)
-        pane.send_text(_COC_DISABLE)
-        pane.send_key("Enter")
-        pane.send_text(_call_line("unlock") if adopted else _UNLOCK_FOR_ANIMATION)
-        pane.send_key("Enter")
+        pane.send_line(_COC_DISABLE)
+        pane.send_line(_call_line("unlock") if adopted else _UNLOCK_FOR_ANIMATION)
         try:
             result = run(pane)
         except NavigationFailed:
             self._normal_mode(pane)
-            pane.send_text(_RESTORE_PASTE)
-            pane.send_key("Enter")
+            pane.send_line(_RESTORE_PASTE)
             if adopted and file_path:
                 handle = _path_handle(self.pane_id, file_path)
-                pane.send_text(_call_line("give_back", handle.name, _case_folds(file_path)))
-                pane.send_key("Enter")
+                pane.send_line(_call_line("give_back", handle.name, _case_folds(file_path)))
             if self.window_id and owned_state(self.window_id, "tmux", self.pane_id) is None:
                 # A `claude-follow stop` ran while the goto waited: the
                 # remainder animate._resume just saved belongs to no follower
@@ -2086,12 +2070,10 @@ class TmuxVimFollower:
                 control.discard_pending_animation(self.window_id)
             raise
         if result.outcome != "interrupted":
-            pane.send_text(relock.line(adopted))
-            pane.send_key("Enter")
+            pane.send_line(relock.line(adopted))
         else:
             # No relock to turn 'paste' off: give the user's back.
-            pane.send_text(_RESTORE_PASTE)
-            pane.send_key("Enter")
+            pane.send_line(_RESTORE_PASTE)
         if adopted:
             # After the relock, whose `:e!` resets 'readonly' (and on an
             # interrupt, which hands over the buffer without one).
@@ -2106,7 +2088,7 @@ class TmuxVimFollower:
 
         Why the caller passes it instead of this backend reading it: the tmux
         backend drives Vim through `tmux send-keys` only. TmuxPane is
-        write-only for buffer content (send_text/send_key/kill/title — there is
+        write-only for buffer content (send_text/send_line/send_key/kill/title — there is
         no buffer-dump helper and none of `:redir`, `capture-pane` or a
         temp-file round-trip exists anywhere in src/), so reading the buffer
         back would mean inventing a blocking read against a keystroke-driven
@@ -2148,31 +2130,27 @@ class TmuxVimFollower:
         # after it is sent until Vim confirms it landed (_confirm_landing).
         handle = _path_handle(self.pane_id, file_path)
         adopted = self._is_adopted()
-        pane.send_text(
+        pane.send_line(
             _call_line("rename", handle.name, _case_folds(file_path), int(in_new_tab), int(adopted))
         )
-        pane.send_key("Enter")
         _confirm_landing(pane, file_path, handle)
         # An ADOPTED Vim is the user's own editor: its buffer gets swap back
         # on right after the rename, with the ATTENTION message suppressed for
         # that one step (see _VIM_SWAP_BACK_ON). A dedicated follower's stays
         # off.
         if adopted:
-            pane.send_text(_call_line("swap_back_on"))
-            pane.send_key("Enter")
+            pane.send_line(_call_line("swap_back_on"))
         # `:filetype detect` must run BEFORE 'paste' is enabled below: it
         # loads the filetype's indent/ftplugin scripts, which can turn
         # cindent/smartindent/indentexpr back on — 'paste' only suppresses
         # whatever was active at the moment it's set, not anything enabled
         # afterwards.
-        pane.send_text(":filetype detect")
-        pane.send_key("Enter")
+        pane.send_line(":filetype detect")
         lines = tuple(content.splitlines())
 
         def run(inner: TmuxPane) -> AnimationResult:
             # Wipe down to a single blank line — Vim can't have zero lines.
-            inner.send_text(":%d")
-            inner.send_key("Enter")
+            inner.send_line(":%d")
             return run_lines(
                 inner,
                 self.window_id,
@@ -2268,13 +2246,11 @@ class TmuxVimFollower:
         actually gets to type into the buffer themselves and wants real
         completion/hints (see _COC_DISABLE for why it's off otherwise)."""
         pane = TmuxPane(pane_id=self.pane_id)
-        pane.send_text(_COC_ENABLE)
-        pane.send_key("Enter")
+        pane.send_line(_COC_ENABLE)
         adopted = self._is_adopted()
         self._define(pane)
         # Gives back only what a record still holds (see s:hand_over).
-        pane.send_text(_call_line("hand_over", int(adopted)))
-        pane.send_key("Enter")
+        pane.send_line(_call_line("hand_over", int(adopted)))
         # An adopted Vim's user gets their readonly back here when a record
         # of it is left (see s:note_user_readonly).
         if adopted:
@@ -2282,8 +2258,7 @@ class TmuxVimFollower:
 
     def goto_line(self, offset: int) -> None:
         pane = TmuxPane(pane_id=self.pane_id)
-        pane.send_text(f":{offset}")
-        pane.send_key("Enter")
+        pane.send_line(f":{offset}")
 
     def stop(self, dedicated: bool | None = None) -> None:
         # The follower's own pane, killed; an adopted Vim's pane is the

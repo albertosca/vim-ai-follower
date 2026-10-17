@@ -17,6 +17,7 @@ from helpers import PATH_HANDLES, resolve_typed_paths
 from vim_ai_follower import cache, config, hooks, session, snapshot
 from vim_ai_follower.backends import nvim_connect, tmux_vim
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
+from vim_ai_follower.tmux import TmuxPane
 
 
 @pytest.fixture(autouse=True)
@@ -99,6 +100,31 @@ def vim_confirms_landing(request: pytest.FixtureRequest, monkeypatch: pytest.Mon
     ):
         return
     monkeypatch.setattr(tmux_vim, "_await_landing", lambda *_args: None)
+
+
+@pytest.fixture(autouse=True)
+def typed_lines_as_text_and_enter(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TmuxPane.send_line types a line and its Enter in ONE `send-keys` (the
+    CR inside the literal text, so Vim never shows the line waiting for its
+    Enter). The unit tests' Vim doubles and recorders read the typed lines as
+    a send_text followed by send_key("Enter"), which is how every line went
+    before that change, so a unit test sees each line in that form. What
+    send_line really sends is pinned by the tests marked
+    @pytest.mark.real_send_line (tests/test_tmux.py, and the backend's own
+    calls in tests/test_tmux_probe_buffer.py); integration tests, whose Vim
+    is real, always run the real one."""
+    if request.node.get_closest_marker("integration") or request.node.get_closest_marker(
+        "real_send_line"
+    ):
+        return
+
+    def as_text_and_enter(pane: TmuxPane, text: str) -> None:
+        pane.send_text(text)
+        pane.send_key("Enter")
+
+    monkeypatch.setattr(TmuxPane, "send_line", as_text_and_enter)
 
 
 @pytest.fixture(autouse=True)
