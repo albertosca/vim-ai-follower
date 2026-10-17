@@ -239,7 +239,7 @@ def test_no_absolute_path_ever_reaches_the_command_line(
     assert typed.count("ENTER") >= 20, typed
     assert any("setlocal" in line for line in typed), typed
     hand_off = [
-        "setlocal modifiable|let &paste = get(g:, 'vaf_user_paste', 0)",
+        f"'hand_over',{int(adopted)})",
         "let &paste = get(g:, 'vaf_user_paste', 0)|unlet! g:vaf_user_paste",
     ]
     if adopted:

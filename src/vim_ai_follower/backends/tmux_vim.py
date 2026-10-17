@@ -135,7 +135,6 @@ _RELOCK = f":setlocal nomodifiable nopaste|{_FORGET_USER_PASTE}"
 _RELOCK_READONLY = f":setlocal readonly nomodifiable nopaste|{_FORGET_USER_PASTE}"
 _GIVE_BACK_PASTE = f"let &paste = get(g:, 'vaf_user_paste', 0)|{_FORGET_USER_PASTE}"
 _RESTORE_PASTE = f":{_GIVE_BACK_PASTE}"
-_HAND_OVER_UNLOCK = f":setlocal modifiable|{_GIVE_BACK_PASTE}"
 _ADOPTED_LOCK_READONLY = _LOCK_READONLY + " | let b:vaf_ro_ours = 1"
 _OUR_READONLY_CLAIM = " | let b:vaf_ro_ours = 1"
 # The restore also leaves its answer for user_readonly (the hand-off cue) in
@@ -157,6 +156,24 @@ function! s:note_user_readonly() abort
   if !get(b:, 'vaf_ro_ours')
     let b:vaf_user_ro = &readonly
     let b:vaf_user_ma = &modifiable
+  endif
+endfunction
+
+" hand_over's unlock (see TmuxVimFollower.hand_over). It runs right after an
+" interrupt's own give-back (_RESTORE_PASTE, s:restore_readonly), which used
+" the records and dropped them: giving back again from no record set 'paste'
+" to 0 and turned a user's 'nomodifiable' back on (Task 20 review, I2). So
+" 'paste' comes back only from a record, and an adopted Vim's 'modifiable' is
+" turned on only while the follower still holds it (a record of the user's
+" value: s:restore_readonly then puts back a 'nomodifiable'). A dedicated
+" Vim's 'modifiable' is the follower's own, always turned on.
+function! s:hand_over(adopted) abort
+  if exists('g:vaf_user_paste')
+    let &paste = g:vaf_user_paste
+    unlet g:vaf_user_paste
+  endif
+  if !a:adopted || has_key(b:, 'vaf_user_ma')
+    setlocal modifiable
   endif
 endfunction
 
@@ -1821,7 +1838,13 @@ class TmuxVimFollower:
         des-interrupt replay needs the buffer back at the interrupt-point
         state, discarding the user's unsaved typing, before the remainder
         resumes at live pace. Leaves the buffer unlocked: resume() runs
-        immediately after and owns the relock."""
+        immediately after and owns the relock.
+
+        Always runs to the end ("completed"): a P or S pressed meanwhile is
+        left on disk for resume(), whose first check takes it before it types
+        anything. Cut inside the rebuild, the buffer handed over held a few
+        lines of a partial Claude was told had all been shown, and `:w` saved
+        that stub (Task 20 review, I1)."""
         self.goto_file(file_path)
         pane = TmuxPane(pane_id=self.pane_id)
         pane.send_text(self._unlock_line())
@@ -1832,7 +1855,15 @@ class TmuxVimFollower:
         if not lines:
             return AnimationResult("completed", 0)
         # `:%d` above wiped the buffer, so this rebuild starts from nothing.
-        return run_lines(pane, self.window_id, lines, 0.0, file_path=file_path, base_content="")
+        return run_lines(
+            pane,
+            self.window_id,
+            lines,
+            0.0,
+            file_path=file_path,
+            base_content="",
+            obey_signals=False,
+        )
 
     def close_tab(self, file_path: str, dedicated: bool | None = None) -> None:
         """Evict `file_path`: wipe its buffer, which closes the tab it was
@@ -2239,13 +2270,14 @@ class TmuxVimFollower:
         pane = TmuxPane(pane_id=self.pane_id)
         pane.send_text(_COC_ENABLE)
         pane.send_key("Enter")
-        pane.send_text(_HAND_OVER_UNLOCK)
+        adopted = self._is_adopted()
+        self._define(pane)
+        # Gives back only what a record still holds (see s:hand_over).
+        pane.send_text(_call_line("hand_over", int(adopted)))
         pane.send_key("Enter")
-        # A hand-off after rewrite_buffer's unlock (a replay interrupted
-        # mid-rebuild), or of a crash-orphaned remainder, gives an adopted
-        # Vim's user back their readonly here (see s:note_user_readonly).
-        if self._is_adopted():
-            self._define(pane)
+        # An adopted Vim's user gets their readonly back here when a record
+        # of it is left (see s:note_user_readonly).
+        if adopted:
             self._send_restore_readonly(pane)
 
     def goto_line(self, offset: int) -> None:

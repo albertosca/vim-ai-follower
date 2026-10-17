@@ -563,10 +563,9 @@ def test_a_dedicated_catch_up_whose_base_probe_goes_unanswered_still_retypes(
     assert follower.show_fresh.call_args == call(resolved, AFTER, in_new_tab=True)
 
 
-@pytest.mark.parametrize("stopped", ["rewrite", "resume"])
 @pytest.mark.parametrize("adopted", [True, False], ids=["adopted", "dedicated"])
 def test_a_catch_up_that_did_not_complete_is_never_grounded(
-    stopped: str, adopted: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    adopted: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An interrupted catch-up is not a buffer of follower text only, so it is
     never reloaded from disk. It was cut by an S, which is this edit's
@@ -577,9 +576,8 @@ def test_a_catch_up_that_did_not_complete_is_never_grounded(
     target, resolved = _setup(tmp_path, adopted=adopted)
     _pending_apply_edit(resolved, "a\nb\nc\n")
     follower = _caught_up_follower(adopted, "differs")
-    getattr(
-        follower, f"{stopped}_buffer" if stopped == "rewrite" else stopped
-    ).return_value = AnimationResult("interrupted", 0)
+    # Only the replay can be cut: the rebuild leaves an S for it (fix round 1).
+    follower.resume.return_value = AnimationResult("interrupted", 0)
     handed: list[str] = []
     monkeypatch.setattr(
         hooks,

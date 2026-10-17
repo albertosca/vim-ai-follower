@@ -51,8 +51,8 @@ _UNLOCK_FOR_ANIMATION = (
 )
 # What every exit that hands the buffer to the user sends: the user's 'paste'.
 _RESTORE_PASTE = ":let &paste = get(g:, 'vaf_user_paste', 0)|unlet! g:vaf_user_paste"
-# hand_over's unlock, which gives it back the same way.
-_HAND_OVER = ":setlocal modifiable" + _RESTORE_PASTE.replace(":", "|", 1)
+# hand_over's unlock, which gives it back only from a record (s:hand_over).
+_HAND_OVER = call_spelled("hand_over", 0)
 # An ADOPTED Vim's readonly bookkeeping (s:note_user_readonly): the unlock
 # that notes the user's readonly and claims the option, the lock's claim, and
 # the restore every animation exit sends (its answer for pane %2).
@@ -583,12 +583,41 @@ def test_resume_skips_relock_when_interrupted_again(tmp_path: Path) -> None:
     assert not any("nomodifiable" in text or "'relock'" in text for text, _ in commands)
 
 
+def test_rewrite_buffer_types_the_whole_partial_and_leaves_an_s_for_the_replay(
+    tmp_path: Path,
+) -> None:
+    """Task 20 review, I1: an S pressed during the rebuild cut it, and the
+    buffer handed over held a few lines of a partial Claude was told had all
+    been shown. The rebuild now reads no signal at all: every line goes out,
+    and the S stays on disk for resume's first check."""
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
+    check = MagicMock(return_value="interrupt")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.control.check_signal", check),
+        patch.object(TmuxVimFollower, "goto_file"),
+    ):
+        result = follower.rewrite_buffer("/tmp/f.txt", "one\ntwo\nthree\n")
+    assert result == AnimationResult("completed", 3)
+    check.assert_not_called()
+    typed = [text for text, literal in _sent_commands(run) if literal]
+    assert [text for text in typed[typed.index(":%d") :] if len(text) > 1] == [
+        ":%d",
+        "one",
+        "two",
+        "three",
+    ]
+
+
 def test_hand_over_unlocks_the_buffer() -> None:
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.hand_over()
     assert _sent_commands(run) == [
         (":silent! CocEnable", True),
+        ("Enter", False),
+        (_DEFINE, True),
         ("Enter", False),
         (_HAND_OVER, True),
         ("Enter", False),
@@ -975,8 +1004,10 @@ def test_an_adopted_hand_over_restores_the_readonly() -> None:
     follower = _adopted_follower()
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.hand_over()
-    assert _sent_commands(run)[-4:] == [
+    assert _sent_commands(run)[-6:] == [
         (_DEFINE, True),
+        ("Enter", False),
+        (call_spelled("hand_over", 1), True),
         ("Enter", False),
         (_restore(), True),
         ("Enter", False),

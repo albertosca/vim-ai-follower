@@ -615,14 +615,9 @@ def _interrupt_a_catch_up(
         "the hand-off after an S during the catch-up",
         timeout=20.0,
     )
-    held = world.buffer_bytes(backend, target, path)
-    assert held is not None
-    assert held.startswith(CATCH_UP_BASE.encode()), "the rebuild was disturbed"
-    assert lines[-1].encode() not in held, "the S landed after the catch-up, measuring nothing"
-    assert b"NEW_EDIT_MARK" not in held, "the new edit was animated over the user's hand-off"
-    # Answer A: no remainder is saved, so the second S reloads Claude's file.
-    assert not world.pending_path.exists(), "an interrupted catch-up saved a remainder"
-    # The cue goes up just after the marker turns "handoff".
+    # The cue goes up just after the marker turns "handoff", once the hook
+    # has sent its hand-off lines: a dump typed before that interleaves with
+    # them.
     if backend == "tmux":
         world.wait_until(
             lambda: (
@@ -636,6 +631,13 @@ def _interrupt_a_catch_up(
             lambda: HANDOFF_CUE in (_status_float_body(world, target) or []),
             "the hand-off cue in the status float",
         )
+    held = world.buffer_bytes(backend, target, path)
+    assert held is not None
+    assert held.startswith(CATCH_UP_BASE.encode()), "the rebuild was disturbed"
+    assert lines[-1].encode() not in held, "the S landed after the catch-up, measuring nothing"
+    assert b"NEW_EDIT_MARK" not in held, "the new edit was animated over the user's hand-off"
+    # Answer A: no remainder is saved, so the second S reloads Claude's file.
+    assert not world.pending_path.exists(), "an interrupted catch-up saved a remainder"
     return target, path, proc, held
 
 
@@ -691,3 +693,215 @@ def test_a_second_s_after_an_interrupted_catch_up_shows_claudes_file(
     world.wait_for_hook_exit(proc, timeout=30.0)
     assert world.buffer_bytes(backend, target, path) == _catch_up_edit(backend).encode()
     assert path.read_text() == _catch_up_edit(backend)
+
+
+# ---------------------------------------- Task 20, fix round 1 (tmux only)
+
+
+def _adopt(world: E2EFollower) -> None:
+    """Make the running dedicated follower read as an ADOPTED Vim: the
+    user's own editor, whose settings the follower must give back."""
+    state_file = world.cache_dir / f"{world.window_id}.pane"
+    state = json.loads(state_file.read_text())
+    state["adopted"] = True
+    state_file.write_text(json.dumps(state))
+
+
+def _vim_typed(world: E2EFollower, pane: str, command: str) -> None:
+    world.tmux("send-keys", "-t", pane, "Escape", "Escape")
+    world.tmux("send-keys", "-t", pane, "-l", "--", command)
+    world.tmux("send-keys", "-t", pane, "Enter")
+
+
+def _vim_option(world: E2EFollower, pane: str, option: str) -> str:
+    """One option's value in the follower's Vim, written out by Vim itself
+    (writefile, never the rendered screen)."""
+    out = world.workdir / f"option-{option}-{os.urandom(4).hex()}.txt"
+    _vim_typed(world, pane, f":call writefile(['option', &{option}], '{out}')")
+    world.wait_until(
+        lambda: out.exists() and len(out.read_text().splitlines()) == 2,
+        f"vim to write out '{option}'",
+    )
+    return out.read_text().splitlines()[1]
+
+
+def _wait_for_handoff_cue(world: E2EFollower, pane: str) -> None:
+    world.wait_until(
+        lambda: world.animating_state() == "handoff",
+        "the marker to read 'handoff'",
+        timeout=30.0,
+    )
+    world.wait_until(
+        lambda: (
+            world.tmux("display-message", "-p", "-t", pane, "#{pane_title}")
+            .stdout.strip()
+            .startswith("Claude waiting")
+        ),
+        "the hand-off cue on the pane border",
+    )
+
+
+def _save_and_release(world: E2EFollower, pane: str, proc: subprocess.Popen[bytes]) -> None:
+    """`:w!` the handed-over buffer, answering Vim's W11 as a user would."""
+    _vim_typed(world, pane, ":w!")
+    world.wait_until(
+        lambda: "changed since reading" in world.capture_pane(pane) or proc.poll() is not None,
+        "the save to ask or to release Claude",
+    )
+    if proc.poll() is None:
+        world.tmux("send-keys", "-t", pane, "y")
+    world.wait_for_hook_exit(proc, timeout=30.0)
+
+
+REBUILD_BASE = _text(*(f"base_line_{index:05d} = {index}" for index in range(400)))
+
+
+def test_an_s_during_the_catch_up_rebuild_hands_over_the_whole_partial(
+    world: E2EFollower,
+) -> None:
+    """Fix round 1, I1. tmux's rewrite_buffer wipes the buffer (`:%d`) and
+    retypes the partial; an S that landed inside it used to cut it, so the
+    buffer handed over held a few lines of a 400-line partial while Claude
+    was told all of it had been shown, and `:w` saved the stub. The rebuild
+    now runs to the end and the S is honoured right after it: the buffer
+    handed over is the whole partial, and the notification quotes exactly
+    that."""
+    path = world.workdir / "rebuild_s.py"
+    world.start("tmux", "muito_rapido")
+    pane = world.follower_target()
+    world.cli("hook", "pre", stdin=payload("Write", path))
+    path.write_text(REBUILD_BASE)
+    world.cli("hook", "post", stdin=payload("Write", path))
+    # The end of the file on screen: its disappearance is the rebuild's `:%d`.
+    _vim_typed(world, pane, ":$")
+    world.wait_until(lambda: "base_line_00399" in world.capture_pane(pane), "the file's end")
+    control.save_pending_show_fresh(
+        world.window_id,
+        ("tail = 1",),
+        0.08,
+        continuation=True,
+        base_dir=world.cache_dir,
+        file_path=os.path.realpath(path),
+        partial=REBUILD_BASE,
+    )
+    world.cli("hook", "pre", stdin=payload("Edit", path))
+    path.write_text(REBUILD_BASE + _text("tail = 1", "NEW_EDIT_MARK = True"))
+    proc = world.cli_background("hook", "post", stdin=payload("Edit", path))
+    world.wait_until(
+        lambda: (
+            "base_line_00399" not in (screen := world.capture_pane(pane))
+            and "base_line_000" in screen
+        ),
+        "the rebuild to be retyping the partial",
+        timeout=30.0,
+        interval=0.01,
+    )
+    assert world.cli("interrupt").stdout == "claude-follow: interrupt requested\n"
+    _wait_for_handoff_cue(world, pane)
+
+    held = world.vim_buffer_bytes(pane)
+    assert held == REBUILD_BASE.encode(), (
+        f"handed over {len(held.splitlines())} of the partial's "
+        f"{len(REBUILD_BASE.splitlines())} lines"
+    )
+    _save_and_release(world, pane, proc)
+    assert path.read_bytes() == held
+    log = world.background_log(proc)
+    quoted = json.loads(log.strip().splitlines()[-1])["hookSpecificOutput"]["additionalContext"]
+    assert REBUILD_BASE.removesuffix("\n") in quoted
+    assert "tail = 1" not in quoted
+
+
+def _set_users_options(world: E2EFollower, pane: str, modifiable: bool) -> None:
+    _vim_typed(
+        world, pane, f":setlocal noreadonly {'' if modifiable else 'no'}modifiable | set paste"
+    )
+    assert _vim_option(world, pane, "paste") == "1"
+    assert _vim_option(world, pane, "modifiable") == ("1" if modifiable else "0")
+
+
+@pytest.mark.parametrize(
+    ("adopted", "modifiable"),
+    [(True, True), (False, True), (True, False)],
+    ids=["adopted", "dedicated", "adopted-nomodifiable"],
+)
+def test_an_s_during_the_catch_up_replay_gives_the_users_options_back(
+    world: E2EFollower, adopted: bool, modifiable: bool
+) -> None:
+    """Fix round 1, I2. The interrupt gives the user's 'paste' (and, adopted,
+    a recorded 'nomodifiable') back and forgets the record; hand_over then
+    gave back AGAIN from no record, setting 'paste' to 0 and turning
+    'modifiable' on. The user's values must survive the hand-off."""
+    path = world.workdir / "options_catch_up.py"
+    world.start("tmux", "muito_rapido")
+    pane = world.follower_target()
+    world.cli("hook", "pre", stdin=payload("Write", path))
+    path.write_text(CATCH_UP_BASE)
+    world.cli("hook", "post", stdin=payload("Write", path))
+    if adopted:
+        _adopt(world)
+    _set_users_options(world, pane, modifiable)
+    lines = _catch_up_lines("tmux")
+    control.save_pending_show_fresh(
+        world.window_id,
+        lines,
+        0.08,
+        continuation=True,
+        base_dir=world.cache_dir,
+        file_path=os.path.realpath(path),
+        partial=CATCH_UP_BASE,
+    )
+    world.cli("hook", "pre", stdin=payload("Edit", path))
+    path.write_text(_catch_up_edit("tmux"))
+    proc = world.cli_background("hook", "post", stdin=payload("Edit", path))
+    world.wait_until(
+        lambda: "catchup_line_0002" in world.capture_pane(pane),
+        "the catch-up to be typing the remainder",
+        timeout=60.0,
+    )
+    assert world.cli("interrupt").stdout == "claude-follow: interrupt requested\n"
+    _wait_for_handoff_cue(world, pane)
+
+    assert _vim_option(world, pane, "paste") == "1"
+    if adopted:
+        assert _vim_option(world, pane, "modifiable") == ("1" if modifiable else "0")
+    world.cli("interrupt")  # S again: Claude's file, and the hook ends
+    world.wait_for_hook_exit(proc, timeout=30.0)
+
+
+@pytest.mark.parametrize("adopted", [True, False], ids=["adopted", "dedicated"])
+def test_an_s_during_a_des_interrupt_replay_gives_the_users_paste_back(
+    world: E2EFollower, adopted: bool
+) -> None:
+    """Fix round 1, I2, through the pre-existing _rearm_handoff: a replay
+    (S again) that is itself interrupted hands over with hand_over too."""
+    path = world.workdir / "options_rearm.py"
+    world.start("tmux", "muito_rapido")
+    pane = world.follower_target()
+    world.cli("hook", "pre", stdin=payload("Write", path))
+    path.write_text(CATCH_UP_BASE)
+    world.cli("hook", "post", stdin=payload("Write", path))
+    if adopted:
+        _adopt(world)
+    _set_users_options(world, pane, modifiable=True)
+    world.cli("hook", "pre", stdin=payload("Edit", path))
+    path.write_text(_catch_up_edit("tmux"))
+    proc = world.cli_background("hook", "post", stdin=payload("Edit", path))
+    world.wait_until(
+        lambda: "catchup_line_0000" in world.capture_pane(pane), "the edit to be typing"
+    )
+    assert world.cli("interrupt").stdout == "claude-follow: interrupt requested\n"
+    _wait_for_handoff_cue(world, pane)
+    assert world.cli("interrupt").stdout.startswith("claude-follow: hand-off cancelled")
+    # Past the rebuild (the first S came within the first ten lines): the S
+    # is the replay's, so the interrupt's give-back runs before hand_over's.
+    world.wait_until(
+        lambda: "catchup_line_0004" in world.capture_pane(pane),
+        "the replay to be typing past the rebuilt partial",
+        timeout=60.0,
+    )
+    assert world.cli("interrupt").stdout == "claude-follow: interrupt requested\n"
+    _wait_for_handoff_cue(world, pane)
+
+    assert _vim_option(world, pane, "paste") == "1"
+    _save_and_release(world, pane, proc)

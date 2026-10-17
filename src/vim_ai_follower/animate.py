@@ -336,8 +336,14 @@ def run_lines(
     file_path: str = "",
     on_resume: Callable[[], None] | None = None,
     base_content: str | None = None,
+    obey_signals: bool = True,
 ) -> AnimationResult:
-    """base_content is the content already on screen ABOVE the lines this run
+    """obey_signals=False types every line and reads no P or S, leaving them
+    for the next driver: rewrite_buffer's rebuild, which only puts back text
+    the user has already seen and must never hand over a buffer cut inside it
+    (Task 20 review, I1).
+
+    base_content is the content already on screen ABOVE the lines this run
     types — "" for a retype into a freshly wiped buffer, the partial being
     continued for a resume — in the same terminated-newline form a persisted
     partial uses. It is the base the crash-fallback `partial` is computed from,
@@ -377,6 +383,7 @@ def run_lines(
             window_id,
             deadline=deadline,
             control_base_dir=base_dir,
+            obey_signals=obey_signals,
         )
         if result.outcome != "completed":
             _exit_insert_mode(pane)
@@ -418,15 +425,16 @@ def send_paced(
     *,
     deadline: float,
     control_base_dir: Path | None = None,
+    obey_signals: bool = True,
 ) -> ApplyResult:
     """Paces at pace_seconds per sequence, checking for a pause/interrupt
     signal before each one (see control.check_signal) and stopping
     immediately — without sending that sequence — if one is found. Stops
     pacing (but keeps sending) once time.monotonic() reaches `deadline`, the
     whole animation's budget that run_lines/run_ops compute once (see
-    MAX_ANIMATION_SECONDS)."""
+    MAX_ANIMATION_SECONDS). obey_signals=False reads none (see run_lines)."""
     for sent_count, sequence in enumerate(sequences):
-        signal = control.check_signal(window_id, control_base_dir)
+        signal = control.check_signal(window_id, control_base_dir) if obey_signals else None
         if signal is not None:
             outcome: Literal["paused", "interrupted"] = (
                 "interrupted" if signal == "interrupt" else "paused"

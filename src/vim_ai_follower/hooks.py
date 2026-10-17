@@ -612,12 +612,40 @@ def _print_hook_context(context: str) -> None:
     )
 
 
-def _print_interrupt_notification(file_path: str, partial_content: str) -> None:
+# How a hand-off an S during the pre-edit catch-up started describes what the
+# user had been shown: "shown", the earlier edit's text (the partial);
+# "unknown", a legacy remainder that recorded no partial.
+EarlierEdit = Literal["shown", "unknown"]
+
+
+def _print_interrupt_notification(
+    file_path: str, partial_content: str, earlier_edit: EarlierEdit | None = None
+) -> None:
     # Every partial arrives newline-terminated, and the template already puts
     # a blank line on each side of the quote — so drop exactly the terminator,
     # not every trailing newline: a partial whose last line is genuinely blank
     # must still show that blank line here.
     quoted = partial_content.removesuffix("\n")
+    if earlier_edit is not None:
+        # The S came while the follower caught up on an EARLIER edit whose
+        # animation had been cut off: the partial is that edit's text, never
+        # "this much of your version" (Task 20 review, m1).
+        shown = (
+            "how much of the earlier edit they had been shown is not known. "
+            if earlier_edit == "unknown"
+            else f"what they had been shown was the start of your earlier, interrupted "
+            f"edit of it:\n\n{quoted}\n\n"
+        )
+        _print_hook_context(
+            f"The user interrupted the live preview of {file_path} while it was "
+            "still catching up on an earlier edit of yours, edited it "
+            "themselves, and SAVED their own "
+            "version — it is now the file's content on disk. So none of this "
+            f"edit had been typed for them, and {shown}"
+            "Re-read the file from disk and build on the user's version; do not "
+            "restore yours without asking."
+        )
+        return
     _print_hook_context(
         f"The user interrupted the live preview of {file_path} while it was "
         "being written, edited it themselves, and SAVED their own version — "
@@ -685,6 +713,7 @@ def _poll_until_interrupt(
     initial_mtime: int | None,
     cue: str = HANDOFF_CUE,
     raw_after: bytes | None = None,
+    earlier_edit: EarlierEdit | None = None,
 ) -> bool:
     """One hand-off wait. True when the user pressed S again (des-interrupt);
     False when they released the turn by saving, with the matching
@@ -711,7 +740,7 @@ def _poll_until_interrupt(
         try:
             if Path(file_path).read_bytes() != expected:
                 control.discard_pending_animation(session.window_id)
-                _print_interrupt_notification(file_path, partial_content)
+                _print_interrupt_notification(file_path, partial_content, earlier_edit)
                 return False
             # A save is a save: a user who reviewed and kept Claude's
             # version (identical content, fresh mtime) must release the
@@ -794,12 +823,10 @@ def _replay_remainder(
         FollowerState.clear_stale(window_id, file_path)
         FollowerState.update_current_file(window_id, file_path)
         return None
-    rebuilt = follower.rewrite_buffer(file_path, partial_content)
-    if rebuilt.outcome != "completed":
-        # Interrupted during the instant rebuild: none of the remainder ran,
-        # so re-arm with it untouched. The half-rebuilt buffer needs no repair
-        # — the next des-interrupt rewrites it from the same partial.
-        return _rearm_handoff(follower, window_id, pending, partial_content, 0)
+    # The rebuild always runs to the end: an S pressed during it is resume's
+    # to take, before it types anything (count 0, the remainder re-armed
+    # whole), so the buffer handed back is never cut inside the partial.
+    follower.rewrite_buffer(file_path, partial_content)
     # rewrite_buffer rebuilds the buffer to EXACTLY the partial, so there is
     # no seed to strip — EXCEPT when the partial is empty (interrupt before
     # any line was typed): nvim can't hold a truly empty buffer, so
@@ -823,6 +850,7 @@ def _await_user_handoff(
     partial_content: str,
     surface: StatusSurface | None = None,
     raw_after: bytes | None = None,
+    earlier_edit: EarlierEdit | None = None,
 ) -> None:
     """The user interrupted and owns the buffer: hold Claude's turn until
     they save their version (release Claude with it, via the notification)
@@ -834,7 +862,12 @@ def _await_user_handoff(
     (pending remainder, partial): a replay that is itself interrupted re-arms
     the wait instead of returning, so the second S is not the last one the
     hook listens to (live finding, 2026-09-16 — a mid-replay interrupt left
-    nobody listening and the buffer partial until the next animation)."""
+    nobody listening and the buffer partial until the next animation).
+
+    earlier_edit marks a hand-off an S during the pre-edit catch-up started:
+    nothing of THIS edit was typed, and partial_content is the earlier,
+    interrupted edit's text ("shown"), or unknown ("unknown"); the release
+    notification says so (_print_interrupt_notification)."""
     window_id = session.window_id
     try:
         initial_mtime = Path(file_path).stat().st_mtime_ns
@@ -876,6 +909,7 @@ def _await_user_handoff(
                 initial_mtime,
                 cue,
                 raw_after=raw_after,
+                earlier_edit=earlier_edit,
             ):
                 return
             # switch the cue from "waiting" to the replay before it runs
@@ -1152,10 +1186,11 @@ class _CatchUp:
     """How a pre-edit catch-up ended. "interrupted" is an S the catch-up's
     driver consumed, and `partial` is then what the buffer holds: the
     persisted partial plus whatever of the remainder the replay typed, in the
-    terminated form every partial uses."""
+    terminated form every partial uses, or None when the remainder recorded
+    no partial (a legacy one) and so what the buffer holds is not known."""
 
     outcome: Literal["completed", "interrupted"]
-    partial: str = ""
+    partial: str | None = ""
 
 
 def _consume_pending_catchup(
@@ -1207,26 +1242,26 @@ def _consume_pending_catchup(
     "completed" means the catch-up ran to the end, so the buffer holds only
     follower text, unless the user typed into an adopted editor while it ran
     (_caught_up_buffer_held asks before _animate_edit reloads it from disk).
-    "interrupted" is an S pressed while it ran (final review M5): the rebuild
-    or the replay consumed it, so nothing more is typed (an interrupted
-    rebuild skips the replay, which would type on past the S) and the caller
-    hands the buffer over (_hand_over_interrupted_catch_up). A legacy
-    remainder without a partial counts from an empty one: its prefix is not
-    known, and the partial only feeds the notification text."""
-    base = pending.partial or ""
+    "interrupted" is an S pressed while it ran (final review M5): the replay
+    consumed it (the rebuild never does: one pressed during it is left for
+    the replay's first check, so the buffer holds at least the whole
+    partial), nothing more is typed, and the caller hands the buffer over
+    (_hand_over_interrupted_catch_up). A legacy remainder without a partial
+    reports None: what its buffer holds is not known."""
     if pending.partial is not None:
-        rebuilt = follower.rewrite_buffer(file_path, pending.partial)
-        if rebuilt.outcome != "completed":
-            return _CatchUp("interrupted", base)
+        # Never cut: an S pressed during it is the replay's, at its start.
+        follower.rewrite_buffer(file_path, pending.partial)
     result = follower.resume(
         dataclasses.replace(pending, pace_seconds=0.0), seeded=not pending.partial, reload=False
     )
     if result.outcome == "completed":
         return _CatchUp("completed")
+    if pending.partial is None:
+        return _CatchUp("interrupted", None)
     if isinstance(pending, control.PendingShowFresh):
-        shown = base + _terminated(pending.lines[: result.completed_count])
+        shown = pending.partial + _terminated(pending.lines[: result.completed_count])
     else:
-        shown = diff_module.apply_ops(base, pending.ops[: result.completed_count])
+        shown = diff_module.apply_ops(pending.partial, pending.ops[: result.completed_count])
     return _CatchUp("interrupted", shown)
 
 
@@ -1236,7 +1271,7 @@ def _hand_over_interrupted_catch_up(
     follower: Follower,
     file_path: str,
     raw_after: bytes,
-    partial: str,
+    partial: str | None,
 ) -> int:
     """An S pressed during the pre-edit catch-up (Alberto's answer A,
     2026-10-17, final review M5): hand the buffer over as it is now. It used
@@ -1245,16 +1280,16 @@ def _hand_over_interrupted_catch_up(
     and the remainder was gone.
 
     The hand-off is THIS edit's: the normal wait, with the catch-up's partial
-    as the partial and NO saved remainder (a pause during the catch-up may
-    have written one; it is the OLD edit's, superseded by the file Claude has
-    just written). So `:w` releases Claude with the user's version, and S
-    again takes _replay_remainder's `pending is None` path: the finished file
-    is reloaded, nothing replayed. hand_over unlocks a rebuild cut short, as
-    _rearm_handoff does for a replay's."""
+    as the partial and NO saved remainder (the catch-up consumed the old one,
+    and a pause during it deletes the crash fallback it wrote on every exit).
+    So `:w` releases Claude with the user's version, told that none of THIS
+    edit had been typed (earlier_edit), and S again takes _replay_remainder's
+    `pending is None` path: the finished file is reloaded, nothing replayed.
+    hand_over re-asserts the unlock and turns CoC back on, as _rearm_handoff
+    does after a replay's interrupt."""
     window_id = session.window_id
     # The driver returned: an S from here on is the des-interrupt.
     control.mark_animating(window_id, state="handoff")
-    control.discard_pending_animation(window_id)
     follower.hand_over()
     FollowerState.update_current_file(window_id, None)
     surface = status_surface_for(current)
@@ -1262,7 +1297,16 @@ def _hand_over_interrupted_catch_up(
     # to restore when it ends.
     surface.retire_state(BASE_DIFFERS_CUE, PROBE_UNKNOWN_CUE)
     after = raw_after.decode("utf-8", errors="replace")
-    _await_user_handoff(current, session, file_path, after, partial, surface, raw_after=raw_after)
+    _await_user_handoff(
+        current,
+        session,
+        file_path,
+        after,
+        partial or "",
+        surface,
+        raw_after=raw_after,
+        earlier_edit="unknown" if partial is None else "shown",
+    )
     _mark_finishing(window_id)
     return 0
 

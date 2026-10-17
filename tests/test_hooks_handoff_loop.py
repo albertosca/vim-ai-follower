@@ -259,42 +259,6 @@ def test_a_mid_replay_interrupt_with_nothing_typed_keeps_the_remainder_unchanged
     assert fake.rewrite_buffer.call_args_list == [call(target, ""), call(target, "")]
 
 
-def test_an_interrupted_rebuild_re_arms_with_the_untouched_remainder(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # rewrite_buffer animates on the tmux backend (run_lines at pace 0), so it
-    # can be interrupted too. None of the remainder ran, so it must be re-armed
-    # whole — and resume must not have been reached at all for that cycle.
-    after = "l0\nl1\nl2\n"
-    current, target = _handoff_state(tmp_path, after)
-    control.save_pending_show_fresh("@1", ("l1", "l2"), 0.03, continuation=True, file_path=target)
-    saved = _spy_saves(monkeypatch)
-
-    fake = MagicMock()
-    fake.rewrite_buffer.side_effect = [
-        AnimationResult("interrupted", 0),
-        AnimationResult("completed", 1),
-    ]
-    fake.resume.return_value = AnimationResult("completed", 2)
-    _install_fake_follower(monkeypatch, fake)
-
-    with (
-        # FollowerState.get gates update_current_file on the pane being alive
-        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
-        patch("vim_ai_follower.control.check_signal", _scripted(["interrupt", "interrupt"])),
-        patch("vim_ai_follower.hooks.time.sleep"),
-    ):
-        hooks._await_user_handoff(current, _SESSION, target, after, "l0\n")
-
-    assert saved == [("show_fresh", ("l1", "l2"), 0.03, True)]  # untouched
-    fake.resume.assert_called_once()
-    assert fake.resume.call_args.args[0].lines == ("l1", "l2")
-    # The des-interrupt replays THIS hook's own edit, so the relock's re-read
-    # of disk is the finished file it is typing: keep it (unlike the catch-up).
-    assert fake.resume.call_args.kwargs.get("reload", True) is True
-    assert fake.hand_over.call_count == 1
-
-
 @pytest.mark.integration
 def test_two_replay_cycles_land_at_the_exact_content_in_a_real_nvim(
     headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

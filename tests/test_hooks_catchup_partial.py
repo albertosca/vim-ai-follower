@@ -97,9 +97,10 @@ _CUT = AnimationResult("interrupted", 0)
     [
         (_DONE, _DONE, "a\n", hooks._CatchUp("completed")),
         (_DONE, _CUT, "a\n", hooks._CatchUp("interrupted", "a\n")),
-        (_CUT, _DONE, "a\n", hooks._CatchUp("interrupted", "a\n")),
         (None, _DONE, None, hooks._CatchUp("completed")),
-        (None, _CUT, None, hooks._CatchUp("interrupted", "")),
+        # A legacy remainder recorded no partial: what the buffer holds is
+        # not known, and the notification must not quote a guess.
+        (None, _CUT, None, hooks._CatchUp("interrupted", None)),
     ],
 )
 def test_catchup_reports_whether_it_ran_to_the_end(
@@ -120,9 +121,6 @@ def test_catchup_reports_whether_it_ran_to_the_end(
     )
 
     assert hooks._consume_pending_catchup(follower, "/tmp/f.py", pending) == expected
-    if rebuilt is _CUT:
-        # The S was the rebuild's: the replay would type on past it.
-        follower.resume.assert_not_called()
 
 
 def test_an_interrupted_apply_edit_catch_up_counts_the_ops_it_applied() -> None:
@@ -416,7 +414,7 @@ def test_catchup_rebuild_is_backend_agnostic_for_tmux(tmp_path: Path) -> None:
 
 
 def _orphaned_remainder_and_edit(
-    tmp_path: Path, adopted: bool = False
+    tmp_path: Path, adopted: bool = False, partial: str | None = "a\n"
 ) -> tuple[str, dict[str, object]]:
     """A file the follower already shows, a crash-orphaned show_fresh
     remainder for it (partial "a\\n", three lines left), and the NEW edit
@@ -435,7 +433,7 @@ def _orphaned_remainder_and_edit(
     )
     snapshot.save("@1", resolved, "a\nx\ny\nz\n")
     control.save_pending_show_fresh(
-        "@1", ("x", "y", "z"), 0.03, continuation=True, file_path=resolved, partial="a\n"
+        "@1", ("x", "y", "z"), 0.03, continuation=True, file_path=resolved, partial=partial
     )
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": resolved}}
     return resolved, payload
@@ -454,20 +452,19 @@ def _run_post_hook(payload: dict[str, object], signal: str | None) -> None:
 
 @pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
 @pytest.mark.parametrize(
-    ("rebuilt", "resumed", "expected_partial"),
+    ("resumed", "expected_partial"),
     [
         # Cut inside the replay: the partial plus the one line it typed.
-        (_DONE, AnimationResult("interrupted", 1), "a\nx\n"),
-        # Cut inside the rebuild: nothing of the remainder ran, and the
-        # replay must not run either (it would type on past the S).
-        (_CUT, _DONE, "a\n"),
+        (AnimationResult("interrupted", 1), "a\nx\n"),
+        # An S pressed during the rebuild, which leaves it for the replay's
+        # first check: the whole partial, nothing of the remainder.
+        (AnimationResult("interrupted", 0), "a\n"),
     ],
     ids=["during-the-replay", "during-the-rebuild"],
 )
 def test_s_during_a_catch_up_hands_the_buffer_over_as_it_is(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    rebuilt: AnimationResult,
     resumed: AnimationResult,
     expected_partial: str,
     adopted: bool,
@@ -478,7 +475,6 @@ def test_s_during_a_catch_up_hands_the_buffer_over_as_it_is(
     the catch-up runs once the probe finds the partial ("holds")."""
     resolved, payload = _orphaned_remainder_and_edit(tmp_path, adopted)
     follower = _fake_follower()
-    follower.rewrite_buffer.return_value = rebuilt
     follower.resume.return_value = resumed
     monkeypatch.setattr(hooks, "get_follower", lambda *a, **k: follower)
     monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: MagicMock())
@@ -492,8 +488,10 @@ def test_s_during_a_catch_up_hands_the_buffer_over_as_it_is(
         partial_content: str,
         surface: object = None,
         raw_after: bytes | None = None,
+        earlier_edit: str | None = None,
     ) -> None:
         seen["file_path"] = file_path
+        seen["earlier_edit"] = earlier_edit
         seen["after"] = after
         seen["partial"] = partial_content
         seen["raw_after"] = raw_after
@@ -509,9 +507,8 @@ def test_s_during_a_catch_up_hands_the_buffer_over_as_it_is(
         "partial": expected_partial,
         "raw_after": b"a\nx\ny\nz\nNEW\n",
         "pending": False,
+        "earlier_edit": "shown",
     }
-    if rebuilt.outcome == "interrupted":
-        follower.resume.assert_not_called()
     follower.hand_over.assert_called_once_with()
     follower.apply_edit.assert_not_called()
     follower.show_fresh.assert_not_called()
@@ -544,44 +541,47 @@ def test_s_again_after_an_interrupted_catch_up_shows_claudes_finished_file(
     assert current.current_file == resolved
 
 
-def test_a_remainder_a_pause_saved_during_the_catch_up_is_not_replayed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("partial", "quoted"),
+    [("a\n", "a\nx"), (None, None)],
+    ids=["known-partial", "legacy-no-partial"],
+)
+def test_a_save_after_an_interrupted_catch_up_says_what_was_really_shown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    partial: str | None,
+    quoted: str | None,
 ) -> None:
-    """A P then S during the catch-up: the pause re-saved the OLD edit's
-    remainder (the crash fallback), and answer A drops it, so the second S
-    reloads Claude's file instead of replaying the old edit on top."""
-    resolved, payload = _orphaned_remainder_and_edit(tmp_path)
+    """Fix round 1, m1. The S came before any of THIS edit was typed: what
+    the user had seen was the earlier, interrupted edit's text (or, for a
+    legacy remainder that recorded no partial, nobody knows how much), and
+    the release notification must say so, not present it as "this much of
+    your version"."""
+    resolved, payload = _orphaned_remainder_and_edit(tmp_path, partial=partial)
     follower = _fake_follower()
-
-    def paused_then_interrupted(*args: object, **kwargs: object) -> AnimationResult:
-        control.save_pending_show_fresh(
-            "@1", ("y", "z"), 0.0, continuation=True, file_path=resolved, partial="a\nx\n"
-        )
-        return AnimationResult("interrupted", 1)
-
-    follower.resume.side_effect = paused_then_interrupted
+    follower.resume.return_value = AnimationResult("interrupted", 1)
     monkeypatch.setattr(hooks, "get_follower", lambda *a, **k: follower)
     monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: MagicMock())
-    monkeypatch.setattr(hooks, "show_popup", lambda *a, **k: None)
-    presses = {"count": 0}
 
-    def interrupt_with_a_hang_guard(*args: object, **kwargs: object) -> str:
-        # A replayed remainder re-arms on every "interrupt" (the mock resume
-        # always cuts), so without the fix this would loop forever.
-        presses["count"] += 1
-        if presses["count"] > 30:
-            raise RuntimeError("hang guard: the hand-off kept replaying a remainder")
-        return "interrupt"
+    def the_user_saves(seconds: float) -> None:
+        Path(resolved).write_text("a\nx\nUSER\n")
 
+    monkeypatch.setattr("vim_ai_follower.hooks.time.sleep", the_user_saves)
     with (
-        patch("vim_ai_follower.control.check_signal", side_effect=interrupt_with_a_hang_guard),
-        patch("vim_ai_follower.hooks.time.sleep"),
+        patch("vim_ai_follower.control.check_signal", return_value=None),
         patch("pynvim.attach", return_value=MagicMock()),
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()),
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
-    follower.reload_and_relock.assert_called_once_with(resolved)
-    follower.rewrite_buffer.assert_called_once_with(resolved, "a\n")  # the catch-up's only
-    assert not control.has_pending_animation("@1")
+    printed = capsys.readouterr().out.strip().splitlines()[-1]
+    context = json.loads(printed)["hookSpecificOutput"]["additionalContext"]
+    assert "SAVED their own version" in context
+    assert "none of this edit had been typed" in context
+    assert "Only this much of your version" not in context
+    if quoted is None:
+        assert "how much of the earlier edit they had been shown is not known" in context
+    else:
+        assert f"your earlier, interrupted edit of it:\n\n{quoted}\n\n" in context

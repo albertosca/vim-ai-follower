@@ -57,10 +57,9 @@ _READONLY_RELOCK = call_spelled("relock", 1, 0)
 # The discarding reload (reload_and_relock's / reload_from_disk's `silent
 # edit!`, s:reload) of a dedicated follower.
 _RELOAD_DISCARDING = call_spelled("reload", 1, 0)
-# hand_over's unlock, giving the user's global 'paste' back.
-_HAND_OVER = (
-    ":setlocal modifiable|let &paste = get(g:, 'vaf_user_paste', 0)|unlet! g:vaf_user_paste"
-)
+# hand_over's unlock of a dedicated Vim, giving the user's global 'paste'
+# back from its record (s:hand_over).
+_HAND_OVER = call_spelled("hand_over", 0)
 
 
 def _goto(path: object) -> str:
