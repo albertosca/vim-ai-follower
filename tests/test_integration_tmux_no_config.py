@@ -41,19 +41,78 @@ def test_the_e2e_server_loads_no_config() -> None:
     assert loaded == "/dev/null"
 
 
+# tmux options that take a value, so the word after them is not the command.
+_OPTIONS_WITH_A_VALUE = {"-c", "-f", "-L", "-S", "-T"}
+# Commands that start a server when none runs (and so read a config):
+# measured on tmux 3.8 (T24b re-review m4 residual). tmux also takes any
+# unambiguous prefix of a command name, and `new`/`a` are aliases.
+_SERVER_STARTERS = ("new-session", "start-server", "attach-session", "list-commands")
+_STARTER_ALIASES = {"new", "start", "attach", "a", "lscm"}
+
+
+def _starts_a_server(command: str) -> bool:
+    return command in _STARTER_ALIASES or (
+        len(command) >= 3 and any(name.startswith(command) for name in _SERVER_STARTERS)
+    )
+
+
+def _unconfigured_server_starts(text: str) -> list[str]:
+    """Every `tmux …` invocation in a script's text that may start a server
+    and names no config with `-f`. Backslash continuations are joined first
+    (T24b re-review m-B: `tmux \\` + newline + `new-session` slipped past a
+    per-line grep, as did the `new` alias)."""
+    offenders = []
+    joined = re.sub(r"\\\n", " ", text)
+    for line in joined.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        for match in re.finditer(r"\btmux\b", line):
+            words = line[match.end() :].split()
+            index = 0
+            named_config = False
+            while index < len(words) and words[index].startswith("-"):
+                named_config = named_config or words[index] == "-f"
+                index += 2 if words[index] in _OPTIONS_WITH_A_VALUE else 1
+            if index >= len(words):
+                continue
+            command = words[index].rstrip(";)\"'")
+            if _starts_a_server(command) and not named_config:
+                offenders.append(line.strip())
+    return offenders
+
+
 def test_every_script_that_starts_a_private_server_passes_no_config() -> None:
     # A script on a private TMUX_TMPDIR starts its own server, and every
-    # new-session there may be the one that starts it (a kill-session of
-    # the last session ends the server). The scripts that add a session to
-    # the developer's REAL server on purpose set no TMUX_TMPDIR; tmux
-    # ignores `-f` for a server that already runs. A script may name its own
-    # config instead (record_demo.sh's, from the repo): any explicit `-f`.
-    offenders = []
-    for script in sorted(_SCRIPTS.glob("*.sh")):
-        text = script.read_text()
-        if "TMUX_TMPDIR=" not in text:
-            continue
-        for number, line in enumerate(text.splitlines(), start=1):
-            if re.search(r"\btmux\b.*\bnew-session\b", line) and not re.search(r"\s-f\s", line):
-                offenders.append(f"{script.name}:{number}: {line.strip()}")
+    # server-starting command there may be the one that starts it (a
+    # kill-session of the last session ends the server). The scripts that
+    # add a session to the developer's REAL server on purpose set no
+    # TMUX_TMPDIR; tmux ignores `-f` for a server that already runs. A
+    # script may name its own config instead (record_demo.sh's, from the
+    # repo): any explicit `-f`.
+    offenders = [
+        f"{script.name}: {line}"
+        for script in sorted(_SCRIPTS.glob("*.sh"))
+        if "TMUX_TMPDIR=" in script.read_text()
+        for line in _unconfigured_server_starts(script.read_text())
+    ]
     assert offenders == []
+
+
+@pytest.mark.parametrize(
+    ("script", "expected"),
+    [
+        ("tmux -f /dev/null new-session -d -s a", []),
+        ("tmux -S /tmp/s -f /dev/null new -d", []),
+        ("tmux new -d -s a", ["tmux new -d -s a"]),
+        ("tmux new-s -d", ["tmux new-s -d"]),
+        ("tmux \\\n  new-session -d -s a", ["tmux    new-session -d -s a"]),
+        ("tmux -S /tmp/s start-server", ["tmux -S /tmp/s start-server"]),
+        ("X=1 tmux attach -t a", ["X=1 tmux attach -t a"]),
+        ("tmux new-window -t a; tmux kill-server", []),
+        ("# tmux new-session", []),
+    ],
+)
+def test_the_script_check_finds_every_unconfigured_server_start(
+    script: str, expected: list[str]
+) -> None:
+    assert _unconfigured_server_starts(script) == expected
