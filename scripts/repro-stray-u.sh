@@ -18,7 +18,24 @@
 set -e
 unset TMUX
 export TMUX_TMPDIR=$(mktemp -d /tmp/vaf-strayu-XXXX)
-trap 'tmux kill-server 2>/dev/null; rm -rf "$TMUX_TMPDIR"' EXIT
+# The cleanup runs under `set -e`, so every step that may fail carries
+# `|| true`: the probes' kill-session already ended the server, the
+# kill-server failed, and the trap stopped there, leaving every run's
+# directory behind (measured 2026-10-18). kill-server returns before the
+# server exits, so wait for its pid (at most 5 s) before removing its
+# socket directory. zsh runs no EXIT trap for a signal, hence INT/TERM.
+cleanup() {
+  local server_pid=$(tmux display-message -p '#{pid}' 2>/dev/null || true)
+  tmux kill-server 2>/dev/null || true
+  local waited=0
+  while [[ -n "$server_pid" && $waited -lt 50 ]] && kill -0 "$server_pid" 2>/dev/null; do
+    sleep 0.1; waited=$((waited + 1))
+  done
+  rm -rf "$TMUX_TMPDIR"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 printf 'banana\nbandana\n' > "$TMUX_TMPDIR/dict.txt"
 VIMRC='set nocompatible noloadplugins'
@@ -26,6 +43,7 @@ VIMRC="$VIMRC | set dictionary=$TMUX_TMPDIR/dict.txt complete=k completeopt=menu
 VIMRC="$VIMRC | inoremap <expr> <Esc> pumvisible() ? \"\\<C-e>\" : \"\\<Esc>\""
 
 probe() {  # $1 label, $2 = single|double
+  # No viminfo (-i NONE): a killed Vim wrote ~/.viminfo, the user's own.
   # Each probe its own file and no swap (-n): a shared file left the first
   # Vim's swap behind, the second Vim opened at the ATTENTION prompt, and
   # the "double" verdict read empty whatever was typed (measured 2026-10-17:
@@ -33,7 +51,7 @@ probe() {  # $1 label, $2 = single|double
   local dump="$TMUX_TMPDIR/dump-$2.txt"
   rm -f "$dump"
   tmux kill-session -t strayu 2>/dev/null || true
-  VIMINIT="$VIMRC" tmux -f /dev/null new-session -d -s strayu -x 120 -y 30 "vim -n $TMUX_TMPDIR/scratch-$2"
+  VIMINIT="$VIMRC" tmux -f /dev/null new-session -d -s strayu -x 120 -y 30 "vim -n -i NONE $TMUX_TMPDIR/scratch-$2"
   local P=$(tmux list-panes -t strayu -F '#{pane_id}' | head -1)
   sleep 1.2
   tmux send-keys -t "$P" i
