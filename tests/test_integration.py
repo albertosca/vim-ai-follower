@@ -11,6 +11,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from helpers import HERMETIC_VIMINIT
 
 from vim_ai_follower import cli, config, control, state
 from vim_ai_follower.diff import compute_edit_script
@@ -975,7 +976,7 @@ def test_preamble_survives_a_pending_hit_enter_prompt_with_hostile_ctrl_n(
             "-t",
             tmux_session,
             "VIMINIT",
-            "set nocompatible noloadplugins | nnoremap <C-n> ggdG",
+            f"{HERMETIC_VIMINIT} | nnoremap <C-n> ggdG",
         ],
         check=True,
     )

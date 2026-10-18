@@ -45,6 +45,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from helpers import HERMETIC_VIMINIT
 
 from vim_ai_follower import cli, control
 
@@ -155,7 +156,7 @@ def _observed_follower(
             "set-environment",
             "-g",
             "VIMINIT",
-            f"set nocompatible noloadplugins | source {observer}",
+            f"{HERMETIC_VIMINIT} | source {observer}",
         ],
         check=True,
     )

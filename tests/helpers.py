@@ -19,6 +19,12 @@ from vim_ai_follower import state
 # it was written under this server (state.proven_here), as a real one does.
 MOCK_SERVER_PID = 4242
 
+# The VIMINIT of every Vim (and nvim: 'viminfofile' is 'shadafile' there) a
+# test starts under the developer's HOME: no user vimrc or plugins, and no
+# viminfo/ShaDa written into that HOME (T24b re-review I-A: every
+# tmux_session Vim wrote ~/.viminfo). Extend it with `| …`, never replace it.
+HERMETIC_VIMINIT = "set nocompatible noloadplugins viminfofile=NONE"
+
 
 def make_mock_tmux_run(
     window_id: str = "@1",

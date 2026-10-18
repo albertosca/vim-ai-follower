@@ -58,7 +58,7 @@ run_variant() {
   local dump="$TMUX_TMPDIR/buf-$variant"
   : > "$log"; rm -f "$dump"
   tmux kill-session -t x 2>/dev/null || true
-  tmux -f /dev/null new-session -d -s x -x 101 -y 51 "vim"
+  tmux -f /dev/null new-session -d -s x -x 101 -y 51 "vim -i NONE"
   local P=$(tmux list-panes -t x -F '#{pane_id}' | head -1)
   sleep 3.0                                    # let the real config finish loading
   local T K

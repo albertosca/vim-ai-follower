@@ -87,7 +87,7 @@ def test_send_text_types_every_hostile_string_byte_exact(
     tmux_session: str, tmp_path: Path, wait_until: Callable[..., bool]
 ) -> None:
     _prove_private()
-    vim = "vim -u NONE -N -n -c 'set paste encoding=utf-8'"
+    vim = "vim -u NONE -i NONE -N -n -c 'set paste encoding=utf-8'"
     pane = subprocess.run(
         ["tmux", "split-window", "-h", "-t", tmux_session, "-P", "-F", "#{pane_id}", vim],
         capture_output=True,

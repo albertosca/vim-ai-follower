@@ -12,7 +12,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
-from helpers import PATH_HANDLES, resolve_typed_paths
+from helpers import HERMETIC_VIMINIT, PATH_HANDLES, resolve_typed_paths
 
 from vim_ai_follower import cache, config, hooks, session, snapshot
 from vim_ai_follower.backends import nvim_connect, tmux_vim
@@ -221,8 +221,20 @@ def tmux_session(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     # swallow keys, ESC timing shifts), and copilot-language-server triggers
     # macOS keychain password prompts on every suite run.
     # noloadplugins also blocks native packages (~/.vim/pack/*/start/*),
-    # which load even when the vimrc is skipped.
-    monkeypatch.setenv("VIMINIT", "set nocompatible noloadplugins")
+    # which load even when the vimrc is skipped. viminfofile=NONE: the
+    # server runs under the developer's HOME, and every Vim it ran wrote
+    # their ~/.viminfo on exit (T24b re-review I-A).
+    monkeypatch.setenv("VIMINIT", HERMETIC_VIMINIT)
+    # The panes' login shells write no history into that HOME either. zsh on
+    # macOS takes HISTFILE from /etc/zshrc (`${ZDOTDIR:-$HOME}/.zsh_history`,
+    # SAVEHIST=1000), overriding the environment's, so its lever is a private
+    # ZDOTDIR whose .zshrc (read after /etc/zshrc) unsets it; bash honours
+    # HISTFILE.
+    shell_home = Path(socket_dir) / "zdotdir"
+    shell_home.mkdir()
+    (shell_home / ".zshrc").write_text("unset HISTFILE\n")
+    monkeypatch.setenv("ZDOTDIR", str(shell_home))
+    monkeypatch.setenv("HISTFILE", "/dev/null")
     session_name = f"pytest-{uuid.uuid4().hex[:8]}"
     # `-f /dev/null`: this server runs under the developer's HOME, so it
     # would otherwise load their real tmux.conf, plugins and hooks included

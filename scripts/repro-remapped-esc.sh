@@ -32,7 +32,7 @@ V='set nocompatible noloadplugins | inoremap <Esc> <Nop>'  # worst case: Esc doe
 
 rm -f "$TMUX_TMPDIR/b" "$TMUX_TMPDIR/pre"
 printf 'LINE-ONE\nLINE-TWO\nLINE-THREE\n' > "$TMUX_TMPDIR/f"
-VIMINIT="$V" tmux -f /dev/null new-session -d -s m -x 120 -y 30 "vim $TMUX_TMPDIR/f"
+VIMINIT="$V" tmux -f /dev/null new-session -d -s m -x 120 -y 30 "vim -i NONE $TMUX_TMPDIR/f"
 P=$(tmux list-panes -t m -F '#{pane_id}' | head -1)
 # Full settle before any key: at ~1s Vim may not have finished sourcing VIMINIT,
 # which silently changes the answer and is what made the old conclusion look

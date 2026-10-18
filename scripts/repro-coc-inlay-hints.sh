@@ -52,7 +52,7 @@ unset TMUX
 trap 'tmux kill-server 2>/dev/null; rm -rf "$TMUX_TMPDIR"' EXIT
 
 printf 'a\nb\n' > "$TMUX_TMPDIR/f"
-VIMINIT='set nocompatible noloadplugins' tmux -f /dev/null new-session -d -s m -x 100 -y 20 "vim $TMUX_TMPDIR/f"
+VIMINIT='set nocompatible noloadplugins' tmux -f /dev/null new-session -d -s m -x 100 -y 20 "vim -i NONE $TMUX_TMPDIR/f"
 P=$(tmux list-panes -t m -F '#{pane_id}' | head -1)
 sleep 1.0
 tmux send-keys -t "$P" -l -- ':silent! CocDisable'
