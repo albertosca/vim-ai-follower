@@ -158,10 +158,12 @@ def route_exec_lua(nvim: MagicMock, *, buffer: int, display_name: str) -> None:
     then pin whatever the mock happened to return. A completion's stamp
     (_STAMP_IF_EXPECTED_LUA) answers True, as for a buffer that holds what
     the run typed; show_fresh's read-then-clear (_READ_THEN_CLEAR_LUA)
-    returns nothing."""
+    returns nothing; the typing loop's window lookup (_FOLLOWER_WINDOW_LUA)
+    answers a window that shows the buffer."""
     from vim_ai_follower.backends.nvim import (
         _DISPLAY_NAME_LUA,
         _FIND_BUFFER_LUA,
+        _FOLLOWER_WINDOW_LUA,
         _READ_THEN_CLEAR_LUA,
         _STAMP_IF_EXPECTED_LUA,
     )
@@ -171,6 +173,7 @@ def route_exec_lua(nvim: MagicMock, *, buffer: int, display_name: str) -> None:
         _DISPLAY_NAME_LUA: display_name,
         _STAMP_IF_EXPECTED_LUA: True,
         _READ_THEN_CLEAR_LUA: None,
+        _FOLLOWER_WINDOW_LUA: 1000,
     }
 
     def answer(code: str, *args: object) -> object:

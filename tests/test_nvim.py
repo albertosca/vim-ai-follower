@@ -11,6 +11,7 @@ from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends import get_follower
 from vim_ai_follower.backends.nvim import (
     _FIND_BUFFER_LUA,
+    _FOLLOWER_WINDOW_LUA,
     _READ_THEN_CLEAR_LUA,
     NvimFollower,
     _animate_lines,
@@ -48,6 +49,42 @@ def test_animate_lines_types_each_line_char_by_char() -> None:
         call(7, 1, 0, 1, 0, ["b"]),
         call(7, 1, 1, 1, 1, ["b"]),
     ]
+
+
+def test_animate_lines_moves_the_cursor_of_the_window_showing_the_buffer() -> None:
+    # Never window 0 (the user's current window in an adopted nvim, T24a
+    # review m6): the window comes from _FOLLOWER_WINDOW_LUA, by handle.
+    nvim = MagicMock()
+    nvim.exec_lua.return_value = 1004
+    with patch("vim_ai_follower.control.check_signal", return_value=None):
+        _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", ns=3)
+    assert nvim.exec_lua.call_args_list == [call(_FOLLOWER_WINDOW_LUA, 7, 0)]
+    assert nvim.api.win_set_cursor.call_args_list == [call(1004, [1, 1]), call(1004, [1, 2])]
+
+
+def test_animate_lines_moves_no_cursor_when_the_buffer_shows_nowhere() -> None:
+    nvim = MagicMock()
+    nvim.exec_lua.return_value = 0
+    with patch("vim_ai_follower.control.check_signal", return_value=None):
+        result = _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", ns=3)
+    assert result == AnimationResult("completed", 1)
+    nvim.api.win_set_cursor.assert_not_called()
+
+
+def test_animate_lines_finds_the_window_again_after_a_mid_line_pause() -> None:
+    nvim = MagicMock()
+    nvim.exec_lua.side_effect = [1004, 1009]
+    signals = iter([None, None, "pause", None])
+    with (
+        patch("vim_ai_follower.control.check_signal", side_effect=lambda *_: next(signals, None)),
+        patch("vim_ai_follower.backends.nvim._wait_while_paused", return_value=True),
+    ):
+        _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", ns=3)
+    assert nvim.exec_lua.call_args_list == [
+        call(_FOLLOWER_WINDOW_LUA, 7, 0),
+        call(_FOLLOWER_WINDOW_LUA, 7, 1004),
+    ]
+    assert nvim.api.win_set_cursor.call_args_list == [call(1004, [1, 1]), call(1009, [1, 2])]
 
 
 def test_animate_lines_forces_the_static_default_colorscheme_before_the_typing_highlight() -> None:

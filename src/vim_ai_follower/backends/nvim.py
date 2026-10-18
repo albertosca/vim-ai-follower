@@ -97,6 +97,30 @@ def _buffer_number(nvim: pynvim.Nvim, file_path: str) -> int:
     return number
 
 
+# The window whose cursor the typing loop moves: one showing the follower's
+# buffer, by handle — the one the loop used last, else the current window,
+# else one in the current tab, else one in any tab; 0 when the buffer shows
+# nowhere. Never "window 0": in an adopted nvim the user may have moved to
+# another tab or split (T24a review m6, measured 2026-10-18: a resumed
+# animation moved the user's cursor in their own file from (7, 3) to (6, 10)).
+_FOLLOWER_WINDOW_LUA = """
+local buf, previous = ...
+local function shows(window)
+  return vim.api.nvim_win_is_valid(window) and vim.api.nvim_win_get_buf(window) == buf
+end
+if previous ~= 0 and shows(previous) then return previous end
+local current = vim.api.nvim_get_current_win()
+if shows(current) then return current end
+for _, window in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+  if shows(window) then return window end
+end
+for _, window in ipairs(vim.api.nvim_list_wins()) do
+  if shows(window) then return window end
+end
+return 0
+"""
+
+
 def _animate_lines(
     nvim: pynvim.Nvim,
     buf: int,
@@ -164,6 +188,7 @@ def _animate_lines(
     )
     nvim.command(f"highlight default {_TYPING_HL} ctermbg=237 guibg=#3a3a3a")
     index = 0
+    window = 0  # the follower's window, resolved per line (_FOLLOWER_WINDOW_LUA)
     while index < len(lines):
         signal = control.check_signal(window_id, base_dir)
         if signal == "interrupt":
@@ -176,6 +201,7 @@ def _animate_lines(
             continue  # resumed: retype this line from its clean boundary
         row = start_row + index
         nvim.api.buf_set_lines(buf, row, row, True, [""])
+        window = nvim.exec_lua(_FOLLOWER_WINDOW_LUA, buf, window)
         line = lines[index]
         pace = pace_provider()
         if pace <= 0:  # pace-0 catch-up: type the whole line at once, no anim
@@ -210,14 +236,17 @@ def _animate_lines(
                 if not resumed:
                     interrupted = True
                     break
+                # The user may have moved to another window while paused.
+                window = nvim.exec_lua(_FOLLOWER_WINDOW_LUA, buf, window)
                 continue  # resumed: retype from the same character
             nvim.api.buf_set_text(buf, row, col, row, col, [line[char]])
             col += len(line[char].encode("utf-8"))
             char += 1
-            with contextlib.suppress(Exception):
-                # Byte-based too, so the cursor trails the typed prefix by its
-                # byte length, not its character count.
-                nvim.api.win_set_cursor(0, [row + 1, col])
+            if window:
+                with contextlib.suppress(Exception):
+                    # Byte-based too, so the cursor trails the typed prefix by
+                    # its byte length, not its character count.
+                    nvim.api.win_set_cursor(window, [row + 1, col])
             nvim.command("redraw")
             time.sleep(pace)
         nvim.api.buf_del_extmark(buf, ns, mark)
