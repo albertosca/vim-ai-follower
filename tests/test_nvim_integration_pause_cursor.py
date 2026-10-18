@@ -22,9 +22,12 @@ import pytest
 
 pynvim = pytest.importorskip("pynvim")
 
-from vim_ai_follower import control  # noqa: E402
+from vim_ai_follower import cache, control, state  # noqa: E402
 from vim_ai_follower.animate import AnimationResult  # noqa: E402
-from vim_ai_follower.backends.nvim import _animate_lines  # noqa: E402
+from vim_ai_follower.backends import nvim as nvim_backend  # noqa: E402
+from vim_ai_follower.backends.nvim import NvimFollower, _animate_lines  # noqa: E402
+from vim_ai_follower.control import PendingShowFresh  # noqa: E402
+from vim_ai_follower.diff import compute_edit_script  # noqa: E402
 
 pytestmark = pytest.mark.integration
 
@@ -151,3 +154,62 @@ def test_a_user_buffer_put_in_the_followers_window_keeps_its_cursor(
     assert user.api.win_get_cursor(0) == [7, 3], "the follower moved the user's cursor"
     assert user.api.buf_get_lines(animation.follower_buffer, 0, -1, True) == [*_LINES, ""]
     user.close()
+
+
+def test_the_followers_buffer_moved_into_the_users_window_keeps_their_cursor(
+    headless_nvim: str,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    # T24c review m2: during the pause the user shows the follower's buffer
+    # in a window of their own and closes the follower's window. The buffer
+    # still shows, but only in the USER's current window; an adopted follower
+    # moves no cursor but its own, so it types by buffer handle alone.
+    animation = _PausedAnimation(headless_nvim, tmp_path, tmp_path / "follower.txt")
+    user = animation.user
+    animation.start_and_pause(wait_until)
+    user.command("tabnew")
+    user_window = user.api.get_current_win().handle
+    user.api.win_set_buf(user_window, animation.follower_buffer)
+    user.api.win_close(animation.follower_window, True)
+    user.api.win_set_cursor(user_window, [1, 0])
+
+    animation.resume_and_finish()
+
+    assert user.api.get_current_win().handle == user_window
+    assert user.api.win_get_cursor(user_window) == [1, 0], "the follower moved the user's cursor"
+    assert user.api.buf_get_lines(animation.follower_buffer, 0, -1, True) == [*_LINES, ""]
+    user.close()
+
+
+@pytest.mark.parametrize("adopted", [False, True])
+def test_every_entry_point_types_with_the_followers_own_kind(
+    headless_nvim: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    adopted: bool,
+) -> None:
+    # Only a dedicated follower may fall back to another window showing its
+    # buffer; show_fresh, apply_edit and resume each say which one it is.
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    state.FollowerState.set("@1", "nvim", headless_nvim, adopted=adopted)
+    follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
+    real_animate = nvim_backend._animate_lines
+    seen: list[bool] = []
+
+    def recording(*args: object, **kwargs: object) -> AnimationResult:
+        seen.append(bool(kwargs["dedicated"]))
+        return real_animate(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(nvim_backend, "_animate_lines", recording)
+    target = tmp_path / "kind.py"
+    target.write_text("one\n")
+    assert follower.show_fresh(str(target), "one\n").outcome == "completed"
+    ops = compute_edit_script("one\n", "one\ntwo\n")
+    assert follower.apply_edit(str(target), ops, before="one\n").outcome == "completed"
+    pending = PendingShowFresh(
+        lines=("three",), pace_seconds=0.0, continuation=True, file_path=str(target)
+    )
+    assert follower.resume(pending, reload=False).outcome == "completed"
+
+    assert seen == [not adopted] * 3

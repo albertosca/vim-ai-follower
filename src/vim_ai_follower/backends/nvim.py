@@ -98,18 +98,29 @@ def _buffer_number(nvim: pynvim.Nvim, file_path: str) -> int:
 
 
 # The window whose cursor the typing loop moves: one showing the follower's
-# buffer, by handle — the one the loop used last, else the current window,
-# else one in the current tab, else one in any tab; 0 when the buffer shows
-# nowhere. Never "window 0": in an adopted nvim the user may have moved to
-# another tab or split (T24a review m6, measured 2026-10-18: a resumed
-# animation moved the user's cursor in their own file from (7, 3) to (6, 10)).
+# buffer, by handle. Never "window 0": in an adopted nvim the user may have
+# moved to another tab or split (T24a review m6, measured 2026-10-18: a
+# resumed animation moved the user's cursor in their own file from (7, 3) to
+# (6, 10)). A DEDICATED follower takes the one the loop used last, else the
+# current window, else one in the current tab, else one in any tab; 0 when
+# the buffer shows nowhere. An ADOPTED one (`own_only`) takes only its own:
+# the window current when the typing starts (`previous` -1), which the
+# navigation just put the follower's buffer in, for as long as it still shows
+# that buffer, then 0 for good — the buffer API types and no cursor moves. A
+# user who showed the follower's buffer in a window of their own during a
+# pause and closed the follower's had their cursor dragged to the typing
+# position by the fallbacks (T24c review m2).
 _FOLLOWER_WINDOW_LUA = """
-local buf, previous = ...
+local buf, previous, own_only = ...
 local function shows(window)
   return vim.api.nvim_win_is_valid(window) and vim.api.nvim_win_get_buf(window) == buf
 end
-if previous ~= 0 and shows(previous) then return previous end
+if previous > 0 and shows(previous) then return previous end
 local current = vim.api.nvim_get_current_win()
+if own_only then
+  if previous == -1 and shows(current) then return current end
+  return 0
+end
 if shows(current) then return current end
 for _, window in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
   if shows(window) then return window end
@@ -132,6 +143,7 @@ def _animate_lines(
     base_dir: Path | None = None,
     save_pending: Callable[[int], None] | None = None,
     prompt_key: str = "",
+    dedicated: bool = False,
 ) -> AnimationResult:
     """Type `lines` into `buf` from `start_row`, one CHARACTER at a time over
     the API, checking for a pause/interrupt signal before every character (not
@@ -189,6 +201,12 @@ def _animate_lines(
     nvim.command(f"highlight default {_TYPING_HL} ctermbg=237 guibg=#3a3a3a")
     index = 0
     window = 0  # the follower's window, resolved per line (_FOLLOWER_WINDOW_LUA)
+    # Failing closed (`dedicated` False): an adopted follower records its own
+    # window before anything can pause, while the navigation's window is
+    # still current.
+    own_only = not dedicated
+    if own_only and lines:
+        window = nvim.exec_lua(_FOLLOWER_WINDOW_LUA, buf, -1, own_only)
     while index < len(lines):
         signal = control.check_signal(window_id, base_dir)
         if signal == "interrupt":
@@ -201,7 +219,7 @@ def _animate_lines(
             continue  # resumed: retype this line from its clean boundary
         row = start_row + index
         nvim.api.buf_set_lines(buf, row, row, True, [""])
-        window = nvim.exec_lua(_FOLLOWER_WINDOW_LUA, buf, window)
+        window = nvim.exec_lua(_FOLLOWER_WINDOW_LUA, buf, window, own_only)
         line = lines[index]
         pace = pace_provider()
         if pace <= 0:  # pace-0 catch-up: type the whole line at once, no anim
@@ -237,7 +255,7 @@ def _animate_lines(
                     interrupted = True
                     break
                 # The user may have moved to another window while paused.
-                window = nvim.exec_lua(_FOLLOWER_WINDOW_LUA, buf, window)
+                window = nvim.exec_lua(_FOLLOWER_WINDOW_LUA, buf, window, own_only)
                 continue  # resumed: retype from the same character
             nvim.api.buf_set_text(buf, row, col, row, col, [line[char]])
             col += len(line[char].encode("utf-8"))
@@ -818,6 +836,7 @@ class NvimFollower:
                     ns,
                     save_pending=save_pending,
                     prompt_key=self.socket_path,
+                    dedicated=self._is_dedicated(),
                 )
                 if result.outcome == "completed" and lines:
                     # Drop the seed blank line the retype pushed to the bottom, so
@@ -982,6 +1001,7 @@ class NvimFollower:
                     ns,
                     save_pending=save_pending,
                     prompt_key=self.socket_path,
+                    dedicated=self._is_dedicated(),
                 )
                 if result.outcome == "interrupted":
                     # Roll the op back so the buffer the user takes over is
@@ -1151,6 +1171,7 @@ class NvimFollower:
             ns,
             save_pending=save_pending,
             prompt_key=self.socket_path,
+            dedicated=self._is_dedicated(),
         )
         if result.outcome == "completed" and seeded:
             # Drop the seed blank the retype pushed to the bottom.

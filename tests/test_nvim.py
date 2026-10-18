@@ -57,8 +57,8 @@ def test_animate_lines_moves_the_cursor_of_the_window_showing_the_buffer() -> No
     nvim = MagicMock()
     nvim.exec_lua.return_value = 1004
     with patch("vim_ai_follower.control.check_signal", return_value=None):
-        _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", ns=3)
-    assert nvim.exec_lua.call_args_list == [call(_FOLLOWER_WINDOW_LUA, 7, 0)]
+        _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", ns=3, dedicated=True)
+    assert nvim.exec_lua.call_args_list == [call(_FOLLOWER_WINDOW_LUA, 7, 0, False)]
     assert nvim.api.win_set_cursor.call_args_list == [call(1004, [1, 1]), call(1004, [1, 2])]
 
 
@@ -66,7 +66,7 @@ def test_animate_lines_moves_no_cursor_when_the_buffer_shows_nowhere() -> None:
     nvim = MagicMock()
     nvim.exec_lua.return_value = 0
     with patch("vim_ai_follower.control.check_signal", return_value=None):
-        result = _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", ns=3)
+        result = _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", ns=3, dedicated=True)
     assert result == AnimationResult("completed", 1)
     nvim.api.win_set_cursor.assert_not_called()
 
@@ -79,12 +79,36 @@ def test_animate_lines_finds_the_window_again_after_a_mid_line_pause() -> None:
         patch("vim_ai_follower.control.check_signal", side_effect=lambda *_: next(signals, None)),
         patch("vim_ai_follower.backends.nvim._wait_while_paused", return_value=True),
     ):
-        _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", ns=3)
+        _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", ns=3, dedicated=True)
     assert nvim.exec_lua.call_args_list == [
-        call(_FOLLOWER_WINDOW_LUA, 7, 0),
-        call(_FOLLOWER_WINDOW_LUA, 7, 1004),
+        call(_FOLLOWER_WINDOW_LUA, 7, 0, False),
+        call(_FOLLOWER_WINDOW_LUA, 7, 1004, False),
     ]
     assert nvim.api.win_set_cursor.call_args_list == [call(1004, [1, 1]), call(1009, [1, 2])]
+
+
+def test_an_adopted_animation_records_its_window_before_anything_can_pause() -> None:
+    # T24c review m2: an adopted follower asks for its own window (-1: the
+    # current one, the navigation's) before the first signal check, and then
+    # only ever for that one again.
+    nvim = MagicMock()
+    nvim.exec_lua.return_value = 1004
+    with patch("vim_ai_follower.control.check_signal", return_value=None):
+        _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", ns=3)
+    assert nvim.exec_lua.call_args_list == [
+        call(_FOLLOWER_WINDOW_LUA, 7, -1, True),
+        call(_FOLLOWER_WINDOW_LUA, 7, 1004, True),
+    ]
+    assert nvim.api.win_set_cursor.call_args_list == [call(1004, [1, 1]), call(1004, [1, 2])]
+
+
+def test_an_adopted_animation_with_no_lines_asks_for_no_window() -> None:
+    nvim = MagicMock()
+    with patch("vim_ai_follower.control.check_signal", return_value=None):
+        assert _animate_lines(nvim, 7, (), 0, lambda: 0.05, "@1", ns=3) == AnimationResult(
+            "completed", 0
+        )
+    nvim.exec_lua.assert_not_called()
 
 
 def test_animate_lines_forces_the_static_default_colorscheme_before_the_typing_highlight() -> None:
