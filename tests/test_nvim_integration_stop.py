@@ -182,12 +182,13 @@ def test_stop_of_an_adopted_nvim_blocked_in_a_key_sequence_sends_nothing(
     ],
     ids=["substitute-confirm", "half-typed-command"],
 )
-def test_stop_of_an_adopted_nvim_whose_user_is_mid_confirm_or_command_line_sends_nothing(
+def test_stop_of_an_adopted_nvim_whose_user_is_mid_confirm_or_command_line_leaves_them_there(
     world: E2EFollower, keys: tuple[str, ...], mode: str, named: str
 ) -> None:
-    # Neither is `blocking`, but the user's answer runs on whatever buffer is
-    # current when it lands (task 22 review I1): nothing is sent, as for a
-    # pending key, and the state is cleared all the same.
+    # Neither is `blocking`, and the user's answer runs on whatever buffer is
+    # current when it lands (task 22 review I1): the stop closes only the
+    # follower's tabs the user is not in (T24c item 6), so the user stays in
+    # their mode, and the state is cleared all the same.
     socket_path = world.cache_dir / "nvim-u.sock"
     tracked = world.workdir / "file.py"
     user_pane = _adopted_user_nvim(world, socket_path, tracked)
@@ -206,7 +207,7 @@ def test_stop_of_an_adopted_nvim_whose_user_is_mid_confirm_or_command_line_sends
         assert not (world.cache_dir / f"{world.window_id}.pane").exists()
         lines = _socket_lines(world, socket_path)
         assert len(lines) == 1, lines
-        assert f"waiting on its user ({named})" in lines[0]
+        assert f"waiting on its user ({named}); closing only the follower's tabs" in lines[0]
         assert user_pane in _pane_ids(world)
         assert world._nvim(str(socket_path)).api.get_mode() == {"mode": mode, "blocking": False}
     finally:

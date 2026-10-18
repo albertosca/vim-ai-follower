@@ -384,9 +384,19 @@ _OPENED = "vaf_opened"
 # closed. "Modified" is the negation of _IS_CLEAN_LUA (this backend never
 # writes, so a completed animation's buffer is 'modified' but clean): an
 # unclean buffer is "kept", a clean one the follower created is wiped, and
-# one the user had loses only the windows the follower opened for it.
+# one the user had loses only the windows the follower opened for it. With
+# `spare_current_tab` (a `stop` while the user is busy, T24c item 6), a buffer
+# with a window in the user's current tab is "current" and left alone: closing
+# a window there can move the user; outside it, the eviction was measured to
+# leave the user's mode, window, buffer, cursor and pending input as they were.
 _EVICT_LUA = f"""
-local buf = ...
+local buf, spare_current_tab = ...
+if spare_current_tab then
+  local here = vim.api.nvim_get_current_tabpage()
+  for _, window in ipairs(vim.fn.win_findbuf(buf)) do
+    if vim.api.nvim_win_get_tabpage(window) == here then return 'current' end
+  end
+end
 local clean = not vim.bo[buf].modified
   or vim.b[buf].{_SYNCED_TICK} == vim.api.nvim_buf_get_changedtick(buf)
 if not clean then return 'kept' end
@@ -1497,7 +1507,9 @@ class NvimFollower:
         if nvim.exec_lua(_IS_CLEAN_LUA, buf):
             self._exec(nvim, "silent edit!")
 
-    def close_tab(self, file_path: str, dedicated: bool | None = None) -> None:
+    def close_tab(
+        self, file_path: str, dedicated: bool | None = None, spare_current_tab: bool = False
+    ) -> None:
         # Wipe by the number _buffer_number resolves, never by name: bwipeout
         # takes a PATTERN, so a raw name can miss the buffer or hit a
         # pattern-sibling (see _buffer_number). goto_file
@@ -1525,7 +1537,9 @@ class NvimFollower:
                     log_state_gone(self.window_id, file_path)
                 bufnr = _buffer_number(nvim, file_path)
                 if bufnr != -1:
-                    log_adopted_close(file_path, nvim.exec_lua(_EVICT_LUA, bufnr))
+                    log_adopted_close(
+                        file_path, nvim.exec_lua(_EVICT_LUA, bufnr, spare_current_tab)
+                    )
                 return
             self.goto_file(file_path)
             bufnr = _buffer_number(nvim, file_path)

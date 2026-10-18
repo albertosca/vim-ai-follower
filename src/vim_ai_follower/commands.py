@@ -11,7 +11,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from vim_ai_follower import binding, cache, config, control, hooks, keybindings, snapshot, tmux
 from vim_ai_follower import state as state_module
@@ -36,6 +36,9 @@ from vim_ai_follower.session import Session, other_live_followers, resolve_sessi
 from vim_ai_follower.state import FollowerState, clear_stopped, mark_stopped, stopped_path
 from vim_ai_follower.status_surface import status_surface_for
 from vim_ai_follower.tmux import TmuxPane, adopt_target
+
+if TYPE_CHECKING:
+    from vim_ai_follower.backends.nvim import NvimFollower
 
 VIM_NEEDS_TMUX = (
     "claude-follow: the vim backend requires tmux — run inside a tmux session, "
@@ -493,21 +496,45 @@ def _tear_down_nvim(existing: FollowerState, session: Session) -> None:
     _close_dedicated_nvim_pane(existing.origin, socket_path, wait_for_quit=quit_sent)
 
 
+# The adopted_user_pending reasons under which `stop` still closes the
+# follower's tabs the user is NOT in (T24c item 6, measured 2026-10-18 on a
+# TUI nvim: the float's clear and the eviction outside the current tab left
+# the user's mode, tab, window, buffer, cursor, visual start and half-typed
+# command line as they were, and the user's next keys finished their work in
+# their own buffer). Not the command-line window (the wipe is refused with
+# E11 behind `silent!`) nor keys pending (every request waits for the user).
+_STOP_CLOSES_OUTSIDE_THE_USERS_TAB = hooks.TYPING_MODES | {
+    "a confirm prompt",
+    "on the command line",
+    "an operator pending",
+}
+
+
 def _tear_down_blocked_adopted_nvim(
     existing: FollowerState, window_id: str, ends_at: float, pending: str | None
 ) -> bool:
-    """The user's own nvim answered `blocking: true`, or is at a confirm, on
-    the command line, in its command-line window or with an operator
-    pending. At a hit-enter or more-prompt the stop acts like any hook
+    """The user's own nvim answered `blocking: true`, or its user is busy:
+    typing (insert, replace, terminal, visual or select mode), at a confirm,
+    on the command line, with an operator pending, or in its command-line
+    window. At a hit-enter or more-prompt the stop acts like any hook
     (decision (a)): it dismisses the prompt, as the Vim follower's Escape
-    pair would, then tears down. In the middle of anything else (a confirm,
-    a command line, an operator, keys pending) nothing there is ours to
-    answer, and closing a tab under it would move the user's command onto
-    another buffer: nothing is sent, and the follower's tabs stay. A prompt that
-    cannot be answered leaves the same. The state is already gone either
-    way. `pending` is the caller's `hooks.adopted_user_pending` answer, asked
-    once: it can cost a raw request (the command-line window)."""
+    pair would, then tears down. A busy user is not interrupted: the stop
+    closes only the follower's tabs the user is not in, one hook.log line
+    for a follower buffer shown in the user's tab (_EVICT_LUA's "current").
+    In the command-line window or with keys pending nothing is sent, and the
+    follower's tabs stay; a prompt that cannot be answered leaves the same.
+    The state is already gone either way. `pending` is the caller's
+    `hooks.adopted_user_pending` answer, asked once: it can cost a raw
+    request (the command-line window)."""
     socket_path = existing.target
+    if pending in _STOP_CLOSES_OUTSIDE_THE_USERS_TAB:
+        hooks.logger.warning(
+            "stop: nvim %s is waiting on its user (%s); closing only the follower's tabs it is "
+            "not in",
+            socket_path,
+            pending,
+        )
+        return _run_nvim_teardown(existing, window_id, ends_at, spare_current_tab=True)
     if pending is not None:
         hooks.logger.warning(
             "stop: nvim %s is waiting on its user (%s); the follower's tabs there are left open",
@@ -523,17 +550,29 @@ def _tear_down_blocked_adopted_nvim(
     return _run_nvim_teardown(existing, window_id, ends_at)
 
 
-def _run_nvim_teardown(existing: FollowerState, window_id: str, ends_at: float) -> bool:
+def _run_nvim_teardown(
+    existing: FollowerState, window_id: str, ends_at: float, spare_current_tab: bool = False
+) -> bool:
     """The RPC steps, each under what is left of the budget; the first
     timeout or lost connection gives up the rest (the nvim stopped answering
-    mid-teardown). True when a dedicated follower's `qall!` went out."""
-    follower = get_follower("nvim", existing.target, window_id=window_id)
+    mid-teardown). True when a dedicated follower's `qall!` went out.
+    `spare_current_tab` leaves an adopted nvim's follower buffers shown in
+    the user's current tab (see _tear_down_blocked_adopted_nvim)."""
+    follower = cast("NvimFollower", get_follower("nvim", existing.target, window_id=window_id))
     steps: list[tuple[str, Callable[[], object]]] = [
         ("clearing the status float", status_surface_for(existing).clear)
     ]
     if existing.adopted:
         steps += [
-            (f"closing {path}", functools.partial(follower.close_tab, path, dedicated=False))
+            (
+                f"closing {path}",
+                functools.partial(
+                    follower.close_tab,
+                    path,
+                    dedicated=False,
+                    spare_current_tab=spare_current_tab,
+                ),
+            )
             for path in existing.open_files
         ]
     else:

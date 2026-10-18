@@ -1328,7 +1328,6 @@ def test_toggle_on_clears_a_tombstone_before_writing() -> None:
 @pytest.mark.parametrize(
     ("blocking", "mode", "named"),
     [
-        (True, "n", "in the middle of a key sequence"),
         (False, "r?", "a confirm prompt"),
         (False, "c", "on the command line"),
         (False, "cv", "on the command line"),
@@ -1350,7 +1349,6 @@ def test_toggle_on_clears_a_tombstone_before_writing() -> None:
         (False, "\x13", "in select mode"),
     ],
     ids=[
-        "keys-pending",
         "confirm",
         "cmdline",
         "cmdline-ex",
@@ -1372,13 +1370,63 @@ def test_toggle_on_clears_a_tombstone_before_writing() -> None:
         "select-block",
     ],
 )
+def test_stop_of_an_adopted_nvim_whose_user_is_busy_closes_only_the_tabs_they_are_not_in(
+    blocking: bool, mode: str, named: str
+) -> None:
+    # Measured 2026-10-18 (T24c item 6): the float's clear and an eviction
+    # outside the user's current tab leave a typing, confirming, half-typed
+    # or operator-pending user exactly where they were. The stop asks
+    # nothing, logs one line and runs the teardown sparing the user's tab.
+    _nvim_follower(adopted=True, open_files=("/tmp/a.py", "/tmp/b.py"))
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
+        patch("vim_ai_follower.commands.nvim_connect.last_probe_blocking", return_value=blocking),
+        patch("vim_ai_follower.commands.nvim_connect.last_probe_mode", return_value=mode),
+        patch("vim_ai_follower.take_over.ask") as asked,
+        patch("vim_ai_follower.commands._run_nvim_teardown", return_value=False) as teardown,
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    asked.assert_not_called()
+    [call] = teardown.call_args_list
+    assert call.kwargs == {"spare_current_tab": True}
+    assert call.args[0].target == _DEDICATED_SOCKET
+    lines = [line for line in _hook_log().splitlines() if _DEDICATED_SOCKET in line]
+    assert len(lines) == 1, _hook_log()
+    assert (
+        f"waiting on its user ({named}); closing only the follower's tabs it is not in"
+        in (lines[0])
+    )
+    assert state.FollowerState.read("@1") is None
+
+
+def test_stop_spares_the_users_tab_only_for_a_busy_user() -> None:
+    # The ordinary adopted teardown closes every follower tab, the current
+    # one included.
+    _nvim_follower(adopted=True, open_files=("/tmp/a.py",))
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
+        patch("vim_ai_follower.commands.nvim_connect.last_probe_blocking", return_value=False),
+        patch("vim_ai_follower.commands.nvim_connect.last_probe_mode", return_value="n"),
+        patch("vim_ai_follower.commands.nvim_connect.in_command_line_window", return_value=False),
+        patch("vim_ai_follower.commands._run_nvim_teardown", return_value=False) as teardown,
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    [call] = teardown.call_args_list
+    assert call.kwargs.get("spare_current_tab", False) is False
+
+
+@pytest.mark.parametrize(
+    ("blocking", "mode", "named"),
+    [(True, "n", "in the middle of a key sequence")],
+    ids=["keys-pending"],
+)
 def test_stop_of_an_adopted_nvim_waiting_on_its_user_sends_nothing_and_logs_one_line(
     blocking: bool, mode: str, named: str
 ) -> None:
-    # Keys pending (blocking, not at a hit-enter or more-prompt), a confirm or
-    # the command line (not blocking, but the user's answer lands on whatever
-    # buffer is current then, task 22 review I1): nothing the follower may
-    # answer or act under.
+    # Keys pending (blocking, not at a hit-enter or more-prompt): every
+    # request waits until the user finishes, so nothing is sent.
     _nvim_follower(adopted=True, open_files=("/tmp/a.py", "/tmp/b.py"))
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
@@ -1636,7 +1684,21 @@ def test_stop_passes_the_adopted_flag_it_read_to_close_tab() -> None:
         patch("vim_ai_follower.backends.nvim.NvimFollower.close_tab") as close_tab,
     ):
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
-    close_tab.assert_called_once_with("/tmp/a.py", dedicated=False)
+    close_tab.assert_called_once_with("/tmp/a.py", dedicated=False, spare_current_tab=False)
+
+
+def test_stop_for_a_user_in_insert_mode_asks_close_tab_to_spare_their_tab() -> None:
+    _nvim_follower(adopted=True, open_files=("/tmp/a.py",))
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
+        patch("vim_ai_follower.commands.nvim_connect.last_probe_blocking", return_value=False),
+        patch("vim_ai_follower.commands.nvim_connect.last_probe_mode", return_value="i"),
+        patch("vim_ai_follower.status_surface.NvimStatusSurface.clear"),
+        patch("vim_ai_follower.backends.nvim.NvimFollower.close_tab") as close_tab,
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    close_tab.assert_called_once_with("/tmp/a.py", dedicated=False, spare_current_tab=True)
 
 
 def test_stop_survives_an_unreadable_state() -> None:

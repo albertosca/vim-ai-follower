@@ -27,6 +27,7 @@ TOKEN = f"p3-{HANDLE_HEX}"
     ("verdict", "level", "words"),
     [
         ("kept", logging.WARNING, "unsaved changes"),
+        ("current", logging.WARNING, "the tab the user is in"),
         ("closed", logging.INFO, "closed the follower's tab"),
         ("forgotten", logging.INFO, "the user had it open"),
         ("unread", logging.WARNING, "could not confirm"),
@@ -118,7 +119,9 @@ def test_an_adopted_vim_that_never_answers_keeps_a_home_it_never_had(
     assert "could not confirm" in caplog.text
 
 
-def _nvim_close(adopted: bool | None, found: int, verdict: str = "kept") -> MagicMock:
+def _nvim_close(
+    adopted: bool | None, found: int, verdict: str = "kept", spare_current_tab: bool = False
+) -> MagicMock:
     FollowerState.set("@6", backend="nvim", target="/tmp/s.sock", adopted=bool(adopted))
     if adopted is None:
         FollowerState.clear("@6")
@@ -129,7 +132,9 @@ def _nvim_close(adopted: bool | None, found: int, verdict: str = "kept") -> Magi
 
     nvim.exec_lua.side_effect = answer
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
-        NvimFollower(socket_path="/tmp/s.sock", window_id="@6").close_tab("/w/f.py")
+        NvimFollower(socket_path="/tmp/s.sock", window_id="@6").close_tab(
+            "/w/f.py", spare_current_tab=spare_current_tab
+        )
     return nvim
 
 
@@ -138,9 +143,19 @@ def test_an_adopted_nvim_runs_the_eviction_rules_and_logs_its_verdict(
 ) -> None:
     caplog.set_level(logging.INFO, logger="vim_ai_follower")
     nvim = _nvim_close(adopted=True, found=4, verdict="forgotten")
-    nvim.exec_lua.assert_any_call(_EVICT_LUA, 4)
+    nvim.exec_lua.assert_any_call(_EVICT_LUA, 4, False)
     nvim.command.assert_not_called()  # no goto_file, no bwipeout from Python
     assert "the user had it open" in caplog.text
+
+
+def test_a_stop_for_a_busy_user_asks_the_eviction_to_spare_their_tab(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="vim_ai_follower")
+    nvim = _nvim_close(adopted=True, found=4, verdict="current", spare_current_tab=True)
+    nvim.exec_lua.assert_any_call(_EVICT_LUA, 4, True)
+    nvim.command.assert_not_called()
+    assert "the tab the user is in" in caplog.text
 
 
 def test_an_adopted_nvim_with_no_buffer_for_the_file_does_nothing() -> None:
@@ -171,7 +186,7 @@ def test_an_nvim_close_with_the_state_gone_never_wipes(
 ) -> None:
     caplog.set_level(logging.INFO, logger="vim_ai_follower")
     nvim = _nvim_close(adopted=None, found=4, verdict="kept")
-    nvim.exec_lua.assert_any_call(_EVICT_LUA, 4)
+    nvim.exec_lua.assert_any_call(_EVICT_LUA, 4, False)
     nvim.command.assert_not_called()
     assert "follower state is gone" in caplog.text
     assert "unsaved changes" in caplog.text

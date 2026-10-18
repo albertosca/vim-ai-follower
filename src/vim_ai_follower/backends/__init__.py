@@ -37,6 +37,7 @@ _ADOPTED_CLOSE_MESSAGES = {
     "kept": "left %s open in the adopted editor: its buffer has unsaved changes",
     "closed": "closed the follower's tab on %s and left the buffer: the user had it open",
     "forgotten": "left %s where it is in the adopted editor: the user had it open",
+    "current": "left %s open in the adopted editor: it shows in the tab the user is in",
 }
 
 
@@ -52,7 +53,7 @@ def log_adopted_close(file_path: str, verdict: str | None) -> None:
             file_path,
             verdict or "no answer",
         )
-    elif verdict == "kept":
+    elif verdict in ("kept", "current"):
         logger.warning(message, file_path)
     else:
         logger.info(message, file_path)
