@@ -109,6 +109,14 @@ def _saved(**previous: str) -> None:
         # and `"\$HOME"` came back `\\\$HOME`.
         "bind-key    -T prefix P       if-shell true { display-message a ; display-message b }",
         'bind-key    -T prefix P       display-message "\\$HOME"',
+        # A `;` inside quotes or a brace block, or escaped, runs nothing at
+        # source time, and an escaped brace opens or closes no block.
+        "bind-key    -T prefix P       display-message \"a;b\" \\; display-message 'c;d'",
+        "bind-key    -T prefix P       if-shell true { display-message \\} ; send-keys b }",
+        "bind-key  -T prefix P if-shell -F 1 { send-keys a ;; send-keys b } { send-keys c }",
+        # A `\"` keeps the double quote open, so this `;` is quoted (listed
+        # this way by tmux 3.8, and sourcing it ran nothing more).
+        'bind-key    -T prefix P       display-message "a\\" ; set -g @p1 1"',
     ],
 )
 def test_unregister_sources_the_users_binding_verbatim(previous: str) -> None:
@@ -175,8 +183,9 @@ def _restore_fails(
         if "could not restore" in record.getMessage()
     ]
     assert warnings == [
-        f"stop: could not restore your tmux binding {previous}; prefix P is unbound"
+        f"stop: could not restore your tmux binding {previous!r}; prefix P is unbound"
     ]
+    assert not any("\n" in warning or "\r" in warning for warning in warnings)
 
 
 def test_a_binding_tmux_refuses_unbinds_ours_and_says_so(caplog: pytest.LogCaptureFixture) -> None:
@@ -207,6 +216,43 @@ def test_a_saved_line_that_is_not_a_bind_key_is_never_sourced(
 ) -> None:
     previous = "run-shell 'rm -rf /tmp/x'"
     server = _FakeBindingServer({})
+    _restore_fails(server, previous, caplog)
+    assert server.sourced == []
+
+
+@pytest.mark.parametrize(
+    "previous",
+    [
+        # T24b review m1: a tampered saved-keybindings.json ran its second
+        # command on a real tmux at `stop`. list-keys prints one binding per
+        # line and a separator outside braces as `\;`, so none of these is a
+        # line it printed; each would run `set -g @pwned 1` when sourced
+        # (measured on tmux 3.8 for the newline, ` ; `, `x;`, after a quote
+        # and after an attached `a{`, which is no block).
+        "bind-key -T prefix P display-message x\nset -g @pwned 1",
+        "bind-key -T prefix P display-message x\rset -g @pwned 1",
+        "bind-key -T prefix P display-message x ; set -g @pwned 1",
+        "bind-key -T prefix P display-message x;set -g @pwned 1",
+        "bind-key -T prefix P display-message 'a;' ; set -g @pwned 1",
+        'bind-key -T prefix P display-message "a" ; set -g @pwned 1',
+        "bind-key -T prefix P display-message a{ ; set -g @pwned 1",
+        "bind-key -T prefix P if-shell true { display-message a } ; set -g @pwned 1",
+        "bind-key -T prefix P if-shell true { display-message a} ; set -g @pwned 1 }",
+        "bind-key -T prefix P display-message x } ; set -g @pwned 1 {",
+        "bind-key -T prefix P display-message x\\\\;set -g @pwned 1",
+        "bind-key -T prefix P display-message 'x ; set -g @pwned 1",
+        "bind-key -T prefix P if-shell true { display-message x ; set -g @pwned 1",
+        # `x{` opens no block and a `#` after a space comments out the rest,
+        # so tmux runs the `;` here; only the attached-brace rule catches it.
+        "bind-key -T prefix P display-message x{ ; set -g @pwned 1 # }",
+    ],
+)
+def test_a_saved_line_that_would_run_more_than_its_binding_is_never_sourced(
+    previous: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The fake lists the line back unchanged, so only the refusal to source
+    # it tells this apart from a restored binding.
+    server = _FakeBindingServer({"P": previous})
     _restore_fails(server, previous, caplog)
     assert server.sourced == []
 

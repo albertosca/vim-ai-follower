@@ -386,13 +386,58 @@ def _same_binding(listed: str, saved: str) -> bool:
     return tokens(listed) == tokens(saved)
 
 
+def _runs_only_its_binding(line: str) -> bool:
+    """Whether sourcing `line` can run nothing but its own bind-key (T24b
+    review m1: a tampered saved-keybindings.json ran a second command at
+    `stop`). list-keys prints one binding per line, every brace that opens
+    or closes a block as a token of its own (a literal one quoted or `\\}`)
+    and a separator outside a block as `\\;`. So the line is refused when it
+    holds a CR or LF, an unquoted unescaped brace inside a word (tmux opens
+    a block at `{x` but not at `a{`, and closes one at `a}`), unbalanced
+    blocks or quotes, or an unquoted unescaped `;` outside every block,
+    which tmux runs as the next command (measured on tmux 3.8, 2026-10-18).
+    Inside a block a `;` only separates the binding's own commands. A `#`
+    after a space comments out the rest of the line (list-keys prints a bare
+    one as `\\#`): what it hides runs nothing, and a `}` it hides that would
+    balance an attached `x{` is already refused by the brace rule."""
+    if "\n" in line or "\r" in line:
+        return False
+    depth = 0
+    quote = ""
+    index = 0
+    while index < len(line):
+        character = line[index]
+        if quote == "'":
+            quote = "" if character == "'" else quote
+        elif quote == '"' and character == "\\":
+            index += 1
+        elif quote == '"':
+            quote = "" if character == '"' else quote
+        elif character == "\\":
+            index += 1
+        elif character in "'\"":
+            quote = character
+        elif character in "{}":
+            before = line[index - 1] if index else " "
+            after = line[index + 1] if index + 1 < len(line) else " "
+            if not (before.isspace() and after.isspace()):
+                return False
+            depth += 1 if character == "{" else -1
+            if depth < 0:
+                return False
+        elif character == ";" and depth == 0:
+            return False
+        index += 1
+    return quote == "" and depth == 0
+
+
 def _restore_binding(key: str, previous: str) -> bool:
     """Re-bind the user's own `previous` (a line list-keys printed) and say
     whether tmux now lists exactly it. The line goes to `source-file`
     verbatim, since list-keys prints what the config parser reads back:
     brace blocks, `"\\$HOME"` and chains included, which an argv rebuilt by
     shlex lost (T24a review m4). Only a literal `;` key needs a quote."""
-    if not previous.startswith("bind-key "):
+    if not previous.startswith("bind-key ") or not _runs_only_its_binding(previous):
         return False
     descriptor, config_path = tempfile.mkstemp(prefix="vaf-binding-", suffix=".conf")
     try:
@@ -425,7 +470,7 @@ def unregister() -> None:
             # Never leave ours bound in its place: a key that runs a stopped
             # follower's command is worse than an unbound one.
             logger.warning(
-                "stop: could not restore your tmux binding %s; prefix %s is unbound", previous, key
+                "stop: could not restore your tmux binding %r; prefix %s is unbound", previous, key
             )
         subprocess.run(["tmux", "unbind-key", "-T", "prefix", key], check=False)
     saved_path.unlink(missing_ok=True)
