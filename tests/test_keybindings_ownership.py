@@ -275,6 +275,21 @@ def test_a_saved_line_that_would_run_more_than_its_binding_is_never_sourced(
     assert server.sourced == []
 
 
+@pytest.mark.parametrize(
+    "blank", [chr(code) for code in (0xA0, 0x0B, 0x0C, 0x1C, 0x85, 0x2028, 0x3000)]
+)
+def test_a_brace_beside_a_blank_tmux_does_not_skip_is_never_sourced(
+    blank: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    # T24b re-review m-A: `str.isspace()` called these blanks, while tmux
+    # reads `a<blank>{` as one word, so the guard counted a block tmux never
+    # opened and allowed the `;` that tmux then ran (measured on tmux 3.8).
+    previous = f"bind-key -T prefix P display-message a{blank}{{ ; set -g @pwned 1 # {blank}}}"
+    server = _FakeBindingServer({"P": previous})
+    _restore_fails(server, previous, caplog)
+    assert server.sourced == []
+
+
 @pytest.mark.parametrize("content", ["", "{not json", "[]", '{"executable": "/x"}'])
 def test_a_malformed_owner_record_reads_as_absent(content: str) -> None:
     path = keybindings._owner_path()

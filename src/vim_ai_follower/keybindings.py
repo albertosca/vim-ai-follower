@@ -386,6 +386,10 @@ def _same_binding(listed: str, saved: str) -> bool:
     return tokens(listed) == tokens(saved)
 
 
+# The characters tmux's config lexer skips between words.
+_TMUX_BLANKS = " \t"
+
+
 def _runs_only_its_binding(line: str) -> bool:
     """Whether sourcing `line` can run nothing but its own bind-key (T24b
     review m1: a tampered saved-keybindings.json ran a second command at
@@ -399,7 +403,11 @@ def _runs_only_its_binding(line: str) -> bool:
     Inside a block a `;` only separates the binding's own commands. A `#`
     after a space comments out the rest of the line (list-keys prints a bare
     one as `\\#`): what it hides runs nothing, and a `}` it hides that would
-    balance an attached `x{` is already refused by the brace rule."""
+    balance an attached `x{` is already refused by the brace rule. A brace
+    stands alone only between a space or a tab, tmux's only blanks:
+    `isspace()` also accepted NBSP, `\\v`, `\\f`, `\\x1c`, U+0085, U+2028
+    and U+3000, around which tmux reads `a<NBSP>{` as one word (T24b
+    re-review m-A)."""
     if "\n" in line or "\r" in line:
         return False
     depth = 0
@@ -420,7 +428,7 @@ def _runs_only_its_binding(line: str) -> bool:
         elif character in "{}":
             before = line[index - 1] if index else " "
             after = line[index + 1] if index + 1 < len(line) else " "
-            if not (before.isspace() and after.isspace()):
+            if not (before in _TMUX_BLANKS and after in _TMUX_BLANKS):
                 return False
             depth += 1 if character == "{" else -1
             if depth < 0:
