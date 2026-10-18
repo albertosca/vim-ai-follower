@@ -33,6 +33,8 @@ from vim_ai_follower.backends import nvim_connect, tmux_vim
 from vim_ai_follower.backends.nvim import _FIND_BUFFER_LUA
 from vim_ai_follower.backends.nvim_connect import NvimNeverListened
 
+pytestmark = pytest.mark.usefixtures("temporaries_in_tmp_path")
+
 _mock_tmux_run = functools.partial(make_mock_tmux_run, pane_id="%9", other_panes=("%1", "%2"))
 
 

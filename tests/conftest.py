@@ -55,6 +55,17 @@ def no_tmux_server_dir() -> Iterator[str]:
     shutil.rmtree(directory, ignore_errors=True)
 
 
+@pytest.fixture
+def temporaries_in_tmp_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """`tempfile` creates its files under this test's tmp_path, not the
+    system $TMPDIR: keybindings' restore writes a `vaf-binding-*.conf` with
+    mkstemp, and a test that failed between create and unlink left one
+    there (T24b review m6). Not autouse: an nvim socket made under a
+    tmp_path can pass the 104-byte AF_UNIX limit."""
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    return tmp_path
+
+
 @pytest.fixture(autouse=True)
 def no_real_tmux_server(monkeypatch: pytest.MonkeyPatch, no_tmux_server_dir: str) -> None:
     """An unmocked in-process tmux call reaches no server at all. pytest run

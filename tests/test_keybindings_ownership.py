@@ -17,6 +17,8 @@ from helpers import make_mock_tmux_run
 
 from vim_ai_follower import cli, commands, hooks, keybindings, state
 
+pytestmark = pytest.mark.usefixtures("temporaries_in_tmp_path")
+
 _mock_tmux_run = functools.partial(make_mock_tmux_run, pane_id="%9", other_panes=("%1",))
 
 
@@ -119,7 +121,7 @@ def _saved(**previous: str) -> None:
         'bind-key    -T prefix P       display-message "a\\" ; set -g @p1 1"',
     ],
 )
-def test_unregister_sources_the_users_binding_verbatim(previous: str) -> None:
+def test_unregister_sources_the_users_binding_verbatim(previous: str, tmp_path: Path) -> None:
     _saved(P=previous)
     server = _FakeBindingServer({"P": previous})
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=server):
@@ -127,6 +129,8 @@ def test_unregister_sources_the_users_binding_verbatim(previous: str) -> None:
     assert server.sourced == [previous + "\n"]
     assert "P" not in server.unbound
     assert not any(Path(path).exists() for path in server.source_paths)
+    # Written under this test's tmp_path, never the system $TMPDIR.
+    assert [Path(path).parent for path in server.source_paths] == [tmp_path]
 
 
 @pytest.mark.parametrize(
