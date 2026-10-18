@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import time
@@ -63,14 +64,21 @@ def test_set_title_reaches_tmux_as_exactly_the_title(title: str) -> None:
 
 def _stored_title(argument: str) -> str:
     """What tmux 3.8 stores for `select-pane -T <argument>` (measured
-    2026-10-17): the argument is format-expanded (`##` is one `#`; a `#`
-    before anything else may start an expansion, `#{pane_id}` or `#S`, so a
-    title that keeps one is refused here) and then vis-encoded (a backslash
-    stored as two), and `#{pane_title}` prints the stored form as it is."""
+    2026-10-17/18): the argument is format-expanded and then vis-encoded (a
+    backslash stored as two), and `#{pane_title}` prints the stored form as
+    it is. In the expansion a run of `#`s that ends at `[` (a style) is kept
+    whole (`##[x` stays `##[x`, T24b review I1); any other run of `#`s is
+    halved (`##` is one `#`), and an odd one may start an expansion
+    (`#{pane_id}`, `#S`, a final `#` dropped), so it is refused here."""
     text, _ = _tmux_argument(argument)
-    pieces = text.split("##")
-    assert not any("#" in piece for piece in pieces), f"{argument!r} is format-expanded"
-    return "#".join(pieces).replace("\\", "\\\\")
+
+    def expanded(run: re.Match[str]) -> str:
+        if text[run.end() : run.end() + 1] == "[":
+            return run.group(0)
+        assert len(run.group(0)) % 2 == 0, f"{argument!r} is format-expanded"
+        return "#" * (len(run.group(0)) // 2)
+
+    return re.sub(r"#+", expanded, text).replace("\\", "\\\\")
 
 
 @pytest.mark.parametrize(
@@ -86,6 +94,10 @@ def _stored_title(argument: str) -> str:
         "--;",
         "#",
         "a#[fg=red]",
+        "#[fg=red]x",
+        "a##[x",
+        "###[x",
+        "#a#[b#",
         "\\\\001",
     ],
 )

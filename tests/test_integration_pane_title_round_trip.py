@@ -4,7 +4,8 @@
 stores a title vis-encoded (a backslash as two) and `select-pane -T`
 format-expands its argument, so a saved `a\\` came back `a\\\\` on every
 save/restore and a saved `#{pane_id}` came back as the pane id (T24a review
-m3). The titles are set the way a shell sets them, by an OSC 2 sequence,
+m3), and a style's `#[` grew a `#` per run of `#`s on every cue (T24b
+review I1). The titles are set the way a shell sets them, by an OSC 2 sequence,
 which tmux neither expands nor refuses."""
 
 from __future__ import annotations
@@ -32,7 +33,22 @@ def _stored(pane: str) -> str:
 
 
 @pytest.mark.parametrize(
-    "title", ["a\\", "a\\\\", "#{pane_id}", "##", "x;", "é", "100%", "--;", "#S #", "a\\#{x}\\"]
+    "title",
+    [
+        "a\\",
+        "a\\\\",
+        "#{pane_id}",
+        "##",
+        "x;",
+        "é",
+        "100%",
+        "--;",
+        "#S #",
+        "a\\#{x}\\",
+        "#[fg=red]x",
+        "a##[x",
+        "###[x",
+    ],
 )
 def test_the_users_title_comes_back_exactly(
     tmux_session: str, wait_until: Callable[..., bool], title: str

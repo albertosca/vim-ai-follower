@@ -3,6 +3,7 @@ queries, zoom) and TmuxWindow (resolve the window from the environment)."""
 
 from __future__ import annotations
 
+import re
 import shlex
 import subprocess
 from dataclasses import dataclass
@@ -20,6 +21,10 @@ def literal_argument(text: str) -> str:
     if text.endswith(";"):
         return text[:-1] + "\\;"
     return text
+
+
+# A `#` that is not part of a run of `#`s ending at `[` (a style, `#[fg=red]`).
+_STYLE_FREE_HASH = re.compile(r"#(?!#*\[)")
 
 
 def _without_stored_backslash_pairs(stored: str) -> str:
@@ -102,10 +107,13 @@ class TmuxPane:
         """Set the pane title to exactly `title`, which `title()` reads back.
         `select-pane -T` format-expands its argument (`#{pane_id}` is set as
         `%0`, `#S` as the session, a final `#` dropped), so every `#` goes as
-        `##`; tmux then stores the title vis-encoded (a backslash as two), the
-        stored form `title()` decodes (measured on tmux 3.8, 2026-10-17)."""
+        `##` except a run of `#`s that ends at `[`: tmux keeps such a run whole
+        (`##[x` stays `##[x`), and doubling it grew a style title by a `#` per
+        `#` on every cue (T24b review I1). tmux then stores the title
+        vis-encoded (a backslash as two), the stored form `title()` decodes
+        (measured on tmux 3.8, 2026-10-17/18)."""
         # The user's own title comes back through here (StatusSurface.clear).
-        escaped = literal_argument(title.replace("#", "##"))
+        escaped = literal_argument(_STYLE_FREE_HASH.sub("##", title))
         subprocess.run(
             ["tmux", "select-pane", "-t", self.pane_id, "-T", escaped],
             check=False,
