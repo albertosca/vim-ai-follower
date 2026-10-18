@@ -27,6 +27,7 @@ and must stay importable without the optional `nvim` extra."""
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import os
 import re
 import shutil
@@ -237,14 +238,15 @@ def resolve_nvim_target(
     )  # fmt: skip
     pane_id = split.stdout.strip()
     deadline = time.monotonic() + wait_seconds
-    while True:
-        left = deadline - time.monotonic()
-        if left <= 0:
-            pane_open = TmuxPane(pane_id=pane_id).running_command() is not None
-            raise SplitNvimNeverAnswered(sock, wait_seconds, pane_id, pane_open=pane_open)
-        if nvim_ready(sock, min(LIVENESS_TIMEOUT_SECONDS, left)):
-            return sock, True
-        time.sleep(min(_SOCKET_POLL_INTERVAL_SECONDS, max(deadline - time.monotonic(), 0.0)))
+    with _one_scan_until(deadline):
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                pane_open = TmuxPane(pane_id=pane_id).running_command() is not None
+                raise SplitNvimNeverAnswered(sock, wait_seconds, pane_id, pane_open=pane_open)
+            if nvim_ready(sock, min(LIVENESS_TIMEOUT_SECONDS, left)):
+                return sock, True
+            time.sleep(min(_SOCKET_POLL_INTERVAL_SECONDS, max(deadline - time.monotonic(), 0.0)))
 
 
 def standalone_launch_command(
@@ -631,21 +633,59 @@ def _default_socket_owner_lives(sock: str) -> bool:
     return True
 
 
+# Inside a bounded wait (_one_scan_until): the deadline every scan is capped
+# to, and the scan's answer per socket, so the wait scans at most once.
+_scan_scope: contextvars.ContextVar[tuple[float, dict[str, bool]] | None] = contextvars.ContextVar(
+    "_scan_scope", default=None
+)
+
+
+@contextlib.contextmanager
+def _one_scan_until(deadline: float) -> Iterator[None]:
+    """For a wait that polls a socket every 20 ms: at most one process scan
+    per socket in the body, its timeout capped to the time left before
+    `deadline` (T19 review rm1/rm2). A split whose nvim died after binding
+    its socket left the file, and every poll was refused and scanned (42
+    `ps` in one 3.27 s hook, ~140 in `start`), each bounded by its own 2 s,
+    so "within 3 s" could take 5. The first answer stands for the rest of
+    the wait: the wait only acts on an nvim that ANSWERS, which skips the
+    scan, so a remembered verdict changes nothing but last_probe_verdict,
+    and a scan with no time left fails closed like any other."""
+    token = _scan_scope.set((deadline, {}))
+    try:
+        yield
+    finally:
+        _scan_scope.reset(token)
+
+
 def is_listened_on_by_a_live_process(sock: str) -> bool:
     """True when a live process's command line has `--listen <sock>`, the
     path a whole argument (an nvim launched to listen there, or the `--embed`
     server its TUI starts with the same arguments), or when the scan cannot
-    say: one `ps` within PROCESS_SCAN_TIMEOUT_SECONDS, failing CLOSED, since
-    the caller is about to treat the socket as dead. `ps` prints argv joined
-    by spaces, unquoted, so the match is on the joined text: a path with
-    spaces still matches whole."""
+    say: one `ps` within PROCESS_SCAN_TIMEOUT_SECONDS (less, and at most once,
+    inside _one_scan_until), failing CLOSED, since the caller is about to
+    treat the socket as dead. `ps` prints argv joined by spaces, unquoted, so
+    the match is on the joined text: a path with spaces still matches whole."""
+    scope = _scan_scope.get()
+    if scope is None:
+        return _scan_for_listener(sock, PROCESS_SCAN_TIMEOUT_SECONDS)
+    deadline, answers = scope
+    if sock not in answers:
+        left = deadline - time.monotonic()
+        answers[sock] = left <= 0 or _scan_for_listener(
+            sock, min(PROCESS_SCAN_TIMEOUT_SECONDS, left)
+        )
+    return answers[sock]
+
+
+def _scan_for_listener(sock: str, timeout: float) -> bool:
     try:
         listing = subprocess.run(
             ["ps", "-A", "-ww", "-o", "command="],
             capture_output=True,
             text=True,
             check=False,
-            timeout=PROCESS_SCAN_TIMEOUT_SECONDS,
+            timeout=timeout,
         )
     except (OSError, subprocess.SubprocessError):
         return True
@@ -782,9 +822,11 @@ def launch_standalone_nvim(
     )
     subprocess.run(cmd, check=True)
     deadline = time.monotonic() + wait_seconds
-    while not nvim_answers(sock) and time.monotonic() < deadline:
-        time.sleep(_SOCKET_POLL_INTERVAL_SECONDS)
-    if not nvim_answers(sock):
+    with _one_scan_until(deadline):
+        while not nvim_answers(sock) and time.monotonic() < deadline:
+            time.sleep(_SOCKET_POLL_INTERVAL_SECONDS)
+        answered = nvim_answers(sock)
+    if not answered:
         # The launcher exited 0 (nvim-qt that found no nvim, a terminal whose
         # nvim died on a config error): there is nothing to attach to, and a
         # follower persisted here would point at a socket no one listens on.

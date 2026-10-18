@@ -205,15 +205,20 @@ def test_standalone_command_falls_back_to_terminal_app_when_not_iterm() -> None:
     assert any("activate" in part for part in cmd)
 
 
-def test_launch_standalone_nvim_raises_when_no_nvim_ever_listens(
-    tmp_path: Path,
-) -> None:
+def test_launch_standalone_nvim_raises_when_no_nvim_ever_listens() -> None:
     """A launcher that exits 0 and starts nothing (an nvim-qt that cannot find
     nvim, a Terminal window whose nvim dies on a config error) used to hand
     back the socket anyway, and `start` said "attached" to nothing. Past the
     deadline it is an error, naming the launcher and the socket. The deadline
-    is a GUI app's cold launch, longer than a tmux split's."""
-    sock_path = tmp_path / "nvim-@1.sock"  # deliberately never created
+    is a GUI app's cold launch, longer than a tmux split's. A short socket
+    directory: under pytest's tmp_path the path passes the AF_UNIX limit, the
+    connect fails like a refusal and runs the process scan, which reads the
+    clock too."""
+    with _short_socket_dir() as directory:
+        _assert_no_nvim_ever_listens(directory / "nvim-@1.sock")  # never created
+
+
+def _assert_no_nvim_ever_listens(sock_path: Path) -> None:
     with (
         patch(
             "vim_ai_follower.backends.nvim_connect.state.nvim_socket_path",
@@ -1522,3 +1527,104 @@ def test_a_live_default_socket_owner_is_enough_even_when_ps_fails() -> None:
             return_value=subprocess.CompletedProcess(args=[], returncode=1, stdout=""),
         ):
             assert nvim_connect.probe_nvim(str(sock)) == "silent"  # still fails closed
+
+
+class _DyingNvimWorld:
+    """subprocess.run for a split or launcher whose nvim binds its socket and
+    dies at once (the file stays, nobody listens), with `ps` counted and
+    taking `scan_seconds` unless its timeout is shorter (T19 review rm1/rm2)."""
+
+    def __init__(self, sock_path: Path, scan_seconds: float = 0.0) -> None:
+        self.sock_path = sock_path
+        self.scan_seconds = scan_seconds
+        self.scan_timeouts: list[float] = []
+
+    def __call__(self, argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if argv[0] == "ps":
+            timeout = kwargs["timeout"]
+            self.scan_timeouts.append(timeout)
+            if timeout < self.scan_seconds:
+                time.sleep(timeout)
+                raise subprocess.TimeoutExpired(argv, timeout)
+            time.sleep(self.scan_seconds)
+            return subprocess.CompletedProcess(args=argv, returncode=0, stdout="")
+        _dead_nvims_socket(self.sock_path)
+        return subprocess.CompletedProcess(args=argv, returncode=0, stdout=f"{_SPLIT_PANE}\n")
+
+
+@contextmanager
+def _dying_split(world: _DyingNvimWorld) -> Iterator[None]:
+    with (
+        patch(
+            "vim_ai_follower.backends.nvim_connect.state.nvim_socket_path",
+            return_value=world.sock_path,
+        ),
+        patch("vim_ai_follower.backends.nvim_connect.subprocess.run", world),
+        patch("vim_ai_follower.backends.nvim_connect.TmuxPane") as pane_class,
+    ):
+        pane_class.return_value.running_command.return_value = None
+        yield
+
+
+def test_the_split_wait_scans_the_processes_at_most_once() -> None:
+    # A split nvim that died after binding its socket leaves the file: every
+    # 20 ms poll was refused and ran a `ps` scan (42 in one 3.27 s hook).
+    with _short_socket_dir() as directory:
+        world = _DyingNvimWorld(directory / "nvim-@1.sock")
+        with _dying_split(world), pytest.raises(nvim_connect.SplitNvimNeverAnswered):
+            nvim_connect.resolve_nvim_target("%1", "@1", adopt=False, wait_seconds=0.5)
+    assert len(world.scan_timeouts) == 1
+
+
+def test_the_split_wait_caps_the_scan_to_the_time_left() -> None:
+    # The scan's own 2 s bound made "within N s" take N + 2 s on a loaded
+    # machine; capped to what is left, the wait keeps its number.
+    with _short_socket_dir() as directory:
+        world = _DyingNvimWorld(directory / "nvim-@1.sock", scan_seconds=3.0)
+        started = time.monotonic()
+        with _dying_split(world), pytest.raises(nvim_connect.SplitNvimNeverAnswered):
+            nvim_connect.resolve_nvim_target("%1", "@1", adopt=False, wait_seconds=0.4)
+        elapsed = time.monotonic() - started
+    assert world.scan_timeouts and max(world.scan_timeouts) <= 0.4
+    assert elapsed < 0.4 + 0.5
+
+
+def test_a_capped_scan_that_runs_out_still_fails_closed() -> None:
+    # A scan cut short says nothing about the socket: the probe stays
+    # "silent", never "absent", whatever the cap.
+    with _short_socket_dir() as directory:
+        world = _DyingNvimWorld(directory / "nvim-@1.sock", scan_seconds=3.0)
+        with _dying_split(world), pytest.raises(nvim_connect.SplitNvimNeverAnswered):
+            nvim_connect.resolve_nvim_target("%1", "@1", adopt=False, wait_seconds=0.3)
+        assert nvim_connect.last_probe_verdict(str(world.sock_path)) == "silent"
+
+
+def test_the_standalone_wait_scans_the_processes_at_most_once() -> None:
+    with _short_socket_dir() as directory:
+        world = _DyingNvimWorld(directory / "nvim-@1.sock")
+        with (
+            patch(
+                "vim_ai_follower.backends.nvim_connect.state.nvim_socket_path",
+                return_value=world.sock_path,
+            ),
+            patch("vim_ai_follower.backends.nvim_connect.subprocess.run", world),
+            patch(
+                "vim_ai_follower.backends.nvim_connect.shutil.which",
+                return_value="/usr/bin/nvim-qt",
+            ),
+            patch("vim_ai_follower.backends.nvim_connect._vimr_app_present", return_value=False),
+            pytest.raises(nvim_connect.NvimNeverListened),
+        ):
+            started = time.monotonic()
+            nvim_connect.launch_standalone_nvim("@1", wait_seconds=0.5)
+    assert len(world.scan_timeouts) == 1
+    assert time.monotonic() - started < 0.5 + 0.5
+
+
+def test_a_scan_with_no_time_left_fails_closed_without_running_ps() -> None:
+    with (
+        patch("vim_ai_follower.backends.nvim_connect.subprocess.run") as run,
+        nvim_connect._one_scan_until(time.monotonic() - 1.0),
+    ):
+        assert nvim_connect.is_listened_on_by_a_live_process("/tmp/nvim-@1.sock")
+    run.assert_not_called()
