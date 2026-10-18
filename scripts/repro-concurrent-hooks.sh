@@ -30,7 +30,7 @@ printf '{"open_policy": "manual", "backend": "tmux"}\n' > "$HOME/.config/claude-
 TAGS=(alpha bravo charlie delta echo foxtrot)
 for t in $TAGS; do : > "$HOME/$t.txt"; for i in $(seq -w 1 8); do print -r -- "${t}_${i}" >> "$HOME/$t.txt"; done; done
 
-tmux new-session -d -s w -x 180 -y 45
+tmux -f /dev/null new-session -d -s w -x 180 -y 45
 ORIGIN=$(tmux list-panes -t w -F '#{pane_id}' | head -1)
 sleep 0.5
 TMUX_PANE="$ORIGIN" CLI start >/dev/null 2>&1 || true

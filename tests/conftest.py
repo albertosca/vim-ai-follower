@@ -213,8 +213,23 @@ def tmux_session(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     # which load even when the vimrc is skipped.
     monkeypatch.setenv("VIMINIT", "set nocompatible noloadplugins")
     session_name = f"pytest-{uuid.uuid4().hex[:8]}"
+    # `-f /dev/null`: this server runs under the developer's HOME, so it
+    # would otherwise load their real tmux.conf, plugins and hooks included
+    # (T24b review m4; tests/test_integration_tmux_no_config.py).
     subprocess.run(
-        ["tmux", "new-session", "-d", "-s", session_name, "-x", "100", "-y", "30"],
+        [
+            "tmux",
+            "-f",
+            "/dev/null",
+            "new-session",
+            "-d",
+            "-s",
+            session_name,
+            "-x",
+            "100",
+            "-y",
+            "30",
+        ],
         check=True,
     )
     try:

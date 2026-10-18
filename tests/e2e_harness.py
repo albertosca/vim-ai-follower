@@ -712,6 +712,10 @@ def e2e_world() -> Iterator[E2EFollower]:
         _checked(
             [
                 "tmux",
+                # No config: the throwaway HOME has none, but the system-wide
+                # one would still load (tests/test_integration_tmux_no_config.py).
+                "-f",
+                "/dev/null",
                 "new-session",
                 "-d",
                 "-s",

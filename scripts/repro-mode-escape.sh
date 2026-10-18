@@ -24,7 +24,7 @@ V="$V | inoremap <expr> <Esc> pumvisible() ? \"\\<C-e>\" : \"\\<Esc>\""
 probe() {  # $1 = single|double  -> prints the buffer's second line
   tmux kill-session -t m 2>/dev/null || true
   printf 'LINE-ONE\nLINE-TWO\nLINE-THREE\n' > "$TMUX_TMPDIR/f"
-  VIMINIT="$V" tmux new-session -d -s m -x 120 -y 30 "vim $TMUX_TMPDIR/f"
+  VIMINIT="$V" tmux -f /dev/null new-session -d -s m -x 120 -y 30 "vim $TMUX_TMPDIR/f"
   local P=$(tmux list-panes -t m -F '#{pane_id}' | head -1)
   sleep 1.2
   tmux send-keys -t "$P" gg

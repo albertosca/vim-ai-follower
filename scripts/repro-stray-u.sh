@@ -33,7 +33,7 @@ probe() {  # $1 label, $2 = single|double
   local dump="$TMUX_TMPDIR/dump-$2.txt"
   rm -f "$dump"
   tmux kill-session -t strayu 2>/dev/null || true
-  VIMINIT="$VIMRC" tmux new-session -d -s strayu -x 120 -y 30 "vim -n $TMUX_TMPDIR/scratch-$2"
+  VIMINIT="$VIMRC" tmux -f /dev/null new-session -d -s strayu -x 120 -y 30 "vim -n $TMUX_TMPDIR/scratch-$2"
   local P=$(tmux list-panes -t strayu -F '#{pane_id}' | head -1)
   sleep 1.2
   tmux send-keys -t "$P" i

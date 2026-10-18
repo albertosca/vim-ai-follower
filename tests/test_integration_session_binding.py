@@ -174,6 +174,8 @@ def _restart_private_tmux_server(world: E2EFollower) -> None:
     _checked(
         [
             "tmux",
+            "-f",
+            "/dev/null",
             "new-session",
             "-d",
             "-s",
@@ -188,6 +190,8 @@ def _restart_private_tmux_server(world: E2EFollower) -> None:
         world.env,
     )
     new_pid = _private_server_pid(world)
+    loaded = world.tmux("display-message", "-p", "#{config_files}").stdout.strip()
+    assert loaded == "/dev/null", f"the restarted server loaded {loaded}"
     assert new_pid is not None and new_pid != old_pid, (
         f"the restarted server reports pid {new_pid}, the old one was {old_pid} — "
         "this test is only meaningful across a genuinely new server"

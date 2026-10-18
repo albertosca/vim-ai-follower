@@ -32,7 +32,7 @@ edit() {  # $1 origin-pane, $2 file, $3 fixture, $4 id-json
   echo "$p" | TMUX_PANE=$1 "$CF" hook post >/dev/null 2>&1
 }
 
-tmux new-session -d -s auto -x 200 -y 50
+tmux -f /dev/null new-session -d -s auto -x 200 -y 50
 O0=$(tmux list-panes -t auto -F '#{pane_id}' | head -1)
 
 # --- Prep: start opens a follower pane ---
