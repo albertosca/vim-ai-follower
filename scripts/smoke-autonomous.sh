@@ -8,13 +8,38 @@
 #
 # Everything targets tmux by PANE ID, never window index, so a base-index in
 # ~/.tmux.conf can't throw it off.
+#
+# A throwaway HOME: the follower keeps its state in ~/.cache/claude-vim-follower
+# named by tmux window id, and this private server numbers its windows from @0
+# like the developer's own, so under the real HOME a run overwrote (or, with
+# `stop`, tore down) a live follower's state. The server and its panes inherit
+# it, so the follower's Vim writes no ~/.viminfo (VIMINIT says
+# viminfofile=NONE too) and the panes' shells no ~/.zsh_history: ZDOTDIR and
+# HISTFILE go, since /etc/zshrc puts the history under ${ZDOTDIR:-$HOME}.
+# The CLI is plain python3 on the repo's src/ (bin/claude-follow): no uv, no
+# Claude config, nothing else read from HOME.
 set -u
 CF="$(cd "$(dirname "$0")/.." && pwd)/bin/claude-follow"
 FIX="$(cd "$(dirname "$0")/../qa/fixtures" && pwd)"
-unset TMUX
+unset TMUX TMUX_PANE ZDOTDIR HISTFILE
+export HOME=$(mktemp -d /tmp/vaf-auto-home-XXXX)
 export TMUX_TMPDIR=$(mktemp -d /tmp/vaf-auto-XXXX)
-export VIMINIT='set nocompatible noloadplugins'
-trap 'tmux kill-server 2>/dev/null; rm -rf "$TMUX_TMPDIR" /tmp/vaf-auto-*.py' EXIT
+export VIMINIT='set nocompatible noloadplugins viminfofile=NONE'
+# zsh runs no EXIT trap for a signal, hence INT/TERM. kill-server returns
+# before the server exits, so wait for its pid (at most 5 s) before removing
+# its socket directory and the HOME its panes may still write.
+cleanup() {
+  local server_pid=$(tmux display-message -p '#{pid}' 2>/dev/null || true)
+  tmux kill-server 2>/dev/null || true
+  local waited=0
+  while [[ -n "$server_pid" && $waited -lt 50 ]] && kill -0 "$server_pid" 2>/dev/null; do
+    sleep 0.1; waited=$((waited + 1))
+  done
+  rm -rf "$TMUX_TMPDIR" "$HOME" /tmp/vaf-auto.py /tmp/vaf-auto-a.py /tmp/vaf-auto-b.py
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 pass=0; fail=0
 ok()  { print -r -- "PASS: $1"; pass=$((pass+1)); }

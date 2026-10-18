@@ -117,3 +117,62 @@ def test_every_vim_that_skips_the_hermetic_viminit_turns_viminfo_off() -> None:
         for command in _vims_without_viminfo_off(path.read_text(), r"[\"']vim\b[^\"'\n]*[\"']")
     ]
     assert offenders == []
+
+
+# A script that runs the follower's CLI under the developer's real HOME reads
+# and writes their live followers' state: a private tmux server numbers its
+# windows from @0 like theirs, and the state files are named by window id
+# (smoke-autonomous.sh could overwrite or stop a live follower; T24b re-review).
+_FOLLOWER_CALL = re.compile(r'"\$CF"|vim_ai_follower\.cli|bin/claude-follow"? ')
+_TMUX_CALL = re.compile(r"\btmux\b")
+
+
+def _first_line(lines: list[str], pattern: re.Pattern[str]) -> int | None:
+    return next(
+        (
+            index
+            for index, line in enumerate(lines)
+            if not line.lstrip().startswith("#") and pattern.search(line)
+        ),
+        None,
+    )
+
+
+def _calls_before_its_own_home(text: str) -> bool:
+    """Whether a script runs tmux or the follower's CLI before it exports a
+    HOME of its own (or never exports one) — when it runs the CLI at all."""
+    lines = text.splitlines()
+    first_follower_call = _first_line(lines, _FOLLOWER_CALL)
+    if first_follower_call is None:
+        return False
+    home = _first_line(lines, re.compile(r"^\s*export HOME="))
+    first_call = min(
+        index
+        for index in (first_follower_call, _first_line(lines, _TMUX_CALL))
+        if index is not None
+    )
+    return home is None or home > first_call
+
+
+def test_every_script_that_runs_the_follower_on_a_private_server_has_its_own_home() -> None:
+    offenders = [
+        script.name
+        for script in sorted((_ROOT / "scripts").glob("*.sh"))
+        if "TMUX_TMPDIR=" in script.read_text() and _calls_before_its_own_home(script.read_text())
+    ]
+    assert offenders == []
+
+
+@pytest.mark.parametrize(
+    ("script", "offends"),
+    [
+        ('export HOME=$(mktemp -d)\ntmux -f /dev/null new -d\n"$CF" start', False),
+        ('tmux -f /dev/null new -d\nexport HOME=$(mktemp -d)\n"$CF" start', True),
+        ('tmux -f /dev/null new -d\n"$CF" start', True),
+        ("CLI() { python3 -m vim_ai_follower.cli; }\ntmux new -d", True),
+        ('# export HOME=x\ntmux new -d\n"$CF" start', True),
+        ("tmux -f /dev/null new -d\nvim -i NONE", False),
+    ],
+)
+def test_the_home_check_finds_a_call_before_the_home(script: str, offends: bool) -> None:
+    assert _calls_before_its_own_home(script) is offends
