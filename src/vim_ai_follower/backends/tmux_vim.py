@@ -9,6 +9,7 @@ import secrets
 import signal
 import subprocess
 import time
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -457,7 +458,7 @@ endfunction
 # a790652). Each name gets its own try, which is why s:find is a `:for` loop,
 # never filter().
 #
-# s:same_file: whether `name` is the file `target` (already resolved) names,
+# s:same_file: whether `name` is the file `targets` (already resolved) name,
 # compared the way Vim itself tells files apart, not by spelling: resolve()d
 # full names (a buffer opened through a file symlink, like a dotfiles
 # checkout's ~/.vimrc, while the hook passes the realpath), and
@@ -472,15 +473,25 @@ endfunction
 # and a case variant, and `:tab drop` then landed on the existing buffer anyway
 # (Vim matches files by identity), under a name no check expected.
 #
+# s:targets: the resolved names `path` may go by: itself and the other
+# Unicode spellings (NFC/NFD) its handle carried (`<handle>.1`/`.2`, kept by
+# s:read in `s:spellings` for that one path). Python hands over only a
+# spelling the FILESYSTEM takes for the same file (_other_spellings): Vim
+# keeps the bytes it was given, so a buffer the user opened as `Café.py`
+# precomposed is not, by name, the hook's decomposed spelling, while macOS
+# takes both for one file (T24c item 7, measured 2026-10-18: the probe said
+# "absent" and every Edit failed with NavigationFailed).
+#
 # s:find: the number of the buffer holding `path`, or -1. A number with no
 # buffer has the name '', whose `:p` is the working directory (trailing slash
 # included), which no file path equals.
 #
 # s:read: the path a handle file holds (see _path_handle), deleting the
-# handle; '' when it cannot be read (one swept under a stalled Vim), and every
-# function then acts on nothing. `filereadable()` first, never a try around
-# the read: measured 2026-09-29 (Vim 9.2), readfile()'s E484 is not a clean
-# exception on a typed line, and a missing handle must cost nothing.
+# handle and its other spellings' files; '' when it cannot be read (one swept
+# under a stalled Vim), and every function then acts on nothing.
+# `filereadable()` first, never a try around the read: measured 2026-09-29
+# (Vim 9.2), readfile()'s E484 is not a clean exception on a typed line, and
+# a missing handle must cost nothing.
 # Byte-exact: `readfile(…, 'b')` joined on "\n" gives back exactly the bytes
 # Python wrote, a newline in the path included (binary mode keeps a CR and
 # adds no item for a missing final newline).
@@ -524,14 +535,22 @@ function! s:resolved(name) abort
   endtry
 endfunction
 
-function! s:same_file(target, name, folds) abort
-  return index([a:target], s:resolved(a:name), 0, a:folds) == 0
+function! s:same_file(targets, name, folds) abort
+  return index(a:targets, s:resolved(a:name), 0, a:folds) >= 0
+endfunction
+
+function! s:targets(path) abort
+  let targets = []
+  for spelling in [a:path] + get(get(s:, 'spellings', {}), a:path, [])
+    call add(targets, s:resolved(spelling))
+  endfor
+  return targets
 endfunction
 
 function! s:find(path, folds) abort
-  let target = s:resolved(a:path)
+  let targets = s:targets(a:path)
   for number in range(1, bufnr('$'))
-    if s:same_file(target, bufname(number), a:folds)
+    if s:same_file(targets, bufname(number), a:folds)
       return number
     endif
   endfor
@@ -542,6 +561,14 @@ function! s:read(handle) abort
   let handle = s:dir . a:handle
   let path = filereadable(handle) ? join(readfile(handle, 'b'), "\n") : ''
   call delete(handle)
+  let others = []
+  for suffix in ['.1', '.2']
+    if filereadable(handle . suffix)
+      call add(others, join(readfile(handle . suffix, 'b'), "\n"))
+    endif
+    call delete(handle . suffix)
+  endfor
+  let s:spellings = path ==# '' ? {} : {path: others}
   return path
 endfunction
 
@@ -556,7 +583,7 @@ function! s:acting_start(token) abort
 endfunction
 
 function! s:land_if_target(folds) abort
-  if s:same_file(s:resolved(g:vaf_p), bufname('%'), a:folds)
+  if s:same_file(s:targets(g:vaf_p), bufname('%'), a:folds)
     let g:vaf_landed = bufnr('%')
   endif
 endfunction
@@ -1622,7 +1649,10 @@ def _path_handle(pane_id: str, file_path: str) -> Path:
       which deletes it right after, and is created exclusively (`xb`), so two
       calls never share one.
     - Byte-exact: the file holds `os.fsencode(file_path)` with no trailing
-      newline (see s:read). A NUL cannot occur in a path."""
+      newline (see s:read). A NUL cannot occur in a path.
+    - The path's other Unicode spellings the filesystem takes for the same
+      file (_other_spellings) go next to it, one per `<handle>.1`/`.2`, for
+      s:read to hand to the lookups (T24c item 7)."""
     directory = cache.CACHE_DIR
     directory.mkdir(parents=True, exist_ok=True)
     now = time.time()
@@ -1641,11 +1671,47 @@ def _path_handle(pane_id: str, file_path: str) -> Path:
                 stream.write(os.fsencode(file_path))
         except FileExistsError:
             continue
+        for number, spelling in enumerate(_other_spellings(file_path), start=1):
+            handle.with_name(f"{handle.name}.{number}").write_bytes(os.fsencode(spelling))
         return handle
 
 
-# A path handle's name (_path_handle): `p<pane number>-<6 hex>`.
-_HANDLE_NAME = re.compile(r"p[0-9]+-[0-9a-f]{6}")
+def _other_spellings(file_path: str) -> list[str]:
+    """The NFC and NFD spellings of file_path that differ from it and that
+    the filesystem says are the SAME file (one inode), for the lookups to
+    match a buffer the user opened under either (s:find, s:same_file).
+
+    Vim keeps the bytes it was given: a buffer opened as `Café.py` with a
+    precomposed é is not, by name, the hook's `Cafe` + combining accent,
+    while macOS (APFS, HFS+, exFAT and FAT32 alike, measured 2026-10-18)
+    takes both for one file. Asked of the filesystem per path, the way
+    _case_folds asks about case: on a normalization-sensitive filesystem
+    (Linux ext4) the two spellings can be two files, and then neither is
+    handed over. A path that cannot be checked (missing, unreadable) has no
+    other spelling, the side that never takes one file for another."""
+    spellings: list[str] = []
+    for form in ("NFC", "NFD"):
+        spelling = unicodedata.normalize(form, file_path)
+        if spelling == file_path or spelling in spellings:
+            continue
+        try:
+            same = Path(file_path).samefile(spelling)
+        except (OSError, ValueError):
+            same = False
+        if same:
+            spellings.append(spelling)
+    return spellings
+
+
+def _drop_handle(handle: Path) -> None:
+    """Remove a path handle Vim did not read, with its other spellings."""
+    for name in (handle.name, f"{handle.name}.1", f"{handle.name}.2"):
+        handle.with_name(name).unlink(missing_ok=True)
+
+
+# A path handle's name (_path_handle): `p<pane number>-<6 hex>`, and its
+# other spellings' `.1`/`.2`.
+_HANDLE_NAME = re.compile(r"p[0-9]+-[0-9a-f]{6}(?:\.[12])?")
 
 
 def _goto_answer_path(pane_id: str) -> Path:
@@ -1741,7 +1807,7 @@ def _await_landing(pane_id: str, answer: Path, nonce: str, file_path: str, handl
         with contextlib.suppress(OSError):
             _unanswered_path(pane_id).touch()
         reason += f"; not retrying for {_UNANSWERED_BACKOFF_SECONDS:.0f} s"
-    handle.unlink(missing_ok=True)
+    _drop_handle(handle)
     raise NavigationFailed(f"the follower's Vim did not land on {file_path} ({reason})")
 
 

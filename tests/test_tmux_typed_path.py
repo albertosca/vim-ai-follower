@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import unicodedata
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
@@ -128,6 +129,73 @@ def test_a_taken_handle_name_is_never_reused() -> None:
         handle = tmux_vim._path_handle("%3", "/tmp/f.py")
     assert handle.name == "p3-bbbbbb"
     assert taken.read_bytes() == b"/tmp/someone-else.py"
+
+
+def test_the_other_unicode_spellings_go_next_to_the_handle_when_they_are_one_file(
+    tmp_path: Path,
+) -> None:
+    """T24c item 7: Vim keeps the bytes it was given, so a buffer opened as
+    `Café.py` precomposed is not, by name, the decomposed spelling. The
+    handle carries each other spelling the filesystem takes for the same
+    file in `<handle>.1`/`.2`; a mixed spelling has two."""
+    composed = unicodedata.normalize("NFC", "Café.py")
+    decomposed = unicodedata.normalize("NFD", "Café.py")
+    mixed = "é" + unicodedata.normalize("NFD", "é") + ".py"
+    with patch.object(Path, "samefile", return_value=True) as samefile:
+        handle = tmux_vim._path_handle("%3", f"/w/{composed}")
+        assert samefile.call_args.args == (f"/w/{decomposed}",)
+        assert handle.read_bytes() == os.fsencode(f"/w/{composed}")
+        assert handle.with_name(handle.name + ".1").read_bytes() == os.fsencode(f"/w/{decomposed}")
+        assert not handle.with_name(handle.name + ".2").exists()
+        both = tmux_vim._path_handle("%3", f"/w/{mixed}")
+        assert both.with_name(both.name + ".1").read_bytes() == os.fsencode(
+            "/w/" + unicodedata.normalize("NFC", mixed)
+        )
+        assert both.with_name(both.name + ".2").read_bytes() == os.fsencode(
+            "/w/" + unicodedata.normalize("NFD", mixed)
+        )
+        plain = tmux_vim._path_handle("%3", "/w/plain.py")
+        assert sorted(path.name for path in cache.CACHE_DIR.glob(plain.name + "*")) == [plain.name]
+
+
+def test_a_spelling_that_is_another_file_or_cannot_be_checked_is_not_handed_over(
+    tmp_path: Path,
+) -> None:
+    # A normalization-sensitive filesystem (Linux ext4) can hold both
+    # spellings as two files; a missing file proves nothing.
+    composed = f"{tmp_path}/" + unicodedata.normalize("NFC", "Café.py")
+    with patch.object(Path, "samefile", return_value=False):
+        assert tmux_vim._other_spellings(composed) == []
+    assert tmux_vim._other_spellings(composed) == []  # missing on disk
+    assert tmux_vim._other_spellings("/tmp/a\0" + unicodedata.normalize("NFC", "é")) == []
+    Path(composed).write_text("x\n")
+    decomposed = unicodedata.normalize("NFD", composed)
+    expected = [decomposed] if Path(decomposed).exists() else []
+    assert tmux_vim._other_spellings(composed) == expected
+
+
+def test_old_other_spelling_files_are_swept_like_their_handles() -> None:
+    cache.CACHE_DIR.mkdir(parents=True)
+    old = [cache.CACHE_DIR / name for name in ("p3-dead00.1", "p3-dead00.2")]
+    kept = cache.CACHE_DIR / "p3-dead00.3"
+    long_ago = time.time() - tmux_vim._PATH_HANDLE_MAX_AGE_SECONDS - 60
+    for path in (*old, kept):
+        path.write_bytes(b"/tmp/old.py")
+        os.utime(path, (long_ago, long_ago))
+    tmux_vim._path_handle("%5", "/tmp/f.py")
+    assert not any(path.exists() for path in old)
+    assert kept.exists()
+
+
+def test_a_handle_vim_did_not_read_goes_with_its_other_spellings() -> None:
+    cache.CACHE_DIR.mkdir(parents=True)
+    handle = cache.CACHE_DIR / "p3-abcdef"
+    files = [handle, handle.with_name("p3-abcdef.1"), handle.with_name("p3-abcdef.2")]
+    for path in files:
+        path.write_bytes(b"/tmp/f.py")
+    tmux_vim._drop_handle(handle)
+    assert not any(path.exists() for path in files)
+    tmux_vim._drop_handle(handle)  # nothing left is no error
 
 
 # --- the script and the lines that call it ---

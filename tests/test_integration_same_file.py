@@ -225,6 +225,11 @@ def test_a_case_variant_is_the_same_file_and_leaves_no_stray_tab(
     follower = TmuxVimFollower(pane_id=pane, pace_seconds=0.0)
 
     _quick(lambda: follower.ensure_showing(str(lower)))  # tab 2
+    # ensure_showing returns once Vim LANDED, before its clean-only re-read
+    # (s:reload) has run: a probe's round trip waits for it, or the write
+    # below raced it and the re-read took AFTER (1 run in 3 at 3322da4,
+    # every run once s:read also reads the other-spelling files).
+    assert _quick(lambda: follower.probe_buffer(str(lower), BEFORE)) == "holds"
     lower.write_text(AFTER)
     # The hook's spelling differs from the buffer's only in case.
     assert _quick(lambda: follower.probe_buffer(str(upper), BEFORE)) == "holds"
