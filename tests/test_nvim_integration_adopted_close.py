@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,7 @@ import pytest
 pynvim = pytest.importorskip("pynvim")
 
 from vim_ai_follower import commands, hooks  # noqa: E402
-from vim_ai_follower.backends.nvim import NvimFollower  # noqa: E402
+from vim_ai_follower.backends.nvim import _EVICT_LUA, NvimFollower  # noqa: E402
 from vim_ai_follower.state import FollowerState  # noqa: E402
 
 pytestmark = pytest.mark.integration
@@ -271,3 +272,26 @@ def test_reads_leave_no_empty_buffer_behind(headless_nvim: str, tmp_path: Path) 
         if buffer.name == "" and not nvim.funcs.win_findbuf(buffer.number)
     ]
     assert hidden_empty == []
+
+
+def test_a_wipe_the_editor_refuses_is_not_reported_as_done(headless_nvim: str) -> None:
+    """Review m1 of T24c: in the command-line window `bwipeout!` fails with
+    E11 behind `silent!`, and _EVICT_LUA still answered "wiped"."""
+    nvim, _follower = _adopted(headless_nvim)
+    nvim.command("tabnew")
+    buffer = nvim.api.create_buf(True, False)
+    nvim.api.buf_set_lines(buffer, 0, -1, True, ["claude"])
+    nvim.api.buf_set_option(buffer, "modified", False)
+    nvim.api.buf_set_var(buffer, "vaf_created", 1)
+    nvim.api.win_set_buf(0, buffer)
+    nvim.command("tabfirst")
+    nvim.input("q:")
+    deadline = time.monotonic() + 5.0
+    while nvim.call("getcmdwintype") != ":" and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert nvim.call("getcmdwintype") == ":"
+
+    assert nvim.exec_lua(_EVICT_LUA, buffer.handle, False) == "not wiped"
+    assert nvim.api.buf_is_valid(buffer)
+    nvim.input("<C-c>")
+    nvim.close()

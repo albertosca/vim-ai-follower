@@ -28,6 +28,7 @@ TOKEN = f"p3-{HANDLE_HEX}"
     [
         ("kept", logging.WARNING, "unsaved changes"),
         ("current", logging.WARNING, "the tab the user is in"),
+        ("not wiped", logging.WARNING, "could not wipe"),
         ("closed", logging.INFO, "closed the follower's tab"),
         ("forgotten", logging.INFO, "the user had it open"),
         ("unread", logging.WARNING, "could not confirm"),

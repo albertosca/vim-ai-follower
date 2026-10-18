@@ -414,3 +414,34 @@ def test_letting_go_after_an_edit_gives_the_user_their_own_buffer_back(
     assert report["EXISTS"] == "1", report
     assert report["LINES"] == AFTER.splitlines(), report
     assert (report["MA"], report["RO"]) == (modifiable, readonly), report
+
+
+def test_a_wipe_the_editor_refuses_is_not_logged_as_done(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Review m1 of T24c: in the command-line window `bwipeout!` fails with
+    E11 behind `silent!`, and s:evict still answered "wiped"."""
+    root = Path(os.path.realpath(tmp_path))
+    (root / "mine.py").write_text("mine = 1\n")
+    claudes = root / "claude.py"
+    claudes.write_text("claude = 1\n")
+    pane, _window_id, follower = _adopted(tmux_session, monkeypatch, root, "mine.py")
+    follower.ensure_showing(str(claudes))
+    assert _buffer(pane, tmp_path / "b0.txt", "claude.py", wait_until)["TABS"] == "2"
+    _keys(pane, "-l", ":tabfirst")
+    _keys(pane, "Enter")
+    _keys(pane, "q:")
+    time.sleep(0.5)
+
+    caplog.set_level(logging.INFO, logger="vim_ai_follower")
+    follower.close_tab(str(claudes))
+    _keys(pane, "C-c")
+    time.sleep(0.3)
+
+    report = _buffer(pane, tmp_path / "b1.txt", "claude.py", wait_until)
+    assert report["EXISTS"] == "1", report
+    assert "could not wipe" in caplog.text, caplog.text

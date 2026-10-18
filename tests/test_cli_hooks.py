@@ -2928,6 +2928,23 @@ def test_an_adopted_nvim_in_its_command_line_window_is_skipped(
         assert busy is None
 
 
+@pytest.mark.parametrize("mode", ["i", "ic", "v", "V", "s", "R", "c", "r?", "no", "niI"])
+def test_the_command_line_window_wins_over_every_mode_typed_inside_it(mode: str) -> None:
+    # Review m1 of T24c: `q:` then `i` read "in insert mode", `q:` then `v`
+    # "in visual mode", and `stop` then ran its teardown inside the cmdwin.
+    with patch(
+        "vim_ai_follower.backends.nvim_connect._probe", return_value=("answers", False, mode)
+    ):
+        nvim_connect.probe_nvim("/tmp/user.sock")
+    with patch("vim_ai_follower.backends.nvim_connect.in_command_line_window", return_value=True):
+        assert hooks.adopted_user_pending("/tmp/user.sock") == "in the command-line window"
+    with patch("vim_ai_follower.backends.nvim_connect.in_command_line_window", return_value=False):
+        assert hooks.adopted_user_pending("/tmp/user.sock") not in (
+            None,
+            "in the command-line window",
+        )
+
+
 @pytest.mark.parametrize(
     "probe_answer", [("answers", True, "r"), ("answers", True, "n"), ("silent", None, None)]
 )

@@ -1013,8 +1013,8 @@ function! s:evict(token, folds) abort
   elseif number < 0
     let verdict = 'absent'
   elseif !getbufvar(number, '&modified') && getbufvar(number, 'vaf_created')
-    let verdict = 'wiped'
     exe 'silent! bwipeout! ' . number
+    let verdict = bufexists(number) ? 'not wiped' : 'wiped'
   else
     call s:release(number)
     let verdict = getbufvar(number, '&modified') ? 'kept' : 'forgotten'

@@ -26,6 +26,8 @@ logger = logging.getLogger("vim_ai_follower")
 # What closing a tab in an ADOPTED editor did with its buffer (the eviction
 # past max_tabs, and `claude-follow stop`), as the backends report it:
 #   - "wiped": the follower created it and nothing changed it since;
+#   - "not wiped": the same, but the editor refused the wipe (E11 in the
+#     command-line window, behind `silent!`), so it is still there;
 #   - "kept": it is modified, so it stays loaded, tab and all;
 #   - "closed": the user had it open; only the tab the follower opened for it
 #     was closed;
@@ -38,6 +40,7 @@ _ADOPTED_CLOSE_MESSAGES = {
     "closed": "closed the follower's tab on %s and left the buffer: the user had it open",
     "forgotten": "left %s where it is in the adopted editor: the user had it open",
     "current": "left %s open in the adopted editor: it shows in the tab the user is in",
+    "not wiped": "could not wipe %s in the adopted editor: it refused, the buffer is still there",
 }
 
 
@@ -53,7 +56,7 @@ def log_adopted_close(file_path: str, verdict: str | None) -> None:
             file_path,
             verdict or "no answer",
         )
-    elif verdict in ("kept", "current"):
+    elif verdict in ("kept", "current", "not wiped"):
         logger.warning(message, file_path)
     else:
         logger.info(message, file_path)

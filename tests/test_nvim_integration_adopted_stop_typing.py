@@ -214,18 +214,27 @@ def test_stop_leaves_a_follower_tab_the_busy_user_is_in(world: E2EFollower) -> N
     assert len(current) == 1 and adopted.claudes_paths[0] in current[0], log
 
 
-def test_stop_still_sends_nothing_in_the_command_line_window(world: E2EFollower) -> None:
+@pytest.mark.parametrize(("inside", "mode"), [("", "n"), ("i", "i"), ("v", "v")])
+def test_stop_still_sends_nothing_in_the_command_line_window(
+    world: E2EFollower, inside: str, mode: str
+) -> None:
+    # Whatever mode the user is in inside it: `q:` then `i` read "in insert
+    # mode", and the teardown ran there (review m1 of T24c).
     adopted = _Adopted(world, ("claude.py",))
     adopted.keys("q:")
     world.wait_until(
         lambda: adopted.nvim().call("getcmdwintype") == ":", "the command-line window", timeout=10.0
     )
+    if inside:
+        adopted.keys(inside)
+    adopted.wait_for_mode(mode)
     try:
         adopted.stop()
         nvim = adopted.nvim()
         assert len(nvim.api.list_tabpages()) == 2
         assert nvim.api.buf_is_valid(adopted.claudes_buffers[0])
         assert nvim.call("getcmdwintype") == ":"
+        assert nvim.api.get_mode()["mode"] == mode
         log = _hook_log(world)
         waiting = [line for line in log.splitlines() if "waiting on its user" in line]
         assert len(waiting) == 1 and "(in the command-line window)" in waiting[0], log

@@ -315,14 +315,16 @@ def test_an_nvim_whose_user_is_mid_confirm_or_command_line_is_skipped(
         world.tmux("send-keys", "-t", pane_id, "Escape")
 
 
+@pytest.mark.parametrize(("inside", "mode"), [("", "n"), ("i", "i"), ("v", "v")])
 @pytest.mark.parametrize("tool", ["Edit", "Write"])
 def test_an_nvim_whose_user_is_in_the_command_line_window_is_skipped(
-    world: E2EFollower, tool: str
+    world: E2EFollower, tool: str, inside: str, mode: str
 ) -> None:
     # `q:` reads mode "n", not blocking, but every window change in it raises
     # E11: show_fresh crashed the hook with a traceback and left an empty
     # buffer behind (T22 re-review m2). An adopted nvim in the cmdwin is
-    # skipped like one on the command line.
+    # skipped like one on the command line, whatever mode the user is in
+    # inside it (`q:` then `i` read "in insert mode": review m1 of T24c).
     socket_path = world.cache_dir / "nvim-adopted.sock"
     world.cache_dir.mkdir(parents=True, exist_ok=True)
     users_file = world.workdir / "a.txt"
@@ -342,6 +344,13 @@ def test_an_nvim_whose_user_is_in_the_command_line_window_is_skipped(
     world.wait_until(
         lambda: world._nvim(str(socket_path)).call("getcmdwintype") == ":",
         "the user's command-line window",
+        timeout=10.0,
+    )
+    if inside:
+        world.tmux("send-keys", "-t", pane_id, inside)
+    world.wait_until(
+        lambda: world._nvim(str(socket_path)).api.get_mode()["mode"] == mode,
+        f"mode {mode} inside the command-line window",
         timeout=10.0,
     )
     try:

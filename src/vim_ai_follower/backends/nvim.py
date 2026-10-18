@@ -402,6 +402,7 @@ local clean = not vim.bo[buf].modified
 if not clean then return 'kept' end
 if vim.b[buf].{_CREATED} then
   vim.cmd('silent! bwipeout! ' .. buf)
+  if vim.api.nvim_buf_is_valid(buf) then return 'not wiped' end
   return 'wiped'
 end
 local verdict = 'forgotten'

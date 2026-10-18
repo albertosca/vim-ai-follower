@@ -1343,13 +1343,23 @@ def adopted_user_pending(socket_path: str) -> str | None:
     Claude's buffer and their next `x`/`d` acted there, review I1 of
     T24a), or a blocking key
     sequence (`q` waiting for its register reads `n`, blocking). An nvim
-    that answered not blocking is also asked whether its command-line
-    window is open (`q:` reads "n", and every
-    window change in it raises E11: show_fresh crashed the hook, re-review
-    m2) — one more bounded raw request; no answer counts as not open. None
+    that answered not blocking is first asked whether its command-line
+    window is open, in every mode (`q:` reads "n", `q:` then `i` reads "i",
+    and every window change in it raises E11: show_fresh crashed the hook,
+    re-review m2; a typing reason won over it, review m1 of T24c) — one
+    more bounded raw request; no answer counts as not open. None
     for an idle nvim or one at a hit-enter or more-prompt, which the
     follower answers when it acts."""
     mode = nvim_connect.last_probe_mode(socket_path)
+    # Asked FIRST, whatever the mode: a user typing inside the command-line
+    # window (`q:` then `i` or `v`) is in it as much as one in its Normal
+    # mode, and every window change there raises E11 (review m1 of T24c).
+    if (
+        not nvim_connect.last_probe_blocking(socket_path)
+        and nvim_connect.last_probe_verdict(socket_path) == "answers"
+        and nvim_connect.in_command_line_window(socket_path)
+    ):
+        return "in the command-line window"
     if mode == "r?":
         return "a confirm prompt"
     if mode is not None and mode.startswith("c"):
@@ -1359,14 +1369,8 @@ def adopted_user_pending(socket_path: str) -> str | None:
     typing = take_over.typing_reason(mode)
     if typing is not None:
         return typing
-    if nvim_connect.last_probe_blocking(socket_path):
-        if not nvim_prompt.answerable(mode):
-            return "in the middle of a key sequence"
-        return None
-    if nvim_connect.last_probe_verdict(
-        socket_path
-    ) == "answers" and nvim_connect.in_command_line_window(socket_path):
-        return "in the command-line window"
+    if nvim_connect.last_probe_blocking(socket_path) and not nvim_prompt.answerable(mode):
+        return "in the middle of a key sequence"
     return None
 
 
