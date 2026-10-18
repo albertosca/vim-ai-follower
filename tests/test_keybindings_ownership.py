@@ -190,8 +190,22 @@ def _restore_fails(
 
 def test_a_binding_tmux_refuses_unbinds_ours_and_says_so(caplog: pytest.LogCaptureFixture) -> None:
     ours = "bind-key -T prefix P run-shell -b claude-follow pause"
-    previous = "bind-key    -T prefix P       if-shell true { display-message a"
-    _restore_fails(_FakeBindingServer({"P": ours}, source_status=1), previous, caplog)
+    previous = "bind-key    -T prefix P       send-keys a"
+    server = _FakeBindingServer({"P": ours}, source_status=1)
+    _restore_fails(server, previous, caplog)
+    assert len(server.sourced) == 1
+
+
+def test_a_source_that_fails_is_never_trusted_even_when_the_listing_matches(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # T24b review m2: a source-file that reports an error proves nothing
+    # about what it bound, so a listing that happens to match (the user's
+    # line already there, a second process restoring it) is not a restore.
+    previous = "bind-key    -T prefix P       send-keys a"
+    server = _FakeBindingServer({"P": previous}, source_status=1)
+    _restore_fails(server, previous, caplog)
+    assert len(server.sourced) == 1
 
 
 def test_a_binding_that_lists_back_different_unbinds_ours_and_says_so(
