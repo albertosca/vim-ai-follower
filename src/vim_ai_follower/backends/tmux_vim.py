@@ -113,11 +113,16 @@ from vim_ai_follower.tmux import TmuxPane
 # 'nomodifiable' themselves (N4, final review of backlog-sweep-3). The restore
 # puts back a recorded 'nomodifiable' (never turns the option on: after a
 # completed animation the relock's lock stands) and s:release puts back the
-# recorded value, 1 when there is none. The one thing it cannot see is the
-# user changing 'readonly' while the follower's own lock is on (a bare
-# `:setlocal readonly`, or `:view` of a file the follower has locked): with
-# no autocommand in the user's Vim, that is indistinguishable from the
-# follower's own value, and the follower's claim wins. The claim can therefore
+# recorded value, 1 when there is none. That relock lock is a claim of its
+# own (`b:vaf_ma_ours`): the restore keeps the record of a user's
+# 'modifiable' it leaves locked, s:note_user_readonly does not take the lock
+# for the user's value, and s:release undoes it (review I1 of T24c: an Edit
+# then a stop or an eviction left the user's own buffer 'nomodifiable').
+# The one thing it cannot see is the user changing 'readonly' while the
+# follower's own lock is on (a bare `:setlocal readonly`, or `:view` of a
+# file the follower has locked): with no autocommand in the user's Vim, that
+# is indistinguishable from the follower's own value, and the follower's
+# claim wins. The claim can therefore
 # outlive a later user `:view` of the same loaded buffer: the restore hands
 # back the value recorded before the follower's lock, not the one `:view` set.
 #
@@ -168,7 +173,9 @@ _VIM_READONLY = r"""
 function! s:note_user_readonly() abort
   if !get(b:, 'vaf_ro_ours')
     let b:vaf_user_ro = &readonly
-    let b:vaf_user_ma = &modifiable
+    if !get(b:, 'vaf_ma_ours')
+      let b:vaf_user_ma = &modifiable
+    endif
   endif
 endfunction
 
@@ -205,10 +212,17 @@ function! s:readonly_back(number) abort
   elseif get(variables, 'vaf_ro_ours') == 2
     call setbufvar(a:number, 'vaf_ro_ours', 0)
   endif
-  if !get(variables, 'vaf_user_ma', 1)
+  let users_ma = get(variables, 'vaf_user_ma', 1)
+  if !users_ma
     call setbufvar(a:number, '&modifiable', 0)
   endif
-  for name in ['vaf_user_ro', 'vaf_user_ma']
+  " A completed animation's relock leaves the user's modifiable buffer
+  " 'nomodifiable': that lock is the follower's, and s:release undoes it.
+  " Only on a record: with none, the value is not the follower's to claim.
+  let ours = get(variables, 'vaf_user_ma') && !getbufvar(a:number, '&modifiable')
+  call setbufvar(a:number, 'vaf_ma_ours', ours)
+  let keep = get(variables, 'vaf_ro_ours') == 1 || ours
+  for name in keep ? [] : ['vaf_user_ro', 'vaf_user_ma']
     if has_key(variables, name)
       call remove(variables, name)
     endif
@@ -978,9 +992,12 @@ function! s:release(number) abort
   let variables = getbufvar(a:number, '')
   if get(variables, 'vaf_ro_ours') == 1
     call setbufvar(a:number, '&readonly', get(variables, 'vaf_user_ro', 0))
+  endif
+  if get(variables, 'vaf_ro_ours') == 1 || get(variables, 'vaf_ma_ours')
     call setbufvar(a:number, '&modifiable', get(variables, 'vaf_user_ma', 1))
   endif
   call setbufvar(a:number, 'vaf_ro_ours', 0)
+  call setbufvar(a:number, 'vaf_ma_ours', 0)
   for name in ['vaf_user_ro', 'vaf_user_ma']
     if has_key(variables, name)
       call remove(variables, name)

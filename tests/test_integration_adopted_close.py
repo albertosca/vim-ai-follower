@@ -25,6 +25,7 @@ from test_integration_same_file import _keys, _tmux, _user_vim
 
 from vim_ai_follower import commands, hooks
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
+from vim_ai_follower.diff import compute_edit_script
 from vim_ai_follower.state import FollowerState
 
 pytestmark = pytest.mark.integration
@@ -45,7 +46,8 @@ def _buffer(
         "--",
         f":let g:n = bufnr('^{name}$') | call writefile(['EXISTS=' . (g:n > 0),"
         " 'LOADED=' . bufloaded(g:n), 'MODIFIED=' . getbufvar(g:n, '&modified', 0),"
-        " 'MA=' . getbufvar(g:n, '&modifiable', 0), 'TABS=' . tabpagenr('$')]"
+        " 'MA=' . getbufvar(g:n, '&modifiable', 0), 'TABS=' . tabpagenr('$'),"
+        " 'RO=' . getbufvar(g:n, '&readonly', 0)]"
         f" + getbufline(g:n, 1, '$') + ['END'], '{out}')",
     )
     _keys(pane, "Enter")
@@ -56,10 +58,10 @@ def _buffer(
     assert wait_until(answered, timeout=10.0), _tmux("capture-pane", "-p", "-t", pane)
     lines = out.read_text().splitlines()[:-1]
     fields: dict[str, str | list[str]] = {}
-    for line in lines[:5]:
+    for line in lines[:6]:
         key, value = line.split("=", 1)
         fields[key] = value
-    fields["LINES"] = lines[5:]
+    fields["LINES"] = lines[6:]
     return fields
 
 
@@ -346,3 +348,69 @@ def test_releasing_the_read_lock_keeps_the_users_own_nomodifiable(
     report = _buffer(pane, tmp_path / "b.txt", "mine.py", wait_until)
     assert report["EXISTS"] == "1", report
     assert report["MA"] == "0", report
+
+
+BEFORE = "mine = 1\n"
+AFTER = "mine = 1\nclaude = 2\n"
+
+# The user's own setting before the follower's first contact, and what the
+# buffer must read once the follower lets go of it: (command, MA, RO).
+_USERS_OWN = {
+    "default": ("", "1", "0"),
+    "nomodifiable": (":setlocal nomodifiable", "0", "0"),
+    "readonly": (":setlocal readonly", "1", "1"),
+}
+
+
+@pytest.mark.parametrize("users_own", list(_USERS_OWN))
+@pytest.mark.parametrize(
+    "steps",
+    [
+        ("edit", "close"),
+        ("edit", "read", "close"),
+        ("edit", "stop"),
+        ("read", "edit", "close"),
+        ("read", "edit", "stop"),
+    ],
+    ids="-".join,
+)
+def test_letting_go_after_an_edit_gives_the_user_their_own_buffer_back(
+    steps: tuple[str, ...],
+    users_own: str,
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    """Review I1 of T24c: an Edit's completion relock leaves the user's own
+    buffer 'nomodifiable' (the follower's lock, so a stray key cannot type
+    into Claude's text), and letting go of the buffer (an eviction, `stop`)
+    must undo that lock. It did not: s:release gave back only a Read's lock,
+    and a Read after the Edit recorded the relock's 'nomodifiable' as the
+    user's own. Whatever the user had set themselves still survives."""
+    command, modifiable, readonly = _USERS_OWN[users_own]
+    root = Path(os.path.realpath(tmp_path))
+    mine = root / "mine.py"
+    mine.write_text(BEFORE)
+    pane, window_id, follower = _adopted(tmux_session, monkeypatch, root, "mine.py")
+    if command:
+        _keys(pane, "-l", command)
+        _keys(pane, "Enter")
+
+    for step in steps:
+        if step == "edit":
+            mine.write_text(AFTER)
+            follower.apply_edit(str(mine), compute_edit_script(BEFORE, AFTER), BEFORE)
+            FollowerState.update(window_id, open_files=(str(mine),))
+        elif step == "read":
+            follower.ensure_showing(str(mine))
+            FollowerState.update(window_id, open_files=(str(mine),))
+        elif step == "close":
+            follower.close_tab(str(mine))
+        else:
+            assert commands.cmd_stop({"TMUX_PANE": pane}) == 0
+
+    report = _buffer(pane, tmp_path / "b.txt", "mine.py", wait_until)
+    assert report["EXISTS"] == "1", report
+    assert report["LINES"] == AFTER.splitlines(), report
+    assert (report["MA"], report["RO"]) == (modifiable, readonly), report

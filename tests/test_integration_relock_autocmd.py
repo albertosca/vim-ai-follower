@@ -315,3 +315,36 @@ def test_an_adopted_read_through_an_erroring_autocommand_is_still_evictable(
 
     gone = f"tabpagenr('$') . bufexists('{target}') . bufname('%')"
     assert state(pane, tmp_path, wait_until, gone)[2] == f"10{user}"
+
+
+@pytest.mark.parametrize(("users_own", "expected"), [("", "1"), ("nomodifiable", "0")])
+def test_an_interrupt_after_a_completed_edit_hands_back_the_users_modifiable(
+    users_own: str,
+    expected: str,
+    tmux_session: str,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    """Review I1 of T24c: a completed Edit leaves the follower's
+    'nomodifiable' lock on the user's buffer (a claim s:release undoes);
+    an interrupted Edit after it, its `:w` hand-off and the release that
+    follows must leave the user's own value."""
+    target = tmp_path / "t.py"
+    target.write_text(BEFORE)
+    pane = vim_pane(tmux_session, tmp_path, wait_until, f"edit {target}")
+    if users_own:
+        _keys(pane, f":setlocal {users_own}")
+    adopted = follower(pane, adopted=True)
+    target.write_text(AFTER)
+    assert adopted.apply_edit(str(target), compute_edit_script(BEFORE, AFTER), BEFORE).outcome == (
+        "completed"
+    )
+    target.write_text(BEFORE)
+    _keys(pane, ":edit!")
+
+    result = interrupted_edit(follower(pane, adopted=True, speed="lento"), target)
+    assert result.outcome == "interrupted"
+    follower(pane, adopted=True).hand_over()
+    assert state(pane, tmp_path, wait_until)[0] == expected
+    follower(pane, adopted=True).close_tab(str(target))
+    assert state(pane, tmp_path, wait_until)[0] == expected
