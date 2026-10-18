@@ -457,3 +457,102 @@ def test_a_save_that_changes_only_an_undecodable_byte_is_the_users_own_version(
             is False
         )
     assert "SAVED their own version" in capsys.readouterr().out
+
+
+def _stop_on_sleep(nth: int, stop: Callable[[], None]) -> Callable[[float], None]:
+    """time.sleep double for the hand-off poll: runs `stop` (what
+    `claude-follow stop` does to the window) at the nth idle sleep, and fails
+    loudly when the wait outlives the budget instead of hanging (CI has no
+    pytest-timeout)."""
+    sleeps = {"count": 0}
+
+    def _sleep(_seconds: float) -> None:
+        sleeps["count"] += 1
+        if sleeps["count"] == nth:
+            stop()
+        if sleeps["count"] > nth + 50:
+            raise AssertionError("the hand-off wait never noticed the stop")
+
+    return _sleep
+
+
+def _stop_by_clearing_the_state() -> None:
+    state.FollowerState.clear("@1")
+    control.clear_signals("@1")
+    control.discard_pending_animation("@1")
+
+
+def _stop_by_tombstone_only() -> None:
+    # The first thing `stop` writes; the state is cleared right after it.
+    state.mark_stopped("@1", None, in_tmux=False)
+
+
+def _restart_under_another_follower() -> None:
+    state.FollowerState.clear("@1")
+    _register_fake_follower("@1", "%9")
+
+
+@pytest.mark.parametrize(
+    "stop",
+    [_stop_by_clearing_the_state, _stop_by_tombstone_only, _restart_under_another_follower],
+    ids=["state cleared", "tombstone", "another follower"],
+)
+def test_a_stop_during_the_hand_off_wait_releases_claude(
+    stop: Callable[[], None], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """T20 review m3: the poll never noticed `claude-follow stop`, so Claude
+    stayed held until the hook's 600 s timeout. It now ends the wait with a
+    message that the follower was stopped, and leaves no remainder or
+    signal behind."""
+    current, target = _handoff_state(tmp_path, "a\nb\n")
+    control.save_pending_apply_edit("@1", list(_OPS), 0.0, file_path=target, partial="a\n")
+    with (
+        patch("vim_ai_follower.control.check_signal", _scripted([])),
+        patch("vim_ai_follower.hooks.time.sleep", _stop_on_sleep(3, stop)),
+    ):
+        assert (
+            hooks._poll_until_interrupt(current, _SESSION, target, "a\nb\n", "a\n", None) is False
+        )
+    message = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "stopped" in message and target in message
+    assert not control.has_pending_animation("@1")
+    assert control.check_signal("@1") is None
+
+
+def test_a_hand_off_the_stop_ended_leaves_the_surface_to_the_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # `stop` takes the follower's cues down itself (or, for an adopted editor
+    # whose user is typing, deliberately sends nothing): the hook restoring
+    # its saved border title after the stop would put a cue back.
+    current, target = _handoff_state(tmp_path, "a\n")
+    monkeypatch.setattr(hooks, "get_follower", lambda *args, **kwargs: MagicMock())
+    surface = MagicMock()
+    with (
+        patch("vim_ai_follower.control.check_signal", _scripted([])),
+        patch("vim_ai_follower.hooks.time.sleep", _stop_on_sleep(2, _stop_by_clearing_the_state)),
+    ):
+        hooks._await_user_handoff(current, _SESSION, target, "a\n", "", surface)
+    surface.clear.assert_not_called()
+    assert "stopped" in capsys.readouterr().out
+
+
+def test_a_catch_up_hand_off_the_stop_ended_releases_claude(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    current, target = _handoff_state(tmp_path, "a\n")
+    follower = MagicMock()
+    monkeypatch.setattr(hooks, "get_follower", lambda *args, **kwargs: follower)
+    monkeypatch.setattr(hooks, "status_surface_for", lambda *args, **kwargs: MagicMock())
+    with (
+        patch("vim_ai_follower.control.check_signal", _scripted([])),
+        patch("vim_ai_follower.hooks.time.sleep", _stop_on_sleep(2, _stop_by_clearing_the_state)),
+    ):
+        assert (
+            hooks._hand_over_interrupted_catch_up(
+                current, _SESSION, follower, target, b"a\n", "a\n"
+            )
+            == 0
+        )
+    assert "stopped" in capsys.readouterr().out
+    assert not control.has_pending_animation("@1")

@@ -905,3 +905,49 @@ def test_an_s_during_a_des_interrupt_replay_gives_the_users_paste_back(
 
     assert _vim_option(world, pane, "paste") == "1"
     _save_and_release(world, pane, proc)
+
+
+# ------------------------------------------- Task 24c, item 4 (T20 review m3)
+
+
+def _assert_the_stop_released_the_hook(world: E2EFollower, proc: subprocess.Popen[bytes]) -> None:
+    world.cli("stop")
+    # The poll sleeps 0.2 s between checks; "a few seconds" is the bar, the
+    # old behaviour held the hook for its whole 600 s timeout.
+    world.wait_for_hook_exit(proc, timeout=5.0)
+    assert "stopped the follower" in world.background_log(proc)
+    assert not world.pending_path.exists(), "the stopped hand-off left a remainder"
+    leftovers = sorted(
+        path.name
+        for path in world.cache_dir.iterdir()
+        if path.name in {f"{world.window_id}.pause", f"{world.window_id}.interrupt"}
+    )
+    assert leftovers == [], f"the stopped hand-off left signals {leftovers}"
+
+
+@pytest.mark.parametrize("backend", ["nvim", "tmux"])
+def test_a_stop_during_the_hand_off_wait_releases_claude_at_once(
+    world: E2EFollower, backend: str
+) -> None:
+    """T20 review m3: `claude-follow stop` while the hook waits for the user's
+    save used to leave the poll waiting for a save nobody would make — Claude
+    held up to the hook's 600 s timeout. The poll now sees the stop."""
+    path = world.workdir / "stopped_handoff.py"
+    target, proc = _animate_fresh(world, backend, path, FRESH, "lento")
+    _wait_visible(world, backend, target, path, "ALPHA_MARK")
+    world.cli("interrupt")
+    world.wait_for_handoff()
+
+    _assert_the_stop_released_the_hook(world, proc)
+    assert path.read_text() == FRESH, "the stop changed Claude's file"
+
+
+@pytest.mark.parametrize("backend", ["nvim", "tmux"])
+def test_a_stop_during_a_catch_up_hand_off_releases_claude_at_once(
+    world: E2EFollower, backend: str
+) -> None:
+    """The same through `_hand_over_interrupted_catch_up`."""
+    _, path, proc, _ = _interrupt_a_catch_up(world, backend)
+
+    _assert_the_stop_released_the_hook(world, proc)
+    assert path.read_text() == _catch_up_edit(backend), "the stop changed Claude's file"

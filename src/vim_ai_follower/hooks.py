@@ -676,6 +676,34 @@ def _print_unchanged_save_notification(file_path: str) -> None:
     )
 
 
+def _print_stopped_notification(file_path: str) -> None:
+    _print_hook_context(
+        f"The user interrupted the live preview of {file_path} and then stopped "
+        "the follower (`claude-follow stop`) without saving their own version, "
+        "so your version stands as the file's content on disk. Continue normally."
+    )
+
+
+def _follower_stopped(current: FollowerState, session: Session) -> bool:
+    """Whether `claude-follow stop` ended this window's follower while a
+    hand-off waited on it (T20 review m3: the wait never noticed, and Claude
+    stayed held until the hook's 600 s timeout). Stop writes its tombstone
+    first and clears the state right after; a state that names another
+    follower is a stop followed by a start. An unreadable state proves
+    nothing (a write caught mid-way): the wait goes on."""
+    window_id = session.window_id
+    try:
+        now = FollowerState.read(window_id)
+    except (OSError, ValueError, KeyError):
+        return False
+    if now is None or (now.backend, now.target) != (current.backend, current.target):
+        return True
+    if not state_module.stopped_path(window_id).exists():
+        return False  # one stat per poll; the tmux server is asked only past it
+    server_pid = binding.tmux_server_pid() if session.in_tmux else None
+    return state_module.is_stopped(window_id, server_pid)
+
+
 _HANDOFF_POLL_SECONDS = 0.2
 _HANDOFF_REMINDER_POLLS = 150  # ~30s at the poll cadence above
 HANDOFF_CUE = "Claude waiting \u2014 :w releases \u00b7 S discards"
@@ -763,6 +791,13 @@ def _poll_until_interrupt(
                 return False
         except OSError:
             pass  # mid-save or momentarily unreadable: check again
+        # After the save checks: a save that landed before the stop is
+        # still the user's version, and is reported as one.
+        if _follower_stopped(current, session):
+            control.discard_pending_animation(session.window_id)
+            control.clear_signals(session.window_id)
+            _print_stopped_notification(file_path)
+            return False
         time.sleep(_HANDOFF_POLL_SECONDS)
 
 
@@ -935,7 +970,12 @@ def _await_user_handoff(
         # is left to interrupt, and an S while the cue comes down must not
         # read "handoff" (it would be told unsaved changes were discarded).
         control.mark_animating(window_id, state="finishing")
-        surface.clear()
+        # A wait the stop ended leaves the cue to the stop: it took the
+        # follower's surface down itself (or, for an adopted editor whose
+        # user is typing, sends nothing on purpose), and a restore here
+        # would put a saved border title back.
+        if not _follower_stopped(current, session):
+            surface.clear()
 
 
 class _Readable(Protocol):
