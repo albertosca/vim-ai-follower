@@ -55,6 +55,23 @@ def no_tmux_server_dir() -> Iterator[str]:
     shutil.rmtree(directory, ignore_errors=True)
 
 
+@pytest.fixture(autouse=True)
+def nvim_state_outside_home(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
+    """Every nvim a test starts keeps its state in a throwaway directory,
+    not the developer's `~/.local/state/nvim`: even `-n -i NONE` writes
+    `nvim.log` there, an nvim without `-n` its swap files, and an LSP client
+    `lsp.log` (T24b re-review 2 m5, measured with a throwaway HOME on nvim
+    0.12.6). Autouse, so it reaches headless_nvim, tmux_session's server
+    (which its panes inherit) and any test that launches nvim itself; the
+    e2e harness sets its own. Only XDG_STATE_HOME: nothing was measured
+    under XDG_DATA_HOME, and nvim's default sockets live under TMPDIR, which
+    this leaves alone (the AF_UNIX path limit)."""
+    directory = tempfile.mkdtemp(prefix="cf-state-")
+    monkeypatch.setenv("XDG_STATE_HOME", directory)
+    yield directory
+    shutil.rmtree(directory, ignore_errors=True)
+
+
 @pytest.fixture
 def temporaries_in_tmp_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """`tempfile` creates its files under this test's tmp_path, not the

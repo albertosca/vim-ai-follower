@@ -1,4 +1,4 @@
-"""No test Vim or shell writes into the developer's HOME.
+"""No test Vim, nvim or shell writes into the developer's HOME.
 
 `tmux_session` runs its server under the developer's real HOME, so every
 Vim it ran wrote their `~/.viminfo` on exit and every pane's login shell
@@ -87,6 +87,45 @@ def test_no_test_vim_or_shell_writes_viminfo_or_history(
         timeout=10.0,
     ), f"the control wrote only {sorted(path.name for path in control.iterdir())}"
     assert sorted(path.name for path in subject.iterdir()) == []
+
+
+def test_no_test_nvim_writes_its_state_into_home(
+    tmux_session: str, tmp_path: Path, wait_until: Callable[..., bool]
+) -> None:
+    # Even `nvim -n -i NONE` writes ~/.local/state/nvim/nvim.log (an nvim
+    # without -n its swap files there): conftest's autouse
+    # nvim_state_outside_home points XDG_STATE_HOME elsewhere. The subjects
+    # are a pane nvim (tmux_session's server inherits the variable) and one
+    # this process starts itself, as headless_nvim does; the control, with
+    # the variable removed, must write, or the empty subject proves nothing.
+    _prove_private()
+    subject = tmp_path / "subject-home"
+    control = tmp_path / "control-home"
+    subject.mkdir()
+    control.mkdir()
+    edited = tmp_path / "edited.txt"
+    edited.write_text("x\n")
+    _tmux("set-environment", "-g", "HOME", str(subject))
+    origin = _tmux("list-panes", "-t", tmux_session, "-F", "#{pane_id}").splitlines()[0]
+    _tmux("resize-window", "-t", tmux_session, "-x", "200", "-y", "60")
+
+    pane_nvim = TmuxPane.split_from(origin, f"nvim -u NONE -i NONE {edited}").pane_id
+    control_nvim = _split(origin, f"env -u XDG_STATE_HOME HOME={control} nvim -u NONE -i NONE -n")
+    in_process = subprocess.Popen(
+        ["nvim", "--headless", "-n", "-u", "NONE", "-i", "NONE"],
+        env={**os.environ, "HOME": str(subject)},
+    )
+    try:
+        for pane in (pane_nvim, control_nvim):
+            assert wait_until(_runs(pane, "nvim"), timeout=10.0), f"nvim never started in {pane}"
+        assert wait_until(
+            lambda: (control / ".local" / "state" / "nvim" / "nvim.log").exists(), timeout=10.0
+        ), f"the control wrote only {sorted(str(path) for path in control.rglob('*'))}"
+    finally:
+        in_process.terminate()
+        in_process.wait(timeout=5)
+        subprocess.run(["tmux", "kill-server"], check=False)
+    assert sorted(str(path.relative_to(subject)) for path in subject.rglob("*")) == []
 
 
 _ROOT = Path(__file__).resolve().parents[1]
