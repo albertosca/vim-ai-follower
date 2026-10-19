@@ -325,14 +325,22 @@ class FakeNvim:
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.server.bind(str(path))
         self.server.listen()
+        # A short accept timeout lets close() stop the thread and then close
+        # every client it accepted: closing the listener alone does not wake
+        # a blocked accept, and a client accepted after close() went through
+        # its list was left to the garbage collector (final fix X1).
+        self.server.settimeout(0.05)
+        self.closing = threading.Event()
         self.clients: list[socket.socket] = []
         self.thread = threading.Thread(target=self._serve, daemon=True)
         self.thread.start()
 
     def _serve(self) -> None:
-        while True:
+        while not self.closing.is_set():
             try:
                 client, _address = self.server.accept()
+            except TimeoutError:
+                continue
             except OSError:
                 return
             self.clients.append(client)
@@ -353,6 +361,10 @@ class FakeNvim:
                 client.sendall(nvim_mode_reply(message_id) if self.reply == "mode" else self.reply)
 
     def close(self) -> None:
+        self.closing.set()
+        # Bounded: a client that connected and never sent holds the thread
+        # in its recv.
+        self.thread.join(timeout=2)
         for client in self.clients:
             client.close()
         self.server.close()

@@ -1903,6 +1903,8 @@ def test_a_read_holds_the_slot_while_it_navigates(tmp_path: Path) -> None:
         for process in processes:
             process.kill()
             process.wait()
+            assert process.stdout is not None
+            process.stdout.close()
     assert exit_code == 0
     assert answers == ["False"]  # the concurrent Edit found the slot taken
     sent = [

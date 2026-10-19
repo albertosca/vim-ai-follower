@@ -240,6 +240,8 @@ class _Competitor:
         assert self.proc.stdin is not None
         self.proc.stdin.close()
         self.proc.wait()
+        assert self.proc.stdout is not None
+        self.proc.stdout.close()
 
 
 class _Steps:

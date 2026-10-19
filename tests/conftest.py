@@ -42,7 +42,12 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[N
     monkeypatch.setattr(nvim_connect, "_last_blocking", {})
     monkeypatch.setattr(nvim_connect, "_last_modes", {})
     yield
-    hooks.logger.handlers.clear()
+    # Close before dropping: a cleared but open FileHandler left its
+    # hook.log for the garbage collector, an unclosed-file ResourceWarning
+    # that `-W error` turned into teardown errors (final fix X1).
+    for handler in list(hooks.logger.handlers):
+        hooks.logger.removeHandler(handler)
+        handler.close()
 
 
 @pytest.fixture(scope="session")
