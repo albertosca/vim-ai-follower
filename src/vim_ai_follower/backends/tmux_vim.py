@@ -1947,6 +1947,8 @@ class _VimProcess:
     pid: int
     # When it started, in time.time() seconds, to a second (ps's etime).
     started: float
+    # A process the Vim started shares its foreground group: `:!cmd`.
+    running_command: bool = False
 
 
 def _tmux_answer(pane_id: str, form: str) -> str:
@@ -1976,15 +1978,23 @@ def _elapsed_seconds(etime: str) -> int | None:
 
 
 def _foreground_vim(pane_id: str) -> _VimProcess | None:
-    """The Vim the pane's terminal has in the foreground: the one process
-    named vim in the group that owns the tty (pgid == tpgid). None when
-    there is not exactly one, or ps could not say."""
+    """The Vim the pane's terminal has in the foreground: in the group that
+    owns the tty (pgid == tpgid), the one process named vim that no other
+    Vim of that group started. None when there is not exactly one, or ps
+    could not say.
+
+    Its `running_command` says whether a process it started is in that group
+    too: Vim runs `:!cmd` in its own process group, with the terminal still
+    its (measured on Vim 9.2: #{pane_current_command} stays "vim" during
+    `:!sleep`), so the shell and what it runs are listed there, and keys
+    sent to the pane go to the command's stdin (final review I2). A program
+    that started the Vim (`git commit`) is its parent, not its child."""
     terminal = _tmux_answer(pane_id, "#{pane_tty}").removeprefix("/dev/")
     if not terminal:
         return None
     try:
         result = subprocess.run(
-            ["ps", "-t", terminal, "-o", "pid=,pgid=,tpgid=,etime=,comm="],
+            ["ps", "-t", terminal, "-o", "pid=,ppid=,pgid=,tpgid=,etime=,comm="],
             capture_output=True,
             text=True,
             check=False,
@@ -1993,16 +2003,38 @@ def _foreground_vim(pane_id: str) -> _VimProcess | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     now = time.time()
-    found: list[_VimProcess] = []
+    # pid -> (parent pid, started, named vim), for the foreground group only.
+    group: dict[int, tuple[int, float, bool]] = {}
     for line in result.stdout.splitlines():
-        fields = line.split(None, 4)
-        if len(fields) != 5 or fields[1] != fields[2] or Path(fields[4]).name != "vim":
+        fields = line.split(None, 5)
+        if len(fields) != 6 or fields[2] != fields[3]:
             continue
-        elapsed = _elapsed_seconds(fields[3])
-        if elapsed is None or not fields[0].isdigit():
+        elapsed = _elapsed_seconds(fields[4])
+        if elapsed is None or not (fields[0].isdigit() and fields[1].isdigit()):
             continue
-        found.append(_VimProcess(pid=int(fields[0]), started=now - elapsed))
-    return found[0] if len(found) == 1 else None
+        group[int(fields[0])] = (int(fields[1]), now - elapsed, Path(fields[5]).name == "vim")
+
+    def ancestors(pid: int) -> list[int]:
+        found: list[int] = []
+        parent = group[pid][0]
+        while parent in group and parent not in found:
+            found.append(parent)
+            parent = group[parent][0]
+        return found
+
+    roots = [
+        pid
+        for pid, (_parent, _started, named_vim) in group.items()
+        if named_vim and not any(group[ancestor][2] for ancestor in ancestors(pid))
+    ]
+    if len(roots) != 1:
+        return None
+    root = roots[0]
+    return _VimProcess(
+        pid=root,
+        started=group[root][1],
+        running_command=any(root in ancestors(pid) for pid in group),
+    )
 
 
 _PS_TIMEOUT_SECONDS = 2.0
@@ -2079,6 +2111,39 @@ _COMPLETION_REASON = "in insert mode (completion)"
 # later, until the row settles; one that never settles asks: asking is the
 # safe direction.
 _FILLER_ROW = "~"
+# Where the user is waiting at a prompt the follower's keys would answer
+# (final review I2). Ex mode (`gQ`/`Q`, mode `cv`/`ce`): the Escape pair does
+# nothing there, and every line the follower typed was joined into one Ex
+# command at the user's prompt (measured: E492 on `ix = 1ocall …`). A
+# confirm (`:s///c`, `confirm()`): no ModeChanged fires for `r?` (measured),
+# so only the screen tells, and the user's answer would land on Claude's
+# buffer. An external command (`:!cmd`): the keys go to its stdin. Answering
+# any of them is the user's choice (Alberto's answer A, as on nvim): the hook
+# skips without a question, and `stop` sends nothing. A hit-enter or
+# more-prompt (`r`, `rm`) is not here: the Escape pair dismisses it, as the
+# nvim hook sweeps one (decision (a)).
+_EX_MODE_REASON = "in Ex mode"
+_COLON_REASON = "at a ':' prompt (Ex mode or the command line)"
+_CONFIRM_REASON = "a confirm prompt"
+_COMMAND_REASON = "running an external command"
+# A Vim in Ex mode whose pane is resized (a client attaching, measured)
+# clears its screen and draws nothing: no banner, no `:`. Outside Ex mode a
+# Vim always draws something (`~` rows, buffer text, a ruler).
+_BLANK_REASON = "a blank screen (as Ex mode leaves it after a resize)"
+WAITING_REASONS = frozenset(
+    {_EX_MODE_REASON, _COLON_REASON, _CONFIRM_REASON, _COMMAND_REASON, _BLANK_REASON}
+)
+# `:s///c`'s prompt, which Vim truncates in the middle at a narrow width
+# (`replace with .../a/q/l/^E/^Y)?`, measured at 49 columns), keeping both
+# ends; the ruler may follow it.
+_SUBSTITUTE_CONFIRM = re.compile(r"replace with .*\^E/\^Y\)\?")
+# confirm()'s choices: `[Y]es, (N)o:`, the default in brackets, each hotkey
+# in parentheses, wherever its `&` was (`Do(n)'t save`).
+_CHOICE = r"[^,]*[\[(]\S[\])][^,]*"
+_CONFIRM_CHOICES = re.compile(rf"{_CHOICE}(?:, {_CHOICE})+:")
+# What Vim prints on entering Ex mode (English); the prompt row is `:`.
+_EX_MODE_BANNER = "Entering Ex mode."
+
 _SETTLE_SECONDS = 2.0
 _SETTLE_POLL_SECONDS = 0.1
 _UNSETTLED_REASON = "in an unknown mode (its screen was still being redrawn)"
@@ -2123,6 +2188,9 @@ def _typing_on_screen(pane_id: str, *, vim_pid: int | None = None) -> str | None
                 os.kill(vim_pid, signal.SIGWINCH)
         time.sleep(_SETTLE_POLL_SECONDS)
     if height.isdigit() and int(height) > 0:
+        waiting = _waiting_on_screen(pane_id, row)
+        if waiting is not None:
+            return waiting
         match = _SHOWMODE.match(row)
         if match is not None and (match.group(2) or match.group(1)):
             return _SHOWMODE_REASONS[match.group(2) or match.group(1)]
@@ -2131,18 +2199,53 @@ def _typing_on_screen(pane_id: str, *, vim_pid: int | None = None) -> str | None
     return _TYPING_CURSORS.get(cursor.strip())
 
 
+def _waiting_on_screen(pane_id: str, row: str) -> str | None:
+    """A prompt the bottom row `row` shows the user waiting at (see
+    WAITING_REASONS), or None. An empty row is read with the whole screen:
+    blank throughout is Ex mode after a resize (_BLANK_REASON). A row
+    starting `:` is Ex mode when the
+    screen (one more capture) still shows Vim's banner for it; a bare `:`
+    is a prompt either way (Ex mode, or a `:` just typed). Any other `:`
+    row is the last command Vim left drawn in Normal mode (`:set ts=4`)."""
+    if _SUBSTITUTE_CONFIRM.match(row) or _CONFIRM_CHOICES.fullmatch(row):
+        return _CONFIRM_REASON
+    if row and not row.startswith(":"):
+        return None
+    result = subprocess.run(
+        ["tmux", "capture-pane", "-p", "-t", pane_id],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return _COLON_REASON if row == ":" else None
+    rows = result.stdout.splitlines()
+    if not row:
+        return _BLANK_REASON if not any(line.strip() for line in rows) else None
+    if any(line.startswith(_EX_MODE_BANNER) for line in rows):
+        return _EX_MODE_REASON
+    return _COLON_REASON if row == ":" else None
+
+
 def typing_mode(pane_id: str) -> str | None:
     """Why the user of the Vim in `pane_id` is known to be TYPING (insert,
-    replace, terminal, visual or select mode), read without typing a key, or
-    None. Its mode file (_VIM_MODE) naming a typing mode decides once the
-    script has been sourced there; otherwise (a file naming another mode, or
-    a missing or stale one: a Vim that never had the script, one too old for
-    ModeChanged, a reused pid) the screen decides (_typing_on_screen). Only
-    a screen that shows none of them, with no typing mode in the file,
+    replace, terminal, visual or select mode), or waiting at a prompt the
+    follower's keys would answer (WAITING_REASONS: Ex mode, a confirm, an
+    external command), read without typing a key, or None. An external
+    command decides first (ps), then its mode file (_VIM_MODE) naming Ex
+    mode or a typing mode, once the script has been sourced there;
+    otherwise (a file naming another mode, or a missing or stale one: a Vim
+    that never had the script, one too old for ModeChanged, a reused pid)
+    the screen decides (_typing_on_screen). Only a screen that shows none
+    of them, with no typing mode in the file,
     answers None: the follower then acts as it always did, starting with its
     Escape pair."""
     vim = _foreground_vim(pane_id)
+    if vim is not None and vim.running_command:
+        return _COMMAND_REASON
     recorded = _recorded_mode(vim) if vim is not None else None
+    if recorded in ("cv", "ce"):
+        return _EX_MODE_REASON
     reason = take_over.typing_reason(recorded)
     if reason is not None:
         return reason
@@ -2210,7 +2313,13 @@ class TmuxVimFollower:
         return state is not None and state.adopted is False
 
     def _normal_mode(self, pane: TmuxPane) -> None:
-        # Two Escapes return to Normal mode from any mode. Never Ctrl-\
+        # Two Escapes return to Normal mode from insert, replace, visual,
+        # select, operator-pending and command-line mode, and dismiss a
+        # hit-enter or more-prompt. Not from Ex mode (`gQ`/`Q`: they do
+        # nothing there), a confirm (they answer it), a terminal window's
+        # job (they go to the job) or an external command (its stdin): an
+        # ADOPTED Vim in one of those is never typed into (typing_mode,
+        # hooks._busy_vim; final review I2). Never Ctrl-\
         # Ctrl-N here: with a plugin-loaded Vim (vim-visual-multi + CoC)
         # and a pending hit-enter prompt, the pair reproducibly corrupts
         # the following command line — observed live and in a scripted

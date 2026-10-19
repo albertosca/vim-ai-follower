@@ -34,6 +34,7 @@ def _world(
     height_and_cursor: str = "20 default",
     bottom_row: str = "",
     capture_code: int = 0,
+    screen: str = "a\n~",
 ) -> MagicMock:
     """A subprocess.run stand-in for the pane %5: its tty, the processes on
     it (ps), its height and cursor, and its bottom row."""
@@ -46,6 +47,8 @@ def _world(
         if argv[1] == "display-message":
             return _completed(argv, height_and_cursor + "\n")
         assert argv[1] == "capture-pane", argv
+        if "-S" not in argv:
+            return _completed(argv, screen + "\n")
         assert argv[-4:] == ["-S", "19", "-E", "19"], argv
         return _completed(argv, bottom_row + "\n", capture_code)
 
@@ -65,10 +68,10 @@ def test_elapsed_seconds_refuses_too_many_fields() -> None:
 
 
 _SHELL_AND_VIM = (
-    "  101   101   202 01:00:00 -zsh\n"
-    "  202   202   202    00:10 /usr/bin/vim\n"
-    "  bad   303   303    00:10 vim\n"
-    "  404   404   404    zz:10 vim\n"
+    "  101     1   101   202 01:00:00 -zsh\n"
+    "  202   101   202   202    00:10 /usr/bin/vim\n"
+    "  bad   101   303   303    00:10 vim\n"
+    "  404   101   404   404    zz:10 vim\n"
     "  short\n"
 )
 
@@ -86,13 +89,13 @@ def test_the_foreground_vim_is_the_one_vim_in_the_terminals_group() -> None:
         "-t",
         "ttys004",
         "-o",
-        "pid=,pgid=,tpgid=,etime=,comm=",
+        "pid=,ppid=,pgid=,tpgid=,etime=,comm=",
     ]
 
 
 def test_a_background_vim_or_two_foreground_ones_are_no_answer() -> None:
-    background = "  202   202   999    00:10 vim\n"
-    two = "  202   202   202    00:10 vim\n  203   202   202    00:10 vim\n"
+    background = "  202   101   202   999    00:10 vim\n"
+    two = "  202   101   202   202    00:10 vim\n  203   101   202   202    00:10 vim\n"
     for processes in (background, two):
         with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes=processes)):
             assert tmux_vim._foreground_vim("%5") is None
@@ -306,6 +309,8 @@ def _settling(rows: list[str]) -> MagicMock:
     def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         if argv[1] == "display-message":
             return _completed(argv, "20 default\n")
+        if "-S" not in argv:
+            return _completed(argv, "a\n~\n")
         row = remaining.pop(0) if len(remaining) > 1 else remaining[0]
         return _completed(argv, row + "\n")
 
@@ -437,7 +442,7 @@ def test_a_bottom_row_that_cannot_be_read_falls_back_to_the_cursor() -> None:
 
 def test_a_typing_mode_file_decides_without_the_screen() -> None:
     _mode_file(202, "202 t\n")
-    world = _world(processes="  202   202   202    00:10 vim\n", bottom_row="-- INSERT --")
+    world = _world(processes="  202   101   202   202    00:10 vim\n", bottom_row="-- INSERT --")
     with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", world):
         assert tmux_vim.typing_mode("%5") == "in terminal mode"
     assert [call.args[0][0] for call in world.call_args_list] == ["tmux", "ps"]
@@ -452,7 +457,7 @@ def test_a_non_typing_mode_file_still_reads_the_screen(bottom_row: str, reason: 
     # ModeChanged, the user's `:au! vim_ai_follower_mode`) keeps its last
     # `n` while the user types; only a typing mode in it skips the screen.
     _mode_file(202, "202 n\n")
-    world = _world(processes="  202   202   202    00:10 vim\n", bottom_row=bottom_row)
+    world = _world(processes="  202   101   202   202    00:10 vim\n", bottom_row=bottom_row)
     with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", world):
         assert tmux_vim.typing_mode("%5") == reason
 
@@ -469,7 +474,7 @@ def test_the_mode_file_is_written_whole_or_not_at_all() -> None:
 
 
 @pytest.mark.parametrize(
-    "processes", ["", "  202   202   202    00:10 vim\n"], ids=["no-vim", "no-mode-file"]
+    "processes", ["", "  202   101   202   202    00:10 vim\n"], ids=["no-vim", "no-mode-file"]
 )
 def test_a_first_contact_reads_the_screen(processes: str) -> None:
     world = _world(processes=processes, bottom_row="-- SELECT --")
@@ -511,3 +516,93 @@ def test_the_sweep_keeps_the_mode_file_of_another_users_vim() -> None:
     with patch("vim_ai_follower.backends.tmux_vim.os.kill", side_effect=PermissionError):
         tmux_vim._sweep_scripts(cache.CACHE_DIR / "vaf-000000.vim")
     assert kept.exists()
+
+
+# --- Ex mode, a confirm, an external command (final review I2) ------------
+
+_VIM_ALONE = "  202   101   202   202    00:10 vim\n"
+
+
+@pytest.mark.parametrize("mode", ["cv", "ce"])
+def test_a_recorded_ex_mode_is_waiting_on_its_user(mode: str) -> None:
+    # The Escape pair does nothing in Ex mode: every typed line was joined
+    # into one Ex command at the user's prompt.
+    _mode_file(202, f"202 {mode}\n")
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes=_VIM_ALONE)):
+        assert tmux_vim.typing_mode("%5") == "in Ex mode"
+    assert "in Ex mode" in tmux_vim.WAITING_REASONS
+
+
+_EX_SCREEN = 'a\nEntering Ex mode.  Type "visual" to go to Normal mode.\n:s/fo'
+
+
+@pytest.mark.parametrize(
+    ("bottom_row", "screen", "reason"),
+    [
+        ("replace with ZZZ (y/n/a/q/l/^E/^Y)?   1,1  All", "", "a confirm prompt"),
+        ("replace with .../a/q/l/^E/^Y)?           1,1           All", "", "a confirm prompt"),
+        ("[Y]es, (N)o:", "", "a confirm prompt"),
+        ("(S)ave, Do(n)'t save, [C]ancel:", "", "a confirm prompt"),
+        (":", "~\n:", "at a ':' prompt (Ex mode or the command line)"),
+        (":s/fo", _EX_SCREEN, "in Ex mode"),
+        (":", _EX_SCREEN.replace(":s/fo", ":"), "in Ex mode"),
+        (":set ts=4                           1,1           All", "~\n:set ts=4", None),
+        # Ex mode after a resize: Vim clears the screen and draws nothing.
+        ("", "\n\n\n", "a blank screen (as Ex mode leaves it after a resize)"),
+        ("", "a\n~\n", None),
+        ("Yes, no:", "", None),
+    ],
+)
+def test_the_screen_shows_a_prompt_the_user_is_waiting_at(
+    bottom_row: str, screen: str, reason: str | None
+) -> None:
+    world = _world(processes=_VIM_ALONE, bottom_row=bottom_row, screen=screen)
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", world):
+        assert tmux_vim.typing_mode("%5") == reason
+    if reason is not None:
+        assert reason in tmux_vim.WAITING_REASONS
+
+
+def test_a_failed_full_capture_is_no_ex_mode() -> None:
+    def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        if argv[0] != "ps" and argv[1] == "capture-pane" and "-S" not in argv:
+            return _completed(argv, _EX_SCREEN, returncode=1)
+        answered: subprocess.CompletedProcess[str] = _world(
+            processes=_VIM_ALONE, bottom_row=":s/fo"
+        )(argv, **kwargs)
+        return answered
+
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", side_effect=run):
+        assert tmux_vim.typing_mode("%5") is None
+
+
+@pytest.mark.parametrize(
+    "processes",
+    [
+        # `:!make`: the shell Vim forks shares its process group.
+        _VIM_ALONE + "  303   202   202   202    00:01 sh\n",
+        # `:!vim x`: the inner Vim is the outer one's descendant.
+        _VIM_ALONE + "  303   202   202   202    00:01 sh\n  404   303   202   202 00:01 vim\n",
+    ],
+    ids=["shell", "nested-vim"],
+)
+def test_a_vim_whose_foreground_group_holds_its_child_runs_an_external_command(
+    processes: str,
+) -> None:
+    # The keys would go to the command's stdin; and no ModeChanged fires.
+    _mode_file(202, "202 n\n")
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes=processes)):
+        found = tmux_vim._foreground_vim("%5")
+        assert found is not None and found.pid == 202 and found.running_command
+        assert tmux_vim.typing_mode("%5") == "running an external command"
+    assert "running an external command" in tmux_vim.WAITING_REASONS
+
+
+def test_a_vim_started_by_another_foreground_program_is_its_own() -> None:
+    # `git commit` runs the editor in its own process group: git is Vim's
+    # parent, not a command Vim runs.
+    processes = "  150   101   150   150    00:20 git\n  202   150   150   150    00:10 vim\n"
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes=processes)):
+        found = tmux_vim._foreground_vim("%5")
+        assert found is not None and found.pid == 202 and not found.running_command
+        assert tmux_vim.typing_mode("%5") is None

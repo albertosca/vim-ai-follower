@@ -1227,7 +1227,9 @@ def _busy_vim(current: FollowerState, question_seconds: float) -> str | None:
     or on a first contact its screen) is asked about first, as an nvim is
     (Alberto, 2026-10-17), before anything is typed: the Escape pair every
     navigation starts with would end their insert, replace, visual or select
-    mode, or go to a terminal window's job. Only `y` takes it over, with
+    mode, or go to a terminal window's job. One waiting at a prompt the
+    keys would answer (tmux_vim.WAITING_REASONS: Ex mode, a confirm, an
+    external command) is skipped without a question. Only `y` takes it over, with
     CTRL-\\ CTRL-N (tmux_vim.leave_typing_mode), and the hook goes on.
     A dedicated follower is never asked: its Vim is the follower's."""
     if not current.adopted:
@@ -1236,6 +1238,11 @@ def _busy_vim(current: FollowerState, question_seconds: float) -> str | None:
     if typing is None:
         return None
     waiting = f"Vim in {current.target} is waiting on its user ({typing})"
+    if typing in tmux_vim.WAITING_REASONS:
+        # Ex mode, a confirm, an external command (final review I2): the
+        # follower's keys would answer the user's prompt, and answering it is
+        # theirs to do (Alberto's answer A, as on nvim). Nothing is asked.
+        return waiting
     answer = take_over.ask(current.target, "Vim", question_seconds)
     if answer != take_over.YES:
         return f"{waiting}, not taken over ({answer})"

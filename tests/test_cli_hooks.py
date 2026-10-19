@@ -3530,6 +3530,30 @@ def test_a_typing_adopted_vim_answered_yes_leaves_its_mode_and_goes_on(
 
 
 @pytest.mark.parametrize(
+    "reason",
+    [
+        "in Ex mode",
+        "at a ':' prompt (Ex mode or the command line)",
+        "a confirm prompt",
+        "running an external command",
+    ],
+)
+def test_an_adopted_vim_waiting_at_a_prompt_is_skipped_without_a_question(reason: str) -> None:
+    # Final review I2: the follower's keys would land in the user's Ex
+    # command, confirm answer or command's stdin; answering is the user's
+    # choice (Alberto's answer A, as on nvim), so nothing is asked.
+    with (
+        patch("vim_ai_follower.backends.tmux_vim.typing_mode", return_value=reason),
+        patch("vim_ai_follower.take_over.ask") as asked,
+        patch("vim_ai_follower.backends.tmux_vim.leave_typing_mode") as leave,
+    ):
+        busy = hooks._busy_follower(_adopted_vim_state(), 10)
+    asked.assert_not_called()
+    leave.assert_not_called()
+    assert busy == f"Vim in %7 is waiting on its user ({reason})"
+
+
+@pytest.mark.parametrize(
     ("typing", "noted"),
     [
         ("in insert mode", True),
