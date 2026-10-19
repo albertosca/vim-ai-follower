@@ -35,11 +35,16 @@ def _world(
     bottom_row: str = "",
     capture_code: int = 0,
     screen: str = "a\n~",
+    every_process: str = "",
 ) -> MagicMock:
     """A subprocess.run stand-in for the pane %5: its tty, the processes on
-    it (ps), its height and cursor, and its bottom row."""
+    it (ps -t), every process's parent and tty (ps -A), its height and
+    cursor, and its bottom row."""
 
     def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        if argv[:2] == ["ps", "-A"]:
+            assert argv == ["ps", "-A", "-o", "ppid=,tty="], argv
+            return _completed(argv, every_process)
         if argv[0] == "ps":
             return _completed(argv, processes)
         if argv[1] == "display-message" and argv[-1] == "#{pane_tty}":
@@ -498,6 +503,52 @@ def test_a_first_contact_reads_the_screen(processes: str) -> None:
     world = _world(processes=processes, bottom_row="-- SELECT --")
     with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", world):
         assert tmux_vim.typing_mode("%5") == "in select mode"
+
+
+_FOREGROUND_VIM = "  202   101   202   202    00:10 vim\n"
+_SHELL_ON_A_PTY = "    1 ??\n  202 ttys004\n  202 ??\n  303 ttys009\n  202 ttys009\n"
+
+
+@pytest.mark.parametrize(
+    ("every_process", "reason"),
+    [
+        (_SHELL_ON_A_PTY, tmux_vim.TERMINAL_JOB_REASON),  # a :term job on ttys009
+        ("  202 ??\n  202 ?\n  202 -\n", None),  # job_start() with no pty
+        ("  202 ttys004\n", None),  # on the pane's own tty: not a terminal window
+        ("  303 ttys009\n  2020 ttys009\n", None),  # another process's child
+        ("garbled\n\n", None),
+    ],
+)
+def test_a_first_contact_with_a_terminal_job_is_an_unknown_mode(
+    every_process: str, reason: str | None
+) -> None:
+    # Final review M4: Terminal-Job mode draws nothing, and with no mode file
+    # the define line went into the job.
+    world = _world(processes=_FOREGROUND_VIM, every_process=every_process)
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", world):
+        assert tmux_vim.typing_mode("%5") == reason
+
+
+def test_a_mode_file_or_a_screen_reason_decides_before_the_terminal_job() -> None:
+    started = time.time() - 5
+    _mode_file(202, "202 n\n")
+    os.utime(cache.CACHE_DIR / "mode-202.txt", (started, started))
+    world = _world(processes=_FOREGROUND_VIM, every_process=_SHELL_ON_A_PTY)
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", world):
+        assert tmux_vim.typing_mode("%5") is None
+    (cache.CACHE_DIR / "mode-202.txt").unlink()
+    world = _world(
+        processes=_FOREGROUND_VIM, every_process=_SHELL_ON_A_PTY, bottom_row="-- INSERT --"
+    )
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", world):
+        assert tmux_vim.typing_mode("%5") == "in insert mode"
+
+
+@pytest.mark.parametrize("failure", [OSError("no ps"), subprocess.TimeoutExpired("ps", 2)])
+def test_a_job_scan_that_fails_is_no_terminal_job(failure: Exception) -> None:
+    vim = _VimProcess(pid=202, started=time.time() - 10, terminal="ttys004")
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", side_effect=failure):
+        assert tmux_vim._runs_a_terminal_job(vim) is False
 
 
 def test_leaving_the_typing_mode_sends_ctrl_backslash_ctrl_n_as_bytes() -> None:

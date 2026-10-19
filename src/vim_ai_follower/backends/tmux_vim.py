@@ -1978,6 +1978,8 @@ class _VimProcess:
     started: float
     # A process the Vim started shares its foreground group: `:!cmd`.
     running_command: bool = False
+    # The pane's tty, as ps names it (`ttys005`, `pts/3`).
+    terminal: str = ""
 
 
 def _tmux_answer(pane_id: str, form: str) -> str:
@@ -2063,7 +2065,32 @@ def _foreground_vim(pane_id: str) -> _VimProcess | None:
         pid=root,
         started=group[root][1],
         running_command=any(root in ancestors(pid) for pid in group),
+        terminal=terminal,
     )
+
+
+def _runs_a_terminal_job(vim: _VimProcess) -> bool:
+    """Whether a process the Vim started runs on a terminal of its own: a
+    `:term` window's job, on the pty Vim opened for it. A plugin's
+    `job_start()` without a pty has none (`??` on macOS, `?` on Linux).
+    A ps that fails or times out says no, as before this check."""
+    try:
+        result = subprocess.run(
+            ["ps", "-A", "-o", "ppid=,tty="],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=_PS_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) != 2 or fields[0] != str(vim.pid):
+            continue
+        if fields[1] not in ("??", "?", "-", vim.terminal):
+            return True
+    return False
 
 
 _PS_TIMEOUT_SECONDS = 2.0
@@ -2208,6 +2235,15 @@ _BLANK_REASON = "a blank screen (as Ex mode leaves it after a resize)"
 WAITING_REASONS = frozenset(
     {_EX_MODE_REASON, _COLON_REASON, _CONFIRM_REASON, _COMMAND_REASON, _BLANK_REASON}
 )
+# A first contact with a Vim running a terminal job (final review M4):
+# Terminal-Job mode draws nothing on the bottom row, and with no mode file
+# yet nothing else can say whether the user is typing to the job; acting
+# typed the define line into it, and on every later contact too, since the
+# script that writes the mode file was never sourced. Not a WAITING reason:
+# the hook asks, and a `y` sends CTRL-\ CTRL-N first.
+TERMINAL_JOB_REASON = (
+    "in an unknown mode (a terminal job runs in it, and its mode was never recorded)"
+)
 # `:s///c`'s prompt, which Vim truncates in the middle at a narrow width
 # (`replace with .../a/q/l/^E/^Y)?`, measured at 49 columns), keeping both
 # ends; the ruler may follow it.
@@ -2311,10 +2347,12 @@ def typing_mode(pane_id: str) -> str | None:
     mode or a typing mode, once the script has been sourced there;
     otherwise (a file naming another mode, or a missing or stale one: a Vim
     that never had the script, one too old for ModeChanged, a reused pid)
-    the screen decides (_typing_on_screen). Only a screen that shows none
-    of them, with no typing mode in the file,
-    answers None: the follower then acts as it always did, starting with its
-    Escape pair."""
+    the screen decides (_typing_on_screen). A screen that shows none of
+    them, with no trusted mode file at all, under a Vim running a terminal
+    job (_runs_a_terminal_job) is TERMINAL_JOB_REASON (final review M4):
+    Terminal-Job mode draws nothing. Only a screen that shows none of them,
+    with no typing mode in the file, answers None: the follower then acts
+    as it always did, starting with its Escape pair."""
     vim = _foreground_vim(pane_id)
     _last_typing_vim[pane_id] = vim.pid if vim is not None else None
     if vim is not None and vim.running_command:
@@ -2328,7 +2366,10 @@ def typing_mode(pane_id: str) -> str | None:
     # A file that names a non-typing mode may have stopped updating (review
     # m9: 'eventignore' holding ModeChanged, the user's `:au!` of our
     # group), so the screen is read too; it types nothing.
-    return _typing_on_screen(pane_id, vim_pid=vim.pid if vim is not None else None)
+    on_screen = _typing_on_screen(pane_id, vim_pid=vim.pid if vim is not None else None)
+    if on_screen is None and vim is not None and recorded is None and _runs_a_terminal_job(vim):
+        return TERMINAL_JOB_REASON
+    return on_screen
 
 
 # The pid of the Vim the last typing_mode read in each pane found, for the

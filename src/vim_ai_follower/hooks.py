@@ -1349,7 +1349,9 @@ def _vim_still_typing(pane_id: str) -> str | None:
     deadline = time.monotonic() + _LEAVE_VIM_TYPING_SECONDS
     while True:
         typing = tmux_vim.typing_mode(pane_id)
-        if typing is None:
+        # A terminal job's unknown mode reads the same until the script is
+        # sourced: the CTRL-\\ CTRL-N just sent is what it asked for (M4).
+        if typing is None or typing == tmux_vim.TERMINAL_JOB_REASON:
             return None
         if time.monotonic() >= deadline:
             return f"{typing} after {_LEAVE_VIM_TYPING_SECONDS:g} s"

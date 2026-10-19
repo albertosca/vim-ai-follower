@@ -47,7 +47,7 @@ from vim_ai_follower import (
     writer_cue,
 )
 from vim_ai_follower.animate import AnimationResult
-from vim_ai_follower.backends import NavigationFailed, nvim_connect
+from vim_ai_follower.backends import NavigationFailed, nvim_connect, tmux_vim
 from vim_ai_follower.backends.nvim import _FIND_BUFFER_LUA
 from vim_ai_follower.backends.nvim_connect import NvimNeverListened
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
@@ -3594,6 +3594,25 @@ def test_a_yes_that_leaves_the_vim_typing_skips_and_notes_a_pending_key(
         f"Vim in %7 is waiting on its user ({typing}), "
         f"answered y but it was still {typing} after 0.3 s{note}"
     )
+
+
+def test_a_yes_to_a_terminal_jobs_unknown_mode_goes_on_after_ctrl_backslash_ctrl_n(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Final review M4: with no mode file, the reason reads the same until the
+    # script is sourced; the CTRL-\ CTRL-N already sent is what it needed.
+    reason = tmux_vim.TERMINAL_JOB_REASON
+    with (
+        caplog.at_level(logging.INFO, logger="vim_ai_follower"),
+        patch("vim_ai_follower.backends.tmux_vim.typing_mode", return_value=reason) as read,
+        patch("vim_ai_follower.take_over.ask", return_value=take_over.YES) as asked,
+        patch("vim_ai_follower.backends.tmux_vim.leave_typing_mode") as leave,
+    ):
+        assert hooks._busy_follower(_adopted_vim_state(), 10) is None
+    asked.assert_called_once_with("%7", "Vim", 10)
+    leave.assert_called_once_with("%7")
+    assert read.call_count == 2
+    assert f"({reason}): taken over (answered y)\n" in caplog.text
 
 
 def test_a_yes_keeps_reading_while_any_reason_is_read() -> None:
