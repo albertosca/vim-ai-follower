@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -240,14 +241,49 @@ def _existing_binding(key: str) -> str | None:
     return None
 
 
+def _save_once(saved_path: Path, previous: dict[str, str | None]) -> None:
+    """Write the user's bindings unless a record already exists, in one
+    atomic step. Two registrations at once both found no record, and the
+    later one, which listed OUR keys already bound by the first, replaced the
+    user's bindings with ours (final review M6). The record is written to a
+    temporary file and LINKED into place: a link onto an existing name fails,
+    so the first record always wins and nobody reads a half-written one."""
+    saved_path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{saved_path.name}.", dir=saved_path.parent)
+    try:
+        with os.fdopen(descriptor, "w") as record:
+            record.write(json.dumps(previous))
+        with contextlib.suppress(FileExistsError):  # the first record wins
+            os.link(temporary, saved_path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+
+
+def _read_saved(saved_path: Path) -> dict[str, str]:
+    """The saved record's string entries; nothing for a missing, unreadable
+    or damaged one. A list, `null`, a number where a line belongs or bytes
+    that are not UTF-8 raised out of `unregister`, and the last `stop`
+    exited non-zero with the keys still bound (final review M5)."""
+    try:
+        saved = json.loads(saved_path.read_text())
+    except (OSError, ValueError):  # UnicodeDecodeError and JSONDecodeError are ValueErrors
+        return {}
+    if not isinstance(saved, dict):
+        return {}
+    return {
+        key: previous
+        for key, previous in saved.items()
+        if isinstance(key, str) and isinstance(previous, str)
+    }
+
+
 def register() -> None:
     saved_path = _saved_bindings_path()
     if not saved_path.exists():
         # Only the FIRST registration records "previous": re-registering
         # after a crash would otherwise save our own still-bound key as the
         # user's original binding.
-        saved_path.parent.mkdir(parents=True, exist_ok=True)
-        saved_path.write_text(json.dumps({key: _existing_binding(key) for key, _ in _KEYBINDINGS}))
+        _save_once(saved_path, {key: _existing_binding(key) for key, _ in _KEYBINDINGS})
     owner = current_owner()
     executable = shlex.quote(owner.executable)
     for key, subcommand in _KEYBINDINGS:
@@ -439,13 +475,28 @@ def _runs_only_its_binding(line: str) -> bool:
     return quote == "" and depth == 0
 
 
+def _binds_its_own_key(key: str, previous: str) -> bool:
+    """Whether `previous` binds prefix `key`, the way list-keys prints it:
+    `bind-key [-r] -T prefix <key> …`. The one-binding check alone let a
+    tampered record saved under P rebind another key (`bind-key -T root C-c
+    …`) at `stop` (final review M8). Our keys need no quoting, so a split on
+    tmux's blanks is exact for them."""
+    tokens = re.split(r"[ \t]+", previous.strip())
+    if tokens[:1] != ["bind-key"]:
+        return False
+    options = tokens[1:]
+    if options[:1] == ["-r"]:
+        options = options[1:]
+    return options[:3] == ["-T", "prefix", key] and len(options) > 3
+
+
 def _restore_binding(key: str, previous: str) -> bool:
     """Re-bind the user's own `previous` (a line list-keys printed) and say
     whether tmux now lists exactly it. The line goes to `source-file`
     verbatim, since list-keys prints what the config parser reads back:
     brace blocks, `"\\$HOME"` and chains included, which an argv rebuilt by
     shlex lost (T24a review m4). Only a literal `;` key needs a quote."""
-    if not previous.startswith("bind-key ") or not _runs_only_its_binding(previous):
+    if not _binds_its_own_key(key, previous) or not _runs_only_its_binding(previous):
         return False
     descriptor, config_path = tempfile.mkstemp(prefix="vaf-binding-", suffix=".conf")
     try:
@@ -456,8 +507,12 @@ def _restore_binding(key: str, previous: str) -> bool:
         )
     finally:
         Path(config_path).unlink(missing_ok=True)
+    if result.returncode != 0:
+        # Ask nothing more: on a dead server `list-keys` STARTS one, which
+        # loads the user's real tmux.conf (final review M7).
+        return False
     listed = _existing_binding(key)
-    return result.returncode == 0 and listed is not None and _same_binding(listed, previous)
+    return listed is not None and _same_binding(listed, previous)
 
 
 def unregister() -> None:
@@ -466,10 +521,7 @@ def unregister() -> None:
     # while follower state is per-window, so only the LAST stop calls this
     # (cmd_stop scans for other live followers first).
     saved_path = _saved_bindings_path()
-    try:
-        saved: dict[str, str | None] = json.loads(saved_path.read_text())
-    except (FileNotFoundError, json.JSONDecodeError):
-        saved = {}
+    saved = _read_saved(saved_path)
     for key, _ in _KEYBINDINGS:
         previous = saved.get(key)
         if previous and "claude-follow" not in previous:

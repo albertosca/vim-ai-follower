@@ -395,7 +395,7 @@ def cmd_stop(env: dict[str, str]) -> int:
         # server or, worse, unbind real keys on one that happens to be
         # running on the machine.
         hooks._configure_logging()  # a binding it cannot restore is logged
-        keybindings.unregister()
+        _teardown_step("keybinding restore", keybindings.unregister)
     print("claude-follow: stopped")
     return 0
 
