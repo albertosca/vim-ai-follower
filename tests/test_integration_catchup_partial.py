@@ -115,6 +115,15 @@ def _rows(pane_id: str) -> list[str]:
     return [line.rstrip() for line in _capture(pane_id).splitlines()]
 
 
+def _shows(pane_id: str, expected: list[str]) -> bool:
+    """Whether the pane's screen shows `expected` as consecutive rows. Wait
+    on this, never on one word of it: the last line is on screen before the
+    relock's typed line runs, and a capture between the two caught that
+    two-row line still drawn, the screen scrolled up by one row."""
+    rows = _rows(pane_id)
+    return any(rows[start : start + len(expected)] == expected for start in range(len(rows)))
+
+
 def _pause_then_abandon(at: int, seen: list[Any]) -> Callable[..., str | None]:
     """check_signal double: pause at the `at`-th call — landing inside the
     line/op the driver is currently sending — snapshot whatever the wait
@@ -234,10 +243,9 @@ def test_show_fresh_catchup_after_a_paused_and_abandoned_run_reaches_full_conten
 
     # Secondary sanity check: the relock's own disk sync leaves the pane
     # settled on the same content, not stuck on an unresolved prompt.
-    assert wait_until(lambda: "delta" in _capture(follower_pane_id), timeout=10.0)
-    rows = _rows(follower_pane_id)
-    start = rows.index("alpha")
-    assert rows[start : start + 4] == ["alpha", "beta", "gamma", "delta"]
+    assert wait_until(
+        lambda: _shows(follower_pane_id, ["alpha", "beta", "gamma", "delta"]), timeout=10.0
+    )
 
 
 def test_apply_edit_catchup_after_a_paused_and_abandoned_mid_op_run_reaches_full_content(
@@ -315,10 +323,7 @@ def test_apply_edit_catchup_after_a_paused_and_abandoned_mid_op_run_reaches_full
     final_start = snapshots[1].index("a")
     assert snapshots[1][final_start : final_start + 5] == ["a", "WW", "XX", "YY", "c"]
 
-    assert wait_until(lambda: "YY" in _capture(follower_pane_id), timeout=10.0)
-    rows = _rows(follower_pane_id)
-    start = rows.index("a")
-    assert rows[start : start + 5] == ["a", "WW", "XX", "YY", "c"]
+    assert wait_until(lambda: _shows(follower_pane_id, ["a", "WW", "XX", "YY", "c"]), timeout=10.0)
 
 
 def test_catchup_from_a_legacy_pending_without_a_partial_converges_at_a_clean_boundary(
@@ -375,7 +380,4 @@ def test_catchup_from_a_legacy_pending_without_a_partial_converges_at_a_clean_bo
     final_start = snapshots[0].index("one")
     assert snapshots[0][final_start : final_start + 3] == ["one", "two", "three"]
 
-    assert wait_until(lambda: "three" in _capture(follower_pane_id), timeout=10.0)
-    rows = _rows(follower_pane_id)
-    start = rows.index("one")
-    assert rows[start : start + 3] == ["one", "two", "three"]
+    assert wait_until(lambda: _shows(follower_pane_id, ["one", "two", "three"]), timeout=10.0)
