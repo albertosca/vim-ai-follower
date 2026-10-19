@@ -807,9 +807,9 @@ def test_an_nvim_pause_waits_under_the_sockets_pause(adopted: bool) -> None:
     state.FollowerState.set("@1", backend="nvim", target="/tmp/x.sock", adopted=adopted)
     seen: list[bool] = []
 
-    def waiting(*_arguments: Any) -> bool:
+    def waiting(*_arguments: Any) -> str:
         seen.append(_adopted_watchdog_answers("/tmp/x.sock"))
-        return False  # interrupted while paused
+        return "interrupted"
 
     signals = iter(["pause"])
     with (

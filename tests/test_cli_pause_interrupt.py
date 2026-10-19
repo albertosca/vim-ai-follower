@@ -251,6 +251,38 @@ def test_pause_resumes_pending_apply_edit(capsys: pytest.CaptureFixture[str]) ->
     assert "resumed (completed)" in capsys.readouterr().out
 
 
+def test_a_keyboard_resume_a_stop_ends_while_paused_again_says_so(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Final review C1: P resumes the remainder from the CLI, P pauses the
+    # replay again, then `claude-follow stop`. The replay's pause wait ends
+    # "stopped": no remainder kept, no popup to the stopped follower's pane.
+    _register_fake_follower("@1", "%2")
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
+    control.save_pending_apply_edit("@1", [op], 0.0)
+    checks = {"count": 0}
+
+    def _check(window_id: str, base_dir: object = None) -> str | None:
+        checks["count"] += 1
+        if checks["count"] == 1:
+            return "pause"
+        if checks["count"] == 2:
+            state.mark_stopped("@1", None, in_tmux=False)
+        return None
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
+        patch("vim_ai_follower.control.check_signal", side_effect=_check),
+        patch("vim_ai_follower.animate.time.sleep"),
+    ):
+        assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 0
+    assert capsys.readouterr().out == "claude-follow: resume ended by `claude-follow stop`\n"
+    assert len(_popup_calls(popen)) == 1  # "Resuming" only
+    assert control.has_pending_animation("@1") is False
+    assert control.is_animating("@1") is False
+
+
 def test_pause_resume_owns_the_slot_while_it_replays_and_releases_it() -> None:
     # The keyboard resume animates from the CLI process: it must hold the
     # window's slot like a hook, or a hook arriving mid-replay animates too.

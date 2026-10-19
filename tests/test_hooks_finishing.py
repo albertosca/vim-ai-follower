@@ -354,3 +354,33 @@ def test_an_interrupted_animation_hands_the_wait_the_bytes_claude_wrote(
     )
     _run_hook(target, follower, monkeypatch)
     assert handed == [b"caf\xe9\r\nX\r\n"]
+
+
+@pytest.mark.parametrize("animation", ["diff", "retype", "catch-up"])
+def test_an_animation_a_stop_ended_while_paused_releases_claude_at_once(
+    animation: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Final review C1: the driver's pause wait saw `claude-follow stop` and
+    ended "stopped". No hand-off, no remainder, no further driver call; the
+    marker reads finishing and Claude is told its version stands."""
+    target, resolved = _setup(tmp_path)
+    follower = _follower("absent" if animation == "retype" else "holds")
+    follower.apply_edit.return_value = AnimationResult("stopped", 0)
+    follower.show_fresh.return_value = AnimationResult("stopped", 1)
+    if animation == "catch-up":
+        _pending_apply_edit(resolved, "a\nb\nc\n")
+        follower.resume.return_value = AnimationResult("stopped", 0)
+    handoffs: list[object] = []
+    monkeypatch.setattr(hooks, "_await_user_handoff", lambda *args, **kwargs: handoffs.append(1))
+    seen = _state_at_release(monkeypatch)
+    _run_hook(target, follower, monkeypatch)
+    assert handoffs == []
+    assert seen == ["finishing"]
+    assert control.has_pending_animation("@1") is False
+    if animation == "catch-up":
+        follower.apply_edit.assert_not_called()
+        follower.show_fresh.assert_not_called()
+    assert "paused the live preview" in capsys.readouterr().out

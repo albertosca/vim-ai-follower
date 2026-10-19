@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from vim_ai_follower import control
+from vim_ai_follower import control, state
 from vim_ai_follower.animate import (
     _EXIT_INSERT,
     MAX_ANIMATION_SECONDS,
@@ -744,7 +744,7 @@ def test_run_ops_leaves_the_slot_to_its_owner_after_interrupt_during_wait(
 _TRY_ACQUIRE = """
 import sys
 from pathlib import Path
-from vim_ai_follower import control
+from vim_ai_follower import control, state
 print(control.try_acquire_animating("@1", Path(sys.argv[1])), flush=True)
 """
 
@@ -995,9 +995,9 @@ def _run_on_fake_clock(
     def check_signal(window_id: str, base_dir: Path | None = None) -> str | None:
         return answers.pop(0) if answers else None
 
-    def wait_while_paused(*_: object) -> bool:
+    def wait_while_paused(*_: object) -> str:
         clock.now += pause_seconds
-        return True
+        return "resumed"
 
     with (
         patch("vim_ai_follower.animate.time.monotonic", side_effect=clock.monotonic),
@@ -1111,3 +1111,103 @@ def test_run_lines_keeps_the_remainder_when_the_post_pause_goto_fails(tmp_path: 
     assert control.load_pending_animation("@1", tmp_path) == control.PendingShowFresh(
         ("b", "c"), 0.0, continuation=True, file_path="/x.py", partial="a\n"
     )
+
+
+def test_run_ops_ends_stopped_when_a_stop_lands_in_the_pause_wait(tmp_path: Path) -> None:
+    # Final review C1: `claude-follow stop` clears the signals, so a pause
+    # wait that only read signals held Claude until the hook timeout.
+    pane = cast(TmuxPane, MagicMock())
+    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    calls = {"count": 0}
+
+    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return "pause"
+        if calls["count"] == 2:  # the first wait poll: the stop lands now
+            assert control.has_pending_animation("@1", tmp_path) is True
+            state.mark_stopped("@1", None, in_tmux=False, base_dir=tmp_path)
+        return None
+
+    with (
+        patch("vim_ai_follower.control.check_signal", side_effect=_check),
+        patch("vim_ai_follower.animate.time.sleep"),
+    ):
+        result = run_ops(pane, "@1", [op], pace_seconds=0.0, base_dir=tmp_path)
+    assert result == AnimationResult("stopped", 0)
+    assert control.has_pending_animation("@1", tmp_path) is False  # no remainder
+    sent_texts = [each.args[0] for each in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    assert "a" not in sent_texts  # nothing typed after the stop
+
+
+def test_run_lines_ends_stopped_when_a_stop_and_start_replace_the_follower(
+    tmp_path: Path,
+) -> None:
+    # A stop followed by a start lifts the tombstone; the state then names
+    # another follower, which is a stop for this run all the same.
+    state.FollowerState.set("@1", "tmux", "%1", base_dir=tmp_path, server_pid=None)
+    pane = cast(TmuxPane, MagicMock())
+    calls = {"count": 0}
+
+    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return "pause"
+        if calls["count"] == 2:
+            state.FollowerState.set("@1", "tmux", "%9", base_dir=tmp_path, server_pid=None)
+        return None
+
+    with (
+        patch("vim_ai_follower.control.check_signal", side_effect=_check),
+        patch("vim_ai_follower.animate.time.sleep"),
+    ):
+        result = run_lines(pane, "@1", ("x", "y"), pace_seconds=0.0, base_dir=tmp_path)
+    assert result == AnimationResult("stopped", 0)
+    assert control.has_pending_animation("@1", tmp_path) is False
+
+
+def test_the_pause_wait_with_an_unreadable_state_ends_only_on_the_tombstone(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "@1.pane").write_text("null")  # JSON of the wrong shape
+    pane = cast(TmuxPane, MagicMock())
+    calls = {"count": 0}
+
+    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return "pause"
+        if calls["count"] == 3:  # two polls passed: the bad state alone is no stop
+            state.mark_stopped("@1", None, in_tmux=False, base_dir=tmp_path)
+        return None
+
+    with (
+        patch("vim_ai_follower.control.check_signal", side_effect=_check),
+        patch("vim_ai_follower.animate.time.sleep") as sleep,
+    ):
+        result = run_lines(pane, "@1", ("x",), pace_seconds=0.0, base_dir=tmp_path)
+    assert result == AnimationResult("stopped", 0)
+    sleep.assert_any_call(PAUSE_POLL_SECONDS)
+
+
+def test_run_ops_ends_stopped_when_a_stop_lands_in_the_delete_half_pause_wait(
+    tmp_path: Path,
+) -> None:
+    pane = cast(TmuxPane, MagicMock())
+    op = EditOp(kind="replace", start_line=2, end_line=3, new_lines=("X",))
+    calls = {"count": 0}
+
+    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
+        calls["count"] += 1
+        if calls["count"] == 2:  # before the delete's Enter
+            return "pause"
+        if calls["count"] == 3:
+            state.mark_stopped("@1", None, in_tmux=False, base_dir=tmp_path)
+        return None
+
+    with (
+        patch("vim_ai_follower.control.check_signal", side_effect=_check),
+        patch("vim_ai_follower.animate.time.sleep"),
+    ):
+        result = run_ops(pane, "@1", [op], pace_seconds=0.0, base_dir=tmp_path)
+    assert result == AnimationResult("stopped", 0)

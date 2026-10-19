@@ -2474,6 +2474,12 @@ class TmuxVimFollower:
                 # (review of T6+T7, m3).
                 control.discard_pending_animation(self.window_id)
             raise
+        if result.outcome == "stopped":
+            # A `claude-follow stop` ended the run while it was paused: the
+            # stop owns the teardown (a dedicated Vim's pane is killed, an
+            # adopted one released, or left alone while its user types), so
+            # nothing more is sent (final review C1).
+            return result
         if result.outcome != "interrupted":
             pane.send_line(relock.line(adopted))
         else:

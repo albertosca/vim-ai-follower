@@ -220,9 +220,9 @@ def _animate_lines(
             return AnimationResult("interrupted", index)
         if signal == "pause":
             with nvim_prompt.paused(prompt_key):
-                resumed = _wait_while_paused(window_id, _bind_save(save_pending, index), base_dir)
-            if not resumed:
-                return AnimationResult("interrupted", index)
+                ended = _wait_while_paused(window_id, _bind_save(save_pending, index), base_dir)
+            if ended != "resumed":
+                return AnimationResult(ended, index)
             continue  # resumed: retype this line from its clean boundary
         row = start_row + index
         nvim.api.buf_set_lines(buf, row, row, True, [""])
@@ -255,10 +255,12 @@ def _animate_lines(
                 break
             if signal == "pause":
                 with nvim_prompt.paused(prompt_key):
-                    resumed = _wait_while_paused(
-                        window_id, _bind_save(save_pending, index), base_dir
-                    )
-                if not resumed:
+                    ended = _wait_while_paused(window_id, _bind_save(save_pending, index), base_dir)
+                if ended == "stopped":
+                    # The stop tears this nvim down (a dedicated one quits):
+                    # not one more request, not even the extmark's removal.
+                    return AnimationResult("stopped", index)
+                if ended == "interrupted":
                     interrupted = True
                     break
                 # The user may have moved to another window while paused.
@@ -734,7 +736,9 @@ class NvimFollower:
         (nomodifiable) on a completed outcome — but only for a launched,
         dedicated follower. An adopted nvim is the user's own editor and is
         never relocked. An interrupt hands the buffer to the user, so it is
-        deliberately left modifiable regardless.
+        deliberately left modifiable regardless. A stop seen while paused
+        ("stopped", final review C1) sends nothing more: the stop tears this
+        nvim down.
 
         A completed run stamps the buffer clean (_IS_CLEAN_LUA) only when it
         holds exactly `expected`, the lines the run was meant to leave
@@ -763,7 +767,7 @@ class NvimFollower:
             nvim.api.buf_set_option(buf, "modifiable", True)
             control.mark_animating(self.window_id)
             result = run()
-            if result.outcome != "interrupted":
+            if result.outcome == "completed":
                 if format_from is not None:
                     _format_from_disk(nvim, buf, format_from)
                 # Clean only if it holds exactly what Claude wrote: see _IS_CLEAN_LUA.
@@ -971,9 +975,9 @@ class NvimFollower:
                 return AnimationResult("interrupted", index)
             if signal == "pause":
                 with nvim_prompt.paused(self.socket_path):
-                    resumed = _wait_while_paused(self.window_id, save_pending, None)
-                if not resumed:
-                    return AnimationResult("interrupted", index)
+                    ended = _wait_while_paused(self.window_id, save_pending, None)
+                if ended != "resumed":
+                    return AnimationResult(ended, index)
                 continue  # resumed: retry this op from its clean boundary
             # start_line-1/end_line are the 0-indexed, end-exclusive range
             # nvim_buf_set_lines wants (same convention as diff.apply_ops).
@@ -1018,6 +1022,10 @@ class NvimFollower:
                     dedicated=dedicated,
                     follower_window=own_window,
                 )
+                if result.outcome == "stopped":
+                    # No rollback: the stop tears this nvim down, and every
+                    # request now could land on a quit nvim or a wiped buffer.
+                    return AnimationResult("stopped", index)
                 if result.outcome == "interrupted":
                     # Roll the op back so the buffer the user takes over is
                     # exactly apply_ops(before, ops[:index]) — the state the

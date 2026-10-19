@@ -16,7 +16,7 @@ import pytest
 from helpers import shows_the_buffer
 
 from vim_ai_follower.animate import AnimationResult
-from vim_ai_follower.backends.nvim import NvimFollower
+from vim_ai_follower.backends.nvim import _STAMP_IF_EXPECTED_LUA, NvimFollower
 from vim_ai_follower.diff import EditOp
 
 
@@ -195,3 +195,43 @@ def test_a_completed_op_never_rolls_back(tmp_path: Path) -> None:
     assert result == AnimationResult("completed", 1)
     assert _snapshots(nvim) == [call(7, 1, 2, True)]  # snapshot taken
     assert call(7, 1, 2, True, ["b"]) not in nvim.api.buf_set_lines.call_args_list
+
+
+def test_a_stop_while_paused_mid_op_neither_rolls_back_nor_relocks(tmp_path: Path) -> None:
+    # Final review C1: the stop tears this nvim down, so after a stop seen in
+    # the pause wait nothing more is sent: no rollback, no extmark removal,
+    # no stamp, no relock.
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.05)
+    nvim = _mock_nvim([2, 3], ["b"])
+    op = EditOp(kind="replace", start_line=2, end_line=2, new_lines=("WX",))
+    # op boundary + line0 boundary + char0("W") -> 3 calls; the 4th pauses.
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.control.check_signal", side_effect=[None, None, None, "pause"]),
+        patch("vim_ai_follower.backends.nvim._wait_while_paused", return_value="stopped"),
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+    ):
+        result = follower.apply_edit("/tmp/f.py", [op], before="a\nb\nc\n")
+    assert result == AnimationResult("stopped", 0)
+    assert call(7, 1, 2, True, ["b"]) not in nvim.api.buf_set_lines.call_args_list
+    nvim.api.buf_del_extmark.assert_not_called()
+    assert call(7, "modifiable", False) not in nvim.api.buf_set_option.call_args_list
+    assert all(each.args[0] != _STAMP_IF_EXPECTED_LUA for each in nvim.exec_lua.call_args_list)
+
+
+def test_a_stop_while_paused_at_an_op_boundary_ends_the_run(tmp_path: Path) -> None:
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.05)
+    nvim = _mock_nvim([], [])
+    ops = [
+        EditOp(kind="delete", start_line=3, end_line=3, new_lines=()),
+        EditOp(kind="delete", start_line=1, end_line=1, new_lines=()),
+    ]
+    with (
+        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.control.check_signal", side_effect=[None, "pause"]),
+        patch("vim_ai_follower.backends.nvim._wait_while_paused", return_value="stopped"),
+        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+    ):
+        result = follower.apply_edit("/tmp/f.py", ops)
+    assert result == AnimationResult("stopped", 1)
+    assert nvim.api.buf_set_lines.call_args_list == [call(7, 2, 3, True, [])]

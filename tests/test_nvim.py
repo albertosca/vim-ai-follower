@@ -77,7 +77,7 @@ def test_animate_lines_finds_the_window_again_after_a_mid_line_pause() -> None:
     signals = iter([None, None, "pause", None])
     with (
         patch("vim_ai_follower.control.check_signal", side_effect=lambda *_: next(signals, None)),
-        patch("vim_ai_follower.backends.nvim._wait_while_paused", return_value=True),
+        patch("vim_ai_follower.backends.nvim._wait_while_paused", return_value="resumed"),
     ):
         _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", ns=3, dedicated=True)
     assert nvim.exec_lua.call_args_list == [
@@ -1003,3 +1003,28 @@ def test_format_from_disk_puts_back_unmodified_only_on_a_buffer_holding_the_file
     calls = [call.args for call in nvim.api.buf_set_option.call_args_list]
     assert (7, "fileformat", "dos") in calls
     assert ((7, "modified", False) in calls) is restored
+
+
+def test_animate_lines_sends_nothing_after_a_stop_in_a_mid_line_pause(tmp_path: Path) -> None:
+    # Final review C1: the stop tears this nvim down, so not even the
+    # typing extmark is removed.
+    nvim = MagicMock()
+    with (
+        patch("vim_ai_follower.control.check_signal", side_effect=[None, "pause"]),
+        patch("vim_ai_follower.backends.nvim._wait_while_paused", return_value="stopped"),
+    ):
+        result = _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", ns=1)
+    assert result == AnimationResult("stopped", 0)
+    nvim.api.buf_set_text.assert_not_called()
+    nvim.api.buf_del_extmark.assert_not_called()
+
+
+def test_animate_lines_ends_stopped_on_a_stop_in_a_line_boundary_pause(tmp_path: Path) -> None:
+    nvim = MagicMock()
+    with (
+        patch("vim_ai_follower.control.check_signal", side_effect=[None, "pause"]),
+        patch("vim_ai_follower.backends.nvim._wait_while_paused", return_value="stopped"),
+    ):
+        result = _animate_lines(nvim, 7, ("a", "b"), 0, lambda: 0.0, "@1", ns=1)
+    assert result == AnimationResult("stopped", 1)
+    assert nvim.api.buf_set_text.call_count == 1

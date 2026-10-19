@@ -112,6 +112,38 @@ def _stopped_here(window_id: str, base_dir: Path | None) -> bool:
     return is_stopped(window_id, current_server_pid(), base_dir)
 
 
+# What reading a state file can raise: a missing or unreadable file, bad
+# JSON, a missing key, or JSON of the wrong shape (`null`, a list: TypeError
+# or AttributeError on the field reads). One list for every reader that must
+# treat such a file as "proves nothing" instead of crashing.
+UNREADABLE_STATE_ERRORS = (OSError, ValueError, KeyError, TypeError, AttributeError)
+
+
+def follower_stopped(
+    window_id: str, follower: tuple[str, str] | None, base_dir: Path | None = None
+) -> bool:
+    """Whether `claude-follow stop` ended the follower `follower` (its
+    (backend, target), None when the caller does not know it) while a hook
+    waited on it: in a pause or a hand-off. True when the window's tombstone
+    holds under this tmux server, or when the state names another follower (a
+    stop followed by a start, which lifts the tombstone).
+
+    A MISSING state alone is not a stop (final review I4): another window's
+    `stop` sweeps a `.pane` whose editor looks dead, which a dedicated Vim
+    running `:!pytest` does, and the wait then released Claude saying the
+    user stopped the follower. A real stop writes its tombstone before it
+    clears the state, so a stop is never seen as a missing state alone. An
+    unreadable state proves nothing (a write caught mid-way, or garbage):
+    only the tombstone decides then."""
+    try:
+        now = FollowerState.read(window_id, base_dir)
+    except UNREADABLE_STATE_ERRORS:
+        now = None
+    if now is not None and follower is not None and (now.backend, now.target) != follower:
+        return True
+    return _stopped_here(window_id, base_dir)
+
+
 def current_server_pid() -> int | None:
     """The attached tmux server's pid (binding.tmux_server_pid), imported
     late: binding imports this module."""
@@ -426,7 +458,7 @@ def owned_state(
     unsaved buffer on such a state) proves nothing about this one."""
     try:
         state = FollowerState.read(window_id, base_dir)
-    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+    except UNREADABLE_STATE_ERRORS:
         return None
     if state is None or state.backend != backend or state.target != target:
         return None

@@ -951,3 +951,25 @@ def test_a_stop_during_a_catch_up_hand_off_releases_claude_at_once(
 
     _assert_the_stop_released_the_hook(world, proc)
     assert path.read_text() == _catch_up_edit(backend), "the stop changed Claude's file"
+
+
+# ------------------------------------------------- final review C1 (pause + stop)
+
+
+@pytest.mark.parametrize("backend", ["nvim", "tmux"])
+def test_a_stop_while_the_animation_is_paused_releases_claude_at_once(
+    world: E2EFollower, backend: str
+) -> None:
+    """Final review C1: the pause wait never looked at the state or the
+    tombstone, so a P followed by `claude-follow stop` held Claude until the
+    hook's 600 s timeout (the stop clears the signals and, last follower, the
+    P/S keys, so nothing could resume it either). The pause wait now sees the
+    stop as the hand-off wait does."""
+    path = world.workdir / "stopped_pause.py"
+    target, proc = _animate_fresh(world, backend, path, FRESH, "lento")
+    _wait_visible(world, backend, target, path, "ALPHA_MARK")
+    world.cli("pause")
+    world.wait_for_animating("paused")
+
+    _assert_the_stop_released_the_hook(world, proc)
+    assert path.read_text() == FRESH, "the stop changed Claude's file"

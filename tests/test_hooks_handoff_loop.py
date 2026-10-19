@@ -477,6 +477,8 @@ def _stop_on_sleep(nth: int, stop: Callable[[], None]) -> Callable[[float], None
 
 
 def _stop_by_clearing_the_state() -> None:
+    # What `claude-follow stop` does, in its order: the tombstone first.
+    state.mark_stopped("@1", None, in_tmux=False)
     state.FollowerState.clear("@1")
     control.clear_signals("@1")
     control.discard_pending_animation("@1")
@@ -517,6 +519,53 @@ def test_a_stop_during_the_hand_off_wait_releases_claude(
     assert "stopped" in message and target in message
     assert not control.has_pending_animation("@1")
     assert control.check_signal("@1") is None
+
+
+def test_a_state_another_windows_stop_swept_does_not_end_the_hand_off_wait(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Final review I4: another window's `stop` sweeps every `.pane` whose
+    editor looks dead (a dedicated Vim running `:!pytest` does), with no
+    tombstone for this window. A missing state alone is no stop: the wait
+    goes on, and the user's save still releases Claude with their version."""
+    current, target = _handoff_state(tmp_path, "a\nb\n")
+
+    polls = {"count": 0}
+
+    def swept_then_saved(_seconds: float) -> None:
+        polls["count"] += 1
+        if polls["count"] == 2:
+            state.FollowerState.clear("@1")  # the other window's sweep
+        if polls["count"] == 6:
+            Path(target).write_text("a\nUSER\n")  # the user's :w
+        if polls["count"] > 60:
+            raise AssertionError("the hand-off wait never saw the save")
+
+    with (
+        patch("vim_ai_follower.control.check_signal", _scripted([])),
+        patch("vim_ai_follower.hooks.time.sleep", swept_then_saved),
+    ):
+        assert (
+            hooks._poll_until_interrupt(current, _SESSION, target, "a\nb\n", "a\n", None) is False
+        )
+    message = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert "SAVED their own version" in message
+    assert "stopped" not in message
+
+
+@pytest.mark.parametrize("content", ["null", "[]", "{}"])
+def test_a_state_of_the_wrong_json_shape_does_not_crash_the_stop_test(
+    content: str, tmp_path: Path
+) -> None:
+    """Final review M13: FollowerState.read raises TypeError (or KeyError) on
+    a `.pane` holding `null` or a list. It escaped the hand-off poll, run_hook
+    swallowed it, and Claude was released with no notification. Such a file
+    proves nothing; only the tombstone decides."""
+    current, _target = _handoff_state(tmp_path, "a\n")
+    state._state_path("@1", None).write_text(content)
+    assert hooks._follower_stopped(current, _SESSION) is False
+    state.mark_stopped("@1", None, in_tmux=False)
+    assert hooks._follower_stopped(current, _SESSION) is True
 
 
 def test_a_state_caught_mid_write_does_not_end_the_hand_off_wait(tmp_path: Path) -> None:
@@ -568,3 +617,29 @@ def test_a_catch_up_hand_off_the_stop_ended_releases_claude(
         )
     assert "stopped" in capsys.readouterr().out
     assert not control.has_pending_animation("@1")
+
+
+def test_a_replay_a_stop_ended_while_paused_releases_claude_with_no_remainder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Final review C1: S, the replay starts, the user pauses it and runs
+    # `claude-follow stop`. The replay's pause wait ends "stopped": nothing
+    # is re-armed and Claude is released at once with its version standing.
+    after = "l0\nl1\nl2\n"
+    current, target = _handoff_state(tmp_path, after)
+    control.save_pending_show_fresh("@1", ("l1", "l2"), 0.03, continuation=True, file_path=target)
+    fake = MagicMock()
+    fake.resume.return_value = AnimationResult("stopped", 0)
+    _install_fake_follower(monkeypatch, fake)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.control.check_signal", _scripted(["interrupt"])),
+        patch("vim_ai_follower.hooks.time.sleep"),
+    ):
+        hooks._await_user_handoff(current, _SESSION, target, after, "l0\n")
+    assert fake.resume.call_count == 1
+    assert control.has_pending_animation("@1") is False
+    output = json.loads(capsys.readouterr().out)
+    context = output["hookSpecificOutput"]["additionalContext"]
+    assert "paused the live preview" in context
+    assert "stopped the follower" in context

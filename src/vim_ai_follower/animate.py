@@ -130,8 +130,15 @@ def _insert_sequences(op: EditOp) -> tuple[list[KeySequence], int]:
 
 @dataclass(frozen=True)
 class AnimationResult:
-    outcome: Literal["completed", "interrupted"]
+    """ "stopped" is a `claude-follow stop` seen while the run was paused
+    (final review C1): nothing more is sent to the editor, which the stop
+    tears down, no remainder is kept and no hand-off follows."""
+
+    outcome: Literal["completed", "interrupted", "stopped"]
     completed_count: int
+
+
+PauseEnd = Literal["resumed", "interrupted", "stopped"]
 
 
 PAUSE_POLL_SECONDS = 0.1
@@ -152,25 +159,54 @@ def _exit_insert_mode(pane: TmuxPane) -> None:
     pane.send_key("Escape")
 
 
+def _serving_follower(window_id: str, base_dir: Path | None) -> tuple[str, str] | None:
+    """The (backend, target) of the follower this run serves, read when a
+    pause starts: what the stop test below compares a later state with."""
+    # Imported here: state imports the backends package, which imports this module.
+    from vim_ai_follower import state
+
+    try:
+        current = state.FollowerState.read(window_id, base_dir)
+    except state.UNREADABLE_STATE_ERRORS:
+        return None
+    return None if current is None else (current.backend, current.target)
+
+
+def _stopped(window_id: str, follower: tuple[str, str] | None, base_dir: Path | None) -> bool:
+    from vim_ai_follower import state
+
+    return state.follower_stopped(window_id, follower, base_dir)
+
+
 def _wait_while_paused(
     window_id: str,
     save_pending: Callable[[], None],
     base_dir: Path | None,
-) -> bool:
-    """Block in place until the user resumes (True) or interrupts (False).
+) -> PauseEnd:
+    """Block in place until the user resumes ("resumed"), interrupts
+    ("interrupted"), or stops the follower ("stopped").
     Pausing no longer exits the hook — Claude's turn stays held until the
     animation truly finishes. The pending file is still written for the
     duration purely as a crash fallback: if this process dies (e.g. hook
-    timeout), the keyboard can still finish the animation visually."""
+    timeout), the keyboard can still finish the animation visually.
+
+    A `claude-follow stop` is seen at the next poll by the same test the
+    hand-off wait uses (state.follower_stopped; final review C1): the stop
+    clears the signals and, for the last follower, the P/S keys, so a wait
+    that only read signals held Claude until the hook's 600 s timeout. The
+    pending goes on every exit, so a stop leaves no remainder."""
+    follower = _serving_follower(window_id, base_dir)
     save_pending()
     control.mark_animating(window_id, base_dir, state="paused")
     try:
         while True:
             signal = control.check_signal(window_id, base_dir)
             if signal == "interrupt":
-                return False
+                return "interrupted"
             if signal == "pause":  # the P toggle: a second press resumes
-                return True
+                return "resumed"
+            if _stopped(window_id, follower, base_dir):
+                return "stopped"
             time.sleep(PAUSE_POLL_SECONDS)
     finally:
         control.discard_pending_animation(window_id, base_dir)
@@ -267,8 +303,9 @@ def run_ops(
                 if result.outcome == "interrupted":
                     return AnimationResult("interrupted", index)
                 paused_at = time.monotonic()
-                if not _wait_while_paused(window_id, save_pending, base_dir):
-                    return AnimationResult("interrupted", index)
+                ended = _wait_while_paused(window_id, save_pending, base_dir)
+                if ended != "resumed":
+                    return AnimationResult(ended, index)
                 deadline += time.monotonic() - paused_at
                 _resume(on_resume, save_pending)
                 continue  # resumed: retry this op from its clean boundary
@@ -298,8 +335,9 @@ def run_ops(
                 if result.outcome == "interrupted":
                     return AnimationResult("interrupted", index)
                 paused_at = time.monotonic()
-                if not _wait_while_paused(window_id, save_pending, base_dir):
-                    return AnimationResult("interrupted", index)
+                ended = _wait_while_paused(window_id, save_pending, base_dir)
+                if ended != "resumed":
+                    return AnimationResult(ended, index)
                 deadline += time.monotonic() - paused_at
                 _resume(on_resume, save_pending)
                 continue
@@ -411,8 +449,9 @@ def run_lines(
                 )
 
             paused_at = time.monotonic()
-            if not _wait_while_paused(window_id, save_pending, base_dir):
-                return AnimationResult("interrupted", index)
+            ended = _wait_while_paused(window_id, save_pending, base_dir)
+            if ended != "resumed":
+                return AnimationResult(ended, index)
             deadline += time.monotonic() - paused_at
             _resume(on_resume, save_pending)
             continue  # resumed: retry this line (same opener, clean boundary)

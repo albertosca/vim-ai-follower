@@ -935,6 +935,31 @@ def test_final_stop_unregisters_keybindings() -> None:
     mock_unregister.assert_called_once()
 
 
+def test_stop_never_collects_a_window_whose_hook_is_live() -> None:
+    """Final review I4: window @2's dedicated Vim runs `:!pytest` during a
+    hand-off, so its pane's foreground command is the shell and the follower
+    reads dead. Another window's `stop` collected its state, pending and
+    snapshots, and @2 lost its follower with its Vim alive. A window whose
+    `.animating` marker names a live process is skipped, and counts as live
+    for the keys (its user may still press S)."""
+    _register_fake_follower("@1", "%2")
+    _register_fake_follower("@2", "%9")  # reads dead: %9 not in list-panes output
+    assert control.try_acquire_animating("@2", state="handoff")  # this live process
+    control.save_pending_apply_edit("@2", [], 0.0, file_path="/tmp/a.py")
+    snapshot.save("@2", "/tmp/a.py", "before")
+    mock_run = make_mock_tmux_run(window_id="@1", pane_id="%2")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=mock_run),
+        patch("vim_ai_follower.commands.keybindings.unregister") as mock_unregister,
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    assert state.FollowerState.read("@2") is not None
+    assert control.has_pending_animation("@2")
+    assert snapshot.load("@2", "/tmp/a.py") == "before"
+    assert control.animating_state("@2") == "handoff"
+    mock_unregister.assert_not_called()
+
+
 def test_stop_collects_dead_and_legacy_state() -> None:
     _register_fake_follower("@1", "%2")
     _register_fake_follower("@2", "%9")  # dead: %9 not in list-panes output
@@ -942,6 +967,8 @@ def test_stop_collects_dead_and_legacy_state() -> None:
     control.mark_animating("@2")  # a signal is only written for a live animation
     control.request_pause("@2")
     assert (cache.CACHE_DIR / "@2.pause").exists()  # else the check below is vacuous
+    # The animation is over (a live one keeps its window out of the sweep).
+    control.clear_animating("@2")
     control.save_pending_apply_edit("@2", [], 0.0, file_path="/tmp/a.py")
     snapshot.save("@2", "/tmp/a.py", "before")
     mock_run = make_mock_tmux_run(window_id="@1", pane_id="%2")

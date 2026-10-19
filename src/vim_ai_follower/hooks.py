@@ -684,24 +684,32 @@ def _print_stopped_notification(file_path: str) -> None:
     )
 
 
+def _print_stopped_while_paused_notification(file_path: str) -> None:
+    _print_hook_context(
+        f"The user paused the live preview of {file_path} and then stopped "
+        "the follower (`claude-follow stop`), so your version stands as the "
+        "file's content on disk. Continue normally."
+    )
+
+
+def _end_stopped_animation(window_id: str, file_path: str) -> int:
+    """A `claude-follow stop` ended this hook's animation while it was paused
+    (final review C1): the driver sent nothing more and kept no remainder.
+    The signals go (the stop cleared them too; one pressed since is nobody's),
+    the cue is the stop's to take down, and Claude is released at once."""
+    control.discard_pending_animation(window_id)
+    control.clear_signals(window_id)
+    _mark_finishing(window_id)
+    _print_stopped_while_paused_notification(file_path)
+    return 0
+
+
 def _follower_stopped(current: FollowerState, session: Session) -> bool:
     """Whether `claude-follow stop` ended this window's follower while a
     hand-off waited on it (T20 review m3: the wait never noticed, and Claude
-    stayed held until the hook's 600 s timeout). Stop writes its tombstone
-    first and clears the state right after; a state that names another
-    follower is a stop followed by a start. An unreadable state proves
-    nothing (a write caught mid-way): the wait goes on."""
-    window_id = session.window_id
-    try:
-        now = FollowerState.read(window_id)
-    except (OSError, ValueError, KeyError):
-        return False
-    if now is None or (now.backend, now.target) != (current.backend, current.target):
-        return True
-    if not state_module.stopped_path(window_id).exists():
-        return False  # one stat per poll; the tmux server is asked only past it
-    server_pid = binding.tmux_server_pid() if session.in_tmux else None
-    return state_module.is_stopped(window_id, server_pid)
+    stayed held until the hook's 600 s timeout). See state.follower_stopped,
+    which the pause wait asks too (final review C1)."""
+    return state_module.follower_stopped(session.window_id, (current.backend, current.target))
 
 
 _HANDOFF_POLL_SECONDS = 0.2
@@ -880,6 +888,13 @@ def _replay_remainder(
     # rewrite_buffer forces a single blank line, which IS a seed the replay
     # must type in front of and drop.
     result = follower.resume(pending, seeded=partial_content == "")
+    if result.outcome == "stopped":
+        # Paused mid-replay, then stopped: the hand-off is over with Claude's
+        # version, and nothing is re-armed onto the editor the stop took.
+        control.discard_pending_animation(window_id)
+        control.clear_signals(window_id)
+        _print_stopped_while_paused_notification(file_path)
+        return None
     if result.outcome == "completed":
         # Same as the completed animation in _animate_edit: the replay
         # finished the file, so any stale mark on it no longer holds.
@@ -1414,7 +1429,7 @@ class _CatchUp:
     terminated form every partial uses, or None when the remainder recorded
     no partial (a legacy one) and so what the buffer holds is not known."""
 
-    outcome: Literal["completed", "interrupted"]
+    outcome: Literal["completed", "interrupted", "stopped"]
     partial: str | None = ""
 
 
@@ -1481,6 +1496,8 @@ def _consume_pending_catchup(
     )
     if result.outcome == "completed":
         return _CatchUp("completed")
+    if result.outcome == "stopped":
+        return _CatchUp("stopped")
     if pending.partial is None:
         return _CatchUp("interrupted", None)
     if isinstance(pending, control.PendingShowFresh):
@@ -1858,6 +1875,8 @@ def _animate_edit(
                     f"{_WHY[held]} (a leftover remainder's partial); dropped the remainder",
                 )
                 return 0
+    if catch_up is not None and catch_up.outcome == "stopped":
+        return _end_stopped_animation(session.window_id, file_path)
     if catch_up is not None and catch_up.outcome == "interrupted":
         return _hand_over_interrupted_catch_up(
             current, session, follower, file_path, raw_after, catch_up.partial
@@ -1942,6 +1961,8 @@ def _animate_edit(
 
     if is_fresh:
         result = follower.show_fresh(file_path, typed_after, in_new_tab=current.shown_any)
+        if result.outcome == "stopped":
+            return _end_stopped_animation(session.window_id, file_path)
         if result.outcome == "interrupted":
             # The driver returned: an S from here on is the des-interrupt.
             control.mark_animating(session.window_id, state="handoff")
@@ -1987,6 +2008,8 @@ def _animate_edit(
     # the applied prefix. It is the same string the interrupt path below
     # replays the ops onto, so the two can never disagree.
     result = follower.apply_edit(file_path, ops, before=typed_before)
+    if result.outcome == "stopped":
+        return _end_stopped_animation(session.window_id, file_path)
     if result.outcome == "interrupted":
         # The driver returned: an S from here on is the des-interrupt.
         control.mark_animating(session.window_id, state="handoff")

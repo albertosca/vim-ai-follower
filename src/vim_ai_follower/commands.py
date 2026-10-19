@@ -288,6 +288,13 @@ def _other_live_follower() -> bool:
     found_live = False
     for path in sorted(cache.CACHE_DIR.glob("*.pane")):
         key = path.stem
+        if key.startswith("@") and control.animating_state(key) is not None:
+            # A live hook animates or waits there: its editor only LOOKS dead
+            # (a dedicated Vim running `:!pytest` mid-hand-off shows the
+            # shell as the pane's command), and collecting it took the
+            # window's follower and remainder away (final review I4).
+            found_live = True
+            continue
         if key.startswith("@") and FollowerState.get(key) is not None:
             found_live = True
             continue
@@ -302,7 +309,6 @@ def _other_live_follower() -> bool:
 _QUIT_GRACE_SECONDS = 1.0
 _REAP_GRACE_SECONDS = 1.0
 _POLL_SECONDS = 0.05
-_UNREADABLE_STATE_ERRORS = (OSError, ValueError, KeyError, TypeError, AttributeError)
 
 
 def cmd_stop(env: dict[str, str]) -> int:
@@ -373,12 +379,12 @@ def _state_to_tear_down(window_id: str) -> FollowerState | None:
     record = state_module.stopping_path(window_id)
     try:
         existing = FollowerState.read(window_id)
-    except _UNREADABLE_STATE_ERRORS:
+    except state_module.UNREADABLE_STATE_ERRORS:
         return None  # unreadable: nothing to tear down, still cleared by the caller
     if existing is None:
         try:
             return FollowerState.read_path(record)
-        except _UNREADABLE_STATE_ERRORS:
+        except state_module.UNREADABLE_STATE_ERRORS:
             return None
     state_module.keep_stopping_record(window_id)
     return existing
@@ -919,6 +925,12 @@ def cmd_pause(env: dict[str, str]) -> int:
             return 1
     finally:
         control.clear_animating(session.window_id)
+    if result.outcome == "stopped":
+        # Paused again inside the replay, then `claude-follow stop`: the
+        # pause wait saw it (final review C1) and kept no remainder, and the
+        # follower's pane is the stop's, so no popup goes to it.
+        print("claude-follow: resume ended by `claude-follow stop`")
+        return 0
     print(f"claude-follow: resumed ({result.outcome})")
     if result.outcome == "interrupted":
         _show_popup(current, "Interrupted", session.in_tmux)

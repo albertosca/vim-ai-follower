@@ -901,6 +901,31 @@ def test_an_adopted_animation_notes_claims_and_restores_the_readonly(outcome: st
 
 
 @pytest.mark.parametrize("adopted", [False, True])
+def test_a_run_a_stop_ended_while_paused_sends_nothing_more(adopted: bool) -> None:
+    """Final review C1: a `claude-follow stop` seen in the pause wait ends the
+    run "stopped". The stop owns the teardown, so no relock, no paste or
+    readonly restore follows the unlock."""
+    if adopted:
+        follower = _adopted_follower()
+    else:
+        _register_fake_follower("@1", "%2")
+        follower = TmuxVimFollower(pane_id="%2", window_id="@1")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+        patch(
+            "vim_ai_follower.backends.tmux_vim.run_ops",
+            return_value=AnimationResult("stopped", 0),
+        ),
+    ):
+        result = follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
+    assert result == AnimationResult("stopped", 0)
+    commands = _sent_commands(run)
+    unlock = _ADOPTED_UNLOCK if adopted else _UNLOCK_FOR_ANIMATION
+    assert commands[-2:] == [(unlock, True), ("Enter", False)]
+
+
+@pytest.mark.parametrize("adopted", [False, True])
 def test_a_failed_goto_after_a_pause_gives_paste_and_readonly_back(adopted: bool) -> None:
     """Final M1: the post-pause goto fails (NavigationFailed) mid-animation.
     It escaped _with_unlocked with no relock and no restore, so an adopted
