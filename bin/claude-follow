@@ -3,5 +3,7 @@
 # tool's PATH while the plugin is enabled, and the absolute target the tmux
 # keybindings use (see keybindings._claude_follow_executable). Resolves the
 # bundled src/ relative to this script so `claude-follow` works from anywhere.
+# -P keeps the cwd off sys.path: a project's json.py or shlex.py would
+# otherwise shadow the standard library.
 DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-exec env PYTHONPATH="$DIR/src" python3 -m vim_ai_follower.cli "$@"
+exec env PYTHONPATH="$DIR/src" python3 -P -m vim_ai_follower.cli "$@"

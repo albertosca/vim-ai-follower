@@ -166,6 +166,9 @@ def ask(target_pane: str, editor: str, seconds: float) -> str:
             "env",
             f"PYTHONPATH={_package_root()}",
             sys.executable,
+            # -P: the cwd off sys.path, or a `select.py`/`termios.py` in the
+            # popup's directory would run inside the question (final review I3).
+            "-P",
             "-m",
             "vim_ai_follower.take_over",
             str(answer_path),
@@ -185,6 +188,10 @@ def ask(target_pane: str, editor: str, seconds: float) -> str:
                     "-t",
                     target_pane,
                     "-E",
+                    # A fixed start directory, not the target pane's current
+                    # one (a user's project).
+                    "-d",
+                    str(cache.CACHE_DIR),
                     "-w",
                     str(_POPUP_WIDTH),
                     "-h",

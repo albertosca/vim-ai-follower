@@ -371,7 +371,7 @@ def test_the_plugin_registers_the_failure_hook_for_edit_tools() -> None:
         entries = manifest["hooks"][event]
         assert [e["matcher"] for e in entries] == ["Edit|MultiEdit|Write"], event
         (command,) = [h["command"] for h in entries[0]["hooks"]]
-        assert command.endswith("python3 -m vim_ai_follower.cli hook failure"), command
+        assert command.endswith("python3 -P -m vim_ai_follower.cli hook failure"), command
 
 
 def test_a_read_by_the_marks_own_writer_clears_it_and_navigates(tmp_path: Path) -> None:
