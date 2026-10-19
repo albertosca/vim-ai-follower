@@ -213,3 +213,82 @@ def test_every_entry_point_types_with_the_followers_own_kind(
     assert follower.resume(pending, reload=False).outcome == "completed"
 
     assert seen == [not adopted] * 3
+
+
+_TWO_HUNK_BEFORE = "".join(f"line {number}\n" for number in range(20))
+_TWO_HUNK_AFTER_LINES = [f"line {number}" for number in range(20)]
+_TWO_HUNK_AFTER_LINES[15:16] = [f"NEWB {number} some typed text here" for number in range(3)]
+_TWO_HUNK_AFTER_LINES[3:4] = [f"NEWA {number} some typed text here" for number in range(3)]
+_TWO_HUNK_AFTER = "".join(line + "\n" for line in _TWO_HUNK_AFTER_LINES)
+
+
+@pytest.mark.parametrize("scenario", ["move and close", "split"])
+def test_a_pause_in_one_op_never_hands_the_next_op_the_users_window(
+    headless_nvim: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    wait_until: Callable[..., bool],
+    scenario: str,
+) -> None:
+    # T24c re-review m2': an adopted Edit with two typed hunks, paused in the
+    # first one typed (the bottom one). Each op used to record "the window
+    # current now" as the follower's own, so the second op took the window
+    # the user had left current and dragged its cursor ([1, 0] -> [6, 26]).
+    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    state.FollowerState.set(_WINDOW_ID, "nvim", headless_nvim, adopted=True)
+    target = tmp_path / "two_hunks.py"
+    target.write_text(_TWO_HUNK_BEFORE)
+    quick = NvimFollower(socket_path=headless_nvim, window_id=_WINDOW_ID, pace_seconds=0.0)
+    assert quick.show_fresh(str(target), _TWO_HUNK_BEFORE).outcome == "completed"
+    user = pynvim.attach("socket", path=headless_nvim)
+    follower_window = user.api.get_current_win().handle
+    follower_buffer = user.api.get_current_buf().handle
+    target.write_text(_TWO_HUNK_AFTER)
+    ops = compute_edit_script(_TWO_HUNK_BEFORE, _TWO_HUNK_AFTER)
+    assert len(ops) == 2
+    follower = NvimFollower(socket_path=headless_nvim, window_id=_WINDOW_ID, pace_seconds=0.03)
+    results: list[AnimationResult] = []
+    control.mark_animating(_WINDOW_ID, tmp_path / "cache")
+    thread = threading.Thread(
+        target=lambda: results.append(
+            follower.apply_edit(str(target), ops, before=_TWO_HUNK_BEFORE)
+        )
+    )
+    thread.start()
+    try:
+        assert wait_until(
+            lambda: any(
+                line.startswith("NEWB 0 s")
+                for line in user.api.buf_get_lines(follower_buffer, 0, -1, True)
+            ),
+            timeout=10.0,
+            interval=0.02,
+        ), "the first op never typed"
+        assert control.request_pause(_WINDOW_ID)
+        assert wait_until(
+            lambda: control.animating_state(_WINDOW_ID) == "paused",
+            timeout=10.0,
+            interval=0.02,
+        ), "the pause never landed"
+        if scenario == "move and close":
+            user.command("tabnew")
+            user_window = user.api.get_current_win().handle
+            user.api.win_set_buf(user_window, follower_buffer)
+            user.api.win_close(follower_window, True)
+        else:
+            user.command("split")
+            user_window = user.api.get_current_win().handle
+        user.api.win_set_cursor(user_window, [1, 0])
+    finally:
+        assert control.request_pause(_WINDOW_ID)
+        thread.join(timeout=60.0)
+    assert not thread.is_alive(), "the animation never finished"
+    assert results == [AnimationResult("completed", 2)]
+
+    assert user.api.get_current_win().handle == user_window
+    assert user.api.win_get_cursor(user_window) == [1, 0], "the follower moved the user's cursor"
+    assert user.api.buf_get_lines(follower_buffer, 0, -1, True) == _TWO_HUNK_AFTER_LINES
+    if scenario == "split":
+        # The follower's own window kept following into the second op.
+        assert user.api.win_get_cursor(follower_window) == [6, len(_TWO_HUNK_AFTER_LINES[5]) - 1]
+    user.close()

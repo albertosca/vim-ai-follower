@@ -144,6 +144,7 @@ def _animate_lines(
     save_pending: Callable[[int], None] | None = None,
     prompt_key: str = "",
     dedicated: bool = False,
+    follower_window: int = -1,
 ) -> AnimationResult:
     """Type `lines` into `buf` from `start_row`, one CHARACTER at a time over
     the API, checking for a pause/interrupt signal before every character (not
@@ -203,10 +204,16 @@ def _animate_lines(
     window = 0  # the follower's window, resolved per line (_FOLLOWER_WINDOW_LUA)
     # Failing closed (`dedicated` False): an adopted follower records its own
     # window before anything can pause, while the navigation's window is
-    # still current.
+    # still current — or takes `follower_window`, recorded by a caller that
+    # types several ops (_run_ops), since by a later op's start a pause may
+    # have left the USER's window current (T24c re-review m2').
     own_only = not dedicated
     if own_only and lines:
-        window = nvim.exec_lua(_FOLLOWER_WINDOW_LUA, buf, -1, own_only)
+        window = (
+            follower_window
+            if follower_window != -1
+            else nvim.exec_lua(_FOLLOWER_WINDOW_LUA, buf, -1, own_only)
+        )
     while index < len(lines):
         signal = control.check_signal(window_id, base_dir)
         if signal == "interrupt":
@@ -928,6 +935,13 @@ class NvimFollower:
         # mid-run the buffer may end on a half-typed line, which is precisely
         # the shape a crash-fallback consumer must not have to interpret.
         initial = _terminated(nvim.api.buf_get_lines(buf, 0, -1, True))
+        # An adopted follower's own window is recorded ONCE, right after the
+        # navigation and before any op can pause, and every op types with it:
+        # recorded per op, a pause in op 1 let op 2 take the window the user
+        # left current (T24c re-review m2'). A dedicated one keeps the
+        # fallbacks (-1: _animate_lines resolves them itself).
+        dedicated = self._is_dedicated()
+        own_window = -1 if dedicated else nvim.exec_lua(_FOLLOWER_WINDOW_LUA, buf, -1, True)
         index = 0
         while index < len(ops):
             op = ops[index]
@@ -1001,7 +1015,8 @@ class NvimFollower:
                     ns,
                     save_pending=save_pending,
                     prompt_key=self.socket_path,
-                    dedicated=self._is_dedicated(),
+                    dedicated=dedicated,
+                    follower_window=own_window,
                 )
                 if result.outcome == "interrupted":
                     # Roll the op back so the buffer the user takes over is
