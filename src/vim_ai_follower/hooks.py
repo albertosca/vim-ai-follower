@@ -1213,15 +1213,87 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         control.clear_animating(session.window_id)
 
 
-def _busy_follower(current: FollowerState, question_seconds: float) -> str | None:
+def _busy_follower(
+    current: FollowerState, question_seconds: float, *, window_id: str = ""
+) -> str | None:
     """Why this hook must leave the follower alone, or None: _busy_nvim for
-    an nvim, _busy_vim for a Vim."""
+    an nvim, _busy_vim for a Vim. `window_id` is where a declined take-over
+    question is remembered (_declined_earlier); none, nothing is."""
     if current.backend == "nvim":
-        return _busy_nvim(current, question_seconds)
-    return _busy_vim(current, question_seconds)
+        return _busy_nvim(current, question_seconds, window_id=window_id)
+    return _busy_vim(current, question_seconds, window_id=window_id)
 
 
-def _busy_vim(current: FollowerState, question_seconds: float) -> str | None:
+# A "no" or a timeout to the take-over question, remembered per window and
+# editor (final review I6, Alberto's decision: until the mode changes):
+# asking again on every Edit and Read cost up to the question's whole time
+# each, and every question took a key from whatever the user was typing
+# (the popup shows over the client's CURRENT window, often Claude's). While
+# the same editor (a Vim by pid, an nvim by socket) reads the same typing
+# mode, the hook skips without asking; a different mode, a non-typing one,
+# another editor, or a `y` ends it. Only an answer the prompt read is
+# remembered (`answered no`, `answered timeout`): "not asked" (no client,
+# a dropped popup) and "no answer" saw no question.
+def _declined_path(window_id: str) -> Path:
+    return cache.CACHE_DIR / f"{window_id}.declined"
+
+
+def _declined_earlier(window_id: str, editor: str, mode: str) -> str | None:
+    """The answer this window's question got from `editor` in `mode`, or
+    None when there is none to honour."""
+    if not window_id or not editor:
+        return None
+    try:
+        record = json.loads(_declined_path(window_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(record, dict) or record.get("editor") != editor:
+        return None
+    answer = record.get("answer")
+    if record.get("mode") != mode or not isinstance(answer, str):
+        return None
+    return answer
+
+
+def _remember_declined(window_id: str, editor: str, mode: str, answer: str) -> None:
+    if not window_id or not editor or not answer.startswith("answered "):
+        _forget_declined(window_id)
+        return
+    path = _declined_path(window_id)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    with contextlib.suppress(OSError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(
+            json.dumps({"editor": editor, "mode": mode, "answer": answer}), encoding="utf-8"
+        )
+        temporary.replace(path)
+
+
+def _forget_declined(window_id: str) -> None:
+    if window_id:
+        with contextlib.suppress(OSError):
+            _declined_path(window_id).unlink(missing_ok=True)
+
+
+def _ask_unless_declined(
+    window_id: str, editor: str, mode: str, waiting: str, ask: functools.partial[str]
+) -> str | None:
+    """None for a `y`; otherwise the skip reason, from this question or from
+    the one this editor declined earlier in the same mode."""
+    earlier = _declined_earlier(window_id, editor, mode)
+    if earlier is not None:
+        return f"{waiting}, not taken over ({earlier} earlier in this mode)"
+    answer = ask()
+    if answer == take_over.YES:
+        _forget_declined(window_id)
+        return None
+    _remember_declined(window_id, editor, mode, answer)
+    return f"{waiting}, not taken over ({answer})"
+
+
+def _busy_vim(
+    current: FollowerState, question_seconds: float, *, window_id: str = ""
+) -> str | None:
     """Why this hook must leave a Vim follower alone, or None: an ADOPTED Vim
     whose user is known to be typing (tmux_vim.typing_mode: its mode file,
     or on a first contact its screen) is asked about first, as an nvim is
@@ -1236,16 +1308,25 @@ def _busy_vim(current: FollowerState, question_seconds: float) -> str | None:
         return None
     typing = tmux_vim.typing_mode(current.target)
     if typing is None:
+        _forget_declined(window_id)
         return None
     waiting = f"Vim in {current.target} is waiting on its user ({typing})"
     if typing in tmux_vim.WAITING_REASONS:
         # Ex mode, a confirm, an external command (final review I2): the
         # follower's keys would answer the user's prompt, and answering it is
         # theirs to do (Alberto's answer A, as on nvim). Nothing is asked.
+        _forget_declined(window_id)
         return waiting
-    answer = take_over.ask(current.target, "Vim", question_seconds)
-    if answer != take_over.YES:
-        return f"{waiting}, not taken over ({answer})"
+    pid = tmux_vim.last_typing_vim_pid(current.target)
+    skipped = _ask_unless_declined(
+        window_id,
+        f"vim:{pid}" if pid is not None else "",
+        typing,
+        waiting,
+        functools.partial(take_over.ask, current.target, "Vim", question_seconds),
+    )
+    if skipped is not None:
+        return skipped
     tmux_vim.leave_typing_mode(current.target)
     # Review I2, measured: with a CTRL-V pending in insert or replace mode
     # Vim inserts the CTRL-\ literally and the CTRL-N completes; with a
@@ -1262,6 +1343,8 @@ def _busy_vim(current: FollowerState, question_seconds: float) -> str | None:
 def _busy_nvim(
     current: FollowerState,
     question_seconds: float = config.DEFAULT_TAKE_OVER_QUESTION_SECONDS,
+    *,
+    window_id: str = "",
 ) -> str | None:
     """Why this hook must leave an nvim follower alone, or None: the liveness
     probe FollowerState.get just ran found it accepting and SILENT — busy in
@@ -1302,7 +1385,8 @@ def _busy_nvim(
         return None
     pending = adopted_user_pending(current.target)
     if pending in TYPING_MODES:
-        return _take_over_nvim(current, pending, question_seconds)
+        return _take_over_nvim(current, pending, question_seconds, window_id=window_id)
+    _forget_declined(window_id)
     if pending is not None:
         return f"nvim at {current.target} is waiting on its user ({pending})"
     if nvim_connect.last_probe_blocking(current.target):
@@ -1318,14 +1402,22 @@ TYPING_MODES = take_over.TYPING_REASONS
 _LEAVE_TYPING_SECONDS = 2.0
 
 
-def _take_over_nvim(current: FollowerState, pending: str, question_seconds: float) -> str | None:
+def _take_over_nvim(
+    current: FollowerState, pending: str, question_seconds: float, *, window_id: str = ""
+) -> str | None:
     """Ask whether to take over an adopted nvim whose user is typing. None
     once it is taken over (back in Normal mode, as the Vim follower's Escape
     pair leaves a Vim); otherwise why the hook must skip."""
     waiting = f"nvim at {current.target} is waiting on its user ({pending})"
-    answer = take_over.ask(current.origin, "Neovim", question_seconds)
-    if answer != take_over.YES:
-        return f"{waiting}, not taken over ({answer})"
+    skipped = _ask_unless_declined(
+        window_id,
+        f"nvim:{current.target}",
+        pending,
+        waiting,
+        functools.partial(take_over.ask, current.origin, "Neovim", question_seconds),
+    )
+    if skipped is not None:
+        return skipped
     left = _leave_typing_mode(current.target)
     if left is not None:
         return f"{waiting}, answered y but {left}"
@@ -1812,7 +1904,7 @@ def _animate_edit(
     if current is None:
         _warn_lost_window_identity(session)
         return 0
-    busy = _busy_follower(current, cfg.take_over_question_seconds)
+    busy = _busy_follower(current, cfg.take_over_question_seconds, window_id=session.window_id)
     if busy is not None:
         # Skipped like an unreachable edit, minus the cue: none was raised,
         # and taking one down would wait on the same silent nvim.
@@ -2180,7 +2272,7 @@ def _navigate_for_read(
     if current is None:
         _warn_lost_window_identity(session)
         return 0
-    busy = _busy_follower(current, cfg.take_over_question_seconds)
+    busy = _busy_follower(current, cfg.take_over_question_seconds, window_id=session.window_id)
     if busy is not None:
         logger.warning("skipped the Read of %s: %s", file_path, busy)
         return 0

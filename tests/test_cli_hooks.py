@@ -3583,6 +3583,143 @@ def test_a_yes_in_insert_or_replace_mode_notes_a_pending_literal_key(
     assert (note in caplog.text) is noted
 
 
+# --- a declined take-over question is remembered (final review I6) -------
+
+
+def _vim_asked(
+    typing: str | None, answer: str, *, pid: int | None = 202, window_id: str = "@1"
+) -> tuple[str | None, int]:
+    """_busy_follower for the adopted Vim %7 reading `typing`, its question
+    answered `answer`: (the skip reason, how many times it was asked)."""
+    with (
+        patch("vim_ai_follower.backends.tmux_vim.typing_mode", return_value=typing),
+        patch("vim_ai_follower.backends.tmux_vim.last_typing_vim_pid", return_value=pid),
+        patch("vim_ai_follower.take_over.ask", return_value=answer) as asked,
+        patch("vim_ai_follower.backends.tmux_vim.leave_typing_mode"),
+    ):
+        busy = hooks._busy_follower(_adopted_vim_state(), 10, window_id=window_id)
+    return busy, asked.call_count
+
+
+@pytest.mark.parametrize("answer", ["answered no", "answered timeout"])
+def test_a_declined_question_is_not_asked_again_in_the_same_mode(answer: str) -> None:
+    assert _vim_asked("in insert mode", answer) == (
+        f"Vim in %7 is waiting on its user (in insert mode), not taken over ({answer})",
+        1,
+    )
+    assert _vim_asked("in insert mode", "answered no") == (
+        f"Vim in %7 is waiting on its user (in insert mode), "
+        f"not taken over ({answer} earlier in this mode)",
+        0,
+    )
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        "no answer: the question closed without one",
+        "not asked: no tmux client is attached to the session of %7 to show the question on",
+        "not asked: the question was never shown"
+        " (another popup was up, or it closed before it started)",
+    ],
+)
+def test_a_question_nobody_answered_is_asked_again(answer: str) -> None:
+    assert _vim_asked("in insert mode", answer)[1] == 1
+    assert _vim_asked("in insert mode", answer)[1] == 1
+    assert not (cache.CACHE_DIR / "@1.declined").exists()
+
+
+@pytest.mark.parametrize(
+    ("second", "pid"),
+    [
+        ("in visual mode", 202),  # another typing mode
+        ("in insert mode", 303),  # another Vim in the same pane
+        ("in insert mode", None),  # a Vim that could not be identified
+    ],
+)
+def test_another_mode_or_another_vim_is_asked_again(second: str, pid: int | None) -> None:
+    _vim_asked("in insert mode", "answered no")
+    assert _vim_asked(second, "answered timeout", pid=pid)[1] == 1
+
+
+def test_a_vim_seen_not_typing_forgets_the_answer() -> None:
+    _vim_asked("in insert mode", "answered no")
+    assert _vim_asked(None, "answered no") == (None, 0)
+    assert not (cache.CACHE_DIR / "@1.declined").exists()
+    assert _vim_asked("in insert mode", "answered no")[1] == 1
+
+
+def test_a_vim_seen_at_a_prompt_forgets_the_answer() -> None:
+    _vim_asked("in insert mode", "answered no")
+    _vim_asked("a confirm prompt", "answered no")
+    assert _vim_asked("in insert mode", "answered no")[1] == 1
+
+
+def test_a_yes_forgets_the_answer() -> None:
+    _vim_asked("in insert mode", "answered no")
+    (cache.CACHE_DIR / "@1.declined").write_text(
+        json.dumps({"editor": "vim:202", "mode": "in visual mode", "answer": "answered no"})
+    )
+    assert _vim_asked("in insert mode", take_over.YES) == (None, 1)
+    assert not (cache.CACHE_DIR / "@1.declined").exists()
+
+
+def test_no_window_remembers_nothing() -> None:
+    _vim_asked("in insert mode", "answered no", window_id="")
+    assert _vim_asked("in insert mode", "answered no", window_id="")[1] == 1
+    assert not list(cache.CACHE_DIR.glob("*.declined"))
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        "not json",
+        json.dumps(["vim:202", "in insert mode", "answered no"]),
+        json.dumps({"editor": "vim:202", "mode": "in insert mode", "answer": 3}),
+    ],
+)
+def test_an_unreadable_record_is_no_answer(record: str) -> None:
+    cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    (cache.CACHE_DIR / "@1.declined").write_text(record)
+    assert _vim_asked("in insert mode", "answered no")[1] == 1
+
+
+def test_a_record_that_cannot_be_written_still_skips() -> None:
+    cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    (cache.CACHE_DIR / "@1.declined").mkdir()
+    busy, asked = _vim_asked("in insert mode", "answered no")
+    assert asked == 1
+    assert busy is not None
+    assert busy.endswith("not taken over (answered no)")
+
+
+def test_a_declined_nvim_question_is_remembered_by_socket() -> None:
+    def busy(socket_path: str, mode: str, answer: str) -> tuple[str | None, int]:
+        with patch(
+            "vim_ai_follower.backends.nvim_connect._probe", return_value=("answers", False, mode)
+        ):
+            nvim_connect.probe_nvim(socket_path)
+        current = dataclasses.replace(_adopted_nvim_state(), target=socket_path)
+        with (
+            patch("vim_ai_follower.take_over.ask", return_value=answer) as asked,
+            patch("vim_ai_follower.hooks._leave_typing_mode", return_value=None),
+        ):
+            reason = hooks._busy_follower(current, 10, window_id="@1")
+        return reason, asked.call_count
+
+    assert busy("/tmp/user.sock", "i", "answered no")[1] == 1
+    assert busy("/tmp/user.sock", "i", "answered no") == (
+        "nvim at /tmp/user.sock is waiting on its user (in insert mode), "
+        "not taken over (answered no earlier in this mode)",
+        0,
+    )
+    assert busy("/tmp/other.sock", "i", "answered no")[1] == 1  # another nvim
+    assert busy("/tmp/other.sock", "v", "answered no")[1] == 1  # another mode
+    assert busy("/tmp/other.sock", "n", "answered no") == (None, 0)  # not typing
+    assert not (cache.CACHE_DIR / "@1.declined").exists()
+    assert busy("/tmp/other.sock", "v", take_over.YES) == (None, 1)
+
+
 @pytest.mark.parametrize("tool_name", ["Edit", "Read"])
 def test_a_hook_asks_before_typing_into_a_typing_adopted_vim(
     tmp_path: Path,

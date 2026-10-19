@@ -2316,6 +2316,7 @@ def typing_mode(pane_id: str) -> str | None:
     answers None: the follower then acts as it always did, starting with its
     Escape pair."""
     vim = _foreground_vim(pane_id)
+    _last_typing_vim[pane_id] = vim.pid if vim is not None else None
     if vim is not None and vim.running_command:
         return _COMMAND_REASON
     recorded = _recorded_mode(vim) if vim is not None else None
@@ -2328,6 +2329,18 @@ def typing_mode(pane_id: str) -> str | None:
     # m9: 'eventignore' holding ModeChanged, the user's `:au!` of our
     # group), so the screen is read too; it types nothing.
     return _typing_on_screen(pane_id, vim_pid=vim.pid if vim is not None else None)
+
+
+# The pid of the Vim the last typing_mode read in each pane found, for the
+# hooks to remember a declined take-over question by (hooks._ask_unless_
+# declined): the same Vim, not just the same pane.
+_last_typing_vim: dict[str, int | None] = {}
+
+
+def last_typing_vim_pid(pane_id: str) -> int | None:
+    """The pid of the Vim typing_mode last found in `pane_id`, or None (no
+    read yet, or no single foreground Vim)."""
+    return _last_typing_vim.get(pane_id)
 
 
 def leave_typing_mode(pane_id: str) -> None:

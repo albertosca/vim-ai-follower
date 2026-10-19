@@ -388,6 +388,24 @@ def test_typing_mode_passes_the_foreground_vims_pid_to_the_screen_read() -> None
     read.assert_called_once_with("%5", vim_pid=202)
 
 
+def test_typing_mode_remembers_which_vim_it_read() -> None:
+    # Final review I6: a declined question is remembered per Vim, by pid.
+    vim = _VimProcess(pid=202, started=time.time() - 60)
+    with (
+        patch("vim_ai_follower.backends.tmux_vim._foreground_vim", return_value=vim),
+        patch("vim_ai_follower.backends.tmux_vim._typing_on_screen", return_value=None),
+    ):
+        tmux_vim.typing_mode("%5")
+    assert tmux_vim.last_typing_vim_pid("%5") == 202
+    with (
+        patch("vim_ai_follower.backends.tmux_vim._foreground_vim", return_value=None),
+        patch("vim_ai_follower.backends.tmux_vim._typing_on_screen", return_value=None),
+    ):
+        tmux_vim.typing_mode("%5")
+    assert tmux_vim.last_typing_vim_pid("%5") is None
+    assert tmux_vim.last_typing_vim_pid("%6") is None
+
+
 def test_a_filler_bottom_row_that_never_settles_asks() -> None:
     with (
         patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _settling(["~"])),
