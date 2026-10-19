@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import termios
+import time
 import tty
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -248,6 +249,49 @@ def test_ask_reports_a_popup_tmux_refused() -> None:
         assert take_over.ask("%3", "Vim", 10) == (
             "not asked: tmux could not show the question (can't find pane: %3)"
         )
+
+
+def test_ask_sweeps_the_answer_files_earlier_questions_left_behind() -> None:
+    # Final review M2: a prompt that outlived its hook's wait (the popup
+    # timed out, the hook was killed) writes its answer file after `ask`'s
+    # `finally` removed it, and nothing else ever did. Each ask removes the
+    # ones older than _SWEEP_AFTER_SECONDS, far past any question.
+    cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    old = time.time() - take_over._SWEEP_AFTER_SECONDS - 60
+    stale = [
+        cache.CACHE_DIR / "take-over-00aa.txt",
+        cache.CACHE_DIR / ".take-over-00bb.txt.00bb",
+    ]
+    fresh = [
+        cache.CACHE_DIR / "take-over-11aa.txt",
+        cache.CACHE_DIR / ".take-over-11bb.txt.11bb",
+    ]
+    unrelated = cache.CACHE_DIR / "mode-12.txt"
+    for path in [*stale, *fresh, unrelated]:
+        path.write_text("x\n")
+    for path in [*stale, unrelated]:
+        os.utime(path, (old, old))
+    with patch("vim_ai_follower.take_over.subprocess.run", _tmux(clients="")):
+        assert take_over.ask("%3", "Vim", 10) == _NO_CLIENT
+    assert [path.exists() for path in stale] == [False, False]
+    assert [path.exists() for path in fresh] == [True, True]
+    assert unrelated.exists()
+
+
+def test_a_sweep_that_cannot_delete_still_asks() -> None:
+    cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    stuck = cache.CACHE_DIR / "take-over-00aa.txt"
+    stuck.mkdir()
+    old = time.time() - take_over._SWEEP_AFTER_SECONDS - 60
+    os.utime(stuck, (old, old))
+    with patch("vim_ai_follower.take_over.subprocess.run", _tmux(popup=_answering("no"))):
+        assert take_over.ask("%3", "Vim", 10) == "answered no"
+
+
+def test_a_sweep_with_no_cache_dir_still_asks() -> None:
+    assert not cache.CACHE_DIR.exists()
+    with patch("vim_ai_follower.take_over.subprocess.run", _tmux(popup=_answering("no"))):
+        assert take_over.ask("%3", "Vim", 10) == "answered no"
 
 
 def test_ask_gives_up_on_a_popup_that_does_not_close() -> None:

@@ -92,6 +92,27 @@ def _answer_path(token: str) -> Path:
     return cache.CACHE_DIR / f"take-over-{token}.txt"
 
 
+# Answer files (and their write temporaries) older than this are an earlier
+# question's leftovers: a prompt that outlived its hook's wait writes its
+# answer after `ask`'s `finally` removed the file (final review M2). Far
+# past any question (config's 120 s plus the close margin).
+_SWEEP_AFTER_SECONDS = 600.0
+
+
+def _sweep_answers() -> None:
+    """Delete the answer files and temporaries earlier questions left behind
+    (_SWEEP_AFTER_SECONDS old). Best effort: a file that cannot be read or
+    deleted stays."""
+    cutoff = time.time() - _SWEEP_AFTER_SECONDS
+    for pattern in ("take-over-*.txt", ".take-over-*.txt.*"):
+        for path in cache.CACHE_DIR.glob(pattern):
+            try:
+                if path.stat().st_mtime < cutoff:
+                    path.unlink()
+            except OSError:
+                continue
+
+
 def _package_root() -> str:
     """The directory that holds the vim_ai_follower package, for the popup's
     interpreter to import it from (the plugin runs from its bundled src/)."""
@@ -130,6 +151,7 @@ def ask(target_pane: str, editor: str, seconds: float) -> str:
     YES only for a deliberate `y`; otherwise why not, for the hook's log."""
     if not target_pane:
         return "not asked: the editor is not in tmux"
+    _sweep_answers()
     client = _client_for(target_pane)
     if client is None:
         return (
