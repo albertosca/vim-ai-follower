@@ -1164,3 +1164,44 @@ def test_case_folds_asks_the_filesystem_and_is_zero_whenever_it_cannot(tmp_path:
     assert _case_folds("/0/1.2") == 0
     assert _case_folds(str(tmp_path / "missing.md")) == 0
     assert _case_folds("/tmp/a\0b") == 0
+
+
+# --- a release a typing stop left pending (final review I5) ---------------
+
+
+def test_a_define_with_a_release_pending_sends_the_release_right_after() -> None:
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch("vim_ai_follower.backends.tmux_vim._take_release_mark", return_value=True) as taken,
+    ):
+        follower.close_tab("/tmp/old.py", dedicated=True)
+    taken.assert_called_once_with("%2")
+    commands = [text for text, literal in _sent_commands(run) if literal]
+    assert commands[:2] == [_DEFINE, call_spelled("release_all")]
+
+
+def test_a_define_with_no_release_pending_sends_none() -> None:
+    state.FollowerState.set("@1", "tmux", "%2", adopted=False)
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        follower.close_tab("/tmp/old.py")
+    assert call_spelled("release_all") not in [text for text, _ in _sent_commands(run)]
+
+
+@pytest.mark.parametrize("pending", [True, False])
+def test_release_claims_sends_the_release_once(pending: bool) -> None:
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch("vim_ai_follower.backends.tmux_vim._take_release_mark", return_value=pending),
+    ):
+        follower.release_claims()
+    assert _sent_commands(run) == [
+        ("Escape", False),
+        ("Escape", False),
+        (_DEFINE, True),
+        ("Enter", False),
+        (call_spelled("release_all"), True),
+        ("Enter", False),
+    ]

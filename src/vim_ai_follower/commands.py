@@ -467,18 +467,36 @@ def _tear_down_tmux(existing: FollowerState, window_id: str) -> None:
         # A user typing in their own Vim is never asked and never typed into:
         # the Escape pair close_tab starts with would end their mode (or
         # reach a terminal window's job), and `stop` takes no answer
-        # (Alberto, 2026-10-17). Its tabs stay; nothing is lost.
+        # (Alberto, 2026-10-17). Its tabs stay, and so do the follower's
+        # locks and the user's 'paste' the follower holds (final review I5):
+        # a "release pending" mark for that Vim makes the next contact with it
+        # while it is not typing (a later hook, or another stop) give them
+        # back first (TmuxVimFollower._define).
         try:
             typing = tmux_vim.typing_mode(existing.target)
         except Exception as error:  # never raised by stop; unknown sends nothing
             typing = f"its mode could not be read: {error}"
         if typing is not None:
+            try:
+                pending = tmux_vim.mark_release_pending(existing.target)
+            except Exception:  # never raised by stop
+                pending = False
             hooks.logger.warning(
-                "stop: Vim in %s is waiting on its user (%s); nothing was sent to it",
+                "stop: Vim in %s is waiting on its user (%s); nothing was sent to it, so the "
+                "follower's locks stay on %s %s",
                 existing.target,
                 typing,
+                ", ".join(existing.open_files) or "no file it read",
+                "until the next contact with it while it is not typing"
+                if pending
+                else "(no release could be recorded: its Vim process was not found)",
             )
             return
+        # Every claim first (s:release_all): the evictions below forget the
+        # records a paused animation's buffer still needs, and none of them
+        # gives 'paste' back.
+        tmux_follower = cast(tmux_vim.TmuxVimFollower, follower)  # get_follower("tmux")
+        _teardown_step("giving back the follower's locks", tmux_follower.release_claims)
         # Adoption never took ownership of the pane: only close the tabs the
         # follower opened, and never the user's work (close_tab leaves a
         # modified buffer, or one the user had open, and says so in hook.log).

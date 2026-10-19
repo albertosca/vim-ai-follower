@@ -606,3 +606,105 @@ def test_a_vim_started_by_another_foreground_program_is_its_own() -> None:
         found = tmux_vim._foreground_vim("%5")
         assert found is not None and found.pid == 202 and not found.running_command
         assert tmux_vim.typing_mode("%5") is None
+
+
+# --- a release a typing stop left pending (final review I5) ---------------
+
+
+def _release_mark(pid: int, text: str, modified: float | None = None) -> Path:
+    cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    path = cache.CACHE_DIR / f"release-{pid}.txt"
+    path.write_text(text)
+    if modified is not None:
+        os.utime(path, (modified, modified))
+    return path
+
+
+def test_a_release_mark_names_the_panes_foreground_vim() -> None:
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes=_VIM_ALONE)):
+        assert tmux_vim.mark_release_pending("%5")
+    assert (cache.CACHE_DIR / "release-202.txt").read_text() == "202\n"
+    assert not list(cache.CACHE_DIR.glob(".release-*"))
+
+
+def test_no_foreground_vim_records_no_release() -> None:
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes="")):
+        assert not tmux_vim.mark_release_pending("%5")
+    assert not list(cache.CACHE_DIR.glob("*release-*"))
+
+
+def test_a_release_mark_that_cannot_be_written_is_no_release() -> None:
+    cache.CACHE_DIR.parent.mkdir(parents=True, exist_ok=True)
+    cache.CACHE_DIR.write_text("a file where the directory should be")
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes=_VIM_ALONE)):
+        assert not tmux_vim.mark_release_pending("%5")
+
+
+def test_the_release_mark_is_taken_once_for_its_own_vim() -> None:
+    mark = _release_mark(202, "202\n")
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes=_VIM_ALONE)):
+        assert tmux_vim._take_release_mark("%5")
+        assert not mark.exists()
+        assert not tmux_vim._take_release_mark("%5")
+
+
+def test_no_release_mark_anywhere_costs_no_process_lookup() -> None:
+    run = _world(processes=_VIM_ALONE)
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", run):
+        assert not tmux_vim._take_release_mark("%5")
+        cache.CACHE_DIR.parent.mkdir(parents=True, exist_ok=True)
+        cache.CACHE_DIR.write_text("not a directory")
+        assert not tmux_vim._take_release_mark("%5")
+    run.assert_not_called()
+
+
+def test_another_vims_release_mark_is_left_for_it() -> None:
+    other = _release_mark(303, "303\n")
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes=_VIM_ALONE)):
+        assert not tmux_vim._take_release_mark("%5")
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes="")):
+        assert not tmux_vim._take_release_mark("%5")
+    assert other.exists()
+
+
+@pytest.mark.parametrize("text", ["303\n", ""])
+def test_a_release_mark_naming_another_pid_is_dropped_unused(text: str) -> None:
+    mark = _release_mark(202, text)
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes=_VIM_ALONE)):
+        assert not tmux_vim._take_release_mark("%5")
+    assert not mark.exists()
+
+
+def test_a_release_mark_older_than_its_vim_was_a_dead_vims() -> None:
+    # The Vim started ten seconds ago (ps etime 00:10): a mark from before
+    # that was left by a Vim that had the same pid.
+    mark = _release_mark(202, "202\n", modified=time.time() - 60)
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes=_VIM_ALONE)):
+        assert not tmux_vim._take_release_mark("%5")
+    assert not mark.exists()
+
+
+def test_the_sweep_deletes_only_the_release_marks_of_gone_vims() -> None:
+    dead = _release_mark(_dead_pid(), "x\n")
+    alive = _release_mark(os.getpid(), "x\n", modified=time.time() - 10 * 86400)
+    dead_temporary = cache.CACHE_DIR / f".release-{_dead_pid()}.txt.tmp"
+    dead_temporary.write_text("x\n")
+    tmux_vim._sweep_scripts(cache.CACHE_DIR / "vaf-000000.vim")
+    assert not dead.exists() and not dead_temporary.exists()
+    assert alive.exists()
+
+
+def test_a_release_mark_cut_off_between_listing_and_reading_is_no_release() -> None:
+    _release_mark(202, "202\n")
+    real_read = Path.read_text
+
+    def vanished(path: Path, *arguments: object, **keywords: object) -> str:
+        if path.name == "release-202.txt":
+            raise FileNotFoundError(path)
+        return real_read(path, *arguments, **keywords)  # type: ignore[arg-type]
+
+    with (
+        patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes=_VIM_ALONE)),
+        patch.object(Path, "read_text", vanished),
+    ):
+        assert not tmux_vim._take_release_mark("%5")

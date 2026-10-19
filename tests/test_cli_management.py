@@ -2215,15 +2215,88 @@ def test_stop_of_an_adopted_vim_whose_user_is_typing_sends_nothing_and_asks_noth
             side_effect=failure,
         ) as read,
         patch("vim_ai_follower.take_over.ask") as asked,
+        patch(
+            "vim_ai_follower.backends.tmux_vim.mark_release_pending", return_value=True
+        ) as marked,
     ):
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
     read.assert_called_once_with("%7")
     asked.assert_not_called()
+    marked.assert_called_once_with("%7")
     sends = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "send-keys"]]
     assert sends == []
     assert state.FollowerState.get("@1") is None
     lines = [line for line in _hook_log().splitlines() if "waiting on its user" in line]
     assert len(lines) == 1 and logged in lines[0], _hook_log()
+    # Final review I5: the warning names what stays locked, until when.
+    assert "locks stay on /tmp/a.py until the next contact" in lines[0], lines
+
+
+@pytest.mark.parametrize(
+    ("marked", "failure"),
+    [(False, None), (None, OSError("ps vanished"))],
+    ids=["no-vim", "raised"],
+)
+def test_a_typing_stop_that_records_no_release_says_so(
+    marked: bool | None, failure: Exception | None
+) -> None:
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="%7 vim\n"),
+    ):
+        state.FollowerState.set(
+            "@1", "tmux", "%7", origin="%1", adopted=True, server_pid=MOCK_SERVER_PID
+        )
+    with (
+        patch(
+            "vim_ai_follower.tmux.subprocess.run",
+            side_effect=make_mock_tmux_run(pane_id="%7", other_panes=("%1",)),
+        ),
+        patch("vim_ai_follower.backends.tmux_vim.typing_mode", return_value="in insert mode"),
+        patch(
+            "vim_ai_follower.backends.tmux_vim.mark_release_pending",
+            return_value=marked,
+            side_effect=failure,
+        ),
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    lines = [line for line in _hook_log().splitlines() if "waiting on its user" in line]
+    assert len(lines) == 1, _hook_log()
+    assert "locks stay on no file it read (no release could be recorded" in lines[0], lines
+
+
+def test_stop_of_an_adopted_vim_gives_every_claim_back_before_its_evictions() -> None:
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="%7 vim\n"),
+    ):
+        state.FollowerState.set(
+            "@1",
+            "tmux",
+            "%7",
+            origin="%1",
+            adopted=True,
+            open_files=("/tmp/a.py",),
+            server_pid=MOCK_SERVER_PID,
+        )
+    order: list[str] = []
+    with (
+        patch(
+            "vim_ai_follower.tmux.subprocess.run",
+            side_effect=make_mock_tmux_run(pane_id="%7", other_panes=("%1",)),
+        ),
+        patch("vim_ai_follower.backends.tmux_vim.typing_mode", return_value=None),
+        patch(
+            "vim_ai_follower.backends.tmux_vim.TmuxVimFollower.release_claims",
+            side_effect=lambda: order.append("release"),
+        ),
+        patch(
+            "vim_ai_follower.backends.tmux_vim.TmuxVimFollower.close_tab",
+            side_effect=lambda path, **_keywords: order.append(path),
+        ),
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    assert order == ["release", "/tmp/a.py"]
 
 
 # --- a write a racing stop refused (final review M11) ---------------------

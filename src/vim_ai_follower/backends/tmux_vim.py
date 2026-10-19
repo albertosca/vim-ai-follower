@@ -1012,6 +1012,31 @@ function! s:release(number) abort
   endfor
 endfunction
 
+" Every claim the follower holds in this Vim, given back at once: a stop
+" that found the user typing sent nothing, and the next contact (or a
+" later stop) runs this first (TmuxVimFollower._define). A buffer still
+" unlocked for an animation (a pause, ro_ours 2) gets the user's readonly
+" and 'modifiable' back from their records; one under the follower's lock
+" (ro_ours 1, ma_ours) is released; and 'paste' comes back from its record,
+" only from a record (s:hand_over).
+function! s:release_all() abort
+  for number in range(1, bufnr('$'))
+    if !bufexists(number)
+      continue
+    endif
+    if getbufvar(number, 'vaf_ro_ours') == 2
+      call s:readonly_back(number)
+    endif
+    if getbufvar(number, 'vaf_ro_ours') || getbufvar(number, 'vaf_ma_ours')
+      call s:release(number)
+    endif
+  endfor
+  if exists('g:vaf_user_paste')
+    let &paste = g:vaf_user_paste
+    unlet g:vaf_user_paste
+  endif
+endfunction
+
 function! s:evict(token, folds) abort
   let path = s:read(a:token)
   let number = path ==# '' ? -1 : s:find(path, a:folds)
@@ -1497,17 +1522,21 @@ def _sweep_scripts(current: Path) -> None:
     _sweep_mode_files(entries)
 
 
-# A Vim's mode file (_VIM_MODE), named after its pid, and the temporary it
-# is written through (left only by a rename that failed).
-_MODE_FILE_NAME = re.compile(r"\.?mode-([0-9]+)\.txt(?:\.tmp)?")
+# A Vim's mode file (_VIM_MODE) and its "release pending" mark
+# (mark_release_pending), named after its pid, and the temporaries they are
+# written through (left only by a rename that failed).
+_MODE_FILE_NAME = re.compile(r"\.?(?:mode|release)-([0-9]+)\.txt(?:\.tmp)?")
 
 
 def _sweep_mode_files(entries: list[Path]) -> None:
-    """Delete the mode files of Vims that are gone: VimLeave deletes its own,
-    but a Vim killed with SIGKILL, or a crash, leaves it. Never by age: a
-    Vim left in insert mode overnight still needs its file to say so, or
-    the next hook would read only its screen (typing_mode). A pid that is
-    alive again is another process: _recorded_mode tells it by its start."""
+    """Delete the mode files and release marks of Vims that are gone:
+    VimLeave deletes the mode file, but a Vim killed with SIGKILL, or a
+    crash, leaves it, and a mark lives until a contact consumes it. Never by
+    age: a Vim left in insert mode overnight still needs its file to say so,
+    or the next hook would read only its screen (typing_mode), and its locks
+    still need giving back once it stops typing. A pid that is alive again
+    is another process: _recorded_mode and _take_release_mark tell it by its
+    start."""
     for entry in entries:
         match = _MODE_FILE_NAME.fullmatch(entry.name)
         if match is None:
@@ -2068,6 +2097,52 @@ def _recorded_mode(vim: _VimProcess) -> str | None:
     return None
 
 
+def _release_mark_path(pid: int) -> Path:
+    return cache.CACHE_DIR / f"release-{pid}.txt"
+
+
+def mark_release_pending(pane_id: str) -> bool:
+    """Record that the follower's claims in the Vim of `pane_id` (its locks
+    and the user's 'paste', see s:release_all) are still to be given back: a
+    `stop` found its user typing and sent nothing (final review I5). Named
+    after the Vim's pid and trusted only for a Vim started before it was
+    written, like the mode file, so a new Vim never inherits it. False when
+    the pane's Vim could not be found or the mark not written."""
+    vim = _foreground_vim(pane_id)
+    if vim is None:
+        return False
+    final = _release_mark_path(vim.pid)
+    temporary = final.with_name(f".{final.name}.tmp")
+    try:
+        final.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(f"{vim.pid}\n", encoding="utf-8")
+        temporary.replace(final)
+    except OSError:
+        return False
+    return True
+
+
+def _take_release_mark(pane_id: str) -> bool:
+    """Whether the Vim of `pane_id` has a release pending (mark_release_
+    pending), consuming the mark. Costs one directory listing when no mark
+    exists anywhere, so every define line can ask. A mark older than the
+    Vim's start was a dead Vim's (a reused pid) and is deleted unused."""
+    if not any(cache.CACHE_DIR.glob("release-*.txt")):  # glob() raises no OSError
+        return False
+    vim = _foreground_vim(pane_id)
+    if vim is None:
+        return False
+    path = _release_mark_path(vim.pid)
+    try:
+        written = path.read_text(encoding="utf-8", errors="replace")
+        modified = path.stat().st_mtime
+    except OSError:
+        return False
+    with contextlib.suppress(OSError):
+        path.unlink()
+    return written.strip() == str(vim.pid) and modified >= vim.started - _START_SLACK_SECONDS
+
+
 # Vim's 'showmode' text on the bottom row, in English (a translated Vim
 # shows its own words, and reads as no typing mode here): `-- INSERT --`,
 # `-- (insert) --` (CTRL-O from insert), `-- (insert) VISUAL --`,
@@ -2335,10 +2410,31 @@ class TmuxVimFollower:
     def _unlock_line(self) -> str:
         return _call_line("unlock") if self._is_adopted() else _UNLOCK_FOR_ANIMATION
 
-    def _define(self, pane: TmuxPane) -> None:
+    def _define(self, pane: TmuxPane) -> bool:
         """Make sure this Vim has the functions the call lines run (see the
-        comment at the top of this module)."""
+        comment at the top of this module). Every entry point that may be a
+        first contact sends it, after the hook has found the user not typing,
+        so it also gives back what a `stop` left pending in this Vim
+        (s:release_all, mark_release_pending) before anything else is sent:
+        the release concerns an earlier follower's claims, and the calls that
+        follow make this one's. True when it sent that release."""
         pane.send_line(_define_line(self.pane_id))
+        if not _take_release_mark(self.pane_id):
+            return False
+        pane.send_line(_call_line("release_all"))
+        logger.info("gave back the locks a stop left pending in Vim %s", self.pane_id)
+        return True
+
+    def release_claims(self) -> None:
+        """Give back every claim the follower holds in this ADOPTED Vim
+        (s:release_all): `stop`'s first step there, before its evictions,
+        which would otherwise forget a paused animation's readonly record,
+        and the only one that gives 'paste' back (Wave A residual: a pause
+        then a stop left the user's 'paste' on)."""
+        pane = TmuxPane(pane_id=self.pane_id)
+        self._normal_mode(pane)
+        if not self._define(pane):
+            pane.send_line(_call_line("release_all"))
 
     def _send_reload_and_lock(self, pane: TmuxPane, *, discard: bool) -> None:
         """A disk re-read (s:reload, which resets 'readonly'), then the
