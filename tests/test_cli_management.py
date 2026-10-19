@@ -1184,7 +1184,19 @@ def test_toggle_on_reopens_dead_pane_as_dedicated_split() -> None:
         assert commands.cmd_toggle({"TMUX_PANE": "%1"}) == 0
 
     splits = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "split-window"]]
-    assert splits == [["tmux", "split-window", "-h", "-t", "%1", "-P", "-F", "#{pane_id}", "vim"]]
+    assert splits == [
+        [
+            "tmux",
+            "split-window",
+            "-h",
+            "-t",
+            "%1",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "vim --cmd 'let g:vaf_dedicated = 1'",
+        ]
+    ]
     result = state.FollowerState.read("@1")
     assert result is not None
     assert result.target == "%9"

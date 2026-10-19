@@ -961,7 +961,19 @@ def test_auto_open_splits_a_pane_when_policy_always(
         result = state.FollowerState.get("@1")
 
     splits = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "split-window"]]
-    assert splits == [["tmux", "split-window", "-h", "-t", "%1", "-P", "-F", "#{pane_id}", "vim"]]
+    assert splits == [
+        [
+            "tmux",
+            "split-window",
+            "-h",
+            "-t",
+            "%1",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "vim --cmd 'let g:vaf_dedicated = 1'",
+        ]
+    ]
     assert result is not None
     assert result.target == "%2"
     binds = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "bind-key"]]

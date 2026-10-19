@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import secrets
+import shlex
 import signal
 import subprocess
 import time
@@ -27,6 +28,12 @@ from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
 from vim_ai_follower.diff import EditOp
 from vim_ai_follower.state import FollowerState, owned_state
 from vim_ai_follower.tmux import TmuxPane
+
+# A Vim the follower launches says so on its command line, before any
+# script runs: the mode script (_VIM_MODE) installs no autocommands in it,
+# since only an ADOPTED Vim's mode is ever read (final review I1).
+DEDICATED_MARK = "let g:vaf_dedicated = 1"
+DEDICATED_COMMAND = f"vim --cmd {shlex.quote(DEDICATED_MARK)}"
 
 # This backend drives Vim by TYPING Ex commands (`tmux send-keys`), and Vim
 # echoes every typed command on its command line before it runs it. The logic
@@ -1075,44 +1082,99 @@ endfunction
 # ADOPTED Vim (typing_mode): a Vim whose user is typing is asked about first
 # (Alberto, 2026-10-17), and the Escape pair the follower would send leaves
 # their insert, replace, visual or select mode, or goes to the job of a
-# terminal window. Every ModeChanged writes `<pid> <mode(1)>` to
-# `mode-<pid>.txt` in the cache directory, and VimLeave deletes it.
-# Measured 2026-10-17 on Vim 9.2: i, n, c, v, s, R, niI, t and nt are all
-# written as the user enters them, and the file is gone after `:qa!`. The
-# autocommands are defined while the define line runs, so the ModeChanged
-# that ends that line never fires (measured): the script writes the mode
-# once itself (the command line's `c`, which is not a typing mode). A Vim
-# without ModeChanged (before 8.2.3430) writes nothing, and every hook
-# reads its screen instead (typing_mode). writefile() truncates and then
-# writes, so the mode goes to a temporary in the same directory first and
-# rename() puts it in place whole (review m9): a reader never sees it
-# empty. The write is in a try: a cache
-# directory gone or unwritable must not raise an error on every mode change
-# of the user's Vim. Its `autocmd!` names the group, as the swap answer's
-# does (see _VIM_SWAP_ANSWER): a bare one after a failed `augroup` would run
-# in the default group and delete every autocommand the user has.
+# terminal window. The file `mode-<pid>.txt` in the cache directory holds
+# `<pid> <mode(1)>`, and VimLeave deletes it. Measured 2026-10-17 on Vim
+# 9.2: i, n, c, v, s, R, niI, t and nt are all seen as the user enters
+# them, and the file is gone after `:qa!`.
+#
+# What it costs the user's Vim (final review I1): written on EVERY
+# ModeChanged, with fsync and a rename, a mode change cost about 9 ms, and
+# `:g/^/normal Ix` over 2000 lines took 19.8 s instead of 0.16 s (measured
+# 2026-10-19, Vim 9.2). So:
+#   - the file is written only when the mode CLASS changes (s:mode_class:
+#     the classes take_over.typing_reason and waiting_reason tell apart, and
+#     "other"): a command line is "other" like Normal mode, so the n->c->n
+#     of every typed call writes nothing;
+#   - ModeChanged only starts a 0 ms timer, and the timer writes: a timer
+#     runs once Vim waits for a key, never inside a `:normal`, a macro or a
+#     mapping, so a `:g/^/normal Ix` writes once at the end, whatever its
+#     size (measured: 0.195 s for 2000 lines; `state('m')` could not tell a
+#     `:normal` apart, measured: its i->n read `oxS`, and a typed Escape
+#     read `mxS`). Timers run in Terminal-Job mode and in Ex mode too
+#     (measured: `t` and `cv` written);
+#   - writefile()'s 'S': no fsync, the file is a hint and not data;
+#   - a DEDICATED Vim gets none of it (DEDICATED_MARK on its command line):
+#     only an adopted Vim's mode is ever read (hooks._busy_vim).
+# The script still writes the mode once itself when it is sourced (the
+# ModeChanged that ends the define line has already fired, measured), so the
+# file exists from the first contact on. A Vim without ModeChanged (before
+# 8.2.3430) writes nothing, and every hook reads its screen instead
+# (typing_mode); one without +timers writes at the ModeChanged itself.
+# writefile() truncates and then writes, so the mode goes to a temporary in
+# the same directory first and rename() puts it in place whole (review m9):
+# a reader never sees it empty. The write is in a try: a cache directory
+# gone or unwritable must not raise an error on every mode change of the
+# user's Vim. Its `autocmd!` names the group, as the swap answer's does (see
+# _VIM_SWAP_ANSWER): a bare one after a failed `augroup` would run in the
+# default group and delete every autocommand the user has.
 _VIM_MODE = r"""
-function! s:note_mode() abort
+function! s:mode_class(mode) abort
+  if a:mode =~# '^\%(i\|niI\)'
+    return 'insert'
+  elseif a:mode =~# '^\%(R\|niR\|niV\)'
+    return 'replace'
+  elseif a:mode =~# '^\%(t\|ntT\)'
+    return 'terminal'
+  elseif a:mode =~# "^\\%([sS\<C-S>]\\|[vV\<C-V>]s$\\)"
+    return 'select'
+  elseif a:mode =~# "^[vV\<C-V>]"
+    return 'visual'
+  elseif a:mode ==# 'cv' || a:mode ==# 'ce'
+    return 'ex'
+  endif
+  return 'other'
+endfunction
+
+function! s:write_mode() abort
+  let s:mode_timer = -1
+  let mode = mode(1)
+  let s:mode_written = s:mode_class(mode)
   try
-    call writefile([getpid() . ' ' . mode(1)], s:dir . '.mode-' . getpid() . '.txt.tmp')
+    call writefile([getpid() . ' ' . mode], s:dir . '.mode-' . getpid() . '.txt.tmp', 'S')
     call rename(s:dir . '.mode-' . getpid() . '.txt.tmp', s:dir . 'mode-' . getpid() . '.txt')
   catch
   endtry
+endfunction
+
+function! s:flush_mode(timer) abort
+  let s:mode_timer = -1
+  if s:mode_class(mode(1)) !=# get(s:, 'mode_written', '')
+    call s:write_mode()
+  endif
+endfunction
+
+function! s:note_mode() abort
+  if get(s:, 'mode_timer', -1) >= 0 || s:mode_class(mode(1)) ==# get(s:, 'mode_written', '')
+    return
+  endif
+  if has('timers')
+    let s:mode_timer = timer_start(0, function('s:flush_mode'))
+  else
+    call s:write_mode()
+  endif
 endfunction
 
 function! s:forget_mode() abort
   call delete(s:dir . 'mode-' . getpid() . '.txt')
 endfunction
 
-augroup vim_ai_follower_mode
-  autocmd! vim_ai_follower_mode
-  if exists('##ModeChanged')
+if exists('##ModeChanged') && !get(g:, 'vaf_dedicated', 0)
+  augroup vim_ai_follower_mode
+    autocmd! vim_ai_follower_mode
     autocmd ModeChanged * call s:note_mode()
     autocmd VimLeave * call s:forget_mode()
-  endif
-augroup END
-if exists('##ModeChanged')
-  call s:note_mode()
+  augroup END
+  call s:write_mode()
 endif
 """
 
@@ -2681,5 +2743,5 @@ class TmuxVimFollower:
 
     @classmethod
     def start(cls, target_pane: str) -> TmuxVimFollower:
-        pane = TmuxPane.split_from(target_pane, "vim")
+        pane = TmuxPane.split_from(target_pane, DEDICATED_COMMAND)
         return cls(pane_id=pane.pane_id)

@@ -463,7 +463,7 @@ def test_the_mode_file_is_written_whole_or_not_at_all() -> None:
     # renames it over the mode file.
     script = tmux_vim._VIM_MODE
     written = "s:dir . '.mode-' . getpid() . '.txt.tmp'"
-    assert f"call writefile([getpid() . ' ' . mode(1)], {written})" in script
+    assert f"call writefile([getpid() . ' ' . mode], {written}, 'S')" in script
     assert f"call rename({written}, s:dir . 'mode-' . getpid() . '.txt')" in script
     assert script.count("writefile(") == 1
 

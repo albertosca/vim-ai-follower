@@ -36,7 +36,17 @@ def test_hook_post_reopens_dead_follower_when_configured(tmp_path: Path) -> None
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert _split_calls(run) == [
-        ["tmux", "split-window", "-h", "-t", "%1", "-P", "-F", "#{pane_id}", "vim"]
+        [
+            "tmux",
+            "split-window",
+            "-h",
+            "-t",
+            "%1",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "vim --cmd 'let g:vaf_dedicated = 1'",
+        ]
     ]
     recovered = state.FollowerState.read("@1")
     assert recovered is not None
@@ -159,7 +169,17 @@ def test_dead_adopted_follower_reopens_fresh_not_adopted(tmp_path: Path) -> None
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     assert _split_calls(run) == [
-        ["tmux", "split-window", "-h", "-t", "%1", "-P", "-F", "#{pane_id}", "vim"]
+        [
+            "tmux",
+            "split-window",
+            "-h",
+            "-t",
+            "%1",
+            "-P",
+            "-F",
+            "#{pane_id}",
+            "vim --cmd 'let g:vaf_dedicated = 1'",
+        ]
     ]
     recovered = state.FollowerState.read("@1")
     assert recovered is not None
