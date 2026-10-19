@@ -346,6 +346,19 @@ class FollowerState:
         temporary_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
         temporary_path.write_text(payload)
         temporary_path.replace(path)
+        if _stopped_here(window_id, base_dir):
+            # The check above and the replace are not one step: a whole
+            # `stop` can run between them (mark_stopped, then a clear that
+            # finds nothing yet), and this write then lands under its
+            # tombstone (final review M9). A stop writes its tombstone before
+            # it clears, so either its clear comes after this write, or this
+            # second look sees the tombstone and takes the write back: only
+            # while the file is still this write, since a `start` may have
+            # lifted the tombstone and written its own state since.
+            with contextlib.suppress(OSError):
+                if path.read_text() == payload:
+                    path.unlink()
+            return False
         return True
 
     @classmethod

@@ -333,6 +333,56 @@ def test_set_and_update_write_nothing_under_a_tombstone_of_this_server() -> None
     assert not state._state_path("@4", None).exists()
 
 
+def test_a_stop_landing_between_sets_check_and_write_leaves_no_state() -> None:
+    """Final review M9: with no state yet, a writer (an auto-open) passed the
+    tombstone check, then the whole stop ran (mark_stopped, clear of nothing),
+    then the writer's replace landed a `.pane` under the tombstone."""
+    from vim_ai_follower import state
+
+    real = state._stopped_here
+    checks = {"count": 0}
+
+    def stop_after_the_check(window_id: str, base_dir: Path | None) -> bool:
+        checks["count"] += 1
+        answer = real(window_id, base_dir)
+        if checks["count"] == 1:
+            state.mark_stopped(window_id, None, in_tmux=False, base_dir=base_dir)
+            FollowerState.clear(window_id, base_dir)
+        return answer
+
+    with patch.object(state, "_stopped_here", side_effect=stop_after_the_check):
+        written = FollowerState.set("@4", "nvim", "/tmp/nvim-x.sock")
+    assert written is False
+    assert not state._state_path("@4", None).exists()
+    assert list(cache.CACHE_DIR.glob("@4.pane*")) == []
+
+
+def test_a_start_that_lifted_the_tombstone_after_the_write_keeps_its_state() -> None:
+    """The recheck removes only its OWN write: a `start` that cleared the
+    tombstone and wrote meanwhile keeps the state it wrote."""
+    from vim_ai_follower import state
+
+    real = state._stopped_here
+    checks = {"count": 0}
+
+    def stop_then_start(window_id: str, base_dir: Path | None) -> bool:
+        checks["count"] += 1
+        if checks["count"] == 2:  # the recheck: a stop, then a start, landed
+            state.mark_stopped(window_id, None, in_tmux=False, base_dir=base_dir)
+            answer = real(window_id, base_dir)
+            state.clear_stopped(window_id, base_dir)
+            FollowerState.set(window_id, "tmux", "%9", base_dir=base_dir, server_pid=None)
+            return answer
+        return real(window_id, base_dir)
+
+    with patch.object(state, "_stopped_here", side_effect=stop_then_start):
+        written = FollowerState.set("@4", "nvim", "/tmp/nvim-x.sock")
+    assert written is False
+    recorded = FollowerState.read("@4")
+    assert recorded is not None
+    assert recorded.target == "%9"
+
+
 def test_set_writes_again_under_a_tombstone_of_another_server() -> None:
     from vim_ai_follower import state
 
