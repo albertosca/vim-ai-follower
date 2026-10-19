@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-label="vim-ai-follower: Watch Claude Code type into your own Vim. 1200+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim">
-  <title>vim-ai-follower: Watch Claude Code type into your own Vim. 1200+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim</title>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" role="img" aria-label="vim-ai-follower: Watch Claude Code type into your own Vim. 2100+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim">
+  <title>vim-ai-follower: Watch Claude Code type into your own Vim. 2100+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim</title>
   <!-- scripts/check_readme_facts.py reads this SVG's proof line and fails when its numbers
        drift from the facts blocks (the wording is shorter on purpose). It does NOT read
        social-preview.png, which is rendered from this file by hand: re-render and
@@ -23,7 +23,7 @@
       <text x="403" y="460" font-weight="700" fill="#282828" text-anchor="middle">S</text>
       <text x="437" y="460">take the keyboard</text>
     </g>
-    <text x="96" y="566" font-size="30" fill="#B8BB26">1200+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim</text>
+    <text x="96" y="566" font-size="30" fill="#B8BB26">2100+ unit tests in CI · 100% branch coverage on the full suite · Vim + Neovim</text>
   </g>
   <!-- the motif: your own Vim, mid-keystroke -->
   <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="24">
