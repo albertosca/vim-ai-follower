@@ -1328,16 +1328,43 @@ def _busy_vim(
     if skipped is not None:
         return skipped
     tmux_vim.leave_typing_mode(current.target)
-    # Review I2, measured: with a CTRL-V pending in insert or replace mode
-    # Vim inserts the CTRL-\ literally and the CTRL-N completes; with a
-    # CTRL-K pending the digraph lookup fails and inserts ^N. The mode reads
-    # `i` either way and no byte cancels a CTRL-V without inserting, so the
-    # log says it may have happened.
-    note = ""
-    if typing.startswith(("in insert mode", "in replace mode")):
-        note = "; a pending CTRL-V/CTRL-K may have inserted a character"
-    logger.info("%s: taken over (answered y)%s", waiting, note)
+    still = _vim_still_typing(current.target)
+    if still is not None:
+        return f"{waiting}, answered y but it was still {still}{_pending_key_note(typing)}"
+    logger.info("%s: taken over (answered y)", waiting)
     return None
+
+
+# How long a taken-over Vim may take to leave its typing mode.
+_LEAVE_VIM_TYPING_SECONDS = 2.0
+
+
+def _vim_still_typing(pane_id: str) -> str | None:
+    """After CTRL-\\ CTRL-N, read the Vim's mode again until it is not
+    typing, bounded: None once it is not, else the reason it last read with
+    " after 2 s". A key the user left pending turns CTRL-\\ CTRL-N into
+    text (final review M3, measured on Vim 9.2: a CTRL-R drops the CTRL-\\
+    and the CTRL-N starts a completion, mode `ic`), and the navigation's
+    Escape pair would then have kept that text and typed on."""
+    deadline = time.monotonic() + _LEAVE_VIM_TYPING_SECONDS
+    while True:
+        typing = tmux_vim.typing_mode(pane_id)
+        if typing is None:
+            return None
+        if time.monotonic() >= deadline:
+            return f"{typing} after {_LEAVE_VIM_TYPING_SECONDS:g} s"
+        time.sleep(0.1)
+
+
+def _pending_key_note(typing: str) -> str:
+    """Review I2 and final review M3, measured on Vim 9.2: a key pending in
+    insert or replace mode takes CTRL-\\ CTRL-N as text — CTRL-V inserts the
+    CTRL-\\ literally, CTRL-K inserts ^N, CTRL-R drops the CTRL-\\ — and
+    the CTRL-N then completes a word. No byte undoes that without its own
+    effect, so the log says it may have happened."""
+    if typing.startswith(("in insert mode", "in replace mode")):
+        return "; a pending CTRL-V/CTRL-K/CTRL-R may have inserted text"
+    return ""
 
 
 def _busy_nvim(
@@ -1431,7 +1458,7 @@ def _take_over_nvim(
         return skipped
     left = _leave_typing_mode(current.target)
     if left is not None:
-        return f"{waiting}, answered y but {left}"
+        return f"{waiting}, answered y but {left}{_pending_key_note(pending)}"
     logger.info("%s: taken over (answered y)", waiting)
     return None
 

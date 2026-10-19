@@ -2868,6 +2868,7 @@ def test_a_yes_that_cannot_leave_the_typing_mode_still_skips() -> None:
     assert busy == (
         "nvim at /tmp/user.sock is waiting on its user (in insert mode), "
         "answered y but it was still in insert mode after 2 s"
+        "; a pending CTRL-V/CTRL-K/CTRL-R may have inserted text"
     )
 
 
@@ -3520,13 +3521,19 @@ def test_a_typing_adopted_vim_answered_yes_leaves_its_mode_and_goes_on(
 ) -> None:
     with (
         caplog.at_level(logging.INFO, logger="vim_ai_follower"),
-        patch("vim_ai_follower.backends.tmux_vim.typing_mode", return_value="in terminal mode"),
+        patch(
+            "vim_ai_follower.backends.tmux_vim.typing_mode",
+            side_effect=["in terminal mode", "in terminal mode", None],
+        ) as typing,
         patch("vim_ai_follower.take_over.ask", return_value=take_over.YES),
         patch("vim_ai_follower.backends.tmux_vim.leave_typing_mode") as leave,
+        patch("vim_ai_follower.hooks.time.sleep"),
     ):
         assert hooks._busy_follower(_adopted_vim_state(), 10) is None
     leave.assert_called_once_with("%7")
-    assert "(in terminal mode): taken over (answered y)" in caplog.text
+    # Read again after the yes until it is not typing (final review M3).
+    assert typing.call_count == 3
+    assert "(in terminal mode): taken over (answered y)\n" in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -3565,22 +3572,42 @@ def test_an_adopted_vim_waiting_at_a_prompt_is_skipped_without_a_question(reason
         ("in select mode", False),
     ],
 )
-def test_a_yes_in_insert_or_replace_mode_notes_a_pending_literal_key(
-    caplog: pytest.LogCaptureFixture, typing: str, noted: bool
+def test_a_yes_that_leaves_the_vim_typing_skips_and_notes_a_pending_key(
+    monkeypatch: pytest.MonkeyPatch, typing: str, noted: bool
 ) -> None:
-    # Review I2 (measured): a pending CTRL-V takes CTRL-\ literally (and the
-    # CTRL-N then completes), a pending CTRL-K inserts ^N; no byte cancels
-    # CTRL-V without inserting, so the log says it may have happened.
+    # Final review M3 (measured on Vim 9.2): a key the user left pending
+    # takes CTRL-\ CTRL-N as text — CTRL-R drops the CTRL-\ and the CTRL-N
+    # completes (mode `ic`), CTRL-V inserts it literally, CTRL-K inserts ^N
+    # — so the Vim is still typing after the yes, and the Escape pair would
+    # keep that text and type on. The hook reads the mode again and skips.
+    monkeypatch.setattr(hooks, "_LEAVE_VIM_TYPING_SECONDS", 0.3)
     with (
-        caplog.at_level(logging.INFO, logger="vim_ai_follower"),
-        patch("vim_ai_follower.backends.tmux_vim.typing_mode", return_value=typing),
+        patch("vim_ai_follower.backends.tmux_vim.typing_mode", return_value=typing) as read,
+        patch("vim_ai_follower.take_over.ask", return_value=take_over.YES),
+        patch("vim_ai_follower.backends.tmux_vim.leave_typing_mode") as leave,
+    ):
+        busy = hooks._busy_follower(_adopted_vim_state(), 10)
+    leave.assert_called_once_with("%7")
+    assert read.call_count >= 3
+    note = "; a pending CTRL-V/CTRL-K/CTRL-R may have inserted text" if noted else ""
+    assert busy == (
+        f"Vim in %7 is waiting on its user ({typing}), "
+        f"answered y but it was still {typing} after 0.3 s{note}"
+    )
+
+
+def test_a_yes_keeps_reading_while_any_reason_is_read() -> None:
+    with (
+        patch(
+            "vim_ai_follower.backends.tmux_vim.typing_mode",
+            side_effect=["in insert mode", "a confirm prompt", None],
+        ),
         patch("vim_ai_follower.take_over.ask", return_value=take_over.YES),
         patch("vim_ai_follower.backends.tmux_vim.leave_typing_mode"),
+        patch("vim_ai_follower.hooks.time.sleep") as slept,
     ):
         assert hooks._busy_follower(_adopted_vim_state(), 10) is None
-    note = "; a pending CTRL-V/CTRL-K may have inserted a character"
-    assert f"({typing}): taken over (answered y){note}" in caplog.text or not noted
-    assert (note in caplog.text) is noted
+    slept.assert_called_once_with(0.1)
 
 
 # --- a declined take-over question is remembered (final review I6) -------
@@ -3591,8 +3618,13 @@ def _vim_asked(
 ) -> tuple[str | None, int]:
     """_busy_follower for the adopted Vim %7 reading `typing`, its question
     answered `answer`: (the skip reason, how many times it was asked)."""
+    reads = iter([typing])
     with (
-        patch("vim_ai_follower.backends.tmux_vim.typing_mode", return_value=typing),
+        # After a yes the mode is read again (final review M3): not typing.
+        patch(
+            "vim_ai_follower.backends.tmux_vim.typing_mode",
+            side_effect=lambda _pane: next(reads, None),
+        ),
         patch("vim_ai_follower.backends.tmux_vim.last_typing_vim_pid", return_value=pid),
         patch("vim_ai_follower.take_over.ask", return_value=answer) as asked,
         patch("vim_ai_follower.backends.tmux_vim.leave_typing_mode"),
