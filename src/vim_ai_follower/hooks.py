@@ -1394,6 +1394,17 @@ def _busy_nvim(
     return None
 
 
+# Claude kills a Read hook after hooks/hooks.json's 60 s (final review M1),
+# and take_over.ask waits its question time plus a 5 s close margin: a
+# configured question up to config's 120 s would leave the popup up, eating
+# keys, after the hook was gone. A Read's question is clamped to leave room
+# for the rest of the hook (the mode read, the navigation); an Edit's hook
+# has 600 s and keeps the configured time. A unit test ties these to
+# hooks.json.
+READ_HOOK_TIMEOUT_SECONDS = 60.0
+READ_QUESTION_SECONDS = 40.0
+
+
 # The adopted_user_pending reasons that mean the user is typing: acting under
 # one puts their next keys into Claude's buffer, so the hook asks first.
 TYPING_MODES = take_over.TYPING_REASONS
@@ -2272,7 +2283,8 @@ def _navigate_for_read(
     if current is None:
         _warn_lost_window_identity(session)
         return 0
-    busy = _busy_follower(current, cfg.take_over_question_seconds, window_id=session.window_id)
+    question_seconds = min(cfg.take_over_question_seconds, READ_QUESTION_SECONDS)
+    busy = _busy_follower(current, question_seconds, window_id=session.window_id)
     if busy is not None:
         logger.warning("skipped the Read of %s: %s", file_path, busy)
         return 0

@@ -3720,6 +3720,63 @@ def test_a_declined_nvim_question_is_remembered_by_socket() -> None:
     assert busy("/tmp/other.sock", "v", take_over.YES) == (None, 1)
 
 
+def _read_hook_timeout_seconds() -> float:
+    hooks_json = Path(__file__).resolve().parent.parent / "hooks" / "hooks.json"
+    entries = json.loads(hooks_json.read_text())["hooks"]["PostToolUse"]
+    (read_entry,) = [entry for entry in entries if entry["matcher"] == "Read"]
+    (command,) = read_entry["hooks"]
+    return float(command["timeout"])
+
+
+def test_the_read_questions_budget_fits_the_read_hooks_timeout() -> None:
+    # Final review M1: Claude kills a Read hook at its hooks.json timeout,
+    # and the question waits its time plus take_over's close margin. The
+    # budget keeps room for the hook's own work around the question.
+    timeout = _read_hook_timeout_seconds()
+    assert timeout == hooks.READ_HOOK_TIMEOUT_SECONDS
+    longest_wait = hooks.READ_QUESTION_SECONDS + take_over._CLOSE_MARGIN_SECONDS
+    assert longest_wait + 10 <= timeout
+    assert config.DEFAULT_TAKE_OVER_QUESTION_SECONDS <= hooks.READ_QUESTION_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "configured", "asked_seconds"),
+    [
+        ("Read", 120.0, None),  # clamped to READ_QUESTION_SECONDS
+        ("Read", 7.0, 7.0),
+        ("Edit", 120.0, 120.0),  # the Edit hook has 600 s
+    ],
+)
+def test_a_reads_question_is_clamped_to_the_read_hooks_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tool_name: str,
+    configured: float,
+    asked_seconds: float | None,
+) -> None:
+    config.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    config.CONFIG_PATH.write_text(json.dumps({"take_over_question_seconds": configured}))
+    target = tmp_path / "f.txt"
+    target.write_text("hello\n")
+    state.FollowerState.set(
+        "term-x", "tmux", "%7", open_files=(str(target),), shown_any=True, origin="%9", adopted=True
+    )
+    current = state.FollowerState.read("term-x")
+    assert current is not None
+    monkeypatch.setattr(hooks, "_live_follower_healing_keys", lambda _session: current)
+    get_follower = MagicMock()
+    monkeypatch.setattr(hooks, "get_follower", get_follower)
+    monkeypatch.setattr(hooks, "status_surface_for", get_follower)
+    payload: dict[str, object] = {"tool_name": tool_name, "tool_input": {"file_path": str(target)}}
+    with (
+        patch("vim_ai_follower.backends.tmux_vim.typing_mode", return_value="in visual mode"),
+        patch("vim_ai_follower.take_over.ask", return_value="answered no") as asked,
+    ):
+        assert hooks.cmd_hook_post({"TERM_SESSION_ID": "x"}, payload) == 0
+    expected = hooks.READ_QUESTION_SECONDS if asked_seconds is None else asked_seconds
+    asked.assert_called_once_with("%7", "Vim", expected)
+
+
 @pytest.mark.parametrize("tool_name", ["Edit", "Read"])
 def test_a_hook_asks_before_typing_into_a_typing_adopted_vim(
     tmp_path: Path,
