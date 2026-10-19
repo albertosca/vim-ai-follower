@@ -1071,9 +1071,10 @@ def cmd_toggle(env: dict[str, str]) -> int:
         print(_unresolvable_pane(env), file=sys.stderr)
         return 1
     raw = FollowerState.read(session.window_id)
-    if raw is not None and state_module.from_another_server(raw):
-        # Left by a previous tmux server: its origin and target name panes
-        # of this one that are not the follower's (see state.from_another_server).
+    if raw is not None and state_module.unproven_here(raw):
+        # Maybe left by a previous tmux server (a pid that differs, or none
+        # recorded): its origin and target may name panes of this one that
+        # are not the follower's, which a toggle would zoom or split beside.
         raw = None
     if raw is None:
         if stopped_path(session.window_id).exists():

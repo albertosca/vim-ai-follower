@@ -2,14 +2,24 @@ from __future__ import annotations
 
 import functools
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from helpers import make_mock_tmux_run
+import pytest
+from helpers import MOCK_SERVER_PID, make_mock_tmux_run
 
 from vim_ai_follower import hooks, state
 
 _mock_tmux_run = functools.partial(make_mock_tmux_run, pane_id="%9", other_panes=("%1",))
+
+
+@pytest.fixture(autouse=True)
+def one_tmux_server() -> Iterator[None]:
+    """Every state here is written and reopened under the same tmux server,
+    which a reopen must prove (state.unproven_here, final review M12)."""
+    with patch("vim_ai_follower.binding.tmux_server_pid", return_value=MOCK_SERVER_PID):
+        yield
 
 
 def _split_calls(run_mock: MagicMock) -> list[list[str]]:

@@ -108,9 +108,10 @@ def _get_active_follower(window_id: str) -> FollowerState | None:
     raw = FollowerState.read(window_id)
     if raw is None or raw.on_failure != "reopen" or not raw.origin:
         return None
-    if state_module.from_another_server(raw):
-        # Left by a previous tmux server: its origin names a pane of this
-        # one that is not this window's (see state.from_another_server).
+    if state_module.unproven_here(raw):
+        # Maybe left by a previous tmux server (a recorded pid that differs,
+        # or none recorded): its origin may name a pane of this one that is
+        # not this window's, and a split there lands beside a stranger.
         return None
 
     if raw.backend == "nvim":

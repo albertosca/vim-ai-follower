@@ -250,6 +250,16 @@ def proven_here(state: FollowerState) -> bool:
     return state.server_pid is not None and state.server_pid == current_server_pid()
 
 
+def unproven_here(state: FollowerState) -> bool:
+    """True when the state lives in a tmux server (a tmux backend, or an
+    origin pane) and proven_here cannot vouch for it. What every path that
+    SPLITS or ZOOMS from a stored state asks (the reopen, toggle; final
+    review M12): from_another_server reads a pre-upgrade state with no pid
+    as "same server", and after a tmux restart its origin is somebody else's
+    pane. A standalone nvim records no server and needs no proof."""
+    return _records_a_server(state.backend, state.origin) and not proven_here(state)
+
+
 def nvim_socket_path(window_id: str, base_dir: Path | None = None) -> Path:
     """Deterministic per-window RPC socket path. The Neovim side must call
     vim.fn.serverstart() at this exact path (the README documents no such integration).

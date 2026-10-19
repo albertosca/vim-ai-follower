@@ -1163,12 +1163,15 @@ def test_toggle_on_reopens_dead_pane_as_dedicated_split() -> None:
         enabled=False,
         open_files=("/a.py",),
         shown_any=True,
+        server_pid=MOCK_SERVER_PID,
     )
 
     def _run(cmd: list[str], **kwargs: object) -> MagicMock:
         if cmd[:3] == ["tmux", "list-panes", "-a"]:
             # the old pane %2 is dead — no vim running there anymore
             return MagicMock(returncode=0, stdout="")
+        if cmd[:2] == ["tmux", "display-message"] and cmd[-1] == "#{pid}":
+            return MagicMock(returncode=0, stdout=f"{MOCK_SERVER_PID}\n")
         if cmd[:2] == ["tmux", "display-message"] and cmd[-1] == "#{window_zoomed_flag}":
             return MagicMock(returncode=0, stdout="0\n")
         if cmd[:2] == ["tmux", "display-message"]:
@@ -2052,6 +2055,39 @@ def test_toggle_ignores_a_state_left_by_another_tmux_server(
     assert not any(c.args[0][:2] == ["tmux", "resize-pane"] for c in run.call_args_list)
 
 
+@pytest.mark.parametrize("enabled", [True, False], ids=["off", "on"])
+def test_toggle_never_acts_on_a_state_no_server_proves_here(
+    enabled: bool, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Final review M12: a pre-upgrade `.pane` names no server; after a tmux
+    restart its origin is another pane, which toggle zoomed (off) or split a
+    Vim beside (on)."""
+    _register_fake_follower("@1", "%9", server_pid=None)
+    state.FollowerState.update("@1", origin="%1", enabled=enabled)
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run(pane_exists=False)
+    ) as run:
+        assert commands.cmd_toggle({"TMUX_PANE": "%1"}) == 0
+    assert "no follower to toggle" in capsys.readouterr().out
+    assert not any(c.args[0][:2] == ["tmux", "resize-pane"] for c in run.call_args_list)
+    assert not any(c.args[0][:2] == ["tmux", "split-window"] for c in run.call_args_list)
+
+
+def test_toggle_acts_on_a_standalone_nvim_which_names_no_server(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The proof is asked only of a state that lives in a tmux server: a
+    standalone nvim's records none and must still toggle."""
+    standalone_session = session.Session(window_id="term-x", origin=None, in_tmux=False)
+    state.FollowerState.set("term-x", "nvim", "/s.sock", origin="")
+    with patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session):
+        assert commands.cmd_toggle({}) == 0
+    assert "follower muted" in capsys.readouterr().out
+    recorded = state.FollowerState.read("term-x")
+    assert recorded is not None
+    assert recorded.enabled is False
+
+
 # --- a tmux split nvim that never answers (T19, answer B) -----------------
 
 
@@ -2259,7 +2295,9 @@ def test_toggle_off_a_stop_overtook_zooms_nothing(capsys: pytest.CaptureFixture[
 def test_toggle_on_a_stop_overtook_before_its_write_says_so_and_resumes_nothing(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    state.FollowerState.set("@1", "tmux", "%2", origin="%1", enabled=False)
+    state.FollowerState.set(
+        "@1", "tmux", "%2", origin="%1", enabled=False, server_pid=MOCK_SERVER_PID
+    )
     with (
         patch(
             "vim_ai_follower.tmux.subprocess.run",
@@ -2277,7 +2315,9 @@ def test_toggle_on_a_stop_overtook_before_its_write_says_so_and_resumes_nothing(
 def test_toggle_on_a_stop_overtook_says_so_and_closes_the_pane_it_split(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    state.FollowerState.set("@1", "tmux", "%2", origin="%1", enabled=False)
+    state.FollowerState.set(
+        "@1", "tmux", "%2", origin="%1", enabled=False, server_pid=MOCK_SERVER_PID
+    )
 
     def _run(cmd: list[str], **kwargs: object) -> MagicMock:
         if cmd[:3] == ["tmux", "list-panes", "-a"]:

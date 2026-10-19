@@ -18,6 +18,7 @@ from unittest.mock import call as mock_call
 
 import pytest
 from helpers import (
+    MOCK_SERVER_PID,
     call_spelled,
     define_line,
     fake_nvim,
@@ -3268,6 +3269,25 @@ def test_reopen_never_splits_from_a_state_left_by_another_tmux_server() -> None:
     assert not any(c.args[0][:2] == ["tmux", "split-window"] for c in run.call_args_list)
 
 
+@pytest.mark.parametrize("current_pid", [MOCK_SERVER_PID, None], ids=["answers", "silent"])
+def test_reopen_never_splits_from_a_state_no_server_proves_here(current_pid: int | None) -> None:
+    """Final review M12: a pre-upgrade `.pane` names no server, and after a
+    tmux restart its origin is some other pane of the new server; the lenient
+    check let the reopen split a Vim beside it. A server that does not
+    answer proves nothing either."""
+    _register_fake_follower("@1", "%5", server_pid=None)
+    state.FollowerState.update("@1", on_failure="reopen", origin="%1")
+    with (
+        patch(
+            "vim_ai_follower.tmux.subprocess.run",
+            side_effect=_mock_tmux_run(pane_id="%2", pane_exists=False),
+        ) as run,
+        patch("vim_ai_follower.binding.tmux_server_pid", return_value=current_pid),
+    ):
+        assert hooks._get_active_follower("@1") is None
+    assert not any(c.args[0][:2] == ["tmux", "split-window"] for c in run.call_args_list)
+
+
 def test_a_window_never_stopped_costs_auto_open_no_tmux_spawn() -> None:
     # Minor 7: one stat, like set()'s check.
     session = Session(window_id="@1", origin="%1", in_tmux=True)
@@ -3409,8 +3429,16 @@ def test_a_split_blocked_by_a_silent_listener_backs_off_too(
 def test_a_reopen_whose_split_never_answers_keeps_the_old_state_and_backs_off(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    state.FollowerState.set("@1", "nvim", "/tmp/old.sock", origin="%1", on_failure="reopen")
+    state.FollowerState.set(
+        "@1",
+        "nvim",
+        "/tmp/old.sock",
+        origin="%1",
+        on_failure="reopen",
+        server_pid=MOCK_SERVER_PID,
+    )
     with (
+        patch("vim_ai_follower.binding.tmux_server_pid", return_value=MOCK_SERVER_PID),
         patch("vim_ai_follower.backends.nvim.pynvim.attach", side_effect=OSError("dead")),
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="absent"),
         patch(
