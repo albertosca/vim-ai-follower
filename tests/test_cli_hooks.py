@@ -3118,6 +3118,36 @@ def test_auto_open_ignores_a_tombstone_from_another_tmux_server(
     assert state.FollowerState.read("@1") is not None
 
 
+def test_auto_open_ignores_a_tombstone_of_an_earlier_server_that_had_this_pid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Final review M10: a reboot, and the new tmux server got the pid the
+    stopped one had. The stop recorded its server's start time too, so the
+    tombstone no longer holds, and it is swept."""
+    payload = _auto_open_payload(tmp_path, monkeypatch)
+    started = {"value": "1792439543"}
+    base_run = _mock_tmux_run(other_panes=("%1",))
+
+    def run(cmd: list[str], **kwargs: object) -> MagicMock:
+        if cmd == ["tmux", "display-message", "-p", "#{start_time}"]:
+            return MagicMock(returncode=0, stdout=started["value"] + "\n")
+        return base_run(cmd, **kwargs)
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=run) as mocked_run,
+        patch("vim_ai_follower.binding.tmux_server_pid", return_value=4242),
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+        assert state.FollowerState.read("@1") is None  # same server: still stopped
+        started["value"] = "1792500000"  # the reboot: same pid, later start
+        mocked_run.reset_mock()
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+    assert any(c.args[0][:2] == ["tmux", "split-window"] for c in mocked_run.call_args_list)
+    assert state.FollowerState.read("@1") is not None
+    assert not state.stopped_path("@1").exists()
+
+
 def test_auto_open_does_not_reopen_a_stopped_standalone_window(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

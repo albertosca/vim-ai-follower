@@ -42,20 +42,44 @@ _UNKNOWN_SERVER = "unknown"
 
 
 def mark_stopped(
-    window_id: str, server_pid: int | None, in_tmux: bool, base_dir: Path | None = None
+    window_id: str,
+    server_pid: int | None,
+    in_tmux: bool,
+    base_dir: Path | None = None,
+    server_started: int | None = None,
 ) -> None:
-    """Write the tombstone: the tmux server pid the stop ran under, '' for a
+    """Write the tombstone: the tmux server pid the stop ran under, followed
+    by that server's start time when it is known ("<pid> <start>"), '' for a
     standalone window, or "unknown" for a stop inside tmux that could not
     learn its server's pid (see is_stopped for what each one holds)."""
     path = stopped_path(window_id, base_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     if not in_tmux:
         path.write_text("")
+    elif server_pid is None:
+        path.write_text(_UNKNOWN_SERVER)
+    elif server_started is None:
+        path.write_text(str(server_pid))
     else:
-        path.write_text(_UNKNOWN_SERVER if server_pid is None else str(server_pid))
+        path.write_text(f"{server_pid} {server_started}")
 
 
-def is_stopped(window_id: str, server_pid: int | None, base_dir: Path | None = None) -> bool:
+def _recorded_server(recorded: str) -> tuple[str, int | None]:
+    """A tombstone's server pid (as written) and start time (None when it
+    has none, or one that does not parse)."""
+    pid, _space, started = recorded.partition(" ")
+    try:
+        return pid, int(started)
+    except ValueError:
+        return pid, None
+
+
+def is_stopped(
+    window_id: str,
+    server_pid: int | None,
+    base_dir: Path | None = None,
+    server_started: int | None = None,
+) -> bool:
     """True while the window's tombstone holds. A tombstone written under a
     tmux server pid holds only under that same server: window ids are reused
     across tmux restarts, so @4 today is not the @4 a stop under the previous
@@ -65,7 +89,12 @@ def is_stopped(window_id: str, server_pid: int | None, base_dir: Path | None = N
     the window id is the terminal's own) holds whatever the server. One
     written inside tmux with the pid unknown holds only while the pid stays
     unknown: it cannot tell this server from a later one, and holding under
-    every later server would silence a window id that tmux has reused."""
+    every later server would silence a window id that tmux has reused.
+
+    A pid match is not enough when both start times are known (the stop's,
+    recorded with its pid, and server_started): a server that started
+    later is a new one that got the old pid, which a reboot makes common
+    (final review M10). Either one unknown leaves the pid to decide."""
     try:
         recorded = stopped_path(window_id, base_dir).read_text().strip()
     except OSError:
@@ -74,7 +103,10 @@ def is_stopped(window_id: str, server_pid: int | None, base_dir: Path | None = N
         return True
     if server_pid is None:
         return True
-    return recorded == str(server_pid)
+    pid, started = _recorded_server(recorded)
+    if pid != str(server_pid):
+        return False
+    return started is None or server_started is None or started == server_started
 
 
 def clear_stopped(window_id: str, base_dir: Path | None = None) -> None:
@@ -109,7 +141,43 @@ def _stopped_here(window_id: str, base_dir: Path | None) -> bool:
     tombstone exists, so an ordinary write costs one stat."""
     if not stopped_path(window_id, base_dir).exists():
         return False
-    return is_stopped(window_id, current_server_pid(), base_dir)
+    from vim_ai_follower import binding  # late: binding imports this module
+
+    return stopped_under(window_id, current_server_pid(), binding.tmux_server_started(), base_dir)
+
+
+def stopped_under(
+    window_id: str,
+    server_pid: int | None,
+    server_started: int | None,
+    base_dir: Path | None = None,
+) -> bool:
+    """is_stopped, sweeping a tombstone that is PROVEN to be an earlier
+    server's: this server has its pid but started later, or its pid is
+    gone. Nothing else ever removed one (final review M10), and its
+    `.stopped-noted` then kept auto-open from saying why it stayed off. A
+    tombstone of another LIVE server is kept: the cache is shared, and that
+    server's window may have the same id; one naming no server is kept too."""
+    if is_stopped(window_id, server_pid, base_dir, server_started):
+        return True
+    try:
+        recorded = stopped_path(window_id, base_dir).read_text().strip()
+    except OSError:
+        return False
+    pid_text, _started = _recorded_server(recorded)
+    if not pid_text.isdigit():
+        return False  # '' or "unknown": no server to prove gone
+    if pid_text == str(server_pid):
+        # Not held under the same pid: both start times known, and different.
+        clear_stopped(window_id, base_dir)
+        return False
+    try:
+        os.kill(int(pid_text), 0)
+    except ProcessLookupError:
+        clear_stopped(window_id, base_dir)
+    except OSError:
+        pass  # EPERM: alive under another user; anything else proves nothing
+    return False
 
 
 # What reading a state file can raise: a missing or unreadable file, bad

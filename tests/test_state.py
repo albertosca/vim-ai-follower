@@ -300,6 +300,93 @@ def test_a_standalone_tombstone_holds_whatever_the_server() -> None:
     assert state.is_stopped("term-x", 64091) is True
 
 
+def test_a_tombstone_of_an_earlier_server_that_had_the_same_pid_does_not_hold() -> None:
+    """Final review M10: after a reboot a new tmux server can get the pid the
+    stopped one had, and the tombstone held under it for good. The server's
+    start time tells the two apart."""
+    from vim_ai_follower import state
+
+    state.mark_stopped("@4", 64091, in_tmux=True, server_started=1792439543)
+    assert state.stopped_path("@4").read_text() == "64091 1792439543"
+    assert state.is_stopped("@4", 64091, server_started=1792439543) is True
+    assert state.is_stopped("@4", 64091, server_started=1792500000) is False
+    # Either start time unknown proves nothing: the pid decides, as before.
+    assert state.is_stopped("@4", 64091) is True
+    state.mark_stopped("@4", 64091, in_tmux=True)
+    assert state.is_stopped("@4", 64091, server_started=1792500000) is True
+
+
+def test_a_tombstone_proven_to_be_an_earlier_servers_is_swept() -> None:
+    """M10: such a tombstone was never swept, and its `.stopped-noted` kept
+    auto-open from saying why it stayed off. One proven stale (this server
+    has its pid but started later) goes, note included."""
+    from vim_ai_follower import state
+
+    state.mark_stopped("@4", 64091, in_tmux=True, server_started=1792439543)
+    state.stopped_note_path("@4").write_text("")
+    with (
+        patch("vim_ai_follower.binding.tmux_server_pid", return_value=64091),
+        patch("vim_ai_follower.binding.tmux_server_started", return_value=1792500000),
+    ):
+        assert state._stopped_here("@4", None) is False
+    assert not state.stopped_path("@4").exists()
+    assert not state.stopped_note_path("@4").exists()
+
+
+def test_a_tombstone_whose_server_is_gone_is_swept() -> None:
+    from vim_ai_follower import state
+
+    state.mark_stopped("@4", 64091, in_tmux=True)
+    with (
+        patch("vim_ai_follower.binding.tmux_server_pid", return_value=70001),
+        patch("vim_ai_follower.binding.tmux_server_started", return_value=None),
+        patch("vim_ai_follower.state.os.kill", side_effect=ProcessLookupError) as kill,
+    ):
+        assert state._stopped_here("@4", None) is False
+    kill.assert_called_once_with(64091, 0)
+    assert not state.stopped_path("@4").exists()
+
+
+@pytest.mark.parametrize("alive", [None, PermissionError])
+def test_a_tombstone_of_another_live_server_is_kept(alive: type[BaseException] | None) -> None:
+    """Two tmux servers can both have a window @4 (the cache is shared): a
+    hook under one must not lift the stop the user gave under the other."""
+    from vim_ai_follower import state
+
+    state.mark_stopped("@4", 64091, in_tmux=True, server_started=1792439543)
+    with (
+        patch("vim_ai_follower.binding.tmux_server_pid", return_value=70001),
+        patch("vim_ai_follower.binding.tmux_server_started", return_value=1792500000),
+        patch("vim_ai_follower.state.os.kill", side_effect=alive),
+    ):
+        assert state._stopped_here("@4", None) is False
+    assert state.stopped_path("@4").exists()
+
+
+@pytest.mark.parametrize("recorded", ["unknown", ""])
+def test_a_tombstone_naming_no_server_is_never_swept(recorded: str) -> None:
+    from vim_ai_follower import state
+
+    state.stopped_path("@4").parent.mkdir(parents=True, exist_ok=True)
+    state.stopped_path("@4").write_text(recorded)
+    with (
+        patch("vim_ai_follower.binding.tmux_server_pid", return_value=70001),
+        patch("vim_ai_follower.binding.tmux_server_started", return_value=1792500000),
+        patch("vim_ai_follower.state.os.kill") as kill,
+    ):
+        state._stopped_here("@4", None)
+    kill.assert_not_called()
+    assert state.stopped_path("@4").read_text() == recorded
+
+
+def test_a_garbled_tombstone_holds_like_an_unknown_server() -> None:
+    from vim_ai_follower import state
+
+    state.stopped_path("@4").parent.mkdir(parents=True, exist_ok=True)
+    state.stopped_path("@4").write_text("64091 soon")
+    assert state.is_stopped("@4", 64091, server_started=1792500000) is True
+
+
 def test_no_tombstone_is_not_stopped() -> None:
     from vim_ai_follower import state
 

@@ -341,6 +341,7 @@ def cmd_stop(env: dict[str, str]) -> int:
         window_id,
         binding.tmux_server_pid_from(env) if session.in_tmux else None,
         session.in_tmux,
+        server_started=binding.tmux_server_started() if session.in_tmux else None,
     )
     FollowerState.clear(window_id)
     control.clear_signals(window_id)

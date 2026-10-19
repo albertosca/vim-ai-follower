@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from vim_ai_follower import binding
 
 
@@ -139,3 +141,30 @@ def test_tmux_server_pid_returns_the_pid_on_success() -> None:
         return_value=MagicMock(returncode=0, stdout="64091\n"),
     ):
         assert binding.tmux_server_pid() == 64091
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        FileNotFoundError("no tmux"),
+        MagicMock(returncode=1, stdout=""),
+        MagicMock(returncode=0, stdout="@1\n"),
+    ],
+    ids=["tmux-missing", "nonzero-exit", "unparseable"],
+)
+def test_tmux_server_started_is_none_whenever_it_cannot_be_read(answer: object) -> None:
+    with patch(
+        "vim_ai_follower.binding.subprocess.run",
+        side_effect=answer if isinstance(answer, BaseException) else None,
+        return_value=answer,
+    ):
+        assert binding.tmux_server_started() is None
+
+
+def test_tmux_server_started_reads_the_start_time_format() -> None:
+    with patch(
+        "vim_ai_follower.binding.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="1792439543\n"),
+    ) as run:
+        assert binding.tmux_server_started() == 1792439543
+    assert run.call_args.args[0] == ["tmux", "display-message", "-p", "#{start_time}"]

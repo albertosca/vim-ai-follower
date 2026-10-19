@@ -438,8 +438,13 @@ def _stopped_window(session: Session) -> bool:
     once per window in hook.log, so a quiet window can be explained."""
     if not state_module.stopped_path(session.window_id).exists():
         return False  # one stat, no tmux spawn, on every hook of a window never stopped
-    server_pid = binding.tmux_server_pid() if session.in_tmux else None
-    if not state_module.is_stopped(session.window_id, server_pid):
+    if session.in_tmux:
+        held = state_module.stopped_under(
+            session.window_id, binding.tmux_server_pid(), binding.tmux_server_started()
+        )
+    else:
+        held = state_module.is_stopped(session.window_id, None)
+    if not held:
         return False
     note = state_module.stopped_note_path(session.window_id)
     if not note.exists():

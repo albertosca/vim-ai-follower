@@ -72,6 +72,28 @@ def tmux_server_pid() -> int | None:
         return None
 
 
+def tmux_server_started() -> int | None:
+    """The attached tmux server's start time (`#{start_time}`, seconds since
+    the epoch), or None on ANY failure. With the pid it names one server
+    for good: after a reboot a new server can get the pid an earlier one
+    had (final review M10), never its start time too."""
+    try:
+        result = subprocess.run(
+            ["tmux", "display-message", "-p", "#{start_time}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return None
+
+
 def tmux_server_pid_from(env: dict[str, str]) -> int | None:
     """tmux_server_pid, falling back to the pid tmux writes into $TMUX
     ("socket,pid,session") when the server cannot be asked: what `stop`
