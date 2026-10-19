@@ -519,6 +519,18 @@ def test_a_stop_during_the_hand_off_wait_releases_claude(
     assert control.check_signal("@1") is None
 
 
+def test_a_state_caught_mid_write_does_not_end_the_hand_off_wait(tmp_path: Path) -> None:
+    # A state file read while another hook rewrites it proves nothing about
+    # a stop: the wait goes on, and the next poll reads it whole.
+    current, _target = _handoff_state(tmp_path, "a\n")
+    state_file = state._state_path("@1", None)
+    whole = state_file.read_text()
+    state_file.write_text(whole[: len(whole) // 2])
+    assert hooks._follower_stopped(current, _SESSION) is False
+    state_file.write_text(whole)
+    assert hooks._follower_stopped(current, _SESSION) is False
+
+
 def test_a_hand_off_the_stop_ended_leaves_the_surface_to_the_stop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
