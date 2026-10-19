@@ -877,6 +877,7 @@ def test_nvim_ready_asks_nothing_more_of_a_socket_nobody_answers_on() -> None:
         (b"\x94\x01\x01\xc0\x01", None),  # a result that is no string
         (b"\x94\x01\x01\xc0", None),  # a reply that stops short
         ("hang up", None),
+        ("hang up after the request", None),  # the read comes back empty
         (None, None),  # held: busy, or at a prompt after all
     ],
 )

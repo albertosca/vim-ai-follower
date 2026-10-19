@@ -314,7 +314,10 @@ class FakeNvim:
     `[0, msgid, method, args]` gets `reply(msgid)` back (a well-formed
     `nvim_get_mode` answer by default). `reply=None` accepts and never
     answers, which is what a SIGSTOPped nvim looks like from outside;
-    `reply="hang up"` closes the connection without a word."""
+    `reply="hang up"` closes the connection without a word, which the
+    client may see as a refused send or as an empty read, whichever the
+    scheduler picks; `reply="hang up after the request"` reads the request
+    first, so the client's read is always the empty one."""
 
     def __init__(self, path: Path, reply: Any = "mode") -> None:
         self.path = path
@@ -336,6 +339,11 @@ class FakeNvim:
             if self.reply is None:
                 continue
             if self.reply == "hang up":
+                client.close()
+                continue
+            if self.reply == "hang up after the request":
+                with suppress(OSError):
+                    client.recv(4096)
                 client.close()
                 continue
             with suppress(OSError):
