@@ -184,7 +184,7 @@ def cmd_start(
         sock = _launch_standalone_or_report(session.window_id)
         if sock is None:
             return 1
-        _record_start(
+        if not _record_start(
             session.window_id,
             "nvim",
             sock,
@@ -192,7 +192,8 @@ def cmd_start(
             on_failure=resolved_on_failure,
             speed=resolved_speed,
             adopted=False,
-        )
+        ):
+            return _start_overtaken(session.window_id, "nvim", sock, launched=True)
         print(f"claude-follow: attached to standalone Neovim at {sock}")
         return 0
 
@@ -207,7 +208,7 @@ def cmd_start(
             sock = _launch_standalone_or_report(session.window_id)
             if sock is None:
                 return 1
-            _record_start(
+            if not _record_start(
                 session.window_id,
                 "nvim",
                 sock,
@@ -215,7 +216,8 @@ def cmd_start(
                 on_failure=resolved_on_failure,
                 speed=resolved_speed,
                 adopted=False,
-            )
+            ):
+                return _start_overtaken(session.window_id, "nvim", sock, launched=True)
             print(f"claude-follow: attached to standalone Neovim at {sock}")
             return 0
         # Adopt a running nvim's socket, or launch a dedicated one; either way
@@ -225,7 +227,7 @@ def cmd_start(
         if target is None:
             return 1
         sock, launched = target
-        _record_start(
+        if not _record_start(
             session.window_id,
             "nvim",
             sock,
@@ -233,14 +235,15 @@ def cmd_start(
             on_failure=resolved_on_failure,
             speed=resolved_speed,
             adopted=not launched,
-        )
+        ):
+            return _start_overtaken(session.window_id, "nvim", sock, launched=launched)
         print(f"claude-follow: attached to Neovim at {sock}")
         return 0
 
     if defaults.adopt_existing:
         adopt = adopt_target(origin)
         if adopt is not None:
-            _record_start(
+            if not _record_start(
                 session.window_id,
                 "tmux",
                 adopt,
@@ -249,30 +252,58 @@ def cmd_start(
                 speed=resolved_speed,
                 adopted=True,
                 shown_any=True,
-            )
+            ):
+                return _start_overtaken(session.window_id, "tmux", adopt, launched=False)
             print(f"claude-follow: adopted existing vim pane {adopt}")
             return 0
 
     started = TmuxVimFollower.start(origin)
-    _record_start(
+    if not _record_start(
         session.window_id,
         "tmux",
         started.pane_id,
         origin=origin,
         on_failure=resolved_on_failure,
         speed=resolved_speed,
-    )
+    ):
+        return _start_overtaken(session.window_id, "tmux", started.pane_id, launched=True)
     print(f"claude-follow: started follower in pane {started.pane_id}")
     return 0
 
 
-def _record_start(window_id: str, backend: str, target: str, **fields: Any) -> None:
+def _record_start(window_id: str, backend: str, target: str, **fields: Any) -> bool:
     """Record the follower a `start` just attached to. An explicit start is
     what lifts a `stop` (see cmd_stop), so the tombstone goes here: before
     the write it would refuse, and only once the start has something to
-    record, since a start that failed must leave auto-open off."""
+    record, since a start that failed must leave auto-open off. False when
+    the write was refused anyway: a `stop` landed after the tombstone went."""
     clear_stopped(window_id)
-    FollowerState.set(window_id, backend, target, **fields)
+    return FollowerState.set(window_id, backend, target, **fields)
+
+
+def _close_unrecorded(window_id: str, backend: str, target: str) -> str:
+    """Close an editor this command launched but could not record (a `stop`
+    overtook the write): nothing names it, so no later `stop` would close it
+    and a later adopting `start` would take it for the user's own. Returns
+    what to tell the user. Best-effort, like every teardown step."""
+    try:
+        get_follower(backend, target, window_id=window_id).stop(dedicated=True)
+    except Exception as error:
+        hooks.logger.warning("could not close the unrecorded follower %s: %s", target, error)
+        return f"; could not close the {backend} it opened ({target})"
+    return f"; closed the {backend} it opened ({target})"
+
+
+def _start_overtaken(window_id: str, backend: str, target: str, launched: bool) -> int:
+    """A `start` whose write a racing `stop` refused (final review M11): it
+    used to print "started" over no state and leave the editor it launched
+    orphaned. An adopted editor is the user's and is never closed."""
+    detail = _close_unrecorded(window_id, backend, target) if launched else ""
+    print(
+        f"claude-follow: window {window_id} was stopped while it was starting{detail}",
+        file=sys.stderr,
+    )
+    return 1
 
 
 def _other_live_follower() -> bool:
@@ -995,6 +1026,12 @@ def cmd_interrupt(env: dict[str, str]) -> int:
     return 0
 
 
+# A `stop` of this window landed while the command ran, and `set` refused its
+# write (final review M11): the command says so instead of reporting a change
+# that was never saved.
+_STOPPED_MEANWHILE = "claude-follow: this window's follower was stopped meanwhile; {what}"
+
+
 def cmd_speed(env: dict[str, str], direction: Literal["up", "down"]) -> int:
     session = resolve_session(env)
     if session is None:
@@ -1005,7 +1042,9 @@ def cmd_speed(env: dict[str, str], direction: Literal["up", "down"]) -> int:
         print("claude-follow: no follower active")
         return 0
     new_speed = config.next_speed(current.speed, direction)
-    FollowerState.update(session.window_id, speed=new_speed)
+    if not FollowerState.update(session.window_id, speed=new_speed):
+        print(_STOPPED_MEANWHILE.format(what="speed not changed"), file=sys.stderr)
+        return 1
     # Saturating scale: label the ends so a press that changed nothing
     # reads as "already at the limit", not as a silent miss.
     if new_speed == config.SPEED_ORDER[-1]:
@@ -1047,7 +1086,9 @@ def cmd_toggle(env: dict[str, str]) -> int:
         print("claude-follow: no follower to toggle")
         return 0
     if raw.enabled:
-        FollowerState.update(session.window_id, enabled=False)
+        if not FollowerState.update(session.window_id, enabled=False):
+            print(_STOPPED_MEANWHILE.format(what="not muted"), file=sys.stderr)
+            return 1
         if raw.origin:
             TmuxPane(pane_id=raw.origin).set_zoomed(True)
         print("claude-follow: follower muted")
@@ -1057,19 +1098,24 @@ def cmd_toggle(env: dict[str, str]) -> int:
     # diff over a stale buffer would produce garbage. Tabs stay for reading.
     # Turning on lifts a `stop` tombstone, before the write it would refuse.
     clear_stopped(session.window_id)
-    FollowerState.update(session.window_id, enabled=True, open_files=())
+    if not FollowerState.update(session.window_id, enabled=True, open_files=()):
+        print(_STOPPED_MEANWHILE.format(what="not resumed"), file=sys.stderr)
+        return 1
     if raw.origin:
         TmuxPane(pane_id=raw.origin).set_zoomed(False)
     if raw.backend == "tmux" and FollowerState.get(session.window_id) is None and raw.origin:
         started = TmuxVimFollower.start(raw.origin)
-        FollowerState.set(
+        if not FollowerState.set(
             session.window_id,
             "tmux",
             started.pane_id,
             origin=raw.origin,
             on_failure=raw.on_failure,
             speed=raw.speed,
-        )  # shown_any defaults False, so the first file reuses (renames) the
-        # new pane's start screen instead of opening a redundant tab.
+        ):  # shown_any defaults False, so the first file reuses (renames) the
+            # new pane's start screen instead of opening a redundant tab.
+            detail = _close_unrecorded(session.window_id, "tmux", started.pane_id)
+            print(_STOPPED_MEANWHILE.format(what=f"not resumed{detail}"), file=sys.stderr)
+            return 1
     print("claude-follow: follower resumed")
     return 0

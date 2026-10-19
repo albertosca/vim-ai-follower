@@ -430,14 +430,16 @@ class FollowerState:
         return True
 
     @classmethod
-    def update(cls, window_id: str, base_dir: Path | None = None, **changes: Any) -> None:
+    def update(cls, window_id: str, base_dir: Path | None = None, **changes: Any) -> bool:
         """Persist a partial change on top of the stored state, alive or not
-        (a toggle must be able to re-enable a follower whose pane died)."""
+        (a toggle must be able to re-enable a follower whose pane died).
+        False when nothing was written: no state, or `set` refused the write
+        (a `stop` of this window), so a command can say so (final review M11)."""
         current = cls.read(window_id, base_dir)
         if current is None:
-            return
+            return False
         updated = dataclasses.replace(current, **changes)
-        cls.set(
+        return cls.set(
             window_id,
             updated.backend,
             updated.target,

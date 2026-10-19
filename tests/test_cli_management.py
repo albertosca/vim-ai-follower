@@ -2176,3 +2176,188 @@ def test_stop_of_an_adopted_vim_whose_user_is_typing_sends_nothing_and_asks_noth
     assert state.FollowerState.get("@1") is None
     lines = [line for line in _hook_log().splitlines() if "waiting on its user" in line]
     assert len(lines) == 1 and logged in lines[0], _hook_log()
+
+
+# --- a write a racing stop refused (final review M11) ---------------------
+
+
+def _stop_lands_after_clear(window_id: str) -> Callable[[str], None]:
+    """commands.clear_stopped, followed at once by a `stop` of window_id: the
+    race in which the start's (or toggle's) write that comes next is refused."""
+    real_clear = state.clear_stopped
+
+    def clear_then_stop(cleared_window: str) -> None:
+        real_clear(cleared_window)
+        state.mark_stopped(window_id, MOCK_SERVER_PID, in_tmux=True)
+
+    return clear_then_stop
+
+
+def test_start_a_stop_overtook_says_so_and_closes_the_pane_it_split(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+        patch("vim_ai_follower.commands.clear_stopped", side_effect=_stop_lands_after_clear("@1")),
+    ):
+        assert commands.cmd_start({"TMUX_PANE": "%1"}) == 1
+    captured = capsys.readouterr()
+    assert "started follower" not in captured.out
+    assert "stopped while it was starting" in captured.err
+    assert state.FollowerState.read("@1") is None
+    kills = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "kill-pane"]]
+    assert kills == [["tmux", "kill-pane", "-t", "%9"]]
+
+
+def test_start_a_stop_overtook_never_closes_an_adopted_editor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"adopt_existing": true}')
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    with (
+        patch(
+            "vim_ai_follower.tmux.subprocess.run",
+            side_effect=_mock_tmux_run(vim_panes=("%5",)),
+        ) as run,
+        patch("vim_ai_follower.commands.adopt_target", return_value="%5"),
+        patch("vim_ai_follower.commands.clear_stopped", side_effect=_stop_lands_after_clear("@1")),
+    ):
+        assert commands.cmd_start({"TMUX_PANE": "%1"}) == 1
+    captured = capsys.readouterr()
+    assert "adopted existing vim pane" not in captured.out
+    assert "stopped while it was starting" in captured.err
+    assert not any(c.args[0][:2] == ["tmux", "kill-pane"] for c in run.call_args_list)
+    assert not any(c.args[0][:2] == ["tmux", "send-keys"] for c in run.call_args_list)
+
+
+def test_speed_a_stop_overtook_reports_nothing_saved(capsys: pytest.CaptureFixture[str]) -> None:
+    _register_fake_follower("@1", "%2")
+    state.mark_stopped("@1", MOCK_SERVER_PID, in_tmux=True)
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()):
+        assert commands.cmd_speed({"TMUX_PANE": "%1"}, "up") == 1
+    captured = capsys.readouterr()
+    assert "claude-follow: speed" not in captured.out
+    assert "was stopped" in captured.err
+
+
+def test_toggle_off_a_stop_overtook_zooms_nothing(capsys: pytest.CaptureFixture[str]) -> None:
+    _register_fake_follower("@1", "%2")
+    state.FollowerState.update("@1", origin="%1")
+    state.mark_stopped("@1", MOCK_SERVER_PID, in_tmux=True)
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        side_effect=_mock_tmux_run_with_zoom("0", pane_id="%2"),
+    ) as run:
+        assert commands.cmd_toggle({"TMUX_PANE": "%1"}) == 1
+    captured = capsys.readouterr()
+    assert "muted" not in captured.out
+    assert "was stopped" in captured.err
+    assert _resize_pane_calls(run) == []
+
+
+def test_toggle_on_a_stop_overtook_before_its_write_says_so_and_resumes_nothing(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state.FollowerState.set("@1", "tmux", "%2", origin="%1", enabled=False)
+    with (
+        patch(
+            "vim_ai_follower.tmux.subprocess.run",
+            side_effect=_mock_tmux_run_with_zoom("1", pane_id="%2"),
+        ) as run,
+        patch("vim_ai_follower.commands.clear_stopped", side_effect=_stop_lands_after_clear("@1")),
+    ):
+        assert commands.cmd_toggle({"TMUX_PANE": "%1"}) == 1
+    captured = capsys.readouterr()
+    assert "resumed" not in captured.out
+    assert "not resumed" in captured.err
+    assert _resize_pane_calls(run) == []
+
+
+def test_toggle_on_a_stop_overtook_says_so_and_closes_the_pane_it_split(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state.FollowerState.set("@1", "tmux", "%2", origin="%1", enabled=False)
+
+    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
+        if cmd[:3] == ["tmux", "list-panes", "-a"]:
+            return MagicMock(returncode=0, stdout="")  # %2 is dead
+        if cmd[:2] == ["tmux", "display-message"] and cmd[-1] == "#{pid}":
+            return MagicMock(returncode=0, stdout=f"{MOCK_SERVER_PID}\n")
+        if cmd[:2] == ["tmux", "display-message"] and cmd[-1] == "#{window_zoomed_flag}":
+            return MagicMock(returncode=0, stdout="0\n")
+        if cmd[:2] == ["tmux", "display-message"]:
+            return MagicMock(returncode=0, stdout="@1\n")
+        if cmd[:2] == ["tmux", "split-window"]:
+            # the stop lands while the new pane opens: after the toggle's own
+            # update, before the write that records the new pane
+            state.mark_stopped("@1", MOCK_SERVER_PID, in_tmux=True)
+            return MagicMock(returncode=0, stdout="%9\n")
+        return MagicMock(returncode=0, stdout="")
+
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_run) as run:
+        assert commands.cmd_toggle({"TMUX_PANE": "%1"}) == 1
+    captured = capsys.readouterr()
+    assert "resumed" not in captured.out
+    assert "was stopped" in captured.err
+    kills = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "kill-pane"]]
+    assert kills == [["tmux", "kill-pane", "-t", "%9"]]
+
+
+@pytest.mark.parametrize(
+    ("config_text", "split_answer", "closed"),
+    [
+        ('{"nvim_window": "auto"}', None, True),  # standalone (no tmux)
+        ('{"nvim_window": "always"}', None, True),  # standalone window from tmux
+        ('{"nvim_window": "auto"}', ("/split.sock", True), True),  # a split it launched
+        ('{"nvim_window": "auto"}', ("/user.sock", False), False),  # the user's nvim
+    ],
+    ids=["standalone", "always", "split", "adopted"],
+)
+def test_start_nvim_a_stop_overtook_closes_only_what_it_launched(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    config_text: str,
+    split_answer: tuple[str, bool] | None,
+    closed: bool,
+) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text(config_text)
+    monkeypatch.setattr(config, "CONFIG_PATH", config_path)
+    standalone = split_answer is None and "auto" in config_text
+    resolved = (
+        session.Session(window_id="term-x", origin=None, in_tmux=False)
+        if standalone
+        else session.Session(window_id="@1", origin="%1", in_tmux=True)
+    )
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.commands.resolve_session", return_value=resolved),
+        patch("vim_ai_follower.commands.launch_standalone_nvim", return_value="/s.sock"),
+        patch("vim_ai_follower.commands.resolve_nvim_target", return_value=split_answer),
+        patch.object(state.FollowerState, "set", return_value=False),
+        patch("vim_ai_follower.commands.get_follower") as get_follower,
+    ):
+        assert commands.cmd_start({"TMUX_PANE": "%1"}, backend="nvim") == 1
+    captured = capsys.readouterr()
+    assert "attached" not in captured.out
+    assert "stopped while it was starting" in captured.err
+    if closed:
+        get_follower.return_value.stop.assert_called_once_with(dedicated=True)
+        assert "closed the nvim it opened" in captured.err
+    else:
+        get_follower.assert_not_called()
+
+
+def test_start_a_stop_overtook_reports_an_editor_it_could_not_close(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.commands.clear_stopped", side_effect=_stop_lands_after_clear("@1")),
+        patch("vim_ai_follower.commands.get_follower") as get_follower,
+    ):
+        get_follower.return_value.stop.side_effect = OSError("pane gone")
+        assert commands.cmd_start({"TMUX_PANE": "%1"}) == 1
+    assert "could not close the tmux it opened (%9)" in capsys.readouterr().err

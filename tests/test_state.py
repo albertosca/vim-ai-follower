@@ -347,6 +347,14 @@ def test_a_tombstone_whose_server_is_gone_is_swept() -> None:
     assert not state.stopped_path("@4").exists()
 
 
+def test_a_window_with_no_tombstone_is_not_stopped_and_nothing_is_signalled() -> None:
+    from vim_ai_follower import state
+
+    with patch("vim_ai_follower.state.os.kill") as kill:
+        assert state.stopped_under("@4", 70001, 1792500000) is False
+    kill.assert_not_called()
+
+
 @pytest.mark.parametrize("alive", [None, PermissionError])
 def test_a_tombstone_of_another_live_server_is_kept(alive: type[BaseException] | None) -> None:
     """Two tmux servers can both have a window @4 (the cache is shared): a
@@ -559,3 +567,13 @@ def test_get_keeps_a_state_when_either_server_pid_is_unknown() -> None:
         assert state.proven_here(_stored("@5")) is False
     with patch("vim_ai_follower.binding.tmux_server_pid", return_value=64091):
         assert state.proven_here(_stored("@4")) is False
+
+
+def test_update_says_whether_it_wrote(tmp_path: Path) -> None:
+    from vim_ai_follower import state as state_module
+
+    assert FollowerState.update("@1", base_dir=tmp_path, speed="lento") is False  # no state
+    FollowerState.set("@1", "nvim", "/tmp/s.sock", base_dir=tmp_path)
+    assert FollowerState.update("@1", base_dir=tmp_path, speed="lento") is True
+    state_module.mark_stopped("@1", None, base_dir=tmp_path, in_tmux=False)
+    assert FollowerState.update("@1", base_dir=tmp_path, speed="rapido") is False
