@@ -813,6 +813,75 @@ def test_an_s_during_the_catch_up_rebuild_hands_over_the_whole_partial(
     assert "tail = 1" not in quoted
 
 
+def test_two_presses_during_the_rebuild_cancel_out(world: E2EFollower) -> None:
+    """T20 m4. The rebuild reads no signal, so presses made during it wait
+    for the replay's first check. P is a toggle: two of them used to collapse
+    into one file, the replay paused, and the user (who had pressed pause
+    then resume) was left paused. They pair off now: the hook runs to the
+    end without pausing."""
+    path = world.workdir / "rebuild_pp.py"
+    world.start("tmux", "muito_rapido")
+    pane = world.follower_target()
+    world.cli("hook", "pre", stdin=payload("Write", path))
+    path.write_text(REBUILD_BASE)
+    world.cli("hook", "post", stdin=payload("Write", path))
+    _vim_typed(world, pane, ":$")
+    world.wait_until(lambda: "base_line_00399" in world.capture_pane(pane), "the file's end")
+    control.save_pending_show_fresh(
+        world.window_id,
+        ("tail = 1",),
+        0.08,
+        continuation=True,
+        base_directory=world.cache_dir,
+        file_path=os.path.realpath(path),
+        partial=REBUILD_BASE,
+    )
+    world.cli("hook", "pre", stdin=payload("Edit", path))
+    final = REBUILD_BASE + _text("tail = 1", "NEW_EDIT_MARK = True")
+    path.write_text(final)
+    process = world.cli_background("hook", "post", stdin=payload("Edit", path))
+    world.wait_until(
+        lambda: (
+            "base_line_00399" not in (screen := world.capture_pane(pane))
+            and "base_line_000" in screen
+        ),
+        "the rebuild to be retyping the partial",
+        timeout=load_scaled(30.0),
+        interval=0.01,
+    )
+    assert world.cli("pause").stdout == "claude-follow: pause requested\n"
+    assert world.cli("pause").stdout == "claude-follow: resume requested\n"
+    world.wait_for_hook_exit(process, timeout=load_scaled(60.0))
+    assert world.vim_buffer_bytes(pane) == final.encode()
+
+
+@pytest.mark.parametrize("backend", ["nvim", "tmux"])
+def test_two_presses_then_a_stop_leave_nothing_paused(world: E2EFollower, backend: str) -> None:
+    """Review Focus (T22): a paused animation, then a resume, a pause and an
+    S pressed in a burst, then `claude-follow stop` from another window. The
+    presses share the signal files the stop clears: whatever order they land
+    in, Claude is released, the file is Claude's, and no signal is left for
+    the next hook."""
+    path = world.workdir / "pp_stop.py"
+    target, process = _animate_fresh(world, backend, path, FRESH, "lento")
+    _wait_visible(world, backend, target, path, "ALPHA_MARK")
+    world.cli("pause")
+    world.wait_for_animating("paused")
+    world.cli("pause")
+    world.cli("pause")
+    world.cli("interrupt")
+
+    _assert_the_stop_released_the_hook(world, process)
+    assert path.read_text() == FRESH, "the stop changed Claude's file"
+    left = sorted(
+        entry.name
+        for entry in world.cache_dir.iterdir()
+        if entry.name.startswith(f"{world.window_id}.")
+        and (".pause" in entry.name or ".interrupt" in entry.name)
+    )
+    assert left == []
+
+
 def _set_users_options(world: E2EFollower, pane: str, modifiable: bool) -> None:
     _vim_typed(
         world, pane, f":setlocal noreadonly {'' if modifiable else 'no'}modifiable | set paste"

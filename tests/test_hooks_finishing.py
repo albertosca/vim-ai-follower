@@ -66,7 +66,7 @@ def _press(signal: str, answer: object = None) -> Callable[..., object]:
     def _call(*_args: object, **_kwargs: object) -> object:
         assert control.animating_state("@1") == "running"
         if signal == "pause":
-            assert control.request_pause("@1") is True
+            assert control.request_pause("@1") == 1
         else:
             assert control.request_interrupt("@1") is True
         if isinstance(answer, BaseException):
@@ -273,7 +273,7 @@ def test_a_press_addressed_to_a_read_is_drained_too(
     follower = _follower("holds")
 
     def navigate(*_args: object, **_kwargs: object) -> None:
-        assert control.request_pause("@1") is True
+        assert control.request_pause("@1") == 1
 
     follower.ensure_showing.side_effect = navigate
     surface = MagicMock()
@@ -370,14 +370,19 @@ def test_every_press_no_driver_consumed_is_drained(
                 if signal == "pause"
                 else control.request_interrupt("@1")
             )
-            assert requested is True
+            assert requested
         raise NavigationFailed("did not land")
 
     follower.apply_edit.side_effect = both
     surface = _run_hook(target, follower, monkeypatch)
 
     retired = [entry for entry in surface.method_calls if entry[0] == "retire_state"]
-    assert call.retire_state("Paused") in retired
+    if presses == ("pause", "pause"):
+        # A pause and its resume (T20 m4): the second press's own cue already
+        # said "Resuming", so there is no "Paused" to take back.
+        assert call.retire_state("Paused") not in retired
+    else:
+        assert call.retire_state("Paused") in retired
     if "interrupt" in presses:
         assert call.retire_state("Interrupted") in retired
     _no_signal_left(tmp_path)

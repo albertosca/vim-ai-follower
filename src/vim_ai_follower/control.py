@@ -43,20 +43,30 @@ def _pending_path(window_id: str, base_directory: Path | None) -> Path:
 
 def _consume(path: Path) -> bool:
     """Atomically claim a signal file, and True only when it was addressed to
-    THIS process. The claim is a rename, not a read-then-unlink, so the file
+    THIS process (for a pause file: an odd number of this process's presses,
+    _consume_presses). The claim is a rename, not a read-then-unlink, so the file
     read is exactly the one claimed — a fresh signal written over a stale one
     in between can never be deleted unread. Losing the race to another
     consumer or to clear_signals means the signal is not ours to act on — and
     must never crash the animation. A signal addressed to anyone else is stale
     (see _request) and is consumed without being obeyed."""
+    return _consume_presses(path) % 2 == 1
+
+
+def _consume_presses(path: Path) -> int:
+    """Claim a signal file and count the lines in it addressed to THIS
+    process: one line per press (_append_press). Read under the file's lock,
+    so a press that passed its check before the rename has been written."""
     claimed = path.with_name(f"{path.name}.{os.getpid()}.claimed")
     try:
         path.rename(claimed)
     except FileNotFoundError:
-        return False
-    addressee = claimed.read_text().strip()
+        return 0
+    with claimed.open("r") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        addressees = [line.strip() for line in handle.read().splitlines()] or [""]
     claimed.unlink()
-    if addressee == "":
+    if "" in addressees:
         # Every request since 8ce0d92 names its owner. An empty one comes from
         # an older claude-follow still bound to the keys (another installation
         # of a different version): dropped like any stale signal, but said.
@@ -65,7 +75,7 @@ def _consume(path: Path) -> bool:
             "signals) is likely bound to the keys — update or remove that installation",
             path.suffix.lstrip("."),
         )
-    return addressee == str(os.getpid())
+    return addressees.count(str(os.getpid()))
 
 
 def check_signal(
@@ -133,8 +143,39 @@ def _request(path: Path, window_id: str, base_directory: Path | None) -> bool:
     return True
 
 
-def request_pause(window_id: str, base_directory: Path | None = None) -> bool:
-    return _request(_pause_path(window_id, base_directory), window_id, base_directory)
+def request_pause(window_id: str, base_directory: Path | None = None) -> int:
+    """Append one press for the live owner, and the number of its presses
+    now waiting unread (0: no live owner, nothing written). P is a toggle:
+    presses the driver had not read yet (a catch-up rebuild reads none) pair
+    off, and only an odd count pauses (T20 m4: two used to collapse into one
+    and the user ended paused)."""
+    owner = _live_owner(window_id, base_directory)
+    if owner is None:
+        return 0
+    return _append_press(_pause_path(window_id, base_directory), owner)
+
+
+def _append_press(path: Path, owner: int) -> int:
+    """One `O_APPEND` line under the file's lock. The file is the one at
+    `path` when the line is written: a consumer that renamed it away first
+    (it claims by rename, then reads under the lock) leaves this open handle
+    on its claimed copy, and the press goes to a new file instead."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    while True:
+        descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            try:
+                current = path.stat()
+            except FileNotFoundError:
+                continue
+            if current.st_ino != os.fstat(descriptor).st_ino:
+                continue
+            os.write(descriptor, f"{owner}\n".encode())
+            with path.open("r") as handle:
+                return handle.read().split().count(str(owner))
+        finally:
+            os.close(descriptor)
 
 
 def request_interrupt(window_id: str, base_directory: Path | None = None) -> bool:

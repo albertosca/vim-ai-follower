@@ -491,7 +491,7 @@ def test_a_signal_addressed_to_a_dead_animation_is_dropped_not_obeyed(tmp_path: 
     finally:
         earlier.kill()
         earlier.wait()
-    assert (tmp_path / "@1.pause").read_text() == str(earlier.pid)  # addressed to it
+    assert (tmp_path / "@1.pause").read_text() == f"{earlier.pid}\n"  # addressed to it
     control.mark_animating("@1", base_directory=tmp_path)  # a new animation, this process
     assert control.check_signal("@1", base_directory=tmp_path) is None
     assert not (tmp_path / "@1.pause").exists()  # consumed as stale, not left behind
@@ -507,10 +507,10 @@ def test_a_signal_is_addressed_to_the_owner_the_key_press_saw(tmp_path: Path) ->
 def test_a_request_says_whether_it_reached_a_live_owner(tmp_path: Path) -> None:
     # The CLI reads "running" first and writes the signal after; an owner that
     # died in between gets nothing written, and the caller must know it.
-    assert control.request_pause("@1", base_directory=tmp_path) is False
+    assert control.request_pause("@1", base_directory=tmp_path) == 0
     assert control.request_interrupt("@1", base_directory=tmp_path) is False
     control.mark_animating("@1", base_directory=tmp_path)
-    assert control.request_pause("@1", base_directory=tmp_path) is True
+    assert control.request_pause("@1", base_directory=tmp_path) == 1
     assert control.request_interrupt("@1", base_directory=tmp_path) is True
 
 
@@ -681,3 +681,58 @@ def test_a_new_token_sweeps_correction_leftovers_older_than_a_minute(tmp_path: P
     control.new_correction_token("@1", tmp_path)
     assert [path.exists() for path in old] == [False, False, False]
     assert fresh.exists()
+
+
+@pytest.mark.usefixtures("animating")
+@pytest.mark.parametrize(("presses", "expected"), [(1, "pause"), (2, None), (3, "pause")])
+def test_presses_not_yet_consumed_toggle(
+    tmp_path: Path, presses: int, expected: str | None
+) -> None:
+    """T20 m4: P is a toggle, so two presses the driver had not read yet
+    (during the uninterruptible catch-up rebuild) mean pause then resume. A
+    second press used to overwrite the first, and the user ended paused."""
+    counts = [control.request_pause("@1", base_directory=tmp_path) for _ in range(presses)]
+    assert counts == list(range(1, presses + 1))
+    assert control.check_signal("@1", base_directory=tmp_path) == expected
+    assert not (tmp_path / "@1.pause").exists()
+
+
+@pytest.mark.usefixtures("animating")
+def test_only_the_owners_presses_are_counted(tmp_path: Path) -> None:
+    # A stale press addressed to an earlier hook does not cancel this one's.
+    (tmp_path / "@1.pause").write_text("1\n")
+    assert control.request_pause("@1", base_directory=tmp_path) == 1
+    assert control.check_signal("@1", base_directory=tmp_path) == "pause"
+
+
+@pytest.mark.usefixtures("animating")
+@pytest.mark.parametrize("left_at_the_path", ["nothing", "a newer file"])
+def test_a_press_landing_while_the_file_is_claimed_is_not_lost(
+    tmp_path: Path, left_at_the_path: str
+) -> None:
+    """A press that opened the file just before a consumer renamed it away
+    (its claim) must not write into the claimed copy, which the consumer may
+    already have read: it sees the path no longer names its file and writes
+    to the one there now."""
+    signal = tmp_path / "@1.pause"
+    claimed = tmp_path / "@1.pause.claimed-by-test"
+    control.request_pause("@1", base_directory=tmp_path)
+    real_flock = fcntl.flock
+    renamed: list[bool] = []
+
+    def claim_before_the_lock(target: Any, operation: int) -> None:
+        if isinstance(target, int) and not renamed:
+            renamed.append(True)
+            signal.rename(claimed)
+            if left_at_the_path == "a newer file":
+                signal.write_text("1\n")  # a stale press for another owner
+        real_flock(target, operation)
+
+    with patch.object(fcntl, "flock", claim_before_the_lock):
+        assert control.request_pause("@1", base_directory=tmp_path) == 1
+    assert claimed.read_text() == f"{os.getpid()}\n"  # the claimed copy untouched
+    assert control.check_signal("@1", base_directory=tmp_path) == "pause"
+
+
+def test_a_press_with_no_live_owner_counts_nothing(tmp_path: Path) -> None:
+    assert control.request_pause("@1", base_directory=tmp_path) == 0

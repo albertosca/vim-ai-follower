@@ -913,10 +913,16 @@ def cmd_pause(environment: dict[str, str]) -> int:
     control.withdraw_corrections(session.window_id)
 
     state = control.animating_state(session.window_id)
-    if state in ("running", "paused") and not control.request_pause(session.window_id):
-        # Its owner died after the state was read: nothing was written, so
-        # this press is one with no live animation (D1 residual).
-        state = None
+    presses = 0
+    if state in ("running", "paused"):
+        presses = control.request_pause(session.window_id)
+        if presses == 0:
+            # Its owner died after the state was read: nothing was written, so
+            # this press is one with no live animation (D1 residual).
+            state = None
+    if presses % 2 == 0 and state in ("running", "paused"):
+        # The presses not read yet pair off (T20 m4): this one undoes the last.
+        state = "paused" if state == "running" else "running"
     if state == "running":
         print("claude-follow: pause requested")
         _pause_feedback(current, session.in_tmux, paused=True)

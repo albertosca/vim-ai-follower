@@ -69,6 +69,34 @@ def test_pause_requests_pause_while_an_animation_is_running(
     assert "pause requested" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("state", ["running", "paused"])
+def test_a_second_press_the_driver_has_not_read_says_it_undoes_the_first(
+    state: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """T20 m4: the two presses pair off (control.request_pause), so the
+    second one's popup must say what it does: it takes the first back."""
+    _register_fake_follower("@1", "%2")
+    control.mark_animating("@1", state=state)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as popen,
+    ):
+        assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 0
+        assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 0
+    first, second = ("Paused", "Resuming") if state == "running" else ("Resuming", "Paused")
+    popups = [" ".join(arguments) for arguments in _popup_calls(popen)]
+    assert len(popups) == 2
+    assert first in popups[0]
+    assert second in popups[1]
+    out = capsys.readouterr().out.splitlines()
+    assert out == (
+        ["claude-follow: pause requested", "claude-follow: resume requested"]
+        if state == "running"
+        else ["claude-follow: resume requested", "claude-follow: pause requested"]
+    )
+    assert control.check_signal("@1") is None
+
+
 def test_interrupt_requests_interrupt_while_an_animation_is_running(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

@@ -271,7 +271,7 @@ def test_insert_sequences_mid_file_positions_then_opens_below() -> None:
 
 @contextmanager
 def _signal_left_by_a_finished_animation(
-    base_directory: Path, request: Callable[..., bool]
+    base_directory: Path, request: Callable[..., object]
 ) -> Iterator[None]:
     """A signal addressed to an earlier animation that ended without consuming
     it (the P landed as its last keystroke went out). That owner was another
