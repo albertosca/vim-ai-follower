@@ -167,14 +167,14 @@ def test_on_tmux_a_drained_press_is_answered_once_its_own_popup_closed(
         on_failure="log",
         speed="normal",
     )
-    hooks._drain_unconsumed_signals("@1", current, True)
+    hooks.drain_unconsumed_signals("@1", current, True)
     [(arguments, keyword_arguments)] = popups
     assert isinstance(keyword_arguments, dict)
     assert arguments == ("%2", message)
     assert keyword_arguments["after_seconds"] == tmux.POPUP_SECONDS + 0.1
     token = keyword_arguments["withdraw_token"]
     assert isinstance(token, Path) and token.exists()  # a newer press can withdraw it
-    hooks._drain_unconsumed_signals("@1", current, False)  # nothing left: no second answer
+    hooks.drain_unconsumed_signals("@1", current, False)  # nothing left: no second answer
     assert len(popups) == 1
 
 
@@ -201,7 +201,7 @@ def test_a_p_and_an_s_drained_together_show_one_correction(
         on_failure="log",
         speed="normal",
     )
-    hooks._drain_unconsumed_signals("@1", current, True)
+    hooks.drain_unconsumed_signals("@1", current, True)
     assert popups == [("%2", "Nothing to pause or interrupt")]
 
 
@@ -221,7 +221,7 @@ def test_on_nvim_a_p_and_an_s_drained_together_take_both_cues_down(
         on_failure="log",
         speed="normal",
     )
-    hooks._drain_unconsumed_signals("@1", current, True)
+    hooks.drain_unconsumed_signals("@1", current, True)
     assert surface.method_calls == [call.retire_state("Interrupted"), call.retire_state("Paused")]
 
 
@@ -243,7 +243,7 @@ def test_a_drained_press_outside_tmux_or_without_a_follower_shows_nothing(
     for current, in_tmux in ((tmux_state, False), (None, True)):
         control.mark_animating("@1")
         control.request_pause("@1")
-        hooks._drain_unconsumed_signals("@1", current, in_tmux)
+        hooks.drain_unconsumed_signals("@1", current, in_tmux)
         assert control.check_signal("@1") is None
     assert popups == []
 

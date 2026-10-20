@@ -1000,6 +1000,9 @@ def cmd_pause(environment: dict[str, str]) -> int:
             print(f"claude-follow: could not resume: {failure}", file=sys.stderr)
             return 1
     finally:
+        # A P or S addressed to this replay after its last signal check, as
+        # a hook's exit drains them (final m3).
+        hooks.drain_unconsumed_signals(session.window_id, current, session.in_tmux)
         control.clear_animating(session.window_id)
     if result.outcome == "stopped":
         # Paused again inside the replay, then `claude-follow stop`: the

@@ -7,7 +7,7 @@ from helpers import call_spelled, resolve_typed_paths
 from helpers import make_mock_tmux_run as _mock_tmux_run
 from helpers import register_fake_follower as _register_fake_follower
 
-from vim_ai_follower import cli, commands, control, session, state, tmux
+from vim_ai_follower import cache, cli, commands, control, session, state, tmux
 from vim_ai_follower.backends import NavigationFailed
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.diff import EditOp
@@ -303,7 +303,8 @@ def test_pause_resume_owns_the_slot_while_it_replays_and_releases_it() -> None:
         patch("vim_ai_follower.control.check_signal", side_effect=_check),
     ):
         assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 0
-    assert seen and set(seen) == {"running"}
+    # The replay's checks, then the exit drain's (final m3), "finishing".
+    assert len(seen) > 1 and set(seen[:-1]) == {"running"} and seen[-1] == "finishing"
     assert control.is_animating("@1") is False  # released on the way out
 
 
@@ -908,3 +909,31 @@ def test_a_late_correction_never_masks_a_real_paused(command: str) -> None:
         entry = commands.cmd_pause if command == "pause" else commands.cmd_interrupt
         assert entry({"TMUX_PANE": "%1"}) == 0
     assert withdrawn_before_the_popup == [True]
+
+
+def test_the_keyboard_resume_drains_its_unconsumed_presses() -> None:
+    """Sweep-5 T22 (final m3): the keyboard resume holds the slot as
+    "running" like a hook, so a P pressed after its replay's last signal
+    check is addressed to it, and nothing consumed it: "Paused" stayed up and
+    the signal was left for the next hook to drop as stale."""
+    _register_fake_follower("@1", "%2")
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
+    control.save_pending_apply_edit("@1", [operation], 0.0)
+    real_resume = TmuxVimFollower.resume
+
+    def resume_then_a_late_press(follower: TmuxVimFollower, pending: object) -> object:
+        result = real_resume(follower, pending)  # type: ignore[arg-type]
+        assert control.request_pause("@1")  # after the replay's last check
+        return result
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()) as spawned,
+        patch.object(TmuxVimFollower, "resume", resume_then_a_late_press),
+    ):
+        assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 0
+    assert not (cache.CACHE_DIRECTORY / "@1.pause").exists()
+    corrections = [
+        entry.args[0][2] for entry in spawned.call_args_list if entry.args[0][:2] == ["sh", "-c"]
+    ]
+    assert len(corrections) == 1 and "Nothing to pause" in corrections[0]

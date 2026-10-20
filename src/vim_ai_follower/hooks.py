@@ -1210,7 +1210,7 @@ def _handle_hook_post_edit(environment: dict[str, str], payload: dict[str, Any])
         _skip_unreachable_edit(session.window_id, file_path, payload, failure)
         return 0
     finally:
-        _drain_unconsumed_signals(
+        drain_unconsumed_signals(
             session.window_id, FollowerState.read(session.window_id), session.in_tmux
         )
         # Release this window's animation slot on every path — including the
@@ -1964,7 +1964,7 @@ def retract_signal_feedback(
 _MAXIMUM_DRAINED_SIGNALS = 8
 
 
-def _drain_unconsumed_signals(window_id: str, current: FollowerState | None, in_tmux: bool) -> None:
+def drain_unconsumed_signals(window_id: str, current: FollowerState | None, in_tmux: bool) -> None:
     """At the hook's exit, BEFORE it releases the slot: a P or S addressed to
     this hook that no driver consumed — pressed while it held the slot as
     "running" on a path that never animates (an adopted buffer left alone, a
@@ -2380,7 +2380,7 @@ def _handle_hook_post_read(environment: dict[str, str], payload: dict[str, Any])
         logger.warning("skipped the Read of %s: %s", file_path, timeout)
         return 0
     finally:
-        _drain_unconsumed_signals(
+        drain_unconsumed_signals(
             session.window_id, FollowerState.read(session.window_id), session.in_tmux
         )
         control.clear_animating(session.window_id)
