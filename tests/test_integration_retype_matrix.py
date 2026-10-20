@@ -10,8 +10,11 @@ buffer, never a key sent) logs each `on_lines` event: the buffer's name, the
 first changed row and the line count after the change. A touch that types
 only the edit starts at the edited row; a whole-file retype starts at row 0
 or empties the buffer. Each case writes its row to the test's report and to
-`matrix.txt`, and asserts only that it ran to the end (exit 0, buffer ==
-disk): the rows are the evidence the fixes start from."""
+`matrix.txt`, and asserts it: a touch whose buffer holds a known base types
+only the edited lines (`_typed_only_the_edit`), and the touches that must
+retype (nothing shown, or the tab evicted) log why (`_retyped_because`).
+The stale cases (p2, s2, vim s2) were whole-file retypes until the skip
+recorded the buffer's base (hooks._mark_stale)."""
 
 from __future__ import annotations
 
@@ -179,6 +182,18 @@ def _ends_equal_to_disk(world: E2EFollower, socket_path: str, file_path: Path) -
     )
 
 
+def _typed_only_the_edit(touch: Touch, log: list[str], first_row: int | None = EDITED_ROW) -> None:
+    assert not touch.whole_file, touch
+    if first_row is not None:
+        assert touch.first_row == first_row, touch
+    assert not [line for line in log if " retype " in line], log
+
+
+def _retyped_because(touch: Touch, log: list[str], file_path: Path, reason: str) -> None:
+    assert touch.whole_file, touch
+    assert any(f"retype {file_path.resolve()}: {reason}" in line for line in log), log
+
+
 def _dedicated_nvim(world: E2EFollower) -> str:
     world.start("nvim", "muito_rapido")
     socket_path = world.follower_target()
@@ -197,13 +212,9 @@ def test_p1_an_edit_of_a_file_in_sync(world: E2EFollower) -> None:
     _observe(world, socket_path)
     _edit(world, target, _content(" # edited"))
     _ends_equal_to_disk(world, socket_path, target)
-    _record(
-        world,
-        "p1 nvim dedicated Edit in sync",
-        _typed_from_line(world, socket_path, target),
-        before,
-        log_before,
-    )
+    touch = _typed_from_line(world, socket_path, target)
+    _record(world, "p1 nvim dedicated Edit in sync", touch, before, log_before)
+    _typed_only_the_edit(touch, _hook_log(world)[log_before:])
 
 
 def _skip_an_edit_behind_a_busy_slot(world: E2EFollower, skipped: Path) -> dict[str, Any]:
@@ -238,13 +249,9 @@ def test_p2_an_edit_after_a_busy_slot_skip(world: E2EFollower) -> None:
     _observe(world, socket_path)
     _edit(world, skipped, _content(" # third edit"))
     _ends_equal_to_disk(world, socket_path, skipped)
-    _record(
-        world,
-        "p2 nvim dedicated Edit after busy skip",
-        _typed_from_line(world, socket_path, skipped),
-        before,
-        log_before,
-    )
+    touch = _typed_from_line(world, socket_path, skipped)
+    _record(world, "p2 nvim dedicated Edit after busy skip", touch, before, log_before)
+    _typed_only_the_edit(touch, _hook_log(world)[log_before:])
 
 
 def test_p3_an_edit_after_max_tabs_eviction(world: E2EFollower) -> None:
@@ -258,12 +265,11 @@ def test_p3_an_edit_after_max_tabs_eviction(world: E2EFollower) -> None:
     _observe(world, socket_path)
     _edit(world, files[0], _content(" # back to the first"))
     _ends_equal_to_disk(world, socket_path, files[0])
-    _record(
-        world,
-        "p3 nvim dedicated Edit after eviction",
-        _typed_from_line(world, socket_path, files[0]),
-        before,
-        log_before,
+    touch = _typed_from_line(world, socket_path, files[0])
+    _record(world, "p3 nvim dedicated Edit after eviction", touch, before, log_before)
+    # Required: the eviction wiped the buffer, so there is no base to diff.
+    _retyped_because(
+        touch, _hook_log(world)[log_before:], files[0], "not open (never opened, or evicted)"
     )
 
 
@@ -280,7 +286,9 @@ def test_p4_the_first_touch_of_a_file(world: E2EFollower) -> None:
     _record(world, "p4 nvim dedicated first touch", touch, before, log_before)
     # The instrument's canary: a first touch has no buffer to diff, so the
     # observer MUST see it typed from the top, or it cannot see a retype.
-    assert touch.whole_file, touch
+    _retyped_because(
+        touch, _hook_log(world)[log_before:], target, "not open (never opened, or evicted)"
+    )
 
 
 def _adopt(world: E2EFollower) -> None:
@@ -293,7 +301,12 @@ def _adopt(world: E2EFollower) -> None:
 
 
 def _measure_nvim(
-    world: E2EFollower, socket_path: str, case: str, target: Path, change: Callable[[], None]
+    world: E2EFollower,
+    socket_path: str,
+    case: str,
+    target: Path,
+    change: Callable[[], None],
+    first_row: int | None = EDITED_ROW,
 ) -> Touch:
     before, log_before = _state(world), len(_hook_log(world))
     _observe(world, socket_path)
@@ -301,6 +314,7 @@ def _measure_nvim(
     _ends_equal_to_disk(world, socket_path, target)
     touch = _typed_from_line(world, socket_path, target)
     _record(world, case, touch, before, log_before)
+    _typed_only_the_edit(touch, _hook_log(world)[log_before:], first_row)
     return touch
 
 
@@ -385,6 +399,7 @@ def test_s7_an_edit_after_a_handed_over_save(world: E2EFollower) -> None:
         lambda: _edit(
             world, target, target.read_text().replace("line 150\n", "line 150 # after\n")
         ),
+        first_row=None,  # the handed-over save moved line 150
     )
 
 
@@ -398,13 +413,11 @@ def test_s2_adopted_an_edit_after_a_busy_slot_skip(world: E2EFollower) -> None:
     _observe(world, socket_path)
     _edit(world, skipped, _content(" # third edit"))
     world.wait_until(lambda: world.animating_state() is None, "the hook to finish", timeout=30.0)
-    _record(
-        world,
-        "s2 nvim adopted Edit after busy skip",
-        _typed_from_line(world, socket_path, skipped),
-        before,
-        log_before,
-    )
+    # The buffer holds the base the skip recorded: a diff, no longer left alone.
+    _ends_equal_to_disk(world, socket_path, skipped)
+    touch = _typed_from_line(world, socket_path, skipped)
+    _record(world, "s2 nvim adopted Edit after busy skip", touch, before, log_before)
+    _typed_only_the_edit(touch, _hook_log(world)[log_before:])
 
 
 # A Vim timer that logs the buffer whenever it changes, never a key sent
@@ -483,6 +496,7 @@ def _measure_vim(
     assert len(states) >= 2, states[-1:]
     touch = vim_touch(states, base)
     _record(world, case, touch, before, log_before)
+    _typed_only_the_edit(touch, _hook_log(world)[log_before:])
     return touch
 
 

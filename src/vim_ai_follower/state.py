@@ -496,8 +496,10 @@ class FollowerState:
         state_class, window_id: str, file_path: str, base_directory: Path | None = None
     ) -> None:
         """Record that the follower's tab for file_path holds a buffer that
-        disk has moved on from, so the next touch must retype it whole
-        instead of animating a diff onto a base that was never applied.
+        disk has moved on from, so the next touch must not animate a diff
+        from the snapshot onto a base that was never applied: it diffs from
+        the base the skip recorded (hooks._mark_stale) only when a probe
+        proves the buffer still holds it, and otherwise retypes it whole.
 
         Deliberately NOT expressed by dropping the file from open_files,
         which is what the skipped-edit path used to do: that tuple doubles

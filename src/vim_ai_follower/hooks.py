@@ -883,7 +883,7 @@ def _replay_remainder(
         follower.reload_and_relock(file_path)
         # reload_and_relock re-reads disk, so the buffer is back in sync even
         # if the interrupted animation had been a stale file's retype.
-        FollowerState.clear_stale(window_id, file_path)
+        _clear_stale(window_id, file_path)
         FollowerState.update_current_file(window_id, file_path)
         return None
     # The rebuild always runs to the end: an S pressed during it is resume's
@@ -906,7 +906,7 @@ def _replay_remainder(
     if result.outcome == "completed":
         # Same as the completed animation in _animate_edit: the replay
         # finished the file, so any stale mark on it no longer holds.
-        FollowerState.clear_stale(window_id, file_path)
+        _clear_stale(window_id, file_path)
         FollowerState.update_current_file(window_id, file_path)
         return None
     return _rearm_handoff(follower, window_id, pending, partial_content, result.completed_count)
@@ -1193,7 +1193,7 @@ def _handle_hook_post_edit(environment: dict[str, str], payload: dict[str, Any])
         # stranding it forever (mark_stale's docstring has the measurement).
         # mark_stale handles a missing .pane file and an untracked path.
         _register_writer(session.window_id, payload)
-        FollowerState.mark_stale(session.window_id, file_path)
+        _mark_stale(session.window_id, file_path)
         return 0
     try:
         return _animate_edit(payload, session, file_path, loaded_config)
@@ -1550,6 +1550,31 @@ def sweep_adopted_prompt(socket_path: str, label: str) -> str | None:
     return None
 
 
+def _mark_stale(window_id: str, file_path: str) -> None:
+    """Mark file_path stale after an edit of it was skipped, recording what
+    its buffer still holds: nothing was sent to it, so it holds the skipped
+    edit's snapshot. The next edit probes for that base and diffs from it
+    instead of retyping the whole file (BACKLOG "Whole-file retype on every
+    change"). Only the FIRST skip records it: a file already stale still
+    holds the base of the edit that made it stale. The probe is exact
+    equality, so a base that is wrong for any reason only means a retype."""
+    current = FollowerState.read(window_id)
+    if (
+        current is not None
+        and file_path in current.open_files
+        and file_path not in current.stale_files
+    ):
+        snapshot.save_stale_base(window_id, file_path, load_snapshot(window_id, file_path))
+    FollowerState.mark_stale(window_id, file_path)
+
+
+def _clear_stale(window_id: str, file_path: str) -> None:
+    """The buffer holds the whole file again: drop the stale mark and the
+    base _mark_stale recorded with it."""
+    FollowerState.clear_stale(window_id, file_path)
+    snapshot.clear_stale_base(window_id, file_path)
+
+
 def _skip_unreachable_edit(
     window_id: str,
     file_path: str,
@@ -1562,7 +1587,7 @@ def _skip_unreachable_edit(
     its next touch retypes it (or, in an adopted editor, probes it) instead
     of typing a diff onto a buffer this edit never reached."""
     logger.warning("skipped the animation of %s: %s", file_path, failure)
-    FollowerState.mark_stale(window_id, file_path)
+    _mark_stale(window_id, file_path)
     current = FollowerState.read(window_id)
     if current is not None:
         _refresh_writer_cue(window_id, current.target, payload)
@@ -1955,7 +1980,7 @@ def _animate_edit(
         # Skipped like an unreachable edit, minus the cue: none was raised,
         # and taking one down would wait on the same silent nvim.
         logger.warning("skipped the animation of %s: %s; marked it stale", file_path, busy)
-        FollowerState.mark_stale(session.window_id, file_path)
+        _mark_stale(session.window_id, file_path)
         return 0
     _register_writer(session.window_id, payload)
     _apply_writer_cue(session.window_id, current.target, payload)
@@ -2064,13 +2089,39 @@ def _animate_edit(
     # user opened there themselves; only "absent" (nothing in it to lose) may
     # be retyped, and "holds" — including a stale file the user resynced with
     # `:e!` — is a diff onto the user's own buffer.
+    #
+    # A stale file whose buffer still holds the base a skip recorded
+    # (_mark_stale) is a diff from that base; only one that does not is
+    # retyped (dedicated) or probed for the snapshot (adopted: a user's `:e!`
+    # makes the buffer the snapshot instead).
     before = load_snapshot(session.window_id, file_path)
+    retype_reason = (
+        "not open (never opened, or evicted)"
+        if file_path not in current.open_files
+        else "stale, no base recorded"
+        if file_path in current.stale_files
+        else ""
+    )
+    stale_base_held = False
+    if file_path in current.open_files and file_path in current.stale_files:
+        stale_base = snapshot.load_stale_base(session.window_id, file_path)
+        if stale_base is not None:
+            stale_probe = _probe_base(follower, file_path, stale_base)
+            if stale_probe == "holds":
+                before = stale_base
+                stale_base_held = True
+                is_fresh = False
+                _clear_stale(session.window_id, file_path)
+            else:
+                retype_reason = f"stale, base {stale_probe}"
     typed_before = without_bom(before)
-    if not is_fresh or current.adopted:
+    if not stale_base_held and (not is_fresh or current.adopted):
         probe = _probe_base(follower, file_path, before)
+        if not retype_reason:
+            retype_reason = f"probe {probe}"
         if probe == "holds":
             if file_path in current.stale_files:
-                FollowerState.clear_stale(session.window_id, file_path)
+                _clear_stale(session.window_id, file_path)
             is_fresh = False
         elif (
             caught_up
@@ -2111,6 +2162,7 @@ def _animate_edit(
     _touch_and_evict(session.window_id, follower, current, file_path, loaded_config.max_tabs)
 
     if is_fresh:
+        logger.info("retype %s: %s", file_path, retype_reason)
         result = follower.show_fresh(file_path, typed_after, in_new_tab=current.shown_any)
         if result.outcome == "stopped":
             return _end_stopped_animation(session.window_id, file_path)
@@ -2148,7 +2200,7 @@ def _animate_edit(
             _mark_finishing(session.window_id)
             # The retype ran to the end, so whatever was stale about this
             # buffer is gone — it now holds the whole file.
-            FollowerState.clear_stale(session.window_id, file_path)
+            _clear_stale(session.window_id, file_path)
             FollowerState.update_current_file(session.window_id, file_path)
             _refresh_writer_cue(session.window_id, current.target, payload)
         return 0

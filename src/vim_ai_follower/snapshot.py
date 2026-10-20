@@ -32,6 +32,36 @@ def load(window_id: str, file_path: str, base_directory: Path | None = None) -> 
     return path.read_bytes().decode("utf-8", errors="replace")
 
 
+def _stale_base_path(window_id: str, file_path: str, base_directory: Path | None) -> Path:
+    return _snapshot_path(window_id, file_path, base_directory).with_suffix(".stalebase")
+
+
+def save_stale_base(
+    window_id: str, file_path: str, content: str, base_directory: Path | None = None
+) -> None:
+    """Record what the follower's buffer for file_path held when an edit of
+    it was skipped (that edit's snapshot): the base the next edit may diff
+    from, once a probe proves the buffer still holds it."""
+    path = _stale_base_path(window_id, file_path, base_directory)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content.encode("utf-8"))
+
+
+def load_stale_base(
+    window_id: str, file_path: str, base_directory: Path | None = None
+) -> str | None:
+    """The recorded stale base, or None when there is none."""
+    try:
+        raw = _stale_base_path(window_id, file_path, base_directory).read_bytes()
+    except OSError:
+        return None
+    return raw.decode("utf-8", errors="replace")
+
+
+def clear_stale_base(window_id: str, file_path: str, base_directory: Path | None = None) -> None:
+    _stale_base_path(window_id, file_path, base_directory).unlink(missing_ok=True)
+
+
 # How long an Edit's in-flight mark holds a Read of its file back. A post hook
 # normally follows the file write within a second, but the mark is set BEFORE
 # any permission prompt, so the pre->post gap includes the user deciding. An
