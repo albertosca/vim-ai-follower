@@ -51,9 +51,15 @@ def _binding_path(session_id: str) -> Path:
     return _bindings_dir() / f"{_sanitize_session_id(session_id)}.json"
 
 
+# A tmux server that does not answer (blocked, or stopped) must not hold a
+# hook or a `stop`: both reads then say unknown, as for any other failure.
+TMUX_READ_TIMEOUT_SECONDS = 2.0
+
+
 def tmux_server_pid() -> int | None:
     """The attached tmux server's pid, or None on ANY failure: tmux missing,
-    non-zero exit, or unparseable output. Verified 2026-09-22 to answer
+    no answer within TMUX_READ_TIMEOUT_SECONDS, non-zero exit, or
+    unparseable output. Verified 2026-09-22 to answer
     correctly even with TMUX_PANE unset."""
     try:
         result = subprocess.run(
@@ -61,8 +67,9 @@ def tmux_server_pid() -> int | None:
             capture_output=True,
             text=True,
             check=False,
+            timeout=TMUX_READ_TIMEOUT_SECONDS,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return None
     if result.returncode != 0:
         return None
@@ -83,8 +90,9 @@ def tmux_server_started() -> int | None:
             capture_output=True,
             text=True,
             check=False,
+            timeout=TMUX_READ_TIMEOUT_SECONDS,
         )
-    except OSError:
+    except (OSError, subprocess.TimeoutExpired):
         return None
     if result.returncode != 0:
         return None

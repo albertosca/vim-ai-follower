@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -168,3 +169,15 @@ def test_tmux_server_started_reads_the_start_time_format() -> None:
     ) as run:
         assert binding.tmux_server_started() == 1792439543
     assert run.call_args.args[0] == ["tmux", "display-message", "-p", "#{start_time}"]
+
+
+@pytest.mark.parametrize("read", ["tmux_server_pid", "tmux_server_started"])
+def test_a_tmux_that_does_not_answer_reads_as_unknown_within_the_bound(read: str) -> None:
+    # A blocked tmux server (sweep-4): the read is bounded, and its timeout
+    # reads as unknown, like any other failure.
+    with patch(
+        "vim_ai_follower.binding.subprocess.run",
+        side_effect=subprocess.TimeoutExpired(["tmux"], 2),
+    ) as run:
+        assert getattr(binding, read)() is None
+    assert run.call_args.kwargs["timeout"] == binding.TMUX_READ_TIMEOUT_SECONDS
