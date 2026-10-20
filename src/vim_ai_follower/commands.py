@@ -847,15 +847,17 @@ def _show_busy(current: FollowerState | None, in_tmux: bool) -> None:
     window: its stderr line is discarded by the keybinding's run-shell, so
     it must be SEEN. tmux: a popup. nvim has no pane to target: "Busy" on the
     status float for as long as a popup would stay, then taken down — unless
-    something else replaced it meanwhile. That wait holds this process, which
-    the keybinding runs in the background (run-shell -b)."""
+    something else replaced it meanwhile — and only on a float showing no
+    other cue: the hook that owns the window has its own up (final m6). That
+    wait holds this process, which the keybinding runs in the background
+    (run-shell -b)."""
     if current is None:
         return
     if current.backend == "nvim":
         surface = status_surface_for(current)
-        surface.set_state("Busy")
-        time.sleep(tmux.POPUP_SECONDS)
-        surface.retire_state("Busy")
+        if surface.set_state_if_idle("Busy"):
+            time.sleep(tmux.POPUP_SECONDS)
+            surface.retire_state("Busy")
         return
     _show_popup(current, "Busy", in_tmux)
 

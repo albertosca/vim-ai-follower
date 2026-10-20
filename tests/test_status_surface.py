@@ -572,3 +572,44 @@ def test_the_box_centers_by_display_cells() -> None:
 
 def test_a_combining_mark_takes_no_cell() -> None:
     assert display_width("e\u0301") == 1
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("showing", ["Writing...", HANDOFF_CUE_READONLY])
+def test_nvim_busy_never_replaces_another_hooks_cue(headless_nvim: str, showing: str) -> None:
+    """Sweep-5 T22 (final m6): a refused press's "Busy" overwrote the cue of
+    the hook that won the slot, and its retire then blanked the body."""
+    NvimStatusSurface(socket_path=headless_nvim, adopted=False).set_state(showing)
+    press = NvimStatusSurface(socket_path=headless_nvim, adopted=False)
+    assert press.set_state_if_idle("Busy") is False
+    status = _status_float(pynvim.attach("socket", path=headless_nvim))
+    assert status is not None and " ".join(status[1]) == showing
+
+
+@pytest.mark.integration
+def test_nvim_busy_shows_on_an_idle_float(headless_nvim: str) -> None:
+    surface = NvimStatusSurface(socket_path=headless_nvim, adopted=False)
+    assert surface.set_state_if_idle("Busy") is True
+    status = _status_float(pynvim.attach("socket", path=headless_nvim))
+    assert status is not None and status[1] == ["Busy"]
+
+
+@pytest.mark.integration
+def test_nvim_busy_loses_to_a_cue_that_lands_after_its_check(headless_nvim: str) -> None:
+    """The interleaving made deterministic: the hook's cue lands between the
+    press's look at the float and its write, and the write is refused."""
+    hook = NvimStatusSurface(socket_path=headless_nvim, adopted=False)
+    hook.set_writer("code-reviewer", "colour78")  # a float with a blank body
+    press = NvimStatusSurface(socket_path=headless_nvim, adopted=False)
+    real_ensure = NvimStatusSurface._ensure_window
+
+    def ensure_after_the_hooks_cue(
+        surface: NvimStatusSurface, nvim: Any, body: list[str]
+    ) -> tuple[Any, Any, int]:
+        hook.set_state("Writing...")
+        return real_ensure(surface, nvim, body)
+
+    with patch.object(NvimStatusSurface, "_ensure_window", ensure_after_the_hooks_cue):
+        assert press.set_state_if_idle("Busy") is False
+    status = _status_float(pynvim.attach("socket", path=headless_nvim))
+    assert status is not None and status[1] == ["Writing..."]

@@ -89,6 +89,23 @@ def _centered_box(lines: list[str], width: int = _MIN_WIDTH) -> list[str]:
     return out[:_WINDOW_HEIGHT]
 
 
+# The compare-and-set of set_state_if_idle: one request, so no other client's
+# write lands between the look and the write. Mirrors _body's reading (the
+# non-blank lines, trimmed, joined by a space).
+_SET_IF_IDLE_LUA = """
+local buffer, text, lines = ...
+local showing = {}
+for _, line in ipairs(vim.api.nvim_buf_get_lines(buffer, 0, -1, true)) do
+  local trimmed = vim.trim(line)
+  if trimmed ~= '' then table.insert(showing, trimmed) end
+end
+local joined = table.concat(showing, ' ')
+if joined ~= '' and joined ~= text then return false end
+vim.api.nvim_buf_set_lines(buffer, 0, -1, true, lines)
+return true
+"""
+
+
 class StatusSurface(Protocol):
     def set_writer(self, label: str, color: str | None) -> None:
         """Persistent border cue: tints the follower's border with the
@@ -106,6 +123,12 @@ class StatusSurface(Protocol):
     def clear(self) -> None:
         """Undo the surface's own cue. Restores what set_state saved, if
         anything; otherwise resets to the neutral (no cue) state."""
+        ...
+
+    def set_state_if_idle(self, text: str) -> bool:
+        """set_state, but only over no other transient cue: a press refused
+        "Busy" must not replace the cue of the hook that won the slot (final
+        m6). True when `text` is now showing."""
         ...
 
     def retire_state(self, *texts: str) -> None:
@@ -146,6 +169,12 @@ class TmuxStatusSurface:
             self._has_saved_state = True
         pane.set_title(text)
         pane.set_window_option(_BORDER_STATUS_OPTION, "top")
+
+    def set_state_if_idle(self, text: str) -> bool:
+        # tmux answers a refused press with a popup, never on the border
+        # (commands._show_busy): nothing here competes with another cue.
+        self.set_state(text)
+        return True
 
     def retire_state(self, *texts: str) -> None:
         # The notice's only trace is the pane title (the hook that set it has
@@ -382,6 +411,25 @@ class NvimStatusSurface:
             _, buffer, width = self._ensure_window(nvim, [text])
             nvim.api.buf_set_lines(buffer, 0, -1, True, _centered_box([text], width))
 
+    def set_state_if_idle(self, text: str) -> bool:
+        """The body is written only while it is blank (or already `text`),
+        checked and written in one request (_SET_IF_IDLE_LUA), so a hook's
+        cue landing after the first look still wins. Looked at first too, so
+        a float showing another cue is not resized for `text`."""
+        with contextlib.suppress(Exception), self._guarded() as nvim:
+            window = self._find_window(nvim)
+            if window is not None and self._body(nvim, window) not in ("", text):
+                return False
+            _, buffer, width = self._ensure_window(nvim, [text])
+            return bool(nvim.exec_lua(_SET_IF_IDLE_LUA, buffer, text, _centered_box([text], width)))
+        return False
+
+    def _body(self, nvim: pynvim.Nvim, window: Any) -> str:
+        buffer = nvim.api.win_get_buf(window)
+        return " ".join(
+            line.strip() for line in nvim.api.buf_get_lines(buffer, 0, -1, True) if line.strip()
+        )
+
     def retire_state(self, *texts: str) -> None:
         """Take down the body when it shows one of `texts`: the float saves
         and restores nothing, so a cue left by a process that has exited (a
@@ -394,12 +442,9 @@ class NvimStatusSurface:
             window = self._find_window(nvim)
             if window is None:
                 return
-            buffer = nvim.api.win_get_buf(window)
-            showing = " ".join(
-                line.strip() for line in nvim.api.buf_get_lines(buffer, 0, -1, True) if line.strip()
-            )
-            if showing not in texts:
+            if self._body(nvim, window) not in texts:
                 return
+            buffer = nvim.api.win_get_buf(window)
             title = nvim.api.win_get_config(window).get("title", [])
             if "".join(chunk[0] for chunk in title) == _DEFAULT_TITLE:
                 self._close(nvim)

@@ -847,7 +847,12 @@ def test_on_nvim_a_busy_refusal_shows_on_the_float_for_a_moment(
     control.save_pending_show_fresh("@1", ("leftover",), 0.15, continuation=True)
     events: list[object] = []
     surface = MagicMock()
-    surface.set_state.side_effect = lambda text: events.append(("set", text))
+
+    def set_if_idle(text: str) -> bool:
+        events.append(("set", text))
+        return True
+
+    surface.set_state_if_idle.side_effect = set_if_idle
     surface.retire_state.side_effect = lambda *texts: events.append(("retire", texts))
     with (
         patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=MagicMock()),
@@ -860,9 +865,34 @@ def test_on_nvim_a_busy_refusal_shows_on_the_float_for_a_moment(
     ):
         assert command({"TMUX_PANE": "%1"}) == 1  # type: ignore[operator]
     assert events == [("set", "Busy"), tmux.POPUP_SECONDS, ("retire", ("Busy",))]
+    surface.set_state.assert_not_called()
     assert _popup_calls(popen) == []
     assert "another animation owns this window" in capsys.readouterr().err
     assert control.has_pending_animation("@1") is True
+
+
+@pytest.mark.parametrize("command", [commands.cmd_pause, commands.cmd_interrupt])
+def test_the_busy_cue_never_replaces_another_hooks_cue(command: object) -> None:
+    """Final m6: the refused press wrote "Busy" over the float the winning
+    hook had just put up ("Writing..."), then retired it, leaving no cue. A
+    float showing another cue keeps it: no wait, nothing retired."""
+    _nvim_follower()
+    control.save_pending_show_fresh("@1", ("leftover",), 0.15, continuation=True)
+    surface = MagicMock()
+    surface.set_state_if_idle.return_value = False
+    with (
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
+        patch("vim_ai_follower.commands.status_surface_for", return_value=surface),
+        patch("vim_ai_follower.commands.time.sleep") as sleep,
+        patch("vim_ai_follower.commands.control.try_acquire_animating", return_value=False),
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+    ):
+        assert command({"TMUX_PANE": "%1"}) == 1  # type: ignore[operator]
+    surface.set_state_if_idle.assert_called_once_with("Busy")
+    sleep.assert_not_called()
+    surface.retire_state.assert_not_called()
+    surface.set_state.assert_not_called()
 
 
 @pytest.mark.parametrize("command", [commands.cmd_pause, commands.cmd_interrupt])
