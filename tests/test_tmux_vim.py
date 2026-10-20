@@ -884,6 +884,26 @@ def test_show_fresh_default_renames_in_place(sent: list[str], follower: TmuxVimF
     assert not any("tabnew" in entry for entry in sent)
 
 
+@pytest.mark.parametrize("window_id", ["@1", ""], ids=["adopted", "no-state"])
+def test_an_unproven_follower_never_renames_the_current_buffer_whatever_it_is_asked(
+    window_id: str,
+) -> None:
+    """In an adopted Vim the current tab is the user's: only a follower the
+    state proves dedicated may type a first file in place (as the nvim
+    backend). The hook passes `shown_any`, which every adoption records True,
+    but a legacy `.pane` (no `adopted`, no `shown_any`) reads as adopted and
+    asked for the rename in place: the user's buffer became Claude's file."""
+    _register_fake_follower("@1", "%2")
+    state.FollowerState.update("@1", adopted=True)
+    follower = TmuxVimFollower(pane_id="%2", window_id=window_id)
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+    ):
+        follower.show_fresh("/tmp/f.txt", "a\n", in_new_tab=False)
+    assert (_rename("/tmp/f.txt", in_new_tab=True, adopted=True), True) in _sent_commands(run)
+
+
 _SWAP_BACK_ON = call_spelled("swap_back_on")
 
 
@@ -921,7 +941,7 @@ def test_show_fresh_turns_swap_back_on_after_the_rename_only_when_adopted(
     ):
         follower.show_fresh("/tmp/f.txt", "a\n")
     commands = _sent_commands(run)
-    rename = commands.index((_rename("/tmp/f.txt", adopted=adopted), True))
+    rename = commands.index((_rename("/tmp/f.txt", adopted=adopted, in_new_tab=adopted), True))
     if adopted:
         assert commands[rename + 1 : rename + 8] == [
             ("Enter", False),

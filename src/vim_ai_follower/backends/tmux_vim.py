@@ -3082,6 +3082,11 @@ class TmuxVimFollower:
         # after it is sent until Vim confirms it landed (_confirm_landing).
         handle = _path_handle(self.pane_id, file_path)
         adopted = self._is_adopted()
+        # Only a follower the state proves dedicated types a first file in
+        # place: in an adopted Vim the current tab is the user's, and a
+        # legacy `.pane` (read as adopted, `shown_any` unset) asked for the
+        # rename there, turning the user's buffer into Claude's file.
+        in_new_tab = in_new_tab or adopted
         pane.send_line(
             _call_line("rename", handle.name, _case_folds(file_path), int(in_new_tab), int(adopted))
         )
