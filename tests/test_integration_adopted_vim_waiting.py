@@ -202,3 +202,38 @@ def test_a_vim_running_an_external_command_is_left_alone(world: E2EFollower) -> 
         assert report["lines"] == "aaa", report
     finally:
         world.tmux("send-keys", "-t", pane_id, "Escape")
+
+
+def test_a_blank_screen_with_a_normal_mode_file_is_not_waiting(world: E2EFollower) -> None:
+    # Final-fix wave B residual: a Vim that draws nothing in Normal mode (an
+    # empty buffer, 'fillchars' eob blank, no ruler, status or tab line) read
+    # as Ex mode after a resize and every hook skipped it. Its trusted mode
+    # file says Normal mode, which outranks the blank screen.
+    _question_seconds(world, 3)
+    users_file = world.workdir / "a.txt"
+    users_file.write_text("")
+    claudes_file = world.workdir / "file.py"
+    claudes_file.write_text("one\ntwo\n")
+    pane_id, observed = _users_vim(world, users_file, claudes_file, showmode=False)
+    _adopted_state(world, pane_id, claudes_file)
+    _sourced(world, pane_id, observed, users_file)
+    world.tmux(
+        "send-keys",
+        "-t",
+        pane_id,
+        "-l",
+        ":set fillchars=eob:\\  noruler laststatus=0 showtabline=0 | redraw!\r",
+    )
+    world.wait_until(
+        lambda: not world.tmux("capture-pane", "-p", "-t", pane_id).stdout.strip(),
+        "a blank screen",
+        timeout=10.0,
+    )
+    _, state = _edit_answered(world, claudes_file, "unasked")
+    log = _hook_log(world)
+    assert "Traceback" not in log, log
+    assert "waiting on its user" not in log, log
+    assert state.stale_files == (), state
+    _observation(
+        world, observed, lambda report: report["claudes"] == "one|TWO", "Claude's edit", 10.0
+    )

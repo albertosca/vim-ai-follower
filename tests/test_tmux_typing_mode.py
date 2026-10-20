@@ -785,3 +785,24 @@ def test_the_mode_file_stamp_is_its_write_time_or_none(tmp_path: Path) -> None:
         (tmp_path / "mode-4321.txt").write_text("4321 i\n")
         os.utime(tmp_path / "mode-4321.txt", ns=(5_000_000_000, 7_000_000_000))
         assert tmux_vim.mode_file_written(4321) == 7_000_000_000
+
+
+@pytest.mark.parametrize(
+    ("recorded", "reason"),
+    [("n", None), ("i", "in insert mode"), (None, tmux_vim._BLANK_REASON)],
+    ids=["normal-file", "typing-file", "no-file"],
+)
+def test_a_blank_screen_waits_only_without_a_trusted_mode_file(
+    recorded: str | None, reason: str | None
+) -> None:
+    vim = _VimProcess(pid=202, started=time.time() - 60)
+    with (
+        patch("vim_ai_follower.backends.tmux_vim._foreground_vim", return_value=vim),
+        patch("vim_ai_follower.backends.tmux_vim._recorded_mode", return_value=recorded),
+        patch(
+            "vim_ai_follower.backends.tmux_vim._typing_on_screen",
+            return_value=tmux_vim._BLANK_REASON,
+        ),
+        patch("vim_ai_follower.backends.tmux_vim._runs_a_terminal_job", return_value=False),
+    ):
+        assert tmux_vim.typing_mode("%5") == reason

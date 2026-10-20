@@ -2420,6 +2420,11 @@ def typing_mode(pane_id: str) -> str | None:
     # m9: 'eventignore' holding ModeChanged, the user's `:au!` of our
     # group), so the screen is read too; it types nothing.
     on_screen = _typing_on_screen(pane_id, vim_pid=vim.pid if vim is not None else None)
+    # A blank screen is Ex mode only by elimination: a trusted file naming
+    # any other mode outranks it (an empty buffer under 'fillchars' eob
+    # blank, no ruler, status or tab line draws nothing in Normal mode).
+    if on_screen == _BLANK_REASON and recorded is not None:
+        return None
     if on_screen is None and vim is not None and recorded is None and _runs_a_terminal_job(vim):
         return TERMINAL_JOB_REASON
     return on_screen
