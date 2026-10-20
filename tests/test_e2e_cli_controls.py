@@ -736,7 +736,7 @@ def _wait_for_handoff_cue(world: E2EFollower, pane: str) -> None:
         lambda: (
             world.tmux("display-message", "-p", "-t", pane, "#{pane_title}")
             .stdout.strip()
-            .startswith("Claude waiting")
+            .startswith("Claude waits")
         ),
         "the hand-off cue on the pane border",
     )

@@ -1624,7 +1624,7 @@ def test_handoff_shows_a_durable_cue_and_periodic_reminders(
         for command_line in tmux_calls
         if command_line[:2] == ["tmux", "select-pane"] and "-T" in command_line
     ]
-    assert any("Claude waiting" in command_line[-1] for command_line in set_titles)  # cue up
+    assert any("Claude waits" in command_line[-1] for command_line in set_titles)  # cue up
     assert set_titles[-1][-1] == "@1"  # restored to the pre-handoff title afterwards
     border_sets = [
         command_line for command_line in tmux_calls if command_line[:2] == ["tmux", "set-option"]
@@ -1634,7 +1634,7 @@ def test_handoff_shows_a_durable_cue_and_periodic_reminders(
     reminder_popups = [
         recorded_call.args[0]
         for recorded_call in popen.call_args_list
-        if any("Claude waiting" in str(argument) for argument in recorded_call.args[0])
+        if any("Claude waits" in str(argument) for argument in recorded_call.args[0])
     ]
     assert len(reminder_popups) >= 1  # at least one periodic reminder fired
 

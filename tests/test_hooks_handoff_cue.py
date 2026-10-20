@@ -18,7 +18,17 @@ from vim_ai_follower.session import Session
 
 
 def test_the_cues_differ_only_in_the_bang() -> None:
-    assert HANDOFF_CUE.replace(":w ", ":w! ") == HANDOFF_CUE_READONLY
+    assert HANDOFF_CUE.replace(":w(", ":w!(") == HANDOFF_CUE_READONLY
+
+
+@pytest.mark.parametrize("cue", [HANDOFF_CUE, HANDOFF_CUE_READONLY])
+def test_the_handoff_cue_says_a_save_may_ask_y(cue: str) -> None:
+    """Vim's `:w` over the file Claude wrote may ask "The file has been
+    changed since reading it!!! Do you really want to write to it (y/n)?",
+    and the save waits for a `y`; the cue says so, within the 43 characters
+    a 49-column border showed whole under tmux's default format."""
+    assert "(y)" in cue
+    assert len(cue) <= 43
 
 
 @pytest.mark.parametrize(("readonly", "cue"), [(True, HANDOFF_CUE_READONLY), (False, HANDOFF_CUE)])

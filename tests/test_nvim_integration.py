@@ -312,9 +312,9 @@ def test_set_writer_opens_a_floating_window_with_the_label_then_clear_closes_it(
     # animation and lied (2026-08-25 battery Check 5 finding).
     assert not any("Writing..." in line for line in lines)
 
-    surface.set_state("Claude waiting — :w releases · S discards")
+    surface.set_state("Claude waits — :w(y) releases · S discards")
     lines_with_state = nvim.api.buf_get_lines(buffer, 0, -1, True)
-    assert any("Claude waiting" in line for line in lines_with_state)
+    assert any("Claude waits" in line for line in lines_with_state)
     # still exactly one floating status window, not a second one stacked on top
     assert len(_floating_windows(nvim)) == 1
 

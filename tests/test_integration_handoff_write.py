@@ -1,4 +1,4 @@
-"""The hand-off cue says ":w releases": on a file a Write created, plain `:w`
+"""The hand-off cue says ":w(y) releases": on a file a Write created, plain `:w`
 must work, against a real tmux+vim at the follower pane's 49 columns.
 
 show_fresh names its buffer with `:file`, and renaming a buffer onto a path

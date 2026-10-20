@@ -722,10 +722,15 @@ def _follower_stopped(current: FollowerState, session: Session) -> bool:
 
 _HANDOFF_POLL_SECONDS = 0.2
 _HANDOFF_REMINDER_POLLS = 150  # ~30s at the poll cadence above
-HANDOFF_CUE = "Claude waiting \u2014 :w releases \u00b7 S discards"
+# "(y)": Vim may ask "The file has been changed since reading it!!! Do you
+# really want to write to it (y/n)?" before the save, since only a read or
+# a write updates the time it compares. A 49-column border under tmux's
+# default format (pane index and quotes) showed the 43-character readonly cue
+# whole and cut a 45-character one (measured 2026-10-20), hence "waits".
+HANDOFF_CUE = "Claude waits \u2014 :w(y) releases \u00b7 S discards"
 # The same cue when the handed-over buffer is readonly by the USER's own
 # setting (an adopted editor): a plain `:w` fails there with E45.
-HANDOFF_CUE_READONLY = "Claude waiting \u2014 :w! releases \u00b7 S discards"
+HANDOFF_CUE_READONLY = "Claude waits \u2014 :w!(y) releases \u00b7 S discards"
 
 # Shown when an adopted editor's buffer is not the base of Claude's edit (see
 # _leave_adopted_buffer_alone). 40 characters: measured in a real 49-column

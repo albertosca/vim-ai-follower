@@ -99,7 +99,7 @@ DEDICATED_COMMAND = f"vim --cmd {shlex.quote(DEDICATED_MARK)}"
 #
 # Whose readonly it is decides everything: the follower sets 'readonly' itself
 # (ensure_showing's lock, show_fresh's relock), and handing THAT back at an
-# interrupt turns the cue's ":w releases" into E45 with Claude still blocked.
+# interrupt turns the cue's ":w(y) releases" into E45 with Claude still blocked.
 # The follower therefore marks its own claim on the option in `b:vaf_ro_ours`:
 # 1 while its readonly lock is on, 2 while an animation has it unlocked, 0 or
 # absent when the value is the user's. A buffer variable survives every reload

@@ -53,8 +53,8 @@ animating_state() {
 }
 
 wait_for_state() {
-    local want=$1 i
-    for ((i = 0; i < 300; i++)); do
+    local want=$1 index
+    for ((index = 0; index < 300; index++)); do
         [[ $(animating_state) == "$want" ]] && return 0
         sleep 0.1
     done
@@ -66,8 +66,8 @@ wait_for_state() {
 # `needle`. The edits animate in a few seconds at --speed normal, so the
 # controls are keyed to what is on screen rather than to a sleep.
 wait_for_screen() {
-    local needle=$1 i
-    for ((i = 0; i < 300; i++)); do
+    local needle=$1 index
+    for ((index = 0; index < 300; index++)); do
         tmux capture-pane -p -t "$follower" | grep -qF -- "$needle" && return 0
         sleep 0.05
     done
@@ -86,9 +86,9 @@ press_prefix() {
 
 # The "user" typing into the follower pane, one key at a time.
 type_into() {
-    local pane=$1 text=$2 i
-    for ((i = 0; i < ${#text}; i++)); do
-        tmux send-keys -t "$pane" -l "${text:i:1}"
+    local pane=$1 text=$2 index
+    for ((index = 0; index < ${#text}; index++)); do
+        tmux send-keys -t "$pane" -l "${text:index:1}"
         sleep 0.06
     done
 }
@@ -199,11 +199,11 @@ press_prefix S
 wait_for_state handoff
 sleep 2.5
 
-# Save with whatever the border cue says releases Claude (":w releases" or
-# ":w! releases"), read from the follower pane's real title.
+# Save with whatever the border cue says releases Claude (":w(y) releases" or
+# ":w!(y) releases"), read from the follower pane's real title.
 cue=$(tmux display-message -p -t "$follower" '#{pane_title}')
 save=":w"
-[[ $cue == *":w! releases"* ]] && save=":w!"
+[[ $cue == *":w!("* ]] && save=":w!"
 you_do "type a line of your own, then $save"
 tmux send-keys -t "$follower" G o
 type_into "$follower" "# you: negative n still needs a test"
@@ -214,7 +214,7 @@ tmux send-keys -t "$follower" Enter
 # Vim may stop the save at "file has been changed since reading it ... (y/n)"
 # (a known BACKLOG item: the buffer's timestamp predates Claude's write).
 # When it does, the "user" answers y on screen rather than the demo hiding it.
-for ((i = 0; i < 60; i++)); do
+for ((index = 0; index < 60; index++)); do
     kill -0 "$tests" 2> /dev/null || break
     if tmux capture-pane -p -t "$follower" | grep -qF -- "(y/n)"; then
         sleep 1.5
