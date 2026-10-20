@@ -896,6 +896,56 @@ def test_a_real_vim_drops_the_dispatchers_of_other_versions_and_nothing_else(
     assert out.read_text().splitlines() == ["1", "1", "1", "0", "1", "1", "1"]
 
 
+def _has_locale(name: str) -> bool:
+    try:
+        listed = subprocess.run(
+            ["locale", "-a"], capture_output=True, text=True, check=False, timeout=10
+        ).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return name.lower() in listed.lower().split()
+
+
+def test_the_script_template_is_ascii_so_it_needs_no_scriptencoding() -> None:
+    """Sweep 5: `scriptencoding utf-8` made a Vim whose 'encoding' is sjis
+    convert every line of the script, and U+005C has no Shift-JIS code, so
+    every backslash read as `?` (E488 in s:mode_class): no dispatcher was
+    defined and every navigation failed. The template is ASCII, and the one
+    non-ASCII text it can carry is the cache directory's path, whose bytes
+    must reach the filesystem unconverted."""
+    assert tmux_vim._VIM_SCRIPT.isascii()
+    assert "scriptencoding" not in tmux_vim._VIM_SCRIPT
+
+
+@pytest.mark.integration
+@pytest.mark.skipif(not _has_locale("ja_JP.SJIS"), reason="no ja_JP.SJIS locale")
+def test_a_shift_jis_vim_defines_the_dispatcher_and_drops_older_ones(
+    home_cache: Path, tmp_path: Path
+) -> None:
+    cache.CACHE_DIRECTORY.mkdir(parents=True)
+    name, text = tmux_vim._vim_functions()
+    older = cache.CACHE_DIRECTORY / "vaf-0a0b0c.vim"
+    older.write_text("function! VafFollower_0a0b0c(op, ...) abort\nendfunction\n")
+    out = tmp_path / "out.txt"
+    subprocess.run(
+        [
+            "vim", "-Nu", "NONE", "-i", "NONE", "-es",
+            "-c", f"source {older}",
+            "-c", f"source {tmux_vim._script_file(name, text)}",
+            "-c", f"call writefile([&encoding, exists('*VafFollower_0a0b0c') . '',"
+            f" exists('*{name}') . '', len(v:errmsg) . ''], '{out}')",
+            "-c", "qa!",
+        ],
+        check=False,
+        timeout=30,
+        stdin=subprocess.DEVNULL,
+        env={**os.environ, "HOME": str(home_cache), "LANG": "ja_JP.SJIS", "LC_ALL": "ja_JP.SJIS"},
+    )  # fmt: skip
+    encoding, older_left, current, error_length = out.read_bytes().decode("ascii").split()
+    assert encoding in ("sjis", "cp932")
+    assert (older_left, current, error_length) == ("0", "1", "0")
+
+
 @pytest.mark.integration
 @pytest.mark.parametrize("vim_home", ["hooks", "another"])
 @pytest.mark.parametrize("script_left", [False, True], ids=["script-gone", "script-there"])

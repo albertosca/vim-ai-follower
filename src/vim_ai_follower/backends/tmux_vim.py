@@ -1293,7 +1293,15 @@ endif
 # by then it is the user's code. No variable records the names, so nothing
 # new is left in the user's namespace.
 #
-# Everything after `scriptencoding` is inside `if 1` … `endif`. A Vim built
+# No `scriptencoding` (sweep 5): the template is ASCII
+# (test_the_script_template_is_ascii_so_it_needs_no_scriptencoding), and
+# `scriptencoding utf-8` made a Vim whose 'encoding' is sjis (LANG=ja_JP.SJIS)
+# convert every line, turning each backslash into `?` (U+005C has no
+# Shift-JIS code): E488, no dispatcher, every navigation failed. The cache
+# directory's path is the only text that can be non-ASCII, and its bytes
+# must reach the filesystem unconverted.
+#
+# Everything after the header comment is inside `if 1` … `endif`. A Vim built
 # without +eval (Ubuntu's vim-tiny) has no `:function`, so sourcing the
 # script ran every helper's BODY as top-level Ex commands (`edit!`, `%d _`)
 # and emptied the user's buffer, unsaved text included; such a Vim skips
@@ -1306,7 +1314,6 @@ endif
 _VIM_SCRIPT = (
     "\" vim-ai-follower's tmux backend: written to its cache directory and\n"
     '" sourced once per Vim (see backends/tmux_vim.py). Do not edit.\n'
-    "scriptencoding utf-8\n"
     # A Vim without +eval skips everything up to the matching endif.
     "if 1\n"
     "let s:cpo_save = &cpo\n"
