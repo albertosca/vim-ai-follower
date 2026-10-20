@@ -138,13 +138,14 @@ class SocketPathBlocked(StandaloneLaunchFailed):
 
 class SplitNvimNotStarted(StandaloneLaunchFailed):
     """The nvim on this window's launch socket answers but has not finished
-    starting: a split left open at its startup prompt (an init error, a swap
-    ATTENTION, an `input()`). Neither attached nor split beside."""
+    starting: a split, or a standalone window, left open at its startup
+    prompt (an init error, a swap ATTENTION, an `input()`). Neither attached
+    nor launched again beside it."""
 
-    def __init__(self, sock: str) -> None:
+    def __init__(self, sock: str, place: str = "pane") -> None:
         super().__init__(
-            f"nvim on {sock} has not finished starting (a prompt in its pane?); "
-            "press Enter there or close the pane"
+            f"nvim on {sock} has not finished starting (a prompt in its {place}?); "
+            f"press Enter there or close the {place}"
         )
         self.sock = sock
 
@@ -799,20 +800,23 @@ def clear_launch_backoff(window_id: str) -> None:
 def answering_socket(window_id: str) -> str | None:
     """This window's standalone socket when an nvim already answers on it —
     typically one a slow launcher bound after the caller stopped waiting.
-    An nvim, not whatever accepts a connection there."""
+    An nvim that has finished starting (nvim_ready), not whatever accepts a
+    connection there, nor an nvim still running its init."""
     sock = str(launch_socket_path(window_id))
-    return sock if nvim_answers(sock) else None
+    return sock if nvim_ready(sock) else None
 
 
 def launch_standalone_nvim(
     window_id: str, wait_seconds: float = _STANDALONE_SOCKET_WAIT_SECONDS
 ) -> str:
     sock = str(_socket_path_in_existing_dir(window_id))
-    if nvim_answers(sock, LIVENESS_TIMEOUT_SECONDS):
+    if nvim_ready(sock):
         # Already up (a launch that outlived its caller's wait): attach. A
         # second launch's nvim would die on "address already in use" and
         # stay on screen as an orphan error window.
         return sock
+    if last_probe_verdict(sock) == "answers":
+        raise SplitNvimNotStarted(sock, place="window")
     _remove_dead_socket(sock)
     command = standalone_launch_command(
         sock,
@@ -822,13 +826,18 @@ def launch_standalone_nvim(
     )
     subprocess.run(command, check=True)
     deadline = time.monotonic() + wait_seconds
+    # Ready, not merely answering: like the split (nvim_ready), a TUI nvim
+    # answers get_mode for a few ms before its init runs (measured on this
+    # path too: 1 launch in 10 returned early).
     with _one_scan_until(deadline):
-        while not nvim_answers(sock) and time.monotonic() < deadline:
+        while not nvim_ready(sock) and time.monotonic() < deadline:
             time.sleep(_SOCKET_POLL_INTERVAL_SECONDS)
-        answered = nvim_answers(sock)
-    if not answered:
-        # The launcher exited 0 (nvim-qt that found no nvim, a terminal whose
-        # nvim died on a config error): there is nothing to attach to, and a
-        # follower persisted here would point at a socket no one listens on.
-        raise NvimNeverListened(sock, command[0], wait_seconds)
-    return sock
+        ready = nvim_ready(sock)
+    if ready:
+        return sock
+    if last_probe_verdict(sock) == "answers":
+        raise SplitNvimNotStarted(sock, place="window")
+    # The launcher exited 0 (nvim-qt that found no nvim, a terminal whose
+    # nvim died on a config error): there is nothing to attach to, and a
+    # follower persisted here would point at a socket no one listens on.
+    raise NvimNeverListened(sock, command[0], wait_seconds)

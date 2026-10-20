@@ -325,7 +325,9 @@ class FakeNvim:
     `reply="hang up"` closes the connection without a word, which the
     client may see as a refused send or as an empty read, whichever the
     scheduler picks; `reply="hang up after the request"` reads the request
-    first, so the client's read is always the empty one."""
+    first, so the client's read is always the empty one. `reply="started"`
+    also answers `nvim_get_vvar('vim_did_enter')` with 1: an nvim that has
+    finished starting (nvim_connect.nvim_ready), not one still in its init."""
 
     def __init__(self, path: Path, reply: Any = "mode") -> None:
         self.path = path
@@ -366,7 +368,12 @@ class FakeNvim:
                 request = client.recv(4096)
                 # [0, msgid, ...]: a fixarray, the request type, a fixint msgid
                 message_id = request[2]
-                client.sendall(nvim_mode_reply(message_id) if self.reply == "mode" else self.reply)
+                if self.reply == "started" and b"vim_did_enter" in request:
+                    client.sendall(bytes([0x94, 0x01, message_id, 0xC0, 0x01]))
+                elif self.reply in ("mode", "started"):
+                    client.sendall(nvim_mode_reply(message_id))
+                else:
+                    client.sendall(self.reply)
 
     def close(self) -> None:
         self.closing.set()

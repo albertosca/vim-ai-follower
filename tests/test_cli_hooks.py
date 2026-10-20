@@ -2431,7 +2431,7 @@ def test_an_nvim_that_binds_after_the_auto_open_gave_up_is_attached_despite_the_
         ):
             assert hooks._maybe_auto_open(standalone, "/tmp/f.txt", loaded_config) is None
             assert nvim_connect.launch_backoff_active("term-x")
-            late_nvim.enter_context(fake_nvim(sock))  # the slow nvim finally answers
+            late_nvim.enter_context(fake_nvim(sock, reply="started"))  # the slow nvim is up
             # The launcher step of hook 2's auto-open (the rest of it would
             # talk RPC to this stand-in; the e2e drives a real nvim).
             assert hooks._launch_standalone_or_log("term-x") == str(sock)

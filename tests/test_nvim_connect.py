@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import os
 import shutil
 import signal
@@ -228,7 +229,9 @@ def _assert_no_nvim_ever_listens(sock_path: Path) -> None:
         patch("vim_ai_follower.backends.nvim_connect.time.sleep") as fake_sleep,
         patch(
             "vim_ai_follower.backends.nvim_connect.time.monotonic",
-            side_effect=[0.0, 9.9, 10.1],
+            # nvim_ready reads the clock once per probe: before the launch,
+            # the deadline, then probe/check pairs, then the last probe.
+            side_effect=[0.0, 0.0, 0.0, 9.9, 9.9, 10.1, 10.1],
         ),
         patch(
             "vim_ai_follower.backends.nvim_connect.shutil.which", return_value="/usr/bin/nvim-qt"
@@ -306,7 +309,7 @@ def test_launch_standalone_nvim_is_not_fooled_by_a_dead_nvims_socket_file() -> N
             patch("vim_ai_follower.backends.nvim_connect.time.sleep"),
             patch(
                 "vim_ai_follower.backends.nvim_connect.time.monotonic",
-                side_effect=[0.0, 99.0],
+                side_effect=[0.0, 0.0, 0.0, 99.0, 99.0],
             ),
             pytest.raises(nvim_connect.NvimNeverListened),
         ):
@@ -317,7 +320,7 @@ def test_launch_standalone_nvim_is_not_fooled_by_a_dead_nvims_socket_file() -> N
 def test_launch_standalone_nvim_never_removes_a_socket_someone_answers_on() -> None:
     with _short_socket_dir() as directory:
         sock_path = directory / "nvim-@1.sock"
-        with fake_nvim(sock_path):
+        with fake_nvim(sock_path, reply="started"):
             launcher = MagicMock()
             with _patched_launcher(sock_path, launcher):
                 assert nvim_connect.launch_standalone_nvim("@1") == str(sock_path)
@@ -325,6 +328,27 @@ def test_launch_standalone_nvim_never_removes_a_socket_someone_answers_on() -> N
             # Adopted, not relaunched: a second window's nvim would die on
             # "address already in use" and stay on screen as an orphan.
             launcher.assert_not_called()
+
+
+def test_launch_standalone_nvim_neither_adopts_nor_relaunches_an_nvim_that_has_not_started() -> (
+    None
+):
+    """An nvim on the launch socket that answers but never entered (its
+    window stopped at a startup prompt): attaching would hold every request
+    behind the prompt, and a second launch would die on "address already in
+    use"."""
+    with _short_socket_dir() as directory:
+        sock_path = directory / "nvim-@1.sock"
+        with fake_nvim(sock_path):
+            launcher = MagicMock()
+            with (
+                _patched_launcher(sock_path, launcher),
+                pytest.raises(nvim_connect.SplitNvimNotStarted) as raised,
+            ):
+                nvim_connect.launch_standalone_nvim("@1")
+            launcher.assert_not_called()
+            assert sock_path.is_socket()
+        assert str(raised.value).endswith("press Enter there or close the window")
 
 
 def test_launch_standalone_nvim_reports_a_socket_path_it_cannot_clear() -> None:
@@ -349,8 +373,8 @@ def test_launch_standalone_nvim_attaches_once_the_socket_accepts(tmp_path: Path)
     with (
         _patched_launcher(sock_path, lambda *_a, **_k: None),
         patch(
-            "vim_ai_follower.backends.nvim_connect.nvim_answers",
-            # not up before the launch, then two polls before it answers
+            "vim_ai_follower.backends.nvim_connect.nvim_ready",
+            # not up before the launch, then two polls before it is ready
             side_effect=[False, False, False, True, True],
         ),
         patch("vim_ai_follower.backends.nvim_connect.time.sleep") as fake_sleep,
@@ -366,7 +390,7 @@ def test_launch_standalone_nvim_honors_a_shorter_wait(tmp_path: Path) -> None:
         patch("vim_ai_follower.backends.nvim_connect.time.sleep"),
         patch(
             "vim_ai_follower.backends.nvim_connect.time.monotonic",
-            side_effect=[0.0, 3.1],
+            side_effect=[0.0, 0.0, 0.0, 3.1, 3.1],
         ),
         pytest.raises(nvim_connect.NvimNeverListened) as raised,
     ):
@@ -382,9 +406,7 @@ def test_launch_standalone_nvim_detects_iterm_from_term_program(tmp_path: Path) 
             return_value=sock_path,
         ),
         patch("vim_ai_follower.backends.nvim_connect.subprocess.run") as run,
-        patch(
-            "vim_ai_follower.backends.nvim_connect.nvim_answers", side_effect=[False, True, True]
-        ),
+        patch("vim_ai_follower.backends.nvim_connect.nvim_ready", side_effect=[False, True, True]),
         patch("vim_ai_follower.backends.nvim_connect.shutil.which", return_value=None),
         patch("vim_ai_follower.backends.nvim_connect._vimr_app_present", return_value=False),
         patch.dict("os.environ", {"TERM_PROGRAM": "iTerm.app"}, clear=False),
@@ -402,9 +424,7 @@ def test_launch_standalone_nvim_falls_back_to_terminal_when_not_iterm(tmp_path: 
             return_value=sock_path,
         ),
         patch("vim_ai_follower.backends.nvim_connect.subprocess.run") as run,
-        patch(
-            "vim_ai_follower.backends.nvim_connect.nvim_answers", side_effect=[False, True, True]
-        ),
+        patch("vim_ai_follower.backends.nvim_connect.nvim_ready", side_effect=[False, True, True]),
         patch("vim_ai_follower.backends.nvim_connect.shutil.which", return_value=None),
         patch("vim_ai_follower.backends.nvim_connect._vimr_app_present", return_value=False),
         patch.dict("os.environ", {"TERM_PROGRAM": "Apple_Terminal"}, clear=False),
@@ -602,7 +622,11 @@ def test_launch_standalone_nvim_creates_the_socket_directory_first(tmp_path: Pat
             "vim_ai_follower.backends.nvim_connect.shutil.which", return_value="/usr/bin/nvim-qt"
         ),
         patch("vim_ai_follower.backends.nvim_connect._vimr_app_present", return_value=False),
-        patch("vim_ai_follower.backends.nvim_connect.time.monotonic", side_effect=[0.0, 0.0, 99.0]),
+        patch(
+            "vim_ai_follower.backends.nvim_connect.time.monotonic",
+            # the probe before the launch, the deadline, then past it
+            side_effect=itertools.chain([0.0, 0.0], itertools.repeat(99.0)),
+        ),
         pytest.raises(nvim_connect.NvimNeverListened),  # the recorder starts no nvim
     ):
         nvim_connect.launch_standalone_nvim("term-x")
@@ -1237,7 +1261,10 @@ def test_answering_socket_adopts_only_an_nvim(monkeypatch: pytest.MonkeyPatch) -
         with fake_nvim(path, reply=None):
             assert nvim_connect.answering_socket("@1") is None
         path.unlink()
-        with fake_nvim(path):
+        with fake_nvim(path):  # answers, but has not finished starting
+            assert nvim_connect.answering_socket("@1") is None
+        path.unlink()
+        with fake_nvim(path, reply="started"):
             assert nvim_connect.answering_socket("@1") == str(path)
 
 
