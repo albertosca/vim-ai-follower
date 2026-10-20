@@ -105,13 +105,13 @@ def _sent_commands(run_mock: MagicMock) -> list[tuple[str, bool]]:
     """(text, literal) pairs, in order, for send-keys calls targeting %2."""
     commands = []
     for call in run_mock.call_args_list:
-        cmd = call.args[0]
-        if cmd[:4] != ["tmux", "send-keys", "-t", "%2"]:
+        command = call.args[0]
+        if command[:4] != ["tmux", "send-keys", "-t", "%2"]:
             continue
-        if "-l" in cmd:
-            commands.append((resolve_typed_paths(cmd[6]), True))
+        if "-l" in command:
+            commands.append((resolve_typed_paths(command[6]), True))
         else:
-            commands.append((cmd[4], False))
+            commands.append((command[4], False))
     return commands
 
 
@@ -191,7 +191,7 @@ def test_apply_edit_relocks_after_pause_and_resume(tmp_path: Path) -> None:
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     calls = {"n": 0}
 
-    def _pause_then_resume(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _pause_then_resume(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         return "pause" if calls["n"] in (1, 2) else None
 
@@ -213,7 +213,7 @@ def test_apply_edit_renavigates_to_its_own_tab_on_resume(tmp_path: Path) -> None
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     calls = {"n": 0}
 
-    def _pause_then_resume(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _pause_then_resume(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         return "pause" if calls["n"] in (1, 2) else None
 
@@ -225,7 +225,9 @@ def test_apply_edit_renavigates_to_its_own_tab_on_resume(tmp_path: Path) -> None
         result = follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
     commands = _sent_commands(run)
     assert result.outcome == "completed"
-    tab_drops = [i for i, c in enumerate(commands) if c == (_goto("/tmp/f.txt"), True)]
+    tab_drops = [
+        index for index, command in enumerate(commands) if command == (_goto("/tmp/f.txt"), True)
+    ]
     # once for the initial goto_file preamble, once more for the resume
     assert len(tab_drops) == 2
     # the second tab drop happens after the pause and before the relock
@@ -458,8 +460,8 @@ def test_resume_at_pace_zero_stays_zero_even_when_state_says_lento(tmp_path: Pat
 
 def test_resume_apply_edit_replays_remaining_ops_and_relocks(tmp_path: Path) -> None:
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
-    pending = control.PendingApplyEdit(ops=[op], pace_seconds=0.0)
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    pending = control.PendingApplyEdit(ops=[operation], pace_seconds=0.0)
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
@@ -534,8 +536,8 @@ def test_resume_without_reload_relocks_without_reading_disk(
 
 def test_resume_navigates_to_the_pending_files_tab_first(tmp_path: Path) -> None:
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
-    pending = control.PendingApplyEdit(ops=[op], pace_seconds=0.0, file_path="/tmp/f.py")
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    pending = control.PendingApplyEdit(ops=[operation], pace_seconds=0.0, file_path="/tmp/f.py")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
@@ -559,8 +561,8 @@ def test_resume_navigates_to_the_pending_files_tab_first(tmp_path: Path) -> None
 
 def test_resume_skips_navigation_when_pending_has_no_file_path(tmp_path: Path) -> None:
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
-    pending = control.PendingApplyEdit(ops=[op], pace_seconds=0.0)
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    pending = control.PendingApplyEdit(ops=[operation], pace_seconds=0.0)
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
@@ -574,8 +576,8 @@ def test_resume_skips_navigation_when_pending_has_no_file_path(tmp_path: Path) -
 
 def test_resume_skips_relock_when_interrupted_again(tmp_path: Path) -> None:
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
-    pending = control.PendingApplyEdit(ops=[op], pace_seconds=0.0)
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    pending = control.PendingApplyEdit(ops=[operation], pace_seconds=0.0)
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
@@ -943,7 +945,7 @@ def test_a_failed_goto_after_a_pause_gives_paste_and_readonly_back(adopted: bool
         follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     checks = {"count": 0}
 
-    def pause_then_resume(window_id: str, base_dir: Path | None = None) -> str | None:
+    def pause_then_resume(window_id: str, base_directory: Path | None = None) -> str | None:
         checks["count"] += 1
         return "pause" if checks["count"] in (1, 2) else None
 
@@ -975,7 +977,7 @@ def test_a_stop_during_the_post_pause_goto_leaves_no_remainder_behind() -> None:
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     checks = {"count": 0}
 
-    def pause_then_resume(window_id: str, base_dir: Path | None = None) -> str | None:
+    def pause_then_resume(window_id: str, base_directory: Path | None = None) -> str | None:
         checks["count"] += 1
         return "pause" if checks["count"] in (1, 2) else None
 

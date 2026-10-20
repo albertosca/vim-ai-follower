@@ -8,8 +8,8 @@ from vim_ai_follower import config
 
 
 def test_load_returns_defaults_when_no_file(tmp_path: Path) -> None:
-    cfg = config.load(tmp_path / "missing.json")
-    assert cfg == config.Config(
+    loaded_config = config.load(tmp_path / "missing.json")
+    assert loaded_config == config.Config(
         on_failure="silent",
         speed="rapido",
         open_policy="manual",
@@ -24,23 +24,31 @@ def test_load_returns_defaults_when_no_file(tmp_path: Path) -> None:
 def test_load_reads_new_keys(tmp_path: Path) -> None:
     path = tmp_path / "config.json"
     path.write_text('{"open_policy": "code", "adopt_existing": true, "max_tabs": 3}')
-    cfg = config.load(path)
-    assert (cfg.open_policy, cfg.adopt_existing, cfg.max_tabs) == ("code", True, 3)
+    loaded_config = config.load(path)
+    assert (loaded_config.open_policy, loaded_config.adopt_existing, loaded_config.max_tabs) == (
+        "code",
+        True,
+        3,
+    )
 
 
 def test_load_falls_back_on_invalid_values(tmp_path: Path) -> None:
     path = tmp_path / "config.json"
     path.write_text('{"open_policy": "sometimes", "adopt_existing": "yes", "max_tabs": 0}')
-    cfg = config.load(path)
-    assert (cfg.open_policy, cfg.adopt_existing, cfg.max_tabs) == ("manual", False, 5)
+    loaded_config = config.load(path)
+    assert (loaded_config.open_policy, loaded_config.adopt_existing, loaded_config.max_tabs) == (
+        "manual",
+        False,
+        5,
+    )
 
 
 def test_load_falls_back_on_invalid_on_failure_and_speed(tmp_path: Path) -> None:
     path = tmp_path / "config.json"
     path.write_text('{"on_failure": "bogus", "speed": "ludicrous"}')
-    cfg = config.load(path)
-    assert cfg.on_failure == config.DEFAULT_ON_FAILURE
-    assert cfg.speed == config.DEFAULT_SPEED
+    loaded_config = config.load(path)
+    assert loaded_config.on_failure == config.DEFAULT_ON_FAILURE
+    assert loaded_config.speed == config.DEFAULT_SPEED
 
 
 def test_load_rejects_bool_max_tabs(tmp_path: Path) -> None:
@@ -90,28 +98,28 @@ def test_backend_defaults_to_tmux_and_validates(tmp_path: Path) -> None:
 
 
 def test_nvim_window_defaults_to_auto(tmp_path: Path) -> None:
-    cfg = config.load(tmp_path / "absent.json")
-    assert cfg.nvim_window == "auto"
+    loaded_config = config.load(tmp_path / "absent.json")
+    assert loaded_config.nvim_window == "auto"
 
 
 def test_nvim_window_reads_valid_value(tmp_path: Path) -> None:
-    p = tmp_path / "c.json"
-    p.write_text('{"nvim_window": "always"}')
-    assert config.load(p).nvim_window == "always"
+    config_path = tmp_path / "c.json"
+    config_path.write_text('{"nvim_window": "always"}')
+    assert config.load(config_path).nvim_window == "always"
 
 
 def test_nvim_window_invalid_falls_back_to_auto(tmp_path: Path) -> None:
-    p = tmp_path / "c.json"
-    p.write_text('{"nvim_window": "sometimes"}')
-    assert config.load(p).nvim_window == "auto"
+    config_path = tmp_path / "c.json"
+    config_path.write_text('{"nvim_window": "sometimes"}')
+    assert config.load(config_path).nvim_window == "auto"
 
 
 def test_load_reads_the_take_over_question_seconds(tmp_path: Path) -> None:
     path = tmp_path / "config.json"
     path.write_text('{"take_over_question_seconds": 4}')
-    cfg = config.load(path)
-    assert cfg.take_over_question_seconds == 4.0
-    assert isinstance(cfg.take_over_question_seconds, float)
+    loaded_config = config.load(path)
+    assert loaded_config.take_over_question_seconds == 4.0
+    assert isinstance(loaded_config.take_over_question_seconds, float)
 
 
 @pytest.mark.parametrize("value", ["true", "0", "-1", "121", '"10"', "null"])

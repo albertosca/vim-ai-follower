@@ -23,16 +23,16 @@ from vim_ai_follower.diff import EditOp
 _OP = EditOp(kind="replace", start_line=2, end_line=2, new_lines=("XX",))
 
 
-def _pause_once(tmp_path: Path, at: int, seen: list[object]) -> Any:
+def _pause_once(tmp_path: Path, pause_position: int, seen: list[object]) -> Any:
     """check_signal double: pause at the `at`-th call, snapshot what the wait
     loop persisted on the next call, then resume."""
     calls = {"n": 0}
 
-    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _check(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
-        if calls["n"] == at:
+        if calls["n"] == pause_position:
             return "pause"
-        if calls["n"] == at + 1:
+        if calls["n"] == pause_position + 1:
             seen.append(control.load_pending_animation("@1", tmp_path))
             return "pause"
         return None

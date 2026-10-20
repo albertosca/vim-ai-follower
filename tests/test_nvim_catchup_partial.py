@@ -35,7 +35,7 @@ def _fresh_partial_spy(saved: list[tuple[str | None, bool]]) -> object:
         lines: tuple[str, ...],
         pace: float,
         continuation: bool = False,
-        base_dir: Path | None = None,
+        base_directory: Path | None = None,
         file_path: str = "",
         partial: str | None = None,
     ) -> None:
@@ -49,7 +49,7 @@ def _ops_partial_spy(saved: list[str | None]) -> object:
         window_id: str,
         ops: list[EditOp],
         pace: float,
-        base_dir: Path | None = None,
+        base_directory: Path | None = None,
         file_path: str = "",
         partial: str | None = None,
     ) -> None:

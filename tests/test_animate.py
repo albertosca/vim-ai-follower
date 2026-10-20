@@ -52,8 +52,8 @@ def test_delete_only_op_deletes_line_by_line_for_the_animation() -> None:
     # One :Nd per line, all at start_line (lines shift up after each), so
     # deletions are paced and visible like insertions instead of vanishing
     # in a single :s,ed (live request, 2026-07-15).
-    op = EditOp(kind="delete", start_line=2, end_line=3, new_lines=())
-    assert _delete_sequences(op) == [
+    operation = EditOp(kind="delete", start_line=2, end_line=3, new_lines=())
+    assert _delete_sequences(operation) == [
         KeySequence(":2d", literal=True),
         KeySequence("Enter", literal=False),
         KeySequence(":2d", literal=True),
@@ -62,8 +62,8 @@ def test_delete_only_op_deletes_line_by_line_for_the_animation() -> None:
 
 
 def test_insert_at_top_uses_gg_open_above() -> None:
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
-    sequences, prefix_len = _insert_sequences(op)
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
+    sequences, prefix_length = _insert_sequences(operation)
     assert sequences == [
         KeySequence("gg", literal=True),
         KeySequence("O", literal=True),
@@ -72,12 +72,12 @@ def test_insert_at_top_uses_gg_open_above() -> None:
         KeySequence("b", literal=True),
         *_EXIT_INSERT,
     ]
-    assert prefix_len == 2  # gg, O — the cursor-positioning prefix
+    assert prefix_length == 2  # gg, O — the cursor-positioning prefix
 
 
 def test_insert_mid_file_positions_then_opens_below() -> None:
-    op = EditOp(kind="insert", start_line=3, end_line=2, new_lines=("c", "d"))
-    sequences, prefix_len = _insert_sequences(op)
+    operation = EditOp(kind="insert", start_line=3, end_line=2, new_lines=("c", "d"))
+    sequences, prefix_length = _insert_sequences(operation)
     assert sequences == [
         KeySequence(":2", literal=True),
         KeySequence("Enter", literal=False),
@@ -87,13 +87,13 @@ def test_insert_mid_file_positions_then_opens_below() -> None:
         KeySequence("d", literal=True),
         *_EXIT_INSERT,
     ]
-    assert prefix_len == 3  # :2, Enter, o
+    assert prefix_length == 3  # :2, Enter, o
 
 
 def test_replace_op_deletes_then_inserts() -> None:
-    op = EditOp(kind="replace", start_line=2, end_line=2, new_lines=("X",))
-    insert_seq, _ = _insert_sequences(op)
-    assert _delete_sequences(op) + insert_seq == [
+    operation = EditOp(kind="replace", start_line=2, end_line=2, new_lines=("X",))
+    insert_sequence, _ = _insert_sequences(operation)
+    assert _delete_sequences(operation) + insert_sequence == [
         KeySequence(":2d", literal=True),
         KeySequence("Enter", literal=False),
         KeySequence(":1", literal=True),
@@ -221,26 +221,26 @@ def test_apply_passes_window_id_and_base_dir_to_check_signal() -> None:
 
 
 def test_delete_sequences_one_pair_per_line() -> None:
-    op = EditOp(kind="delete", start_line=2, end_line=4, new_lines=())
-    seqs = _delete_sequences(op)
+    operation = EditOp(kind="delete", start_line=2, end_line=4, new_lines=())
+    seqs = _delete_sequences(operation)
     assert len(seqs) == 6  # three (":2d", Enter) pairs
-    assert all(s.text == ":2d" for s in seqs[::2])
-    assert all(s.text == "Enter" and not s.literal for s in seqs[1::2])
+    assert all(sequence.text == ":2d" for sequence in seqs[::2])
+    assert all(sequence.text == "Enter" and not sequence.literal for sequence in seqs[1::2])
 
 
 def test_delete_sequences_empty_for_pure_insert_op() -> None:
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
-    assert _delete_sequences(op) == []
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    assert _delete_sequences(operation) == []
 
 
 def test_insert_sequences_empty_for_pure_delete_op() -> None:
-    op = EditOp(kind="delete", start_line=2, end_line=3, new_lines=())
-    assert _insert_sequences(op) == ([], 0)
+    operation = EditOp(kind="delete", start_line=2, end_line=3, new_lines=())
+    assert _insert_sequences(operation) == ([], 0)
 
 
 def test_insert_sequences_at_top_uses_gg_open_above() -> None:
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
-    sequences, prefix_len = _insert_sequences(op)
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
+    sequences, prefix_length = _insert_sequences(operation)
     assert sequences == [
         KeySequence("gg", literal=True),
         KeySequence("O", literal=True),
@@ -249,12 +249,12 @@ def test_insert_sequences_at_top_uses_gg_open_above() -> None:
         KeySequence("b", literal=True),
         *_EXIT_INSERT,
     ]
-    assert prefix_len == 2  # "gg", "O"
+    assert prefix_length == 2  # "gg", "O"
 
 
 def test_insert_sequences_mid_file_positions_then_opens_below() -> None:
-    op = EditOp(kind="insert", start_line=3, end_line=2, new_lines=("c", "d"))
-    sequences, prefix_len = _insert_sequences(op)
+    operation = EditOp(kind="insert", start_line=3, end_line=2, new_lines=("c", "d"))
+    sequences, prefix_length = _insert_sequences(operation)
     assert sequences == [
         KeySequence(":2", literal=True),
         KeySequence("Enter", literal=False),
@@ -265,13 +265,13 @@ def test_insert_sequences_mid_file_positions_then_opens_below() -> None:
         *_EXIT_INSERT,
     ]
     # the prefix is derived from the same list it describes — it can't desync
-    assert prefix_len == 3
-    assert [s.text for s in sequences[:prefix_len]] == [":2", "Enter", "o"]
+    assert prefix_length == 3
+    assert [sequence.text for sequence in sequences[:prefix_length]] == [":2", "Enter", "o"]
 
 
 @contextmanager
 def _signal_left_by_a_finished_animation(
-    base_dir: Path, request: Callable[..., bool]
+    base_directory: Path, request: Callable[..., bool]
 ) -> Iterator[None]:
     """A signal addressed to an earlier animation that ended without consuming
     it (the P landed as its last keystroke went out). That owner was another
@@ -279,12 +279,12 @@ def _signal_left_by_a_finished_animation(
     signal to it, then let it die and retire its marker."""
     earlier = subprocess.Popen(["sleep", "30"])
     try:
-        (base_dir / "@1.animating").write_text(f"{earlier.pid} running")
-        request("@1", base_dir=base_dir)
+        (base_directory / "@1.animating").write_text(f"{earlier.pid} running")
+        request("@1", base_dir=base_directory)
     finally:
         earlier.kill()
         earlier.wait()
-    (base_dir / "@1.animating").unlink()
+    (base_directory / "@1.animating").unlink()
     # Obeying the stale signal would block in the pause wait forever: fail
     # there instead of hanging the suite.
     with patch(
@@ -304,13 +304,13 @@ def test_run_ops_ignores_a_pause_left_for_an_earlier_animation(tmp_path: Path) -
     assert not (tmp_path / "@1.pause").exists()  # and it does not linger
 
 
-def _resume_on_first_poll(base_dir: Path, seen: list[str | None]) -> Callable[[float], None]:
+def _resume_on_first_poll(base_directory: Path, seen: list[str | None]) -> Callable[[float], None]:
     """Stands in for the pause wait's poll sleep: records what `claude-follow
     status` would see, then presses P again (the resume toggle)."""
 
     def poll(_seconds: float) -> None:
-        seen.append(control.animating_state("@1", base_dir))
-        control.request_pause("@1", base_dir=base_dir)
+        seen.append(control.animating_state("@1", base_directory))
+        control.request_pause("@1", base_dir=base_directory)
 
     return poll
 
@@ -390,11 +390,11 @@ def test_run_ops_interrupted_mid_insert_undoes_the_insert(tmp_path: Path) -> Non
     # pure-insert op, anchor<1 so the sequence is ["gg", "O", "a", "Enter",
     # "b", "Escape"] (prefix length 2). Two Nones let "gg" and "O" through —
     # insert mode is now entered — then "interrupt" fires before "a" is sent.
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
     with patch("vim_ai_follower.control.check_signal", side_effect=[None, None, "interrupt"]):
-        result = run_ops(pane, "@1", [op], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("interrupted", 0)
-    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    sent_texts = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent_texts == ["gg", "O", "u"]
     assert pane.send_key.call_args_list == [  # type: ignore[attr-defined]
         call("Escape"),
@@ -404,11 +404,11 @@ def test_run_ops_interrupted_mid_insert_undoes_the_insert(tmp_path: Path) -> Non
 
 def test_run_ops_interrupted_before_insert_mode_entered_skips_undo(tmp_path: Path) -> None:
     pane = cast(TmuxPane, MagicMock())
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
     # signal fires on the very first check inside the insert-half send_paced()
     # call — before "gg" is even sent, so insert mode was never entered
     with patch("vim_ai_follower.control.check_signal", side_effect=["interrupt"]):
-        result = run_ops(pane, "@1", [op], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("interrupted", 0)
     assert pane.send_key.call_args_list == [  # type: ignore[attr-defined]
         call("Escape"),
@@ -419,11 +419,11 @@ def test_run_ops_interrupted_before_insert_mode_entered_skips_undo(tmp_path: Pat
 
 def test_run_ops_interrupted_during_delete_needs_no_undo(tmp_path: Path) -> None:
     pane = cast(TmuxPane, MagicMock())
-    op = EditOp(kind="delete", start_line=2, end_line=3, new_lines=())
+    operation = EditOp(kind="delete", start_line=2, end_line=3, new_lines=())
     # the first pair's command text (":2d") gets typed, but the signal fires
     # before its Enter — no pair committed, so Escape alone is enough
     with patch("vim_ai_follower.control.check_signal", side_effect=[None, "interrupt"]):
-        result = run_ops(pane, "@1", [op], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("interrupted", 0)
     pane.send_text.assert_called_once_with(":2d")  # type: ignore[attr-defined]
     assert pane.send_key.call_args_list == [  # type: ignore[attr-defined]
@@ -436,11 +436,11 @@ def test_run_ops_pause_in_insert_half_rolls_back_both_halves_then_resumes(
     tmp_path: Path,
 ) -> None:
     pane = cast(TmuxPane, MagicMock())
-    op = EditOp(kind="replace", start_line=2, end_line=3, new_lines=("X", "Y"))
+    operation = EditOp(kind="replace", start_line=2, end_line=3, new_lines=("X", "Y"))
     pending_seen: list[object] = []
     calls = {"n": 0}
 
-    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _check(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         if calls["n"] == 6:  # delete (2 checks) + insert prefix (3) → before "X"
             return "pause"
@@ -453,11 +453,11 @@ def test_run_ops_pause_in_insert_half_rolls_back_both_halves_then_resumes(
         return None
 
     with patch("vim_ai_follower.control.check_signal", side_effect=_check):
-        result = run_ops(pane, "@1", [op], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("completed", 1)
-    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    sent_texts = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent_texts.count("u") == 2  # insert undone AND delete undone before waiting
-    assert pending_seen == [control.PendingApplyEdit([op], 0.0)]  # crash fallback was armed
+    assert pending_seen == [control.PendingApplyEdit([operation], 0.0)]  # crash fallback was armed
     assert control.has_pending_animation("@1", tmp_path) is False  # and disarmed on resume
 
 
@@ -465,17 +465,17 @@ def test_run_ops_pause_before_insert_prefix_still_rolls_back_the_delete(
     tmp_path: Path,
 ) -> None:
     pane = cast(TmuxPane, MagicMock())
-    op = EditOp(kind="replace", start_line=2, end_line=3, new_lines=("X",))
+    operation = EditOp(kind="replace", start_line=2, end_line=3, new_lines=("X",))
     calls = {"n": 0}
 
-    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _check(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         return "pause" if calls["n"] in (3, 4) else None  # pause at insert's 1st check, resume
 
     with patch("vim_ai_follower.control.check_signal", side_effect=_check):
-        result = run_ops(pane, "@1", [op], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("completed", 1)
-    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    sent_texts = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent_texts.count("u") == 1  # only the delete needed rolling back
 
 
@@ -483,7 +483,7 @@ def test_run_ops_interrupt_in_insert_half_of_replace_restores_the_op_boundary(
     tmp_path: Path,
 ) -> None:
     pane = cast(TmuxPane, MagicMock())
-    op = EditOp(kind="replace", start_line=2, end_line=3, new_lines=("X",))
+    operation = EditOp(kind="replace", start_line=2, end_line=3, new_lines=("X",))
     # interrupt after the insert prefix completed: undo insert, undo delete —
     # the buffer must equal apply_ops(before, ops[:0]) so the notification
     # sent to Claude reflects what is actually on screen
@@ -491,9 +491,9 @@ def test_run_ops_interrupt_in_insert_half_of_replace_restores_the_op_boundary(
         "vim_ai_follower.control.check_signal",
         side_effect=[None, None, None, None, None, "interrupt"],
     ):
-        result = run_ops(pane, "@1", [op], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("interrupted", 0)
-    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    sent_texts = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent_texts.count("u") == 2
 
 
@@ -505,7 +505,7 @@ def test_run_ops_interrupt_during_pause_wait_discards_pending(tmp_path: Path) ->
     ]
     calls = {"n": 0}
 
-    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _check(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         if calls["n"] == 8:  # op0 completes (7 checks); pause before op1
             return "pause"
@@ -588,7 +588,7 @@ def test_run_lines_types_each_line_on_its_own_line() -> None:
     ):
         result = run_lines(pane, "@1", ("a", "b"), pace_seconds=0.0)
     assert result == AnimationResult("completed", 2)
-    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    sent_texts = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent_texts == ["i", "a", "o", "b"]  # 'o' gives line 2 its own line
 
 
@@ -599,7 +599,7 @@ def test_run_lines_continuation_opens_even_the_first_line_with_o() -> None:
     ):
         result = run_lines(pane, "@1", ("rest",), pace_seconds=0.0, continuation=True)
     assert result == AnimationResult("completed", 1)
-    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    sent_texts = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent_texts == ["o", "rest"]  # the buffer already has content; 'i' would join lines
 
 
@@ -611,7 +611,7 @@ def test_run_lines_interrupted_after_bare_i_skips_undo(tmp_path: Path) -> None:
     with patch("vim_ai_follower.control.check_signal", side_effect=[None, "interrupt"]):
         result = run_lines(pane, "@1", ("a",), pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("interrupted", 0)
-    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    sent_texts = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent_texts == ["i"]
     assert pane.send_key.call_args_list == [  # type: ignore[attr-defined]
         call("Escape"),
@@ -626,7 +626,7 @@ def test_run_lines_interrupted_after_text_undoes_the_partial_line(tmp_path: Path
     with patch("vim_ai_follower.control.check_signal", side_effect=[None, None, "interrupt"]):
         result = run_lines(pane, "@1", ("a",), pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("interrupted", 0)
-    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    sent_texts = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent_texts == ["i", "a", "u"]
 
 
@@ -641,7 +641,7 @@ def test_run_lines_interrupted_after_bare_o_undoes_the_opened_line(tmp_path: Pat
     ):
         result = run_lines(pane, "@1", ("a", "b"), pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("interrupted", 1)
-    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    sent_texts = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent_texts == ["i", "a", "o", "u"]
 
 
@@ -650,7 +650,7 @@ def test_run_lines_pause_mid_first_line_waits_then_retries_with_i(tmp_path: Path
     pending_seen: list[object] = []
     calls = {"n": 0}
 
-    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _check(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         if calls["n"] == 3:  # 'i' + text sent; pause before line 0's Escape
             return "pause"
@@ -662,7 +662,7 @@ def test_run_lines_pause_mid_first_line_waits_then_retries_with_i(tmp_path: Path
     with patch("vim_ai_follower.control.check_signal", side_effect=_check):
         result = run_lines(pane, "@1", ("a", "b"), pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("completed", 2)
-    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    sent_texts = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     # rollback undid the partial line; the retry re-opens with 'i' (virgin buffer)
     assert sent_texts == ["i", "a", "u", "i", "a", "o", "b"]
     assert pending_seen == [control.PendingShowFresh(("a", "b"), 0.0, continuation=False)]
@@ -673,7 +673,7 @@ def test_run_lines_pause_on_later_line_arms_continuation_fallback(tmp_path: Path
     pending_seen: list[object] = []
     calls = {"n": 0}
 
-    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _check(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         if calls["n"] == 7:  # line "a" completed (6 checks); pause before line "b"
             return "pause"
@@ -715,7 +715,7 @@ def test_run_lines_marks_animating_and_leaves_the_slot_to_its_owner(tmp_path: Pa
     pane = cast(TmuxPane, MagicMock())
     seen: list[bool] = []
 
-    def _check(window_id: str, base_dir: Path | None = None) -> None:
+    def _check(window_id: str, base_directory: Path | None = None) -> None:
         seen.append(control.is_animating("@1", tmp_path))
         return
 
@@ -734,9 +734,9 @@ def test_run_ops_leaves_the_slot_to_its_owner_after_interrupt_during_wait(
     # reading "paused".
     assert control.try_acquire_animating("@1", tmp_path)
     pane = cast(TmuxPane, MagicMock())
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
     with patch("vim_ai_follower.control.check_signal", side_effect=["pause", "interrupt"]):
-        result = run_ops(pane, "@1", [op], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("interrupted", 0)
     assert control.animating_state("@1", tmp_path) == "running"
 
@@ -749,10 +749,10 @@ print(control.try_acquire_animating("@1", Path(sys.argv[1])), flush=True)
 """
 
 
-def _another_hook_acquires(base_dir: Path) -> bool:
+def _another_hook_acquires(base_directory: Path) -> bool:
     """A second hook process, alive while it tries (its own PID is live)."""
     result = subprocess.run(
-        [sys.executable, "-c", _TRY_ACQUIRE, str(base_dir)],
+        [sys.executable, "-c", _TRY_ACQUIRE, str(base_directory)],
         capture_output=True,
         text=True,
         check=True,
@@ -769,8 +769,8 @@ def test_no_second_hook_gets_the_slot_between_one_hooks_drivers(tmp_path: Path) 
     pane = cast(TmuxPane, MagicMock())
     run_lines(pane, "@1", ("caught up",), pace_seconds=0.0, base_dir=tmp_path)
     assert _another_hook_acquires(tmp_path) is False, "a second hook took the slot mid-hook"
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("edit",))
-    run_ops(pane, "@1", [op], pace_seconds=0.0, base_dir=tmp_path)
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("edit",))
+    run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
     assert _another_hook_acquires(tmp_path) is False
     control.clear_animating("@1", tmp_path)  # the hook's own release
     assert _another_hook_acquires(tmp_path) is True
@@ -778,10 +778,10 @@ def test_no_second_hook_gets_the_slot_between_one_hooks_drivers(tmp_path: Path) 
 
 def test_run_ops_pause_wait_polls_until_the_resume_arrives(tmp_path: Path) -> None:
     pane = cast(TmuxPane, MagicMock())
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
     calls = {"n": 0}
 
-    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _check(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         if calls["n"] == 1:
             return "pause"
@@ -793,17 +793,17 @@ def test_run_ops_pause_wait_polls_until_the_resume_arrives(tmp_path: Path) -> No
         patch("vim_ai_follower.control.check_signal", side_effect=_check),
         patch("vim_ai_follower.animate.time.sleep") as sleep,
     ):
-        result = run_ops(pane, "@1", [op], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("completed", 1)
     sleep.assert_any_call(PAUSE_POLL_SECONDS)
 
 
 def test_run_ops_interrupt_during_delete_half_pause_wait(tmp_path: Path) -> None:
     pane = cast(TmuxPane, MagicMock())
-    op = EditOp(kind="replace", start_line=2, end_line=3, new_lines=("X",))
+    operation = EditOp(kind="replace", start_line=2, end_line=3, new_lines=("X",))
     # pause before the delete's Enter (check 2); interrupt lands in the wait
     with patch("vim_ai_follower.control.check_signal", side_effect=[None, "pause", "interrupt"]):
-        result = run_ops(pane, "@1", [op], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("interrupted", 0)
     assert control.has_pending_animation("@1", tmp_path) is False
 
@@ -812,16 +812,18 @@ def test_run_ops_calls_on_resume_exactly_once_when_resumed_from_a_pause(
     tmp_path: Path,
 ) -> None:
     pane = cast(TmuxPane, MagicMock())
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
     calls = {"n": 0}
 
-    def _pause_then_resume(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _pause_then_resume(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         return "pause" if calls["n"] in (1, 2) else None
 
     on_resume = MagicMock()
     with patch("vim_ai_follower.control.check_signal", side_effect=_pause_then_resume):
-        result = run_ops(pane, "@1", [op], pace_seconds=0.0, base_dir=tmp_path, on_resume=on_resume)
+        result = run_ops(
+            pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path, on_resume=on_resume
+        )
     assert result == AnimationResult("completed", 1)
     on_resume.assert_called_once_with()
 
@@ -831,26 +833,30 @@ def test_run_ops_calls_on_resume_when_paused_in_the_delete_half(tmp_path: Path) 
     # very first signal check lands the pause inside the delete-half send_paced,
     # the branch the insert-only case above never reaches.
     pane = cast(TmuxPane, MagicMock())
-    op = EditOp(kind="replace", start_line=1, end_line=1, new_lines=("X",))
+    operation = EditOp(kind="replace", start_line=1, end_line=1, new_lines=("X",))
     calls = {"n": 0}
 
-    def _pause_then_resume(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _pause_then_resume(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         return "pause" if calls["n"] in (1, 2) else None
 
     on_resume = MagicMock()
     with patch("vim_ai_follower.control.check_signal", side_effect=_pause_then_resume):
-        result = run_ops(pane, "@1", [op], pace_seconds=0.0, base_dir=tmp_path, on_resume=on_resume)
+        result = run_ops(
+            pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path, on_resume=on_resume
+        )
     assert result == AnimationResult("completed", 1)
     on_resume.assert_called_once_with()
 
 
 def test_run_ops_does_not_call_on_resume_when_never_paused(tmp_path: Path) -> None:
     pane = cast(TmuxPane, MagicMock())
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
     on_resume = MagicMock()
     with patch("vim_ai_follower.control.check_signal", return_value=None):
-        result = run_ops(pane, "@1", [op], pace_seconds=0.0, base_dir=tmp_path, on_resume=on_resume)
+        result = run_ops(
+            pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path, on_resume=on_resume
+        )
     assert result == AnimationResult("completed", 1)
     on_resume.assert_not_called()
 
@@ -861,7 +867,7 @@ def test_run_lines_calls_on_resume_exactly_once_when_resumed_from_a_pause(
     pane = cast(TmuxPane, MagicMock())
     calls = {"n": 0}
 
-    def _pause_then_resume(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _pause_then_resume(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         return "pause" if calls["n"] in (1, 2) else None
 
@@ -920,19 +926,19 @@ def test_delete_half_pause_rolls_back_each_committed_line_delete(tmp_path: Path)
     # deletes committed -> exactly two "u" before the wait, so the buffer
     # sits back on the clean op boundary for the retry.
     pane = cast(TmuxPane, MagicMock())
-    op = EditOp(kind="delete", start_line=2, end_line=4, new_lines=())
+    operation = EditOp(kind="delete", start_line=2, end_line=4, new_lines=())
     calls = {"n": 0}
 
-    def _pause_after_two_pairs(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _pause_after_two_pairs(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         # checks precede each sequence: pause at the 5th (before the 3rd
         # pair's ":2d"), resume at the next check inside the wait.
         return "pause" if calls["n"] in (5, 6) else None
 
     with patch("vim_ai_follower.control.check_signal", side_effect=_pause_after_two_pairs):
-        result = run_ops(pane, "@1", [op], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
     assert result.outcome == "completed"
-    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    sent_texts = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     first_retry = sent_texts.index(":2d", sent_texts.index("u"))
     assert sent_texts[:first_retry].count("u") == 2  # one per committed line delete
 
@@ -942,19 +948,19 @@ def test_insert_half_rollback_undoes_every_line_of_the_delete_half(tmp_path: Pat
     # rollback must undo the opened insert line (1 u) AND all three
     # per-line deletes (3 u), not just one.
     pane = cast(TmuxPane, MagicMock())
-    op = EditOp(kind="replace", start_line=2, end_line=4, new_lines=("x",))
+    operation = EditOp(kind="replace", start_line=2, end_line=4, new_lines=("x",))
     calls = {"n": 0}
 
-    def _interrupt_in_insert(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _interrupt_in_insert(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         # delete half = 6 sequences (checks 1-6); insert prefix ":1",
         # Enter, "o" = checks 7-9; interrupt at check 10.
         return "interrupt" if calls["n"] == 10 else None
 
     with patch("vim_ai_follower.control.check_signal", side_effect=_interrupt_in_insert):
-        result = run_ops(pane, "@1", [op], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
     assert result.outcome == "interrupted"
-    sent_texts = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    sent_texts = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent_texts.count("u") == 4  # 1 insert + 3 line deletes
 
 
@@ -992,7 +998,7 @@ def _run_on_fake_clock(
     pane = MagicMock()
     answers = list(signals or [])
 
-    def check_signal(window_id: str, base_dir: Path | None = None) -> str | None:
+    def check_signal(window_id: str, base_directory: Path | None = None) -> str | None:
         return answers.pop(0) if answers else None
 
     def wait_while_paused(*_: object) -> str:
@@ -1006,14 +1012,16 @@ def _run_on_fake_clock(
         patch("vim_ai_follower.animate._wait_while_paused", side_effect=wait_while_paused),
     ):
         if animation == "lines":
-            lines = tuple(f"line {n}" for n in range(100))  # 4 sequences each: 400 s
+            lines = tuple(f"line {number}" for number in range(100))  # 4 sequences each: 400 s
             result = run_lines(cast(TmuxPane, pane), "@1", lines, 1.0, base_dir=tmp_path)
         else:
             # 50 one-line replacements, bottom-up like compute_edit_script:
             # 2 delete + 6 insert sequences each, 400 s at 1 s per sequence.
             ops = [
-                EditOp(kind="replace", start_line=n, end_line=n, new_lines=(f"new {n}",))
-                for n in range(100, 1, -2)
+                EditOp(
+                    kind="replace", start_line=number, end_line=number, new_lines=(f"new {number}",)
+                )
+                for number in range(100, 1, -2)
             ]
             result = run_ops(cast(TmuxPane, pane), "@1", ops, 1.0, base_dir=tmp_path)
     return result, pane
@@ -1050,7 +1058,7 @@ def _pause_at_check(pause_check: int) -> Callable[..., str | None]:
     at the next one (the pause wait's first poll), nothing otherwise."""
     checks = {"count": 0}
 
-    def check(window_id: str, base_dir: Path | None = None) -> str | None:
+    def check(window_id: str, base_directory: Path | None = None) -> str | None:
         checks["count"] += 1
         return "pause" if checks["count"] in (pause_check, pause_check + 1) else None
 
@@ -1117,10 +1125,10 @@ def test_run_ops_ends_stopped_when_a_stop_lands_in_the_pause_wait(tmp_path: Path
     # Final review C1: `claude-follow stop` clears the signals, so a pause
     # wait that only read signals held Claude until the hook timeout.
     pane = cast(TmuxPane, MagicMock())
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
     calls = {"count": 0}
 
-    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _check(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["count"] += 1
         if calls["count"] == 1:
             return "pause"
@@ -1133,7 +1141,7 @@ def test_run_ops_ends_stopped_when_a_stop_lands_in_the_pause_wait(tmp_path: Path
         patch("vim_ai_follower.control.check_signal", side_effect=_check),
         patch("vim_ai_follower.animate.time.sleep"),
     ):
-        result = run_ops(pane, "@1", [op], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("stopped", 0)
     assert control.has_pending_animation("@1", tmp_path) is False  # no remainder
     sent_texts = [each.args[0] for each in pane.send_text.call_args_list]  # type: ignore[attr-defined]
@@ -1149,7 +1157,7 @@ def test_run_lines_ends_stopped_when_a_stop_and_start_replace_the_follower(
     pane = cast(TmuxPane, MagicMock())
     calls = {"count": 0}
 
-    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _check(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["count"] += 1
         if calls["count"] == 1:
             return "pause"
@@ -1173,7 +1181,7 @@ def test_the_pause_wait_with_an_unreadable_state_ends_only_on_the_tombstone(
     pane = cast(TmuxPane, MagicMock())
     calls = {"count": 0}
 
-    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _check(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["count"] += 1
         if calls["count"] == 1:
             return "pause"
@@ -1194,10 +1202,10 @@ def test_run_ops_ends_stopped_when_a_stop_lands_in_the_delete_half_pause_wait(
     tmp_path: Path,
 ) -> None:
     pane = cast(TmuxPane, MagicMock())
-    op = EditOp(kind="replace", start_line=2, end_line=3, new_lines=("X",))
+    operation = EditOp(kind="replace", start_line=2, end_line=3, new_lines=("X",))
     calls = {"count": 0}
 
-    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _check(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["count"] += 1
         if calls["count"] == 2:  # before the delete's Enter
             return "pause"
@@ -1209,5 +1217,5 @@ def test_run_ops_ends_stopped_when_a_stop_lands_in_the_delete_half_pause_wait(
         patch("vim_ai_follower.control.check_signal", side_effect=_check),
         patch("vim_ai_follower.animate.time.sleep"),
     ):
-        result = run_ops(pane, "@1", [op], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
     assert result == AnimationResult("stopped", 0)

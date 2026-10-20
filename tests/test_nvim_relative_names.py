@@ -42,23 +42,23 @@ def test_the_lua_keeps_the_short_form_only_when_its_p_round_trips() -> None:
 
 def test_show_fresh_names_its_buffer_with_the_display_name(tmp_path: Path) -> None:
     nvim = _nvim("sub/a.py")
-    buf = fresh_buffer(nvim)
+    buffer = fresh_buffer(nvim)
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
     ):
         NvimFollower(socket_path="/tmp/x.sock", window_id="@1").show_fresh("/p/sub/a.py", "a\n")
-    assert nvim.api.buf_set_name.call_args_list == [call(buf, "sub/a.py")]
+    assert nvim.api.buf_set_name.call_args_list == [call(buffer, "sub/a.py")]
 
 
 def test_goto_file_names_the_buffer_it_creates_with_the_display_name() -> None:
     nvim = _nvim("sub/a.py")
     tabnew_adds_a_tab(nvim)
-    buf = nvim.api.create_buf.return_value
+    buffer = nvim.api.create_buf.return_value
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         NvimFollower(socket_path="/tmp/x.sock").goto_file("/p/sub/a.py")
-    assert nvim.api.buf_set_name.call_args_list == [call(buf, "sub/a.py")]
+    assert nvim.api.buf_set_name.call_args_list == [call(buffer, "sub/a.py")]
 
 
 def test_ensure_showing_adds_the_buffer_under_the_display_name() -> None:

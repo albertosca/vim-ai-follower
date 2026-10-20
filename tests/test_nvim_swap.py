@@ -95,8 +95,8 @@ def test_the_disk_loading_branch_writes_exactly_three_buffer_options() -> None:
     nvim.api.set_option_value.assert_not_called()
     # The event-firing commands go through exec2 (plugin output captured and
     # logged, see nvim_prompt.exec_logged); only tabnew stays a plain command.
-    assert [c.args[0] for c in nvim.command.call_args_list] == ["tabnew"]
-    assert [c.args[0] for c in nvim.api.exec2.call_args_list] == [
+    assert [recorded_call.args[0] for recorded_call in nvim.command.call_args_list] == ["tabnew"]
+    assert [recorded_call.args[0] for recorded_call in nvim.api.exec2.call_args_list] == [
         "call bufload(42)",
         "filetype detect",
     ]
@@ -133,7 +133,9 @@ def test_switching_to_an_existing_buffer_never_touches_its_swapfile() -> None:
         patch.object(NvimFollower, "goto_file"),
     ):
         follower.ensure_showing("/tmp/f.py")
-    assert "swapfile" not in [c.args[1] for c in nvim.api.buf_set_option.call_args_list]
+    assert "swapfile" not in [
+        recorded_call.args[1] for recorded_call in nvim.api.buf_set_option.call_args_list
+    ]
 
 
 def test_goto_file_opts_the_buffer_it_creates_out_of_swap_before_naming_it() -> None:
@@ -146,13 +148,13 @@ def test_goto_file_opts_the_buffer_it_creates_out_of_swap_before_naming_it() -> 
     nvim = MagicMock()
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     tabnew_adds_a_tab(nvim)
-    buf = nvim.api.create_buf.return_value
+    buffer = nvim.api.create_buf.return_value
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.goto_file("/tmp/f.py")
-    assert nvim.api.buf_set_option.call_args_list == [call(buf, "swapfile", False)]
-    assert nvim.api.buf_set_name.call_args_list == [call(buf, "/tmp/f.py")]
-    assert nvim.api.mock_calls.index(call.buf_set_option(buf, "swapfile", False)) < (
-        nvim.api.mock_calls.index(call.buf_set_name(buf, "/tmp/f.py"))
+    assert nvim.api.buf_set_option.call_args_list == [call(buffer, "swapfile", False)]
+    assert nvim.api.buf_set_name.call_args_list == [call(buffer, "/tmp/f.py")]
+    assert nvim.api.mock_calls.index(call.buf_set_option(buffer, "swapfile", False)) < (
+        nvim.api.mock_calls.index(call.buf_set_name(buffer, "/tmp/f.py"))
     )
 
 
@@ -163,7 +165,7 @@ def test_show_fresh_opts_its_new_buffer_out_of_swap_before_naming_it(tmp_path: P
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
-    buf = fresh_buffer(nvim)
+    buffer = fresh_buffer(nvim)
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
@@ -171,8 +173,8 @@ def test_show_fresh_opts_its_new_buffer_out_of_swap_before_naming_it(tmp_path: P
     ):
         follower.show_fresh("/tmp/f.py", "a\n")
     calls = nvim.api.mock_calls
-    assert calls.index(call.buf_set_option(buf, "swapfile", False)) < calls.index(
-        call.buf_set_name(buf, "/tmp/f.py")
+    assert calls.index(call.buf_set_option(buffer, "swapfile", False)) < calls.index(
+        call.buf_set_name(buffer, "/tmp/f.py")
     )
 
 
@@ -201,7 +203,9 @@ def test_goto_file_opts_an_unloaded_buffer_out_of_swap_before_loading_it() -> No
 
 def test_goto_file_leaves_a_loaded_buffers_swap_alone() -> None:
     nvim, window = _goto_hidden_buffer(loaded=True)
-    assert "swapfile" not in [c.args[1] for c in nvim.api.buf_set_option.call_args_list]
+    assert "swapfile" not in [
+        recorded_call.args[1] for recorded_call in nvim.api.buf_set_option.call_args_list
+    ]
     assert call.win_set_buf(window, 5) in nvim.api.mock_calls
 
 
@@ -220,7 +224,7 @@ def test_show_fresh_turns_swap_back_on_after_naming_only_when_adopted(
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
-    buf = fresh_buffer(nvim)
+    buffer = fresh_buffer(nvim)
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
@@ -231,7 +235,7 @@ def test_show_fresh_turns_swap_back_on_after_naming_only_when_adopted(
     calls = nvim.api.mock_calls
     back_on = call.exec2(_SWAP_BACK_ON, {"output": True})
     if adopted:
-        assert calls.index(call.buf_set_name(buf, "/tmp/f.py")) < calls.index(back_on)
+        assert calls.index(call.buf_set_name(buffer, "/tmp/f.py")) < calls.index(back_on)
     else:
         assert back_on not in calls
 
@@ -269,7 +273,7 @@ def test_goto_file_turns_swap_back_on_after_loading_only_when_adopted(
         follower.goto_file("/tmp/f.py")
     calls = nvim.api.mock_calls
     back_on = call.exec2(_SWAP_BACK_ON, {"output": True})
-    shown = [c for c in calls if c[0] == "win_set_buf"]
+    shown = [recorded_call for recorded_call in calls if recorded_call[0] == "win_set_buf"]
     assert shown
     if adopted:
         assert calls.index(shown[-1]) < calls.index(back_on)
@@ -322,7 +326,7 @@ def test_a_swap_that_cannot_be_turned_back_on_is_logged_and_left_off(
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     fresh_buffer(nvim)
 
-    def exec2(command: str, opts: dict[str, bool]) -> dict[str, str]:
+    def exec2(command: str, options: dict[str, bool]) -> dict[str, str]:
         if command == _SWAP_BACK_ON:
             raise pynvim.NvimError("Vim(setlocal):E303: Unable to open swap file")
         return {"output": ""}
@@ -340,5 +344,7 @@ def test_a_swap_that_cannot_be_turned_back_on_is_logged_and_left_off(
     calls = nvim.api.mock_calls
     failed = calls.index(call.exec2(_SWAP_BACK_ON, {"output": True}))
     assert call.buf_set_option(nvim.api.get_current_buf(), "swapfile", False) in calls[failed:]
-    assert any(c[0] == "buf_set_text" for c in calls[failed:]), "the retype never ran"
+    assert any(recorded_call[0] == "buf_set_text" for recorded_call in calls[failed:]), (
+        "the retype never ran"
+    )
     assert "could not turn swap back on" in caplog.text

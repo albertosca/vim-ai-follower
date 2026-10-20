@@ -43,15 +43,17 @@ def test_set_writes_the_pane_atomically_via_rename(tmp_path: Path) -> None:
     real_write_text = Path.write_text
     real_replace = Path.replace
 
-    def spy_write_text(self: Path, *args: object, **kwargs: object) -> int:
+    def spy_write_text(self: Path, *arguments: object, **keyword_arguments: object) -> int:
         if self == target:
             observed["target_written_directly"] = True
-        return real_write_text(self, *args, **kwargs)  # type: ignore[arg-type]
+        return real_write_text(self, *arguments, **keyword_arguments)  # type: ignore[arg-type]
 
-    def spy_replace(self: Path, dst: object, *args: object, **kwargs: object) -> Path:
-        if Path(dst) == target:  # type: ignore[arg-type]
+    def spy_replace(
+        self: Path, destination: object, *arguments: object, **keyword_arguments: object
+    ) -> Path:
+        if Path(destination) == target:  # type: ignore[arg-type]
             observed["renamed_onto_target"] = True
-        return real_replace(self, dst, *args, **kwargs)  # type: ignore[arg-type]
+        return real_replace(self, destination, *arguments, **keyword_arguments)  # type: ignore[arg-type]
 
     with (
         patch("vim_ai_follower.tmux.subprocess.run", return_value=MagicMock(stdout="%5 vim\n")),
@@ -69,7 +71,7 @@ def test_set_does_not_leave_a_temp_file_behind(tmp_path: Path) -> None:
         FollowerState.set("@1", "tmux", "%5", base_dir=tmp_path)
     # Only the final .pane remains; the temp file was renamed onto it. A
     # lingering temp must also never be caught by the *.pane orphan scan.
-    assert [p.name for p in tmp_path.iterdir()] == ["@1.pane"]
+    assert [entry.name for entry in tmp_path.iterdir()] == ["@1.pane"]
 
 
 def test_get_returns_none_when_no_state_file(tmp_path: Path) -> None:
@@ -437,12 +439,12 @@ def test_a_stop_landing_between_sets_check_and_write_leaves_no_state() -> None:
     real = state._stopped_here
     checks = {"count": 0}
 
-    def stop_after_the_check(window_id: str, base_dir: Path | None) -> bool:
+    def stop_after_the_check(window_id: str, base_directory: Path | None) -> bool:
         checks["count"] += 1
-        answer = real(window_id, base_dir)
+        answer = real(window_id, base_directory)
         if checks["count"] == 1:
-            state.mark_stopped(window_id, None, in_tmux=False, base_dir=base_dir)
-            FollowerState.clear(window_id, base_dir)
+            state.mark_stopped(window_id, None, in_tmux=False, base_dir=base_directory)
+            FollowerState.clear(window_id, base_directory)
         return answer
 
     with patch.object(state, "_stopped_here", side_effect=stop_after_the_check):
@@ -460,15 +462,15 @@ def test_a_start_that_lifted_the_tombstone_after_the_write_keeps_its_state() -> 
     real = state._stopped_here
     checks = {"count": 0}
 
-    def stop_then_start(window_id: str, base_dir: Path | None) -> bool:
+    def stop_then_start(window_id: str, base_directory: Path | None) -> bool:
         checks["count"] += 1
         if checks["count"] == 2:  # the recheck: a stop, then a start, landed
-            state.mark_stopped(window_id, None, in_tmux=False, base_dir=base_dir)
-            answer = real(window_id, base_dir)
-            state.clear_stopped(window_id, base_dir)
-            FollowerState.set(window_id, "tmux", "%9", base_dir=base_dir, server_pid=None)
+            state.mark_stopped(window_id, None, in_tmux=False, base_dir=base_directory)
+            answer = real(window_id, base_directory)
+            state.clear_stopped(window_id, base_directory)
+            FollowerState.set(window_id, "tmux", "%9", base_dir=base_directory, server_pid=None)
             return answer
-        return real(window_id, base_dir)
+        return real(window_id, base_directory)
 
     with patch.object(state, "_stopped_here", side_effect=stop_then_start):
         written = FollowerState.set("@4", "nvim", "/tmp/nvim-x.sock")

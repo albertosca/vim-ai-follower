@@ -40,9 +40,9 @@ def test_color_is_stable_by_position() -> None:
 
 
 def test_color_wraps_past_palette_length() -> None:
-    n = len(writer_cue.PALETTE)
-    writers = tuple(str(i) for i in range(n + 1))
-    assert writer_cue.color_for(writers, str(n)) == writer_cue.PALETTE[0]
+    palette_size = len(writer_cue.PALETTE)
+    writers = tuple(str(index) for index in range(palette_size + 1))
+    assert writer_cue.color_for(writers, str(palette_size)) == writer_cue.PALETTE[0]
 
 
 def test_palette_has_several_distinct_colors() -> None:

@@ -27,7 +27,7 @@ from vim_ai_follower.tmux import TmuxWindow
 
 pytestmark = pytest.mark.pid_walk
 
-SYNTHETIC_ENV = {"TERM_SESSION_ID": "w0t0p0"}
+SYNTHETIC_ENVIRONMENT = {"TERM_SESSION_ID": "w0t0p0"}
 SYNTHETIC = session_mod.Session(window_id="term-w0t0p0", origin=None, in_tmux=False)
 
 
@@ -48,21 +48,21 @@ def make_proc_world(
     command issued is appended to `calls`, so a test can assert how much the
     walk cost and not only where it landed."""
 
-    def _run(cmd: list[str], **kwargs: Any) -> MagicMock:
-        calls.append(cmd)
+    def _run(command: list[str], **keyword_arguments: Any) -> MagicMock:
+        calls.append(command)
         result = MagicMock()
         result.returncode = 0
-        if cmd[:2] == ["tmux", "list-panes"]:
+        if command[:2] == ["tmux", "list-panes"]:
             if tmux_raises:
                 raise OSError("tmux not found")
             result.returncode = tmux_returncode
             lines = [f"{pid} {pane} {window}" for pid, (pane, window) in panes.items()]
             lines.extend(extra_pane_lines)
             result.stdout = "".join(line + "\n" for line in lines)
-        elif cmd[:2] == ["ps", "-o"]:
+        elif command[:2] == ["ps", "-o"]:
             if ps_raises:
                 raise OSError("ps not found")
-            pid = int(cmd[-1])
+            pid = int(command[-1])
             parent = parents.get(pid)
             if parent is None:
                 result.returncode = 1
@@ -70,7 +70,7 @@ def make_proc_world(
             else:
                 result.stdout = f"  {parent}\n"
         else:  # pragma: no cover - the fallback issues no other command
-            raise AssertionError(f"unexpected command {cmd}")
+            raise AssertionError(f"unexpected command {command}")
         return result
 
     return _run
@@ -81,14 +81,14 @@ def install(
     ppid: int,
     parents: dict[int, int],
     panes: dict[int, tuple[str, str]],
-    **kwargs: Any,
+    **keyword_arguments: Any,
 ) -> list[list[str]]:
     """Returns the list the fake records every issued command into."""
     calls: list[list[str]] = []
     monkeypatch.setattr(os, "getppid", lambda: ppid)
     monkeypatch.setattr(
         "vim_ai_follower.session.subprocess.run",
-        make_proc_world(parents, panes, calls, **kwargs),
+        make_proc_world(parents, panes, calls, **keyword_arguments),
     )
     return calls
 
@@ -97,7 +97,7 @@ def test_recovers_the_window_when_the_direct_parent_is_a_pane(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install(monkeypatch, ppid=500, parents={500: 400}, panes={500: ("%7", "@3")})
-    assert session_mod.resolve_session(SYNTHETIC_ENV) == session_mod.Session(
+    assert session_mod.resolve_session(SYNTHETIC_ENVIRONMENT) == session_mod.Session(
         window_id="@3", origin="%7", in_tmux=True, recovered_via_pid=True
     )
 
@@ -113,7 +113,7 @@ def test_recovers_the_window_from_an_ancestor_three_hops_up(
         parents={500: 501, 501: 502, 502: 1},
         panes={502: ("%7", "@3"), 9999: ("%8", "@4")},
     )
-    session = session_mod.resolve_session(SYNTHETIC_ENV)
+    session = session_mod.resolve_session(SYNTHETIC_ENVIRONMENT)
     assert session is not None
     assert (session.window_id, session.origin, session.recovered_via_pid) == ("@3", "%7", True)
 
@@ -129,7 +129,7 @@ def test_the_nearest_matching_ancestor_wins(monkeypatch: pytest.MonkeyPatch) -> 
         parents={500: 501, 501: 502},
         panes={501: ("%inner", "@inner"), 502: ("%outer", "@outer")},
     )
-    session = session_mod.resolve_session(SYNTHETIC_ENV)
+    session = session_mod.resolve_session(SYNTHETIC_ENVIRONMENT)
     assert session is not None
     assert (session.window_id, session.origin) == ("@inner", "%inner")
 
@@ -143,14 +143,14 @@ def test_no_matching_ancestor_keeps_the_synthetic_identity(
         parents={500: 501, 501: 1},
         panes={9998: ("%7", "@3")},
     )
-    assert session_mod.resolve_session(SYNTHETIC_ENV) == SYNTHETIC
+    assert session_mod.resolve_session(SYNTHETIC_ENVIRONMENT) == SYNTHETIC
 
 
 def test_reaching_launchd_ends_the_walk(monkeypatch: pytest.MonkeyPatch) -> None:
     """The pathological bg-pty-host chain (daemon -> claude daemon -> launchd)
     reaches no pane at all; pid 1 is the floor, and pane pids are never <= 1."""
     install(monkeypatch, ppid=500, parents={500: 1}, panes={1: ("%7", "@3")})
-    assert session_mod.resolve_session(SYNTHETIC_ENV) == SYNTHETIC
+    assert session_mod.resolve_session(SYNTHETIC_ENVIRONMENT) == SYNTHETIC
 
 
 def test_an_ancestor_that_died_mid_walk_ends_the_walk(
@@ -159,7 +159,7 @@ def test_an_ancestor_that_died_mid_walk_ends_the_walk(
     # 501 is absent from `parents`, so ps answers exit 1 / empty stdout, the
     # way it answers for a pid that exited between two hops.
     install(monkeypatch, ppid=500, parents={500: 501}, panes={9998: ("%7", "@3")})
-    assert session_mod.resolve_session(SYNTHETIC_ENV) == SYNTHETIC
+    assert session_mod.resolve_session(SYNTHETIC_ENVIRONMENT) == SYNTHETIC
 
 
 def test_the_depth_cap_is_eight() -> None:
@@ -180,41 +180,41 @@ def test_the_depth_cap_is_respected(monkeypatch: pytest.MonkeyPatch) -> None:
     chain = list(range(500, 500 + cap + 2))
     parents = {pid: pid + 1 for pid in chain[:-1]}
     calls = install(monkeypatch, ppid=chain[0], parents=parents, panes={chain[cap]: ("%7", "@3")})
-    assert session_mod.resolve_session(SYNTHETIC_ENV) == SYNTHETIC
+    assert session_mod.resolve_session(SYNTHETIC_ENVIRONMENT) == SYNTHETIC
     # One tmux call plus one `ps` per hop except the last: the cap-th pid is
     # examined, never walked past.
-    ps_calls = [cmd for cmd in calls if cmd[0] == "ps"]
+    ps_calls = [command for command in calls if command[0] == "ps"]
     assert len(ps_calls) == cap - 1
     assert ps_calls[-1] == ["ps", "-o", "ppid=", "-p", str(chain[cap - 2])]
 
     # ... and the last ancestor still inside the cap IS found, so the first
     # half fails for the cap and not because the walk is broken outright.
     install(monkeypatch, ppid=chain[0], parents=parents, panes={chain[cap - 1]: ("%7", "@3")})
-    session = session_mod.resolve_session(SYNTHETIC_ENV)
+    session = session_mod.resolve_session(SYNTHETIC_ENVIRONMENT)
     assert session is not None
     assert session.window_id == "@3"
 
 
 def test_tmux_missing_keeps_the_synthetic_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     install(monkeypatch, ppid=500, parents={500: 400}, panes={500: ("%7", "@3")}, tmux_raises=True)
-    assert session_mod.resolve_session(SYNTHETIC_ENV) == SYNTHETIC
+    assert session_mod.resolve_session(SYNTHETIC_ENVIRONMENT) == SYNTHETIC
 
 
 def test_tmux_failing_keeps_the_synthetic_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     install(monkeypatch, ppid=500, parents={500: 400}, panes={500: ("%7", "@3")}, tmux_returncode=1)
-    assert session_mod.resolve_session(SYNTHETIC_ENV) == SYNTHETIC
+    assert session_mod.resolve_session(SYNTHETIC_ENVIRONMENT) == SYNTHETIC
 
 
 def test_no_tmux_panes_at_all_keeps_the_synthetic_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install(monkeypatch, ppid=500, parents={500: 400}, panes={})
-    assert session_mod.resolve_session(SYNTHETIC_ENV) == SYNTHETIC
+    assert session_mod.resolve_session(SYNTHETIC_ENVIRONMENT) == SYNTHETIC
 
 
 def test_ps_missing_keeps_the_synthetic_identity(monkeypatch: pytest.MonkeyPatch) -> None:
     install(monkeypatch, ppid=500, parents={500: 501}, panes={501: ("%7", "@3")}, ps_raises=True)
-    assert session_mod.resolve_session(SYNTHETIC_ENV) == SYNTHETIC
+    assert session_mod.resolve_session(SYNTHETIC_ENVIRONMENT) == SYNTHETIC
 
 
 def test_unparsable_pane_lines_are_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -228,7 +228,7 @@ def test_unparsable_pane_lines_are_skipped(monkeypatch: pytest.MonkeyPatch) -> N
         panes={500: ("%7", "@3")},
         extra_pane_lines=("", "nope %9 @9", "123 %9"),
     )
-    session = session_mod.resolve_session(SYNTHETIC_ENV)
+    session = session_mod.resolve_session(SYNTHETIC_ENVIRONMENT)
     assert session is not None
     assert session.window_id == "@3"
 
@@ -241,15 +241,15 @@ def test_tmux_pane_in_the_environment_never_walks_the_ancestry(
     made is TmuxWindow.from_env's display-message, on the other module)."""
     calls: list[list[str]] = []
 
-    def _boom(cmd: list[str], **kwargs: Any) -> MagicMock:
-        calls.append(cmd)
-        raise AssertionError(f"the fallback ran: {cmd}")
+    def _boom(command: list[str], **keyword_arguments: Any) -> MagicMock:
+        calls.append(command)
+        raise AssertionError(f"the fallback ran: {command}")
 
     monkeypatch.setattr("vim_ai_follower.session.subprocess.run", _boom)
     monkeypatch.setattr(
         TmuxWindow,
         "from_env",
-        classmethod(lambda cls, env: TmuxWindow(window_id="@3")),
+        classmethod(lambda window_class, environment: TmuxWindow(window_id="@3")),
     )
     assert session_mod.resolve_session({"TMUX_PANE": "%1"}) == session_mod.Session(
         window_id="@3", origin="%1", in_tmux=True
@@ -263,7 +263,7 @@ def test_an_inherited_session_is_not_marked_as_recovered(
     monkeypatch.setattr(
         TmuxWindow,
         "from_env",
-        classmethod(lambda cls, env: TmuxWindow(window_id="@3")),
+        classmethod(lambda window_class, environment: TmuxWindow(window_id="@3")),
     )
     session = session_mod.resolve_session({"TMUX_PANE": "%1"})
     assert session is not None
@@ -311,11 +311,11 @@ def test_real_pane_is_recovered_without_tmux_pane_in_the_environment(
     )
     pane_id, window_id = listed.stdout.split()[:2]
 
-    src = str(Path(session_mod.__file__).parent.parent)
+    source = str(Path(session_mod.__file__).parent.parent)
     probe = tmp_path / "probe.py"
     probe.write_text(_PROBE)
     out = tmp_path / "out.json"
-    inner = f"{sys.executable} {probe} {src} > {out} 2>&1; true"
+    inner = f"{sys.executable} {probe} {source} > {out} 2>&1; true"
     command = f"env -u TMUX_PANE -u TMUX TMUX_TMPDIR={os.environ['TMUX_TMPDIR']} bash -c {inner!r}"
     subprocess.run(["tmux", "send-keys", "-t", pane_id, command, "Enter"], check=True)
 

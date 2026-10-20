@@ -44,7 +44,7 @@ def _pause_at(check: int, tmp_path: Path, seen: list[object]) -> object:
     (the pause signal is a toggle: a second read means "resume")."""
     calls = {"n": 0}
 
-    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _check(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         if calls["n"] == check:
             return "pause"
@@ -85,7 +85,7 @@ def test_run_lines_pause_mid_line_leaves_the_half_typed_line_out_of_the_partial(
     # was typed, undone, and retyped. Without this the test would pass just as
     # happily against a boundary pause, asserting nothing about half-typed
     # lines.
-    sent = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    sent = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent == ["i", "alpha", "o", "beta", "o", "gamma", "u", "o", "gamma"]
     assert seen == [
         control.PendingShowFresh(("gamma",), 0.0, continuation=True, partial="alpha\nbeta\n")
@@ -187,7 +187,7 @@ def test_run_ops_pause_mid_op_leaves_the_rolled_back_op_out_of_the_partial(
     assert result == AnimationResult("completed", 2)
     # Proof the pause landed INSIDE op1: its "gg"/"O" opener went out, was
     # rolled back with a "u", and the whole op was replayed afterwards.
-    sent = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    sent = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent == [":2d", ":1", "o", "XX", "YY", "gg", "O", "u", "gg", "O", "ZZ"]
     assert seen == [control.PendingApplyEdit(_OPS[1:], 0.0, partial="a\nXX\nYY\nc\n")]
 

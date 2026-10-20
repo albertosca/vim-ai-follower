@@ -175,9 +175,9 @@ def test_every_navigation_goes_through_the_guarded_goto() -> None:
         ("reload_and_relock", ("/tmp/f.py",)),
         ("goto_file", ("/tmp/f.py",)),
     )
-    for name, args in callers:
+    for name, arguments in callers:
         with patch("vim_ai_follower.tmux.subprocess.run") as run:
-            getattr(follower, name)(*args)
+            getattr(follower, name)(*arguments)
         sent = _sent_text(run)
         assert any("('goto'," in text for text in sent), f"{name} sent no navigation"
         assert not any("tab drop" in text for text in sent), sent

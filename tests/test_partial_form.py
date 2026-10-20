@@ -103,17 +103,17 @@ def test_an_apply_ops_result_chains_as_the_base_of_the_next_call() -> None:
 # --------------------------------------------------------------------------
 
 
-def _pause_at(check: int, base_dir: Path, seen: list[object]) -> Callable[..., str | None]:
+def _pause_at(check: int, base_directory: Path, seen: list[object]) -> Callable[..., str | None]:
     """A check_signal double pausing at the `check`-th call, snapshotting the
     pending the wait loop just wrote, then resuming (pause is a toggle)."""
     calls = {"n": 0}
 
-    def _check(window_id: str, bd: Path | None = None) -> str | None:
+    def _check(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         if calls["n"] == check:
             return "pause"
         if calls["n"] == check + 1:
-            seen.append(control.load_pending_animation("@1", base_dir))
+            seen.append(control.load_pending_animation("@1", base_directory))
             return "pause"
         return None
 
@@ -135,7 +135,7 @@ def test_the_tmux_driver_persists_the_blank_ending_prefix_in_terminated_form(
     assert result == AnimationResult("completed", 2)
     # Proof the pause landed at the op boundary and not somewhere that would
     # make the expected partial right for the wrong reason.
-    sent = [c.args[0] for c in pane.send_text.call_args_list]  # type: ignore[attr-defined]
+    sent = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent == [":4d", ":3", "o", "", ":1d", "gg", "O", "ONE"]
     assert seen == [control.PendingApplyEdit(_OPS[1:], 0.0, partial=_PREFIX)]
 
@@ -156,7 +156,7 @@ def test_the_nvim_backend_persists_the_blank_ending_prefix_in_terminated_form(
         window_id: str,
         ops: list[EditOp],
         pace: float,
-        base_dir: Path | None = None,
+        base_directory: Path | None = None,
         file_path: str = "",
         partial: str | None = None,
     ) -> None:
@@ -217,14 +217,16 @@ def test_the_hook_interrupt_path_persists_the_blank_ending_prefix_in_terminated_
     seen: dict[str, Any] = {}
     real_save = control.save_pending_apply_edit
 
-    def spy(*args: Any, **kwargs: Any) -> None:
-        seen.update(kwargs)
-        real_save(*args, **kwargs)
+    def spy(*arguments: Any, **keyword_arguments: Any) -> None:
+        seen.update(keyword_arguments)
+        real_save(*arguments, **keyword_arguments)
 
     monkeypatch.setattr(control, "save_pending_apply_edit", spy)
-    monkeypatch.setattr(hooks, "get_follower", lambda *a, **k: follower)
-    monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: MagicMock())
-    monkeypatch.setattr(hooks, "show_popup", lambda *a, **k: None)
+    monkeypatch.setattr(hooks, "get_follower", lambda *arguments, **keyword_arguments: follower)
+    monkeypatch.setattr(
+        hooks, "status_surface_for", lambda *arguments, **keyword_arguments: MagicMock()
+    )
+    monkeypatch.setattr(hooks, "show_popup", lambda *arguments, **keyword_arguments: None)
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
     with (
         patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
@@ -256,7 +258,7 @@ def test_rearm_handoff_grows_an_apply_edit_partial_in_terminated_form(
     follower = _fake_follower()
     follower.resume.return_value = AnimationResult("interrupted", 1)
     pending = control.PendingApplyEdit(_OPS, 0.0, file_path=str(target), partial=_BEFORE)
-    monkeypatch.setattr(hooks, "get_follower", lambda *a, **k: follower)
+    monkeypatch.setattr(hooks, "get_follower", lambda *arguments, **keyword_arguments: follower)
 
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()):
         grown = hooks._rearm_handoff(follower, "@1", pending, _BEFORE, 1)

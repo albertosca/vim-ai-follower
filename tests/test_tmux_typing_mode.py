@@ -182,11 +182,11 @@ def test_a_mode_file_renamed_between_the_reads_is_read_again() -> None:
     path = cache.CACHE_DIR / "mode-202.txt"
     original = Path.read_text
 
-    def read_text(self: Path, *args: object, **kwargs: object) -> str:
+    def read_text(self: Path, *arguments: object, **keyword_arguments: object) -> str:
         if self.name == ".mode-202.txt.tmp":
             _mode_file(202, "202 R\n")
             raise FileNotFoundError(self)
-        return original(self, *args, **kwargs)  # type: ignore[arg-type]
+        return original(self, *arguments, **keyword_arguments)  # type: ignore[arg-type]
 
     assert not path.exists()
     with patch.object(Path, "read_text", read_text):
@@ -238,12 +238,12 @@ def test_an_empty_temporary_ends_the_reads_even_if_the_file_then_appears() -> No
     _temporary(202, "")
     original = Path.read_text
 
-    def read_text(self: Path, *args: object, **kwargs: object) -> str:
+    def read_text(self: Path, *arguments: object, **keyword_arguments: object) -> str:
         if self.name == ".mode-202.txt.tmp":
-            content = original(self, *args, **kwargs)  # type: ignore[arg-type]
+            content = original(self, *arguments, **keyword_arguments)  # type: ignore[arg-type]
             _mode_file(202, "202 i\n")
             return content
-        return original(self, *args, **kwargs)  # type: ignore[arg-type]
+        return original(self, *arguments, **keyword_arguments)  # type: ignore[arg-type]
 
     with patch.object(Path, "read_text", read_text):
         assert tmux_vim._recorded_mode(_VimProcess(pid=202, started=started)) is None
@@ -633,12 +633,12 @@ def test_the_screen_shows_a_prompt_the_user_is_waiting_at(
 
 
 def test_a_failed_full_capture_is_no_ex_mode() -> None:
-    def run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def run(argv: list[str], **keyword_arguments: object) -> subprocess.CompletedProcess[str]:
         if argv[0] != "ps" and argv[1] == "capture-pane" and "-S" not in argv:
             return _completed(argv, _EX_SCREEN, returncode=1)
         answered: subprocess.CompletedProcess[str] = _world(
             processes=_VIM_ALONE, bottom_row=":s/fo"
-        )(argv, **kwargs)
+        )(argv, **keyword_arguments)
         return answered
 
     with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", side_effect=run):

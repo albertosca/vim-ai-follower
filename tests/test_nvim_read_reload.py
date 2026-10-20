@@ -15,7 +15,7 @@ from vim_ai_follower.backends.nvim import _IS_CLEAN_LUA, _STAMP_IF_EXPECTED_LUA,
 
 def _nvim(*, clean: bool, swap: bool) -> MagicMock:
     nvim = MagicMock()
-    nvim.exec_lua.side_effect = lambda code, *args: clean if code == _IS_CLEAN_LUA else 9
+    nvim.exec_lua.side_effect = lambda code, *arguments: clean if code == _IS_CLEAN_LUA else 9
     nvim.api.get_current_buf.return_value.handle = 9
     nvim.api.buf_get_option.return_value = swap
     nvim.api.exec2.return_value = {"output": ""}
@@ -35,9 +35,9 @@ def _ensure_showing(nvim: MagicMock, tmp_path: Path, *, adopted: bool) -> None:
 
 def _edits(nvim: MagicMock) -> list[str]:
     """Every `edit!` the follower ran, through either exec path."""
-    commands = [c.args[0] for c in nvim.command.call_args_list]
-    commands += [c.args[0] for c in nvim.api.exec2.call_args_list]
-    return [c for c in commands if "edit!" in c]
+    commands = [recorded_call.args[0] for recorded_call in nvim.command.call_args_list]
+    commands += [recorded_call.args[0] for recorded_call in nvim.api.exec2.call_args_list]
+    return [command for command in commands if "edit!" in command]
 
 
 def test_a_clean_buffer_is_re_read_silently(tmp_path: Path) -> None:
@@ -59,7 +59,9 @@ def test_an_adopted_nvim_re_reads_plainly_and_keeps_its_swap(tmp_path: Path) -> 
     nvim = _nvim(clean=True, swap=True)
     _ensure_showing(nvim, tmp_path, adopted=True)
     assert nvim.command.call_args_list == [call("silent edit!")]
-    assert "swapfile" not in [c.args[1] for c in nvim.api.buf_set_option.call_args_list]
+    assert "swapfile" not in [
+        recorded_call.args[1] for recorded_call in nvim.api.buf_set_option.call_args_list
+    ]
 
 
 def _drive(outcome: str, expected: list[str] | None = None) -> MagicMock:

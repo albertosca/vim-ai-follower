@@ -120,12 +120,16 @@ def test_animate_lines_forces_the_static_default_colorscheme_before_the_typing_h
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", return_value=None):
         _animate_lines(nvim, 7, ("a",), 0, lambda: 0.05, "@1", ns=3, base_dir=Path("/tmp/x"))
-    cmds = [c.args[0] for c in nvim.command.call_args_list]
+    cmds = [recorded_call.args[0] for recorded_call in nvim.command.call_args_list]
     assert "set background=dark" in cmds
-    background_idx = cmds.index("set background=dark")
-    colorscheme_idx = next(i for i, c in enumerate(cmds) if "colorscheme gruvbox" in c)
-    highlight_idx = next(i for i, c in enumerate(cmds) if c.startswith("highlight default"))
-    assert background_idx < colorscheme_idx < highlight_idx
+    background_index = cmds.index("set background=dark")
+    colorscheme_index = next(
+        index for index, command in enumerate(cmds) if "colorscheme gruvbox" in command
+    )
+    highlight_index = next(
+        index for index, command in enumerate(cmds) if command.startswith("highlight default")
+    )
+    assert background_index < colorscheme_index < highlight_index
 
 
 def test_animate_lines_pace_zero_types_the_whole_line_at_once() -> None:
@@ -314,8 +318,8 @@ def test_show_fresh_never_edits_the_real_file_and_types_the_content(tmp_path: Pa
         result = follower.show_fresh("/tmp/f.py", "hello\nworld\n")
     assert result == AnimationResult("completed", 2)
     # Never `:e`/`:edit` the real file — that would flash the finished content.
-    issued = [c.args[0] for c in nvim.command.call_args_list]
-    assert not any(cmd.startswith("edit ") or cmd.startswith("e ") for cmd in issued)
+    issued = [recorded_call.args[0] for recorded_call in nvim.command.call_args_list]
+    assert not any(command.startswith("edit ") or command.startswith("e ") for command in issued)
     # Each line is typed at its row (pace 0 here -> whole-line inserts).
     nvim.api.buf_set_text.assert_any_call(7, 0, 0, 0, 0, ["hello"])
     nvim.api.buf_set_text.assert_any_call(7, 1, 0, 1, 0, ["world"])
@@ -335,7 +339,7 @@ def test_show_fresh_opens_a_new_tab_when_requested(tmp_path: Path) -> None:
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
     ):
         follower.show_fresh("/tmp/b.py", "x\n", in_new_tab=True)
-    cmds = [c.args[0] for c in nvim.command.call_args_list]
+    cmds = [recorded_call.args[0] for recorded_call in nvim.command.call_args_list]
     assert "tabnew" in cmds
     assert "enew" not in cmds
     # The name goes on the buffer show_fresh CREATED, by handle, and that
@@ -361,7 +365,7 @@ def test_show_fresh_marks_animating_and_leaves_the_slot_to_its_owner(tmp_path: P
     fresh_buffer(nvim)
     seen: list[bool] = []
 
-    def _check(window_id: str, base_dir: Path | None = None) -> None:
+    def _check(window_id: str, base_directory: Path | None = None) -> None:
         from vim_ai_follower import control
 
         seen.append(control.is_animating("@1", tmp_path))
@@ -396,7 +400,11 @@ def test_show_fresh_relocks_buffer_when_completed(tmp_path: Path) -> None:
     # unlocked around the animation, then relocked (nomodifiable) after.
     # (The first option call opts the new buffer out of swap before naming it;
     # the lock protocol starts after it.)
-    locks = [c for c in nvim.api.buf_set_option.call_args_list if c.args[1] != "swapfile"]
+    locks = [
+        recorded_call
+        for recorded_call in nvim.api.buf_set_option.call_args_list
+        if recorded_call.args[1] != "swapfile"
+    ]
     assert locks[0] == call(7, "modifiable", True)
     assert nvim.api.buf_set_option.call_args_list[-1] == call(7, "modifiable", False)
 
@@ -432,7 +440,7 @@ def test_show_fresh_pause_saves_show_fresh_remainder_then_resumes(tmp_path: Path
         lines: tuple[str, ...],
         pace: float,
         continuation: bool = False,
-        base_dir: Path | None = None,
+        base_directory: Path | None = None,
         file_path: str = "",
         partial: str | None = None,
     ) -> None:
@@ -470,7 +478,7 @@ def test_apply_edit_pause_at_op_boundary_saves_ops_and_resumes(tmp_path: Path) -
     shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
     nvim.api.buf_line_count.return_value = 1
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
     saved: list[int] = []
     real_save = control.save_pending_apply_edit
 
@@ -478,7 +486,7 @@ def test_apply_edit_pause_at_op_boundary_saves_ops_and_resumes(tmp_path: Path) -
         window_id: str,
         ops: list[EditOp],
         pace: float,
-        base_dir: Path | None = None,
+        base_directory: Path | None = None,
         file_path: str = "",
         partial: str | None = None,
     ) -> None:
@@ -492,7 +500,7 @@ def test_apply_edit_pause_at_op_boundary_saves_ops_and_resumes(tmp_path: Path) -
         patch("vim_ai_follower.control.save_pending_apply_edit", side_effect=spy_save),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
     ):
-        result = follower.apply_edit("/tmp/f.py", [op])
+        result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("completed", 1)
     assert saved == [1]  # remainder = the whole op list from the paused op
     nvim.api.buf_set_text.assert_called_once()
@@ -503,13 +511,13 @@ def test_apply_edit_pause_at_op_boundary_then_interrupt(tmp_path: Path) -> None:
     nvim = MagicMock()
     shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=["pause", "interrupt"]),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
     ):
-        result = follower.apply_edit("/tmp/f.py", [op])
+        result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("interrupted", 0)
     nvim.api.buf_set_text.assert_not_called()  # interrupted before op0's delete
 
@@ -520,14 +528,14 @@ def test_apply_edit_pause_inside_an_ops_lines_saves_and_resumes(tmp_path: Path) 
     shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
     nvim.api.buf_line_count.return_value = 1
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
     saved: list[int] = []
 
     def spy_save(
         window_id: str,
         ops: list[EditOp],
         pace: float,
-        base_dir: Path | None = None,
+        base_directory: Path | None = None,
         file_path: str = "",
         partial: str | None = None,
     ) -> None:
@@ -543,7 +551,7 @@ def test_apply_edit_pause_inside_an_ops_lines_saves_and_resumes(tmp_path: Path) 
         patch("vim_ai_follower.control.save_pending_apply_edit", side_effect=spy_save),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
     ):
-        result = follower.apply_edit("/tmp/f.py", [op])
+        result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("completed", 1)
     assert saved == [1]  # the op-granular remainder is saved mid-op too
     assert nvim.api.buf_set_text.call_count == 2  # both lines eventually typed
@@ -617,7 +625,11 @@ def test_drive_skips_relock_for_an_adopted_follower(tmp_path: Path) -> None:
     # relocked afterwards.
     # (The first option call opts the new buffer out of swap before naming it;
     # the lock protocol starts after it.)
-    locks = [c for c in nvim.api.buf_set_option.call_args_list if c.args[1] != "swapfile"]
+    locks = [
+        recorded_call
+        for recorded_call in nvim.api.buf_set_option.call_args_list
+        if recorded_call.args[1] != "swapfile"
+    ]
     assert locks[0] == call(7, "modifiable", True)
     assert call(7, "modifiable", False) not in nvim.api.buf_set_option.call_args_list
 
@@ -696,14 +708,14 @@ def test_apply_edit_navigates_to_the_tab_showing_file_path(tmp_path: Path) -> No
     nvim = MagicMock()
     nvim.api.get_current_buf.return_value.handle = 7
     nvim.api.buf_line_count.return_value = 1
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
         patch.object(NvimFollower, "goto_file") as goto_file,
     ):
-        follower.apply_edit("/tmp/f.py", [op])
+        follower.apply_edit("/tmp/f.py", [operation])
     goto_file.assert_called_once_with("/tmp/f.py")
 
 
@@ -736,14 +748,14 @@ def test_apply_edit_interrupted_inside_an_ops_line_animation(tmp_path: Path) -> 
     shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
     nvim.api.buf_line_count.return_value = 1
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         # op boundary (None), line0 (None, typed), line1 boundary -> interrupt.
         patch("vim_ai_follower.control.check_signal", side_effect=[None, None, "interrupt"]),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
     ):
-        result = follower.apply_edit("/tmp/f.py", [op])
+        result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("interrupted", 0)
     assert nvim.api.buf_set_text.call_count == 0  # no snap; line0 not typed at all
 
@@ -753,13 +765,13 @@ def test_apply_edit_pure_delete_op_needs_no_animation(tmp_path: Path) -> None:
     nvim = MagicMock()
     shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
-    op = EditOp(kind="delete", start_line=2, end_line=3, new_lines=())
+    operation = EditOp(kind="delete", start_line=2, end_line=3, new_lines=())
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
     ):
-        result = follower.apply_edit("/tmp/f.py", [op])
+        result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("completed", 1)
     nvim.api.buf_set_lines.assert_any_call(7, 1, 3, True, [])
     nvim.api.buf_set_text.assert_not_called()
@@ -826,12 +838,14 @@ def test_goto_file_switches_to_the_tab_already_showing_the_buffer() -> None:
     nvim.exec_lua.return_value = 9
     tab_other, tab_target = MagicMock(), MagicMock()
     win_other, win_target = MagicMock(), MagicMock()
-    buf_other, buf_target = MagicMock(number=3), MagicMock(number=9)
+    other_buffer, target_buffer = MagicMock(number=3), MagicMock(number=9)
     nvim.api.list_tabpages.return_value = [tab_other, tab_target]
-    nvim.api.tabpage_list_wins.side_effect = lambda t: (
-        [win_target] if t is tab_target else [win_other]
+    nvim.api.tabpage_list_wins.side_effect = lambda tabpage: (
+        [win_target] if tabpage is tab_target else [win_other]
     )
-    nvim.api.win_get_buf.side_effect = lambda w: buf_target if w is win_target else buf_other
+    nvim.api.win_get_buf.side_effect = lambda window: (
+        target_buffer if window is win_target else other_buffer
+    )
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.goto_file("/tmp/f.py")
     nvim.api.set_current_win.assert_called_once_with(win_target)
@@ -848,11 +862,21 @@ def test_goto_file_finds_the_buffer_in_a_split_window_not_just_the_focused_one()
     nvim.exec_lua.return_value = 9
     tab1, tab2 = MagicMock(), MagicMock()
     win1, win2a, win2b = MagicMock(), MagicMock(), MagicMock()
-    buf1, buf2a, buf2b = MagicMock(number=1), MagicMock(number=3), MagicMock(number=9)
+    first_buffer, second_tab_first_buffer, second_tab_second_buffer = (
+        MagicMock(number=1),
+        MagicMock(number=3),
+        MagicMock(number=9),
+    )
     nvim.api.list_tabpages.return_value = [tab1, tab2]
-    nvim.api.tabpage_list_wins.side_effect = lambda t: [win1] if t is tab1 else [win2a, win2b]
-    win_to_buf = {win1: buf1, win2a: buf2a, win2b: buf2b}
-    nvim.api.win_get_buf.side_effect = lambda w: win_to_buf[w]
+    nvim.api.tabpage_list_wins.side_effect = lambda tabpage: (
+        [win1] if tabpage is tab1 else [win2a, win2b]
+    )
+    window_to_buffer = {
+        win1: first_buffer,
+        win2a: second_tab_first_buffer,
+        win2b: second_tab_second_buffer,
+    }
+    nvim.api.win_get_buf.side_effect = lambda window: window_to_buffer[window]
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.goto_file("/tmp/f.py")
     nvim.api.set_current_win.assert_called_once_with(win2b)
@@ -994,7 +1018,7 @@ def test_format_from_disk_puts_back_unmodified_only_on_a_buffer_holding_the_file
     target = tmp_path / "a.py"
     target.write_bytes(b"a\r\nb\r\n")
     nvim = MagicMock()
-    nvim.api.buf_get_option.side_effect = lambda buf, name: {
+    nvim.api.buf_get_option.side_effect = lambda buffer, name: {
         "modified": False,
         "fileformat": "unix",
     }[name]

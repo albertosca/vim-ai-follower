@@ -151,9 +151,9 @@ def test_a_stale_probe_file_is_removed_before_asking() -> None:
     probe.write_text(f"stale\n{NONCE}\n")
     seen: list[bool] = []
 
-    def _vim_writes(p: Path) -> None:
-        seen.append(p.exists())
-        _dump("a", NONCE)(p)
+    def _vim_writes(path: Path) -> None:
+        seen.append(path.exists())
+        _dump("a", NONCE)(path)
 
     held, _ = _probe(_vim_writes, "a\n")
     assert seen == [False]

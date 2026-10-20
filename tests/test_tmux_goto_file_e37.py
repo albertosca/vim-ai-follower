@@ -76,13 +76,13 @@ def _sent_commands(run_mock: MagicMock) -> list[tuple[str, bool]]:
     """(text, literal) pairs, in order, for send-keys calls targeting %2."""
     commands = []
     for call in run_mock.call_args_list:
-        cmd = call.args[0]
-        if cmd[:4] != ["tmux", "send-keys", "-t", "%2"]:
+        command = call.args[0]
+        if command[:4] != ["tmux", "send-keys", "-t", "%2"]:
             continue
-        if "-l" in cmd:
-            commands.append((resolve_typed_paths(cmd[6]), True))
+        if "-l" in command:
+            commands.append((resolve_typed_paths(command[6]), True))
         else:
-            commands.append((cmd[4], False))
+            commands.append((command[4], False))
     return commands
 
 
@@ -91,7 +91,7 @@ def _assert_navigates_through_the_guard(commands: list[tuple[str, bool]], file_p
     (s:goto) — never a bare `:tab drop`, which is what would put the prompt
     back."""
     guarded = (_goto(file_path), True)
-    indices = [i for i, c in enumerate(commands) if c == guarded]
+    indices = [position for position, command in enumerate(commands) if command == guarded]
     assert indices, f"no guarded navigation to {file_path!r} found in {commands!r}"
     for index in indices:
         assert commands[index + 1] == ("Enter", False)
@@ -235,7 +235,7 @@ def test_apply_edit_navigates_through_the_guard_including_on_resume(
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     calls = {"n": 0}
 
-    def _pause_then_resume(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _pause_then_resume(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         return "pause" if calls["n"] in (1, 2) else None
 
@@ -247,13 +247,13 @@ def test_apply_edit_navigates_through_the_guard_including_on_resume(
         follower.apply_edit("/tmp/f.py", compute_edit_script("a\n", "b\n"))
     commands = _sent_commands(run)
     _assert_navigates_through_the_guard(commands, "/tmp/f.py")
-    assert len([c for c in commands if c == (_goto("/tmp/f.py"), True)]) == 2
+    assert len([command for command in commands if command == (_goto("/tmp/f.py"), True)]) == 2
 
 
 def test_resume_navigates_through_the_guard() -> None:
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
-    pending = control.PendingApplyEdit(ops=[op], pace_seconds=0.0, file_path="/tmp/f.py")
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    pending = control.PendingApplyEdit(ops=[operation], pace_seconds=0.0, file_path="/tmp/f.py")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
         patch("vim_ai_follower.control.check_signal", return_value=None),

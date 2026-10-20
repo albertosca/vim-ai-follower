@@ -228,11 +228,11 @@ def test_a_give_back_nvim_refuses_is_navigation_failed() -> None:
 
 
 @pytest.mark.parametrize(
-    ("state", "opens_a_tab"),
+    ("state", "opens_tab"),
     [("dedicated", False), ("adopted", True), ("gone", True)],
 )
 def test_only_a_proven_dedicated_follower_types_a_first_file_in_place(
-    state: str, opens_a_tab: bool
+    state: str, opens_tab: bool
 ) -> None:
     """Review of sweep-4 T8, I1: the hook asks for the current window
     (in_new_tab=shown_any=False) on an adopted nvim's first Write; the
@@ -246,7 +246,7 @@ def test_only_a_proven_dedicated_follower_types_a_first_file_in_place(
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
         _follower().show_fresh("/tmp/f.py", "a\n", in_new_tab=False)
-    assert (call("tabnew") in nvim.command.call_args_list) is opens_a_tab
+    assert (call("tabnew") in nvim.command.call_args_list) is opens_tab
 
 
 def test_a_replaced_buffer_its_own_bufhidden_wiped_is_left_alone() -> None:

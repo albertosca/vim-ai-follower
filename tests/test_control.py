@@ -136,9 +136,9 @@ def test_check_signal_survives_losing_the_claim_race(tmp_path: Path) -> None:
 
 
 def test_pending_write_is_atomic_no_partial_file_visible(tmp_path: Path) -> None:
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("x",))
-    control.save_pending_apply_edit("@1", [op], 0.1, tmp_path)
-    leftovers = sorted(p.name for p in tmp_path.iterdir())
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("x",))
+    control.save_pending_apply_edit("@1", [operation], 0.1, tmp_path)
+    leftovers = sorted(entry.name for entry in tmp_path.iterdir())
     assert leftovers == ["@1.pending_animation.json"]  # no .tmp residue
     # and the write goes through an atomic rename, not a direct write:
     with patch.object(Path, "replace", autospec=True, side_effect=Path.replace) as replace:
@@ -226,9 +226,9 @@ class _Competitor:
     """A competing hook: a real, separate process that tries to take the slot
     and then stays alive, as a hook that won would."""
 
-    def __init__(self, base_dir: Path) -> None:
+    def __init__(self, base_directory: Path) -> None:
         self.proc = subprocess.Popen(
-            [sys.executable, "-c", _COMPETITOR, str(base_dir)],
+            [sys.executable, "-c", _COMPETITOR, str(base_directory)],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             text=True,
@@ -264,9 +264,9 @@ class _Steps:
             event()
 
     def _wrap(self, real: Callable[..., Any]) -> Callable[..., Any]:
-        def call(*args: Any, **kwargs: Any) -> Any:
+        def call(*arguments: Any, **keyword_arguments: Any) -> Any:
             try:
-                return real(*args, **kwargs)
+                return real(*arguments, **keyword_arguments)
             finally:
                 self._step()
 
@@ -276,17 +276,17 @@ class _Steps:
         real = getattr(os, name)
         return self._wrap(real) if callable(real) else real
 
-    def acquire(self, base_dir: Path) -> bool:
+    def acquire(self, base_directory: Path) -> bool:
         with (
             patch("vim_ai_follower.control.os", self),
             patch("vim_ai_follower.control.animating_state", self._wrap(self._animating_state)),
         ):
-            return control.try_acquire_animating("@1", base_dir)
+            return control.try_acquire_animating("@1", base_directory)
 
 
-def _compete_into(base_dir: Path, found: list[_Competitor]) -> Callable[[], None]:
+def _compete_into(base_directory: Path, found: list[_Competitor]) -> Callable[[], None]:
     def compete() -> None:
-        found.append(_Competitor(base_dir))
+        found.append(_Competitor(base_directory))
 
     return compete
 
@@ -379,10 +379,10 @@ def _swap_before_stat(marker: Path, swap: Callable[[], None]) -> Callable[..., A
     the moment between reading the dead marker and removing it."""
     real = os.stat
 
-    def stat(path: Any, *args: Any, **kwargs: Any) -> Any:
+    def stat(path: Any, *arguments: Any, **keyword_arguments: Any) -> Any:
         if Path(path) == marker:
             swap()
-        return real(path, *args, **kwargs)
+        return real(path, *arguments, **keyword_arguments)
 
     return stat
 
@@ -469,7 +469,7 @@ def test_a_state_change_replaces_the_marker_never_truncates_it(tmp_path: Path) -
         control.mark_animating("@1", tmp_path, state="paused")
         assert before.read() == f"{os.getpid()} running"
     assert control.animating_state("@1", tmp_path) == "paused"
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["@1.animating"]
+    assert sorted(entry.name for entry in tmp_path.iterdir()) == ["@1.animating"]
 
 
 def test_a_signal_with_no_live_animation_to_address_is_not_written(tmp_path: Path) -> None:
@@ -533,14 +533,15 @@ def test_clearing_signals_sweeps_what_killed_processes_left_behind(tmp_path: Pat
         (tmp_path / name).write_text("1")
     other_window = tmp_path / f"@10.pause.{dead}.claimed"
     other_window.write_text("1")
-    not_a_pid = tmp_path / "@1.pause.x.tmp"
-    not_a_pid.write_text("1")
+    unrelated_leftover = tmp_path / "@1.pause.x.tmp"
+    unrelated_leftover.write_text("1")
 
     control.clear_signals("@1", base_dir=tmp_path)
 
     left = sorted(path.name for path in tmp_path.iterdir())
     assert left == sorted(
-        [name for name in names if f".{live}." in name] + [other_window.name, not_a_pid.name]
+        [name for name in names if f".{live}." in name]
+        + [other_window.name, unrelated_leftover.name]
     )
 
 

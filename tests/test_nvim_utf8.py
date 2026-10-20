@@ -39,12 +39,12 @@ def _no_sleep() -> Iterator[None]:
 
 def _insert_columns(nvim: MagicMock) -> list[int]:
     """The start column of every buf_set_text call, in order."""
-    return [c.args[2] for c in nvim.api.buf_set_text.call_args_list]
+    return [recorded_call.args[2] for recorded_call in nvim.api.buf_set_text.call_args_list]
 
 
 def _cursor_columns(nvim: MagicMock) -> list[int]:
     """The column of every win_set_cursor call, in order."""
-    return [c.args[1][1] for c in nvim.api.win_set_cursor.call_args_list]
+    return [recorded_call.args[1][1] for recorded_call in nvim.api.win_set_cursor.call_args_list]
 
 
 def test_typing_inserts_each_character_at_its_byte_column() -> None:
@@ -94,7 +94,9 @@ def test_cursor_follows_the_typed_prefix_in_byte_columns() -> None:
         _animate_lines(nvim, 7, (_MIXED,), 4, lambda: 0.05, "@1", ns=3)
     assert _cursor_columns(nvim) == [1, 3, 6, 7]
     # row is 1-indexed for the cursor and unchanged by the byte conversion
-    assert {c.args[1][0] for c in nvim.api.win_set_cursor.call_args_list} == {5}
+    assert {
+        recorded_call.args[1][0] for recorded_call in nvim.api.win_set_cursor.call_args_list
+    } == {5}
 
 
 def test_each_line_restarts_the_byte_column_at_zero() -> None:
@@ -144,11 +146,13 @@ def test_pause_resumes_at_the_same_byte_column(tmp_path: Path) -> None:
     # so the byte offset must survive the wait untouched — neither reset to
     # the character index nor advanced by the blocked iteration.
     nvim = MagicMock()
-    base_dir = tmp_path / "cache"
+    base_directory = tmp_path / "cache"
     # calls: line boundary, char0, char1, then pause (twice: the trigger and
     # the toggle that _wait_while_paused reads as "resume"), then the rest.
     signals = [None, None, None, "pause", "pause", None, None]
     with patch("vim_ai_follower.control.check_signal", side_effect=signals):
-        result = _animate_lines(nvim, 7, (_MIXED,), 0, lambda: 0.05, "@1", ns=3, base_dir=base_dir)
+        result = _animate_lines(
+            nvim, 7, (_MIXED,), 0, lambda: 0.05, "@1", ns=3, base_dir=base_directory
+        )
     assert result == AnimationResult("completed", 1)
     assert _insert_columns(nvim) == [0, 1, 3, 6]

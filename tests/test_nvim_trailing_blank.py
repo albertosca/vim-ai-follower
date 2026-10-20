@@ -101,13 +101,13 @@ def test_apply_edit_pure_delete_that_empties_the_buffer_leaves_the_implicit_blan
     shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
     nvim.api.buf_line_count.return_value = 1
-    op = EditOp(kind="delete", start_line=1, end_line=1, new_lines=())
+    operation = EditOp(kind="delete", start_line=1, end_line=1, new_lines=())
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
     ):
-        result = follower.apply_edit("/tmp/f.py", [op])
+        result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("completed", 1)
     nvim.api.buf_set_lines.assert_called_once_with(7, 0, 1, True, [])
 
@@ -125,14 +125,14 @@ def test_apply_edit_interrupted_mid_wipe_rolls_back_instead_of_dropping(tmp_path
     # alone), interrupt (2 = the row inserted for "a" plus that blank).
     nvim.api.buf_line_count.side_effect = [1, 1, 2]
     nvim.api.buf_get_lines.return_value = ["z"]
-    op = EditOp(kind="replace", start_line=1, end_line=1, new_lines=("a", "b"))
+    operation = EditOp(kind="replace", start_line=1, end_line=1, new_lines=("a", "b"))
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         # op boundary (None), line0 boundary (None), char 0 of "a" -> interrupt.
         patch("vim_ai_follower.control.check_signal", side_effect=[None, None, "interrupt"]),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
     ):
-        result = follower.apply_edit("/tmp/f.py", [op])
+        result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("interrupted", 0)
     assert nvim.api.buf_set_lines.call_args_list == [
         call(7, 0, 1, True, []),  # the op's delete

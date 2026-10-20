@@ -24,7 +24,7 @@ from vim_ai_follower.backends.nvim import _IS_CLEAN_LUA, NvimFollower
 from vim_ai_follower.diff import EditOp
 
 
-def _buffer_9_not_clean(code: str, *args: object) -> object:
+def _buffer_9_not_clean(code: str, *arguments: object) -> object:
     """exec_lua for an existing buffer 9 that is NOT clean, so ensure_showing
     switches to it without a re-read: these tests are about the lock only
     (the re-read has its own in tests/test_nvim_read_reload.py)."""
@@ -187,10 +187,10 @@ def test_goto_file_itself_never_touches_modifiable() -> None:
     nvim = MagicMock()
     nvim.exec_lua.return_value = 9
     tab, win = MagicMock(), MagicMock()
-    buf = MagicMock(number=9)
+    buffer = MagicMock(number=9)
     nvim.api.list_tabpages.return_value = [tab]
     nvim.api.tabpage_list_wins.return_value = [win]
-    nvim.api.win_get_buf.return_value = buf
+    nvim.api.win_get_buf.return_value = buffer
     with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
         follower.goto_file("/tmp/f.py")
     nvim.api.buf_set_option.assert_not_called()
@@ -215,7 +215,7 @@ def test_ensure_showing_with_the_state_gone_locks_nothing_and_logs_nothing(
 ) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
-    nvim.exec_lua.side_effect = lambda code, *args: True if code == _IS_CLEAN_LUA else 9
+    nvim.exec_lua.side_effect = lambda code, *arguments: True if code == _IS_CLEAN_LUA else 9
     nvim.api.get_current_buf.return_value.handle = 9
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),

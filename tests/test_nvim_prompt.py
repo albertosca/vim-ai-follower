@@ -43,7 +43,7 @@ def _nvim(*modes: dict[str, Any]) -> MagicMock:
 
 
 def _watchdogs_alive() -> list[threading.Thread]:
-    return [t for t in threading.enumerate() if t.name == WATCHDOG_THREAD_NAME]
+    return [thread for thread in threading.enumerate() if thread.name == WATCHDOG_THREAD_NAME]
 
 
 def _wait_for(predicate: Any, timeout: float = 3.0) -> bool:
@@ -311,7 +311,7 @@ def test_the_log_once_set_is_guarded() -> None:
         def __enter__(self) -> None:
             seen.append(("enter", "/guarded" in logged))
 
-        def __exit__(self, *exc_info: object) -> None:
+        def __exit__(self, *exception_info: object) -> None:
             seen.append(("exit", "/guarded" in logged))
 
     with (

@@ -33,7 +33,7 @@ def test_set_writer_tints_border_sets_status_top_and_title() -> None:
     surface = TmuxStatusSurface(pane_id="%2")
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()) as run:
         surface.set_writer("code-reviewer", "colour78")
-    cmds = [c.args[0] for c in run.call_args_list]
+    cmds = [recorded_call.args[0] for recorded_call in run.call_args_list]
     assert ["tmux", "set-option", "-p", "-t", "%2", "pane-border-style", "fg=colour78"] in cmds
     assert [
         "tmux",
@@ -52,7 +52,7 @@ def test_set_writer_with_no_color_unsets_border_style() -> None:
     surface = TmuxStatusSurface(pane_id="%2")
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()) as run:
         surface.set_writer("code-reviewer", None)
-    cmds = [c.args[0] for c in run.call_args_list]
+    cmds = [recorded_call.args[0] for recorded_call in run.call_args_list]
     assert ["tmux", "set-option", "-pu", "-t", "%2", "pane-border-style"] in cmds
     assert ["tmux", "set-option", "-pu", "-t", "%2", "pane-active-border-style"] in cmds
 
@@ -64,7 +64,7 @@ def test_clear_with_no_prior_set_state_resets_border_and_status() -> None:
     surface = TmuxStatusSurface(pane_id="%2")
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()) as run:
         surface.clear()
-    cmds = [c.args[0] for c in run.call_args_list]
+    cmds = [recorded_call.args[0] for recorded_call in run.call_args_list]
     assert ["tmux", "set-option", "-pu", "-t", "%2", "pane-border-style"] in cmds
     assert ["tmux", "set-option", "-pu", "-t", "%2", "pane-active-border-style"] in cmds
     assert ["tmux", "set-option", "-wu", "-t", "%2", "pane-border-status"] in cmds
@@ -77,22 +77,22 @@ def test_set_state_saves_prior_title_and_status_then_clear_restores_them() -> No
     surface = TmuxStatusSurface(pane_id="%2")
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()) as run:
         surface.set_state("Claude waiting")
-    cmds = [c.args[0] for c in run.call_args_list]
+    cmds = [recorded_call.args[0] for recorded_call in run.call_args_list]
     assert ["tmux", "display-message", "-p", "-t", "%2", "#{pane_title}"] in cmds
     assert ["tmux", "show-options", "-wv", "-t", "%2", "pane-border-status"] in cmds
     assert ["tmux", "select-pane", "-t", "%2", "-T", "Claude waiting"] in cmds
     assert ["tmux", "set-option", "-w", "-t", "%2", "pane-border-status", "top"] in cmds
-    assert not any("pane-border-style" in c for c in cmds)
+    assert not any("pane-border-style" in command for command in cmds)
 
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()) as run:
         surface.clear()
-    cmds = [c.args[0] for c in run.call_args_list]
+    cmds = [recorded_call.args[0] for recorded_call in run.call_args_list]
     # make_mock_tmux_run's display-message stub always answers "@1" (its
     # default window_id) for #{pane_title} too -- that is the "saved" title
     # restored here.
     assert ["tmux", "select-pane", "-t", "%2", "-T", "@1"] in cmds
     assert ["tmux", "set-option", "-wu", "-t", "%2", "pane-border-status"] in cmds
-    assert not any("pane-border-style" in c for c in cmds)
+    assert not any("pane-border-style" in command for command in cmds)
 
 
 def test_clear_restores_a_saved_title_that_ends_in_a_semicolon() -> None:
@@ -103,7 +103,7 @@ def test_clear_restores_a_saved_title_that_ends_in_a_semicolon() -> None:
         surface.set_state("Claude waiting")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         surface.clear()
-    cmds = [c.args[0] for c in run.call_args_list]
+    cmds = [recorded_call.args[0] for recorded_call in run.call_args_list]
     assert ["tmux", "select-pane", "-t", "%2", "-T", "vim x\\;"] in cmds
 
 
@@ -117,7 +117,7 @@ def test_set_state_twice_keeps_the_first_saved_title_for_clear_to_restore() -> N
         surface.set_state("Writing...")
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()) as run:
         surface.clear()
-    cmds = [c.args[0] for c in run.call_args_list]
+    cmds = [recorded_call.args[0] for recorded_call in run.call_args_list]
     # restores the ORIGINAL title (mock answers "@1"), not "Claude waiting".
     assert ["tmux", "select-pane", "-t", "%2", "-T", "@1"] in cmds
 
@@ -129,7 +129,7 @@ def test_set_state_with_none_and_nothing_saved_falls_back_to_full_reset() -> Non
     surface = TmuxStatusSurface(pane_id="%2")
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()) as run:
         surface.set_state(None)
-    cmds = [c.args[0] for c in run.call_args_list]
+    cmds = [recorded_call.args[0] for recorded_call in run.call_args_list]
     assert ["tmux", "set-option", "-pu", "-t", "%2", "pane-border-style"] in cmds
     assert ["tmux", "set-option", "-wu", "-t", "%2", "pane-border-status"] in cmds
 
@@ -207,7 +207,7 @@ def test_set_writer_creates_a_floating_window_when_none_exists() -> None:
         {"relative": ""} if win == 1 else {"relative": "editor"}
     )
     nvim.api.win_get_buf.side_effect = lambda win: 99
-    nvim.api.buf_get_name.side_effect = lambda buf: "/tmp/other-file.py"
+    nvim.api.buf_get_name.side_effect = lambda buffer: "/tmp/other-file.py"
     nvim.api.create_buf.return_value = 7
     nvim.api.open_win.return_value = 3
     nvim.api.buf_get_lines.return_value = []
@@ -219,7 +219,10 @@ def test_set_writer_creates_a_floating_window_when_none_exists() -> None:
     # Every connection targets the follower's socket (the cue's own, plus the
     # hit-enter watchdog's on a dedicated follower — see nvim_prompt).
     assert attach.call_args_list
-    assert all(c == call("socket", path="/tmp/x.sock") for c in attach.call_args_list)
+    assert all(
+        recorded_call == call("socket", path="/tmp/x.sock")
+        for recorded_call in attach.call_args_list
+    )
     nvim.api.create_buf.assert_called_once_with(False, True)
     nvim.api.buf_set_name.assert_called_once()
     nvim.api.open_win.assert_called_once()
@@ -491,8 +494,8 @@ def test_a_surface_built_without_the_adopted_flag_never_answers_prompts() -> Non
 
 
 def _float_opts(nvim: MagicMock) -> dict[str, object]:
-    opts: dict[str, object] = nvim.api.open_win.call_args.args[2]
-    return opts
+    options: dict[str, object] = nvim.api.open_win.call_args.args[2]
+    return options
 
 
 def _no_window_nvim(columns: int) -> MagicMock:
@@ -500,7 +503,7 @@ def _no_window_nvim(columns: int) -> MagicMock:
     nvim.api.list_wins.return_value = []
     nvim.api.create_buf.return_value = 7
     nvim.api.open_win.return_value = 3
-    nvim.api.get_option_value.side_effect = lambda name, opts: columns
+    nvim.api.get_option_value.side_effect = lambda name, options: columns
     return nvim
 
 
@@ -508,11 +511,11 @@ def test_the_float_widens_to_fit_the_hand_off_cue_on_one_row() -> None:
     nvim = _no_window_nvim(49)
     with patch("pynvim.attach", return_value=nvim):
         NvimStatusSurface(socket_path="/tmp/x.sock").set_state(HANDOFF_CUE_READONLY)
-    opts = _float_opts(nvim)
-    assert isinstance(opts["width"], int) and isinstance(opts["col"], int)
-    assert opts["width"] >= len(HANDOFF_CUE_READONLY)
-    assert opts["col"] >= 0
-    assert opts["col"] + opts["width"] + 2 <= 49  # the border fits on screen
+    options = _float_opts(nvim)
+    assert isinstance(options["width"], int) and isinstance(options["col"], int)
+    assert options["width"] >= len(HANDOFF_CUE_READONLY)
+    assert options["col"] >= 0
+    assert options["col"] + options["width"] + 2 <= 49  # the border fits on screen
     body = nvim.api.buf_set_lines.call_args.args[4]
     assert HANDOFF_CUE_READONLY in [line.strip() for line in body]
 
@@ -521,10 +524,10 @@ def test_the_float_never_outgrows_a_narrow_editor() -> None:
     nvim = _no_window_nvim(30)
     with patch("pynvim.attach", return_value=nvim):
         NvimStatusSurface(socket_path="/tmp/x.sock").set_state(HANDOFF_CUE_READONLY)
-    opts = _float_opts(nvim)
-    assert isinstance(opts["width"], int)
-    assert opts["width"] <= 28
-    assert opts["col"] == 0
+    options = _float_opts(nvim)
+    assert isinstance(options["width"], int)
+    assert options["width"] <= 28
+    assert options["col"] == 0
 
 
 def test_a_short_cue_keeps_the_minimum_width() -> None:
@@ -541,7 +544,7 @@ def test_an_existing_float_is_resized_for_a_longer_cue() -> None:
     nvim.api.win_get_config.return_value = {"relative": "editor"}
     nvim.api.win_get_buf.return_value = 7
     nvim.api.buf_get_name.return_value = "vaf-status"
-    nvim.api.get_option_value.side_effect = lambda name, opts: 49
+    nvim.api.get_option_value.side_effect = lambda name, options: 49
     with patch("pynvim.attach", return_value=nvim):
         NvimStatusSurface(socket_path="/tmp/x.sock").set_state(HANDOFF_CUE_READONLY)
     nvim.api.open_win.assert_not_called()

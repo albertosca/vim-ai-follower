@@ -99,7 +99,11 @@ def test_show_fresh_interrupted_mid_line_buffer_call_holds_only_the_typed_prefix
     # left modifiable and unlocked — the user owns the buffer after an interrupt
     # (The first option call opts the new buffer out of swap before naming it;
     # the lock protocol starts after it.)
-    locks = [c for c in nvim.api.buf_set_option.call_args_list if c.args[1] != "swapfile"]
+    locks = [
+        recorded_call
+        for recorded_call in nvim.api.buf_set_option.call_args_list
+        if recorded_call.args[1] != "swapfile"
+    ]
     assert locks[0] == call(7, "modifiable", True)
     assert call(7, "modifiable", False) not in nvim.api.buf_set_option.call_args_list
 
@@ -112,7 +116,7 @@ def test_apply_edit_interrupted_mid_op_line_reports_op_index_with_no_snap(
     shows_the_buffer(nvim)
     nvim.api.get_current_buf.return_value.handle = 7
     nvim.api.buf_line_count.return_value = 1
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("wxyz",))
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("wxyz",))
     # op boundary + outer line-boundary + char0("w") -> 3 calls; the 4th call
     # (char1, before 'x') interrupts.
     signals = [None, None, None, "interrupt"]
@@ -121,6 +125,6 @@ def test_apply_edit_interrupted_mid_op_line_reports_op_index_with_no_snap(
         patch("vim_ai_follower.control.check_signal", side_effect=signals),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
     ):
-        result = follower.apply_edit("/tmp/f.py", [op])
+        result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("interrupted", 0)  # op-level bookkeeping unaffected
     assert nvim.api.buf_set_text.call_args_list == [call(7, 0, 0, 0, 0, ["w"])]

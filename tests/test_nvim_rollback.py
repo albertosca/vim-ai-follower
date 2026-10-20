@@ -44,7 +44,11 @@ _INITIAL_READ = call(7, 0, -1, True)
 
 
 def _snapshots(nvim: MagicMock) -> list[Any]:
-    return [c for c in nvim.api.buf_get_lines.call_args_list if c != _INITIAL_READ]
+    return [
+        recorded_call
+        for recorded_call in nvim.api.buf_get_lines.call_args_list
+        if recorded_call != _INITIAL_READ
+    ]
 
 
 def test_interrupt_mid_line_restores_the_deleted_range_and_drops_the_typed_row(
@@ -58,7 +62,7 @@ def test_interrupt_mid_line_restores_the_deleted_range_and_drops_the_typed_row(
     # asked exactly twice: after the delete (2 = ["a", "c"]) and on the
     # interrupt (3 = ["a", "", "c"] with "W" typed into the middle row).
     nvim = _mock_nvim([2, 3], ["b"])
-    op = EditOp(kind="replace", start_line=2, end_line=2, new_lines=("WX",))
+    operation = EditOp(kind="replace", start_line=2, end_line=2, new_lines=("WX",))
     # op boundary + line0 boundary + char0("W") -> 3 calls; the 4th (char1,
     # before "X") interrupts.
     with (
@@ -66,7 +70,7 @@ def test_interrupt_mid_line_restores_the_deleted_range_and_drops_the_typed_row(
         patch("vim_ai_follower.control.check_signal", side_effect=[None, None, None, "interrupt"]),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
     ):
-        result = follower.apply_edit("/tmp/f.py", [op])
+        result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("interrupted", 0)
     assert _snapshots(nvim) == [call(7, 1, 2, True)]
     assert nvim.api.buf_set_lines.call_args_list == [
@@ -83,14 +87,14 @@ def test_interrupt_at_the_first_char_of_the_first_new_line_still_rolls_back(
     # delete already happened — the rollback must still fire.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.05)
     nvim = _mock_nvim([2, 3], ["b"])
-    op = EditOp(kind="replace", start_line=2, end_line=2, new_lines=("WX",))
+    operation = EditOp(kind="replace", start_line=2, end_line=2, new_lines=("WX",))
     # op boundary + line0 boundary -> 2 calls; the 3rd (char0) interrupts.
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=[None, None, "interrupt"]),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
     ):
-        result = follower.apply_edit("/tmp/f.py", [op])
+        result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("interrupted", 0)
     nvim.api.buf_set_text.assert_not_called()
     assert nvim.api.buf_set_lines.call_args_list[-1] == call(7, 1, 2, True, ["b"])
@@ -103,7 +107,7 @@ def test_interrupt_at_a_new_line_boundary_rolls_back_the_full_typed_region(
     # boundary before its row exists: the region to replace is one row wide.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.05)
     nvim = _mock_nvim([2, 3], ["b"])
-    op = EditOp(kind="replace", start_line=2, end_line=2, new_lines=("W", "Z"))
+    operation = EditOp(kind="replace", start_line=2, end_line=2, new_lines=("W", "Z"))
     # op boundary + line0 boundary + char0("W") -> 3; the 4th (line1
     # boundary) interrupts.
     with (
@@ -111,7 +115,7 @@ def test_interrupt_at_a_new_line_boundary_rolls_back_the_full_typed_region(
         patch("vim_ai_follower.control.check_signal", side_effect=[None, None, None, "interrupt"]),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
     ):
-        result = follower.apply_edit("/tmp/f.py", [op])
+        result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("interrupted", 0)
     assert nvim.api.buf_set_lines.call_args_list[-1] == call(7, 1, 2, True, ["b"])
 
@@ -124,13 +128,13 @@ def test_interrupt_inside_a_wiping_op_swallows_the_implicit_blank(tmp_path: Path
     # buf_line_count: 3 (wipes_buffer test, pre-delete), 1 (post-delete: only
     # the implicit blank), 2 (interrupt: one typed row + the implicit blank).
     nvim = _mock_nvim([3, 1, 2], ["a", "b", "c"])
-    op = EditOp(kind="replace", start_line=1, end_line=3, new_lines=("XY", "Z"))
+    operation = EditOp(kind="replace", start_line=1, end_line=3, new_lines=("XY", "Z"))
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=[None, None, None, "interrupt"]),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
     ):
-        result = follower.apply_edit("/tmp/f.py", [op])
+        result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("interrupted", 0)
     assert _snapshots(nvim) == [call(7, 0, 3, True)]
     assert nvim.api.buf_set_lines.call_args_list == [
@@ -147,13 +151,13 @@ def test_an_op_boundary_interrupt_leaves_the_buffer_untouched(tmp_path: Path) ->
     # delete, so there is nothing to roll back — and nothing to snapshot.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.05)
     nvim = _mock_nvim([], ["b"])
-    op = EditOp(kind="replace", start_line=2, end_line=2, new_lines=("WX",))
+    operation = EditOp(kind="replace", start_line=2, end_line=2, new_lines=("WX",))
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=["interrupt"]),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
     ):
-        result = follower.apply_edit("/tmp/f.py", [op])
+        result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("interrupted", 0)
     assert _snapshots(nvim) == []
     nvim.api.buf_set_lines.assert_not_called()
@@ -185,13 +189,13 @@ def test_a_completed_op_never_rolls_back(tmp_path: Path) -> None:
     # written back on the interrupted path.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     nvim = _mock_nvim([2], ["b"])
-    op = EditOp(kind="replace", start_line=2, end_line=2, new_lines=("WX",))
+    operation = EditOp(kind="replace", start_line=2, end_line=2, new_lines=("WX",))
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
     ):
-        result = follower.apply_edit("/tmp/f.py", [op])
+        result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("completed", 1)
     assert _snapshots(nvim) == [call(7, 1, 2, True)]  # snapshot taken
     assert call(7, 1, 2, True, ["b"]) not in nvim.api.buf_set_lines.call_args_list
@@ -203,7 +207,7 @@ def test_a_stop_while_paused_mid_op_neither_rolls_back_nor_relocks(tmp_path: Pat
     # no stamp, no relock.
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.05)
     nvim = _mock_nvim([2, 3], ["b"])
-    op = EditOp(kind="replace", start_line=2, end_line=2, new_lines=("WX",))
+    operation = EditOp(kind="replace", start_line=2, end_line=2, new_lines=("WX",))
     # op boundary + line0 boundary + char0("W") -> 3 calls; the 4th pauses.
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
@@ -211,7 +215,7 @@ def test_a_stop_while_paused_mid_op_neither_rolls_back_nor_relocks(tmp_path: Pat
         patch("vim_ai_follower.backends.nvim._wait_while_paused", return_value="stopped"),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
     ):
-        result = follower.apply_edit("/tmp/f.py", [op], before="a\nb\nc\n")
+        result = follower.apply_edit("/tmp/f.py", [operation], before="a\nb\nc\n")
     assert result == AnimationResult("stopped", 0)
     assert call(7, 1, 2, True, ["b"]) not in nvim.api.buf_set_lines.call_args_list
     nvim.api.buf_del_extmark.assert_not_called()

@@ -29,7 +29,7 @@ def test_replace_single_line() -> None:
 
 def test_multiple_ops_ordered_bottom_to_top() -> None:
     ops = compute_edit_script("a\nb\nc\nd\ne", "a\nX\nc\nd\nY")
-    assert [op.start_line for op in ops] == [5, 2]
+    assert [operation.start_line for operation in ops] == [5, 2]
 
 
 def test_empty_before_is_full_insertion() -> None:
@@ -84,7 +84,7 @@ def test_apply_ops_multiple_ops_applied_in_given_order() -> None:
     before = "a\nb\nc\nd\ne"
     after = "a\nX\nc\nd\nY"
     ops = compute_edit_script(before, after)
-    assert [op.start_line for op in ops] == [5, 2]  # already bottom-to-top
+    assert [operation.start_line for operation in ops] == [5, 2]  # already bottom-to-top
     assert apply_ops(before, ops) == after + "\n"
 
 

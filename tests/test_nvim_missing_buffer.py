@@ -28,7 +28,11 @@ def test_ensure_showing_switches_to_an_existing_buffer_without_touching_disk() -
     ):
         follower.ensure_showing("/tmp/f.py")
     goto_file.assert_called_once_with("/tmp/f.py")
-    assert not [c for c in nvim.api.exec2.call_args_list if "bufload" in c.args[0]]
+    assert not [
+        recorded_call
+        for recorded_call in nvim.api.exec2.call_args_list
+        if "bufload" in recorded_call.args[0]
+    ]
 
 
 def test_ensure_showing_loads_the_real_disk_content_when_no_buffer_exists() -> None:
@@ -57,8 +61,8 @@ def test_ensure_showing_loads_the_real_disk_content_when_no_buffer_exists() -> N
     ]
     # The event-firing commands go through exec2 (plugin output captured and
     # logged, see nvim_prompt.exec_logged); only tabnew stays a plain command.
-    assert [c.args[0] for c in nvim.command.call_args_list] == ["tabnew"]
-    assert [c.args[0] for c in nvim.api.exec2.call_args_list] == [
+    assert [recorded_call.args[0] for recorded_call in nvim.command.call_args_list] == ["tabnew"]
+    assert [recorded_call.args[0] for recorded_call in nvim.api.exec2.call_args_list] == [
         "call bufload(42)",
         "filetype detect",
     ]
@@ -135,7 +139,11 @@ def test_resume_apply_edit_returns_completed_and_touches_nothing_when_the_buffer
     assert result == AnimationResult("completed", 2)
     goto_file.assert_not_called()
     nvim.funcs.bufadd.assert_not_called()
-    assert not [c for c in nvim.api.exec2.call_args_list if "bufload" in c.args[0]]
+    assert not [
+        recorded_call
+        for recorded_call in nvim.api.exec2.call_args_list
+        if "bufload" in recorded_call.args[0]
+    ]
     nvim.api.create_buf.assert_not_called()
     nvim.api.buf_set_lines.assert_not_called()
     nvim.command.assert_not_called()
@@ -167,15 +175,19 @@ def test_apply_edit_animates_normally_when_the_buffer_is_still_there(tmp_path: P
     nvim.exec_lua.return_value = 9
     nvim.api.get_current_buf.return_value.handle = 7
     nvim.api.buf_line_count.return_value = 1
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
         patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
         patch.object(NvimFollower, "goto_file") as goto_file,
     ):
-        result = follower.apply_edit("/tmp/f.py", [op])
+        result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("completed", 1)
     goto_file.assert_called_once_with("/tmp/f.py")
-    assert not [c for c in nvim.api.exec2.call_args_list if "bufload" in c.args[0]]
+    assert not [
+        recorded_call
+        for recorded_call in nvim.api.exec2.call_args_list
+        if "bufload" in recorded_call.args[0]
+    ]
     nvim.api.buf_set_text.assert_any_call(7, 0, 0, 0, 0, ["a"])

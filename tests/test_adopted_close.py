@@ -128,7 +128,7 @@ def _nvim_close(
         FollowerState.clear("@6")
     nvim = MagicMock()
 
-    def answer(code: str, *args: object) -> object:
+    def answer(code: str, *arguments: object) -> object:
         return {_FIND_BUFFER_LUA: found, _EVICT_LUA: verdict}.get(code, 0)
 
     nvim.exec_lua.side_effect = answer

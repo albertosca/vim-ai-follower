@@ -26,7 +26,7 @@ from vim_ai_follower import commands, keybindings, session, state
 _mock_tmux_run = functools.partial(make_mock_tmux_run, pane_id="%9", other_panes=("%1", "%2"))
 
 
-def _git(cwd: Path, *args: str) -> None:
+def _git(cwd: Path, *arguments: str) -> None:
     subprocess.run(
         [
             "git",
@@ -38,7 +38,7 @@ def _git(cwd: Path, *args: str) -> None:
             "commit.gpgsign=false",
             "-C",
             str(cwd),
-            *args,
+            *arguments,
         ],
         check=True,
         capture_output=True,
@@ -104,10 +104,10 @@ def test_executable_leaves_a_main_checkout_path_alone(
     # and the returned path is still right, because the bogus candidate fails
     # the exists() check and falls back — so the returned path alone cannot
     # tell the two apart, and a test asserting only that is vacuous here.
-    dirs = keybindings._git_dirs(main / "bin")
-    assert dirs is not None
-    common_dir, git_dir, _toplevel = dirs
-    assert common_dir == git_dir
+    git_directories = keybindings._git_dirs(main / "bin")
+    assert git_directories is not None
+    common_directory, git_directory, _toplevel = git_directories
+    assert common_directory == git_directory
 
     assert Path(keybindings._claude_follow_executable()) == main / "bin" / "claude-follow"
 
@@ -145,14 +145,16 @@ def test_executable_is_unchanged_when_git_is_not_installed(
 ) -> None:
     """No git on the machine must degrade to the old behavior, not to a
     traceback out of `claude-follow start`."""
-    wrapper_dir = tmp_path / "somewhere" / "bin"
-    wrapper_dir.mkdir(parents=True)
-    (wrapper_dir / "claude-follow").touch()
+    wrapper_directory = tmp_path / "somewhere" / "bin"
+    wrapper_directory.mkdir(parents=True)
+    (wrapper_directory / "claude-follow").touch()
     monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
-    monkeypatch.setattr(keybindings, "_bundled_wrapper", lambda: wrapper_dir / "claude-follow")
+    monkeypatch.setattr(
+        keybindings, "_bundled_wrapper", lambda: wrapper_directory / "claude-follow"
+    )
 
     with patch("vim_ai_follower.keybindings.subprocess.run", side_effect=FileNotFoundError("git")):
-        assert Path(keybindings._claude_follow_executable()) == wrapper_dir / "claude-follow"
+        assert Path(keybindings._claude_follow_executable()) == wrapper_directory / "claude-follow"
 
 
 def test_plugin_root_still_wins_over_the_worktree_redirect(
@@ -202,10 +204,10 @@ def test_second_start_keeps_the_users_original_bindings_intact() -> None:
     listed = [original]
     base = _mock_tmux_run()
 
-    def fake_run(cmd: list[str], **kwargs: object) -> MagicMock:
-        if cmd[:2] == ["tmux", "list-keys"]:
+    def fake_run(command: list[str], **keyword_arguments: object) -> MagicMock:
+        if command[:2] == ["tmux", "list-keys"]:
             return MagicMock(returncode=0, stdout="".join(line + "\n" for line in listed))
-        return base(cmd, **kwargs)
+        return base(command, **keyword_arguments)
 
     # One patch, not two: keybindings and tmux share the very same subprocess
     # module object, so patching either name patches both.

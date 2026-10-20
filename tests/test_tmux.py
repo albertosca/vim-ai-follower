@@ -243,12 +243,14 @@ def test_set_zoomed_only_toggles_when_state_differs() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         run.return_value = MagicMock(returncode=0, stdout="0\n")
         TmuxPane(pane_id="%1").set_zoomed(True)
-        assert ["tmux", "resize-pane", "-Z", "-t", "%1"] in [c[0][0] for c in run.call_args_list]
+        assert ["tmux", "resize-pane", "-Z", "-t", "%1"] in [
+            recorded_call[0][0] for recorded_call in run.call_args_list
+        ]
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         run.return_value = MagicMock(returncode=0, stdout="1\n")
         TmuxPane(pane_id="%1").set_zoomed(True)
         assert ["tmux", "resize-pane", "-Z", "-t", "%1"] not in [
-            c[0][0] for c in run.call_args_list
+            recorded_call[0][0] for recorded_call in run.call_args_list
         ]
 
 
@@ -322,7 +324,7 @@ def test_adopt_target_requires_exactly_one_vim_pane() -> None:
 def test_set_border_color_sets_both_pane_border_styles() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         TmuxPane(pane_id="%2").set_border_color("colour203")
-    calls = [c.args[0] for c in run.call_args_list]
+    calls = [recorded_call.args[0] for recorded_call in run.call_args_list]
     assert [
         "tmux",
         "set-option",
@@ -346,7 +348,7 @@ def test_set_border_color_sets_both_pane_border_styles() -> None:
 def test_set_border_color_none_unsets_both_styles() -> None:
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         TmuxPane(pane_id="%2").set_border_color(None)
-    calls = [c.args[0] for c in run.call_args_list]
+    calls = [recorded_call.args[0] for recorded_call in run.call_args_list]
     assert ["tmux", "set-option", "-pu", "-t", "%2", "pane-border-style"] in calls
     assert ["tmux", "set-option", "-pu", "-t", "%2", "pane-active-border-style"] in calls
 
@@ -358,11 +360,11 @@ def test_a_popup_is_spawned_detached_from_the_callers_output(after_seconds: floa
     reader waiting for end-of-output waited for the popup too."""
     with patch("vim_ai_follower.tmux.subprocess.Popen") as popen:
         tmux.show_popup("%2", "Paused", after_seconds=after_seconds)
-    kwargs = popen.call_args.kwargs
-    assert kwargs["stdin"] is subprocess.DEVNULL
-    assert kwargs["stdout"] is subprocess.DEVNULL
-    assert kwargs["stderr"] is subprocess.DEVNULL
-    assert kwargs["start_new_session"] is True
+    keyword_arguments = popen.call_args.kwargs
+    assert keyword_arguments["stdin"] is subprocess.DEVNULL
+    assert keyword_arguments["stdout"] is subprocess.DEVNULL
+    assert keyword_arguments["stderr"] is subprocess.DEVNULL
+    assert keyword_arguments["start_new_session"] is True
 
 
 def test_a_delayed_popup_does_not_hold_the_callers_pipe(tmp_path: Path) -> None:

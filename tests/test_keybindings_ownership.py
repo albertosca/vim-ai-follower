@@ -307,7 +307,11 @@ def _record(owner: keybindings.Owner) -> None:
 
 def _bound_paths(run: MagicMock) -> list[str]:
     """The run-shell command strings of every bind-key call made."""
-    return [c.args[0][-1] for c in run.call_args_list if c.args[0][:2] == ["tmux", "bind-key"]]
+    return [
+        recorded_call.args[0][-1]
+        for recorded_call in run.call_args_list
+        if recorded_call.args[0][:2] == ["tmux", "bind-key"]
+    ]
 
 
 @pytest.fixture
@@ -318,9 +322,9 @@ def plugin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root
 
 
-def _claim(**kwargs: bool) -> tuple[keybindings.Claim, MagicMock]:
+def _claim(**keyword_arguments: bool) -> tuple[keybindings.Claim, MagicMock]:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
-        result = keybindings.claim(**kwargs)
+        result = keybindings.claim(**keyword_arguments)
     return result, run
 
 
@@ -328,7 +332,7 @@ def test_claim_with_no_owner_takes_the_keys(plugin: Path) -> None:
     result, run = _claim()
     assert result.outcome is keybindings.ClaimOutcome.TAKEN
     assert result.previous is None
-    assert all(str(plugin / "bin" / "claude-follow") in cmd for cmd in _bound_paths(run))
+    assert all(str(plugin / "bin" / "claude-follow") in command for command in _bound_paths(run))
     assert len(_bound_paths(run)) == 5
 
 
@@ -353,7 +357,7 @@ def test_claim_same_installation_new_version_refreshes(plugin: Path, tmp_path: P
     _record(keybindings.Owner(str(old / "bin" / "claude-follow"), str(old.parent)))
     result, run = _claim()
     assert result.outcome is keybindings.ClaimOutcome.REFRESHED
-    assert all("0.2.0" in cmd for cmd in _bound_paths(run))
+    assert all("0.2.0" in command for command in _bound_paths(run))
     assert len(_bound_paths(run)) == 5
 
 
@@ -440,10 +444,10 @@ def _holding(owner: keybindings.Owner) -> object:
     base = _mock_tmux_run()
     line = f'bind-key -T prefix P run-shell -b "TMUX_PANE=#{{pane_id}} {owner.executable} pause"\n'
 
-    def run(cmd: list[str], **kwargs: object) -> MagicMock:
-        if cmd[:2] == ["tmux", "list-keys"]:
+    def run(command: list[str], **keyword_arguments: object) -> MagicMock:
+        if command[:2] == ["tmux", "list-keys"]:
             return MagicMock(returncode=0, stdout=line)
-        return base(cmd, **kwargs)
+        return base(command, **keyword_arguments)
 
     return run
 
@@ -532,7 +536,7 @@ def test_hook_post_repoints_keys_after_a_plugin_update(plugin: Path, tmp_path: P
     target.write_text("x\n")
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _read_payload(target)) == 0
-    assert all("0.2.0" in cmd for cmd in _bound_paths(run))
+    assert all("0.2.0" in command for command in _bound_paths(run))
     assert len(_bound_paths(run)) == 5
     assert "keybindings re-pointed from" in hooks.LOG_PATH.read_text()
 
@@ -544,9 +548,13 @@ def test_hook_post_heals_before_navigating(plugin: Path, tmp_path: Path) -> None
     target.write_text("x\n")
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _read_payload(target))
-    cmds = [c.args[0] for c in run.call_args_list]
-    first_bind = next(i for i, c in enumerate(cmds) if c[:2] == ["tmux", "bind-key"])
-    first_keys = next(i for i, c in enumerate(cmds) if c[:2] == ["tmux", "send-keys"])
+    cmds = [recorded_call.args[0] for recorded_call in run.call_args_list]
+    first_bind = next(
+        index for index, command in enumerate(cmds) if command[:2] == ["tmux", "bind-key"]
+    )
+    first_keys = next(
+        index for index, command in enumerate(cmds) if command[:2] == ["tmux", "send-keys"]
+    )
     assert first_bind < first_keys
 
 
@@ -577,10 +585,10 @@ def test_a_failing_bind_never_fails_the_hook(plugin: Path, tmp_path: Path) -> No
     _running_follower()
     base = _mock_tmux_run()
 
-    def run(cmd: list[str], **kwargs: object) -> MagicMock:
-        if cmd[:2] == ["tmux", "bind-key"]:
-            raise subprocess.CalledProcessError(1, cmd)
-        return base(cmd, **kwargs)
+    def run(command: list[str], **keyword_arguments: object) -> MagicMock:
+        if command[:2] == ["tmux", "bind-key"]:
+            raise subprocess.CalledProcessError(1, command)
+        return base(command, **keyword_arguments)
 
     target = tmp_path / "f.py"
     target.write_text("x\n")
@@ -614,7 +622,7 @@ def test_an_edit_hook_also_heals_the_keys(plugin: Path, tmp_path: Path) -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
     assert len(_bound_paths(run)) == 5
-    assert all("0.2.0" in cmd for cmd in _bound_paths(run))
+    assert all("0.2.0" in command for command in _bound_paths(run))
 
 
 # ---------------------------------------------------------------------------
@@ -662,16 +670,16 @@ def test_a_shell_started_old_version_is_refreshed_by_a_new_versions_hook(
     result, run = _claim()
     assert result.outcome is keybindings.ClaimOutcome.REFRESHED
     assert len(_bound_paths(run)) == 5
-    assert all("0.2.7" in cmd for cmd in _bound_paths(run))
+    assert all("0.2.7" in command for command in _bound_paths(run))
 
 
 def _mock_run_with_bindings(lines: list[str]) -> object:
     base = _mock_tmux_run()
 
-    def run(cmd: list[str], **kwargs: object) -> MagicMock:
-        if cmd[:2] == ["tmux", "list-keys"]:
+    def run(command: list[str], **keyword_arguments: object) -> MagicMock:
+        if command[:2] == ["tmux", "list-keys"]:
             return MagicMock(returncode=0, stdout="".join(line + "\n" for line in lines))
-        return base(cmd, **kwargs)
+        return base(command, **keyword_arguments)
 
     return run
 
@@ -683,8 +691,10 @@ def test_a_live_foreign_owner_that_no_longer_holds_the_keys_is_taken_over(
     the other installation's executable) survive. Deferring to it would leave
     the user with no keys at all, announced as "belong to X"."""
     owner = _live_foreign_owner(tmp_path)
-    run_fn = _mock_run_with_bindings(["bind-key -T prefix P send-keys C-a"])  # not the owner's
-    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=run_fn) as run:
+    run_function = _mock_run_with_bindings(
+        ["bind-key -T prefix P send-keys C-a"]
+    )  # not the owner's
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=run_function) as run:
         result = keybindings.claim()
     assert result.outcome is keybindings.ClaimOutcome.TAKEN_FROM_STALE
     assert result.previous == owner
@@ -740,9 +750,9 @@ def test_the_per_hook_heal_touches_tmux_keys_only_when_something_changed(
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         hooks.cmd_hook_post({"TMUX_PANE": "%1"}, _read_payload(target))
     keys_calls = [
-        c.args[0][:2]
-        for c in run.call_args_list
-        if c.args[0][:2] in (["tmux", "bind-key"], ["tmux", "list-keys"])
+        recorded_call.args[0][:2]
+        for recorded_call in run.call_args_list
+        if recorded_call.args[0][:2] in (["tmux", "bind-key"], ["tmux", "list-keys"])
     ]
     assert keys_calls == []
 
@@ -768,13 +778,13 @@ def test_a_main_checkout_lookup_spawns_no_git(
     calls: list[list[str]] = []
     original = real_subprocess.run
 
-    def counting(cmd: list[str], **kwargs: object) -> object:
-        calls.append(cmd)
-        return original(cmd, **kwargs)  # type: ignore[call-overload]
+    def counting(command: list[str], **keyword_arguments: object) -> object:
+        calls.append(command)
+        return original(command, **keyword_arguments)  # type: ignore[call-overload]
 
     monkeypatch.setattr("vim_ai_follower.keybindings.subprocess.run", counting)
     assert keybindings.current_owner().executable == str(wrapper)
-    assert [cmd for cmd in calls if cmd[:1] == ["git"]] == []
+    assert [command for command in calls if command[:1] == ["git"]] == []
 
 
 def test_the_owner_record_is_replaced_atomically(plugin: Path) -> None:
@@ -784,9 +794,9 @@ def test_the_owner_record_is_replaced_atomically(plugin: Path) -> None:
     seen: list[tuple[str, str]] = []
     real_replace = os.replace
 
-    def spying_replace(src: str, dst: str) -> None:
-        seen.append((Path(src).read_text(), str(dst)))
-        real_replace(src, dst)
+    def spying_replace(source: str, destination: str) -> None:
+        seen.append((Path(source).read_text(), str(destination)))
+        real_replace(source, destination)
 
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
@@ -800,7 +810,7 @@ def test_the_owner_record_is_replaced_atomically(plugin: Path) -> None:
         "executable": keybindings.current_owner().executable,
         "installation": keybindings.current_owner().installation,
     }
-    assert sorted(p.name for p in keybindings._owner_path().parent.iterdir()) == [
+    assert sorted(entry.name for entry in keybindings._owner_path().parent.iterdir()) == [
         "keybindings-owner.json",
         "saved-keybindings.json",
     ]
@@ -813,7 +823,7 @@ def test_a_failed_owner_write_leaves_no_temp_file(plugin: Path) -> None:
         pytest.raises(OSError, match="disk full"),
     ):
         keybindings.register()
-    assert sorted(p.name for p in keybindings._owner_path().parent.iterdir()) == [
+    assert sorted(entry.name for entry in keybindings._owner_path().parent.iterdir()) == [
         "saved-keybindings.json"
     ]
 
@@ -845,10 +855,10 @@ def test_auto_open_survives_a_failing_key_bind(plugin: Path, tmp_path: Path) -> 
     config.CONFIG_PATH.write_text(json.dumps({"open_policy": "always"}))
     base = _mock_tmux_run()
 
-    def run(cmd: list[str], **kwargs: object) -> MagicMock:
-        if cmd[:2] == ["tmux", "bind-key"]:
-            raise subprocess.CalledProcessError(1, cmd)
-        return base(cmd, **kwargs)
+    def run(command: list[str], **keyword_arguments: object) -> MagicMock:
+        if command[:2] == ["tmux", "bind-key"]:
+            raise subprocess.CalledProcessError(1, command)
+        return base(command, **keyword_arguments)
 
     target = tmp_path / "f.py"
     target.write_text("x\n")
@@ -862,11 +872,11 @@ def test_a_failed_temp_write_leaves_no_partial_file(plugin: Path) -> None:
     the partial temp must not be left behind either."""
     real_write = Path.write_text
 
-    def half_write(self: Path, data: str, *args: object, **kwargs: object) -> int:
+    def half_write(self: Path, data: str, *arguments: object, **keyword_arguments: object) -> int:
         if self.name.endswith(".tmp"):
             real_write(self, data[:5])
             raise OSError("disk full")
-        return real_write(self, data, *args, **kwargs)  # type: ignore[arg-type]
+        return real_write(self, data, *arguments, **keyword_arguments)  # type: ignore[arg-type]
 
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
@@ -874,4 +884,6 @@ def test_a_failed_temp_write_leaves_no_partial_file(plugin: Path) -> None:
         pytest.raises(OSError, match="disk full"),
     ):
         keybindings.register()
-    assert not [p for p in keybindings._owner_path().parent.iterdir() if p.name.endswith(".tmp")]
+    assert not [
+        entry for entry in keybindings._owner_path().parent.iterdir() if entry.name.endswith(".tmp")
+    ]

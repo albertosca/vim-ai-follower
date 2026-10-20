@@ -36,27 +36,27 @@ def test_discover_adopt_socket_matches_the_panes_nvim_pid(tmp_path: Path) -> Non
     (tmp_path / "nvim.me" / "BBB" / "nvim.9999.0").write_text("")  # stale, other pid
     with (
         patch.dict("os.environ", {"TMPDIR": str(tmp_path), "USER": "me"}, clear=False),
-        patch("vim_ai_follower.backends.nvim_connect.TmuxPane") as TP,
+        patch("vim_ai_follower.backends.nvim_connect.TmuxPane") as tmux_pane_class,
     ):
-        TP.return_value.pane_pid.return_value = 4242
+        tmux_pane_class.return_value.pane_pid.return_value = 4242
         assert nvim_connect.discover_adopt_socket("%3") == str(match)
 
 
 def test_discover_adopt_socket_none_when_no_match(tmp_path: Path) -> None:
     with (
         patch.dict("os.environ", {"TMPDIR": str(tmp_path), "USER": "me"}, clear=False),
-        patch("vim_ai_follower.backends.nvim_connect.TmuxPane") as TP,
+        patch("vim_ai_follower.backends.nvim_connect.TmuxPane") as tmux_pane_class,
     ):
-        TP.return_value.pane_pid.return_value = 4242
+        tmux_pane_class.return_value.pane_pid.return_value = 4242
         assert nvim_connect.discover_adopt_socket("%3") is None
 
 
 def test_discover_adopt_socket_none_when_pane_has_no_pid(tmp_path: Path) -> None:
     with (
         patch.dict("os.environ", {"TMPDIR": str(tmp_path), "USER": "me"}, clear=False),
-        patch("vim_ai_follower.backends.nvim_connect.TmuxPane") as TP,
+        patch("vim_ai_follower.backends.nvim_connect.TmuxPane") as tmux_pane_class,
     ):
-        TP.return_value.pane_pid.return_value = None
+        tmux_pane_class.return_value.pane_pid.return_value = None
         assert nvim_connect.discover_adopt_socket("%3") is None
 
 
@@ -102,9 +102,9 @@ def test_resolve_launches_when_adopt_requested_but_nothing_found(tmp_path: Path)
         sock, launched = nvim_connect.resolve_nvim_target("%1", "@1", adopt=True)
     assert (sock, launched) == (str(sock_path), True)
     # adopt requested but nothing found -> still splits a pane running nvim --listen
-    args = run.call_args_list[0].args[0]
-    assert args[:3] == ["tmux", "split-window", "-h"]
-    assert args[-3:] == ["nvim", "--listen", str(sock_path)]
+    arguments = run.call_args_list[0].args[0]
+    assert arguments[:3] == ["tmux", "split-window", "-h"]
+    assert arguments[-3:] == ["nvim", "--listen", str(sock_path)]
 
 
 def test_resolve_adopts_when_socket_found() -> None:
@@ -126,8 +126,8 @@ def test_resolve_launches_when_no_adopt(tmp_path: Path) -> None:
         sock, launched = nvim_connect.resolve_nvim_target("%1", "@1", adopt=False)
     assert (sock, launched) == (str(sock_path), True)
     # split a pane running `nvim --listen <sock>`, asking tmux for its pane id
-    args = run.call_args_list[0].args[0]
-    assert args == [
+    arguments = run.call_args_list[0].args[0]
+    assert arguments == [
         "tmux",
         "split-window",
         "-h",
@@ -165,25 +165,25 @@ def test_resolve_launched_waits_for_an_rpc_answer_not_the_socket_file(tmp_path: 
 
 
 def test_standalone_command_prefers_nvim_qt() -> None:
-    cmd = nvim_connect.standalone_launch_command(
+    command = nvim_connect.standalone_launch_command(
         "/s.sock", has_nvim_qt=True, has_vimr=True, is_iterm=True
     )
-    assert cmd == ["nvim-qt", "--", "--listen", "/s.sock"]
+    assert command == ["nvim-qt", "--", "--listen", "/s.sock"]
 
 
 def test_standalone_command_uses_vimr_when_no_nvim_qt() -> None:
-    cmd = nvim_connect.standalone_launch_command(
+    command = nvim_connect.standalone_launch_command(
         "/s.sock", has_nvim_qt=False, has_vimr=True, is_iterm=True
     )
-    assert cmd[:3] == ["open", "-a", "VimR"]  # + the file/socket wiring
+    assert command[:3] == ["open", "-a", "VimR"]  # + the file/socket wiring
 
 
 def test_standalone_command_uses_iterm_split_when_no_gui_app() -> None:
-    cmd = nvim_connect.standalone_launch_command(
+    command = nvim_connect.standalone_launch_command(
         "/s.sock", has_nvim_qt=False, has_vimr=False, is_iterm=True
     )
-    assert cmd[0] == "osascript"
-    script = cmd[2]
+    assert command[0] == "osascript"
+    script = command[2]
     # bundle id, not display name — immune to a future app rename
     assert 'application id "com.googlecode.iterm2"' in script
     assert "current session of current window" in script
@@ -192,17 +192,17 @@ def test_standalone_command_uses_iterm_split_when_no_gui_app() -> None:
 
 
 def test_standalone_command_falls_back_to_terminal_app_when_not_iterm() -> None:
-    cmd = nvim_connect.standalone_launch_command(
+    command = nvim_connect.standalone_launch_command(
         "/s.sock", has_nvim_qt=False, has_vimr=False, is_iterm=False
     )
-    assert cmd[0] == "osascript"
-    assert any("nvim --listen /s.sock" in part for part in cmd)
+    assert command[0] == "osascript"
+    assert any("nvim --listen /s.sock" in part for part in command)
     # `do script` alone can create an invisible, backgrounded window when
     # Terminal.app is already running (live finding, 2026-09-03: two windows
     # created by `do script` both came back `visible=false` with Terminal not
     # frontmost — nothing appeared on screen even though the command
     # "succeeded"). `activate` is what makes the window actually show up.
-    assert any("activate" in part for part in cmd)
+    assert any("activate" in part for part in command)
 
 
 def test_launch_standalone_nvim_raises_when_no_nvim_ever_listens() -> None:
@@ -521,9 +521,11 @@ def test_a_split_clears_a_dead_nvims_socket_file_first() -> None:
         _dead_nvims_socket(sock_path)
         present_at_split: list[bool] = []
 
-        def split_recording(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        def split_recording(
+            *arguments: object, **keyword_arguments: object
+        ) -> subprocess.CompletedProcess[str]:
             present_at_split.append(sock_path.exists())
-            return _split_run(*args, **kwargs)
+            return _split_run(*arguments, **keyword_arguments)
 
         with (
             _patched_split(sock_path, split_recording),
@@ -612,8 +614,8 @@ def test_resolve_launched_creates_the_socket_directory_first(tmp_path: Path) -> 
     sock_path = tmp_path / "fresh-cache" / "nvim-@1.sock"
     recorder = _RecordsSocketDir(sock_path)
 
-    def run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        recorder(*args, **kwargs)
+    def run(*arguments: object, **keyword_arguments: object) -> subprocess.CompletedProcess[str]:
+        recorder(*arguments, **keyword_arguments)
         return _split_run()
 
     with (
@@ -1022,17 +1024,17 @@ def test_sweep_stale_sockets_removes_only_unnamed_sockets_nobody_answers_on(
         named_by_its_window = directory / "nvim-@73.sock"
         _dead_nvims_socket(named_by_its_window)
         (directory / "@73.pane").write_text("{not json")
-        named_as_a_target = directory / "nvim-@75.sock"
-        _dead_nvims_socket(named_as_a_target)
-        FollowerState.set("@74", "nvim", str(named_as_a_target), base_dir=directory)
-        not_a_socket = directory / "nvim-@76.sock"
-        not_a_socket.write_text("")
+        named_for_target = directory / "nvim-@75.sock"
+        _dead_nvims_socket(named_for_target)
+        FollowerState.set("@74", "nvim", str(named_for_target), base_dir=directory)
+        non_socket = directory / "nvim-@76.sock"
+        non_socket.write_text("")
         booting = directory / "nvim-@77.sock"
         _dead_nvims_socket(booting)
         # A .pane gone between the listing and the read (a racing `stop`),
         # held still here as a dangling symlink: its window's path is kept.
-        named_by_a_vanishing_pane = directory / "nvim-@78.sock"
-        _dead_nvims_socket(named_by_a_vanishing_pane)
+        named_by_vanishing_pane = directory / "nvim-@78.sock"
+        _dead_nvims_socket(named_by_vanishing_pane)
         (directory / "@78.pane").symlink_to(directory / "removed-meanwhile")
         with fake_nvim(directory / "nvim-@72.sock") as answering:
             for path in directory.glob("nvim-*.sock"):
@@ -1042,10 +1044,10 @@ def test_sweep_stale_sockets_removes_only_unnamed_sockets_nobody_answers_on(
             assert answering.path.is_socket()
         assert not dead.exists()
         assert named_by_its_window.is_socket()
-        assert named_as_a_target.is_socket()
-        assert not_a_socket.exists()
+        assert named_for_target.is_socket()
+        assert non_socket.exists()
         assert booting.is_socket(), "a launch still booting lost its socket"
-        assert named_by_a_vanishing_pane.is_socket()
+        assert named_by_vanishing_pane.is_socket()
 
 
 @pytest.mark.parametrize("reply", [None, b"HTTP/1.1 400 Bad Request\r\n\r\n"])
@@ -1545,9 +1547,11 @@ class _DyingNvimWorld:
         self.scan_seconds = scan_seconds
         self.scan_timeouts: list[float] = []
 
-    def __call__(self, argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+    def __call__(
+        self, argv: list[str], **keyword_arguments: Any
+    ) -> subprocess.CompletedProcess[str]:
         if argv[0] == "ps":
-            timeout = kwargs["timeout"]
+            timeout = keyword_arguments["timeout"]
             self.scan_timeouts.append(timeout)
             if timeout < self.scan_seconds:
                 time.sleep(timeout)

@@ -50,25 +50,25 @@ def shadowing_cwd(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def launch_env(tmp_path: Path) -> dict[str, str]:
+def launch_environment(tmp_path: Path) -> dict[str, str]:
     """A throwaway HOME (the hook log), no tmux at all, and `python3` on PATH
     resolving to the base interpreter."""
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    (bin_dir / "python3").symlink_to(_base_python())
+    bin_directory = tmp_path / "bin"
+    bin_directory.mkdir()
+    (bin_directory / "python3").symlink_to(_base_python())
     home = tmp_path / "home"
     home.mkdir()
-    tmux_dir = tmp_path / "tmux"
-    tmux_dir.mkdir()
+    tmux_directory = tmp_path / "tmux"
+    tmux_directory.mkdir()
     environment = {
         key: value
         for key, value in os.environ.items()
         if key not in {"TMUX", "TMUX_PANE", "PYTHONPATH", "PYTHONSAFEPATH"}
     }
     environment.update(
-        PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        PATH=f"{bin_directory}{os.pathsep}{os.environ['PATH']}",
         HOME=str(home),
-        TMUX_TMPDIR=str(tmux_dir),
+        TMUX_TMPDIR=str(tmux_directory),
         CLAUDE_PLUGIN_ROOT=str(REPO),
     )
     return environment
@@ -91,12 +91,12 @@ def _assert_no_module_ran(directory: Path, result: subprocess.CompletedProcess[s
 
 @pytest.mark.parametrize("command", _hook_commands())
 def test_every_hook_command_ignores_modules_in_its_cwd(
-    command: str, shadowing_cwd: Path, launch_env: dict[str, str]
+    command: str, shadowing_cwd: Path, launch_environment: dict[str, str]
 ) -> None:
     result = subprocess.run(
         ["sh", "-c", command],
         cwd=shadowing_cwd,
-        env=launch_env,
+        env=launch_environment,
         input=json.dumps({"tool_name": "Bash", "tool_input": {"command": "ls"}}),
         capture_output=True,
         text=True,
@@ -108,12 +108,12 @@ def test_every_hook_command_ignores_modules_in_its_cwd(
 
 
 def test_the_claude_follow_wrapper_ignores_modules_in_its_cwd(
-    shadowing_cwd: Path, launch_env: dict[str, str]
+    shadowing_cwd: Path, launch_environment: dict[str, str]
 ) -> None:
     result = subprocess.run(
         [str(REPO / "bin" / "claude-follow"), "--help"],
         cwd=shadowing_cwd,
-        env=launch_env,
+        env=launch_environment,
         capture_output=True,
         text=True,
         timeout=60,
@@ -125,7 +125,7 @@ def test_the_claude_follow_wrapper_ignores_modules_in_its_cwd(
 
 
 def test_the_take_over_popup_ignores_modules_in_its_cwd_and_starts_in_the_cache_dir(
-    shadowing_cwd: Path, launch_env: dict[str, str]
+    shadowing_cwd: Path, launch_environment: dict[str, str]
 ) -> None:
     """The popup's command is run for real, on a pty, from the shadowing
     directory (where display-popup would start it without `-d`: the pane's
@@ -142,7 +142,7 @@ def test_the_take_over_popup_ignores_modules_in_its_cwd_and_starts_in_the_cache_
             real_run(
                 ["sh", "-c", argv[-1]],
                 cwd=shadowing_cwd,
-                env=launch_env,
+                env=launch_environment,
                 stdin=prompt_side,
                 stdout=prompt_side,
                 stderr=subprocess.PIPE,
