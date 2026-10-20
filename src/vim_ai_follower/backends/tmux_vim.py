@@ -15,7 +15,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from vim_ai_follower import cache, config, control, take_over
+from vim_ai_follower import binding, cache, config, control, take_over
 from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult, run_lines, run_ops
 from vim_ai_follower.backends import (
     BufferProbe,
@@ -1386,8 +1386,14 @@ def _unanswered_path(pane_id: str) -> Path:
     """Marks that this pane's Vim left a landing unanswered (_await_landing);
     its mtime is when. While it is younger than _UNANSWERED_BACKOFF_SECONDS
     the navigating calls fail at once and send nothing (_backoff_remaining);
-    a confirmed landing removes it."""
-    return cache.CACHE_DIRECTORY / f"unanswered-{pane_id.lstrip('%')}"
+    a confirmed landing removes it. Named after the tmux server too: pane ids
+    start again from %0 on every server and the cache is shared between
+    them (final review); with no server pid, the pane id alone, as before."""
+    server_pid = binding.tmux_server_pid()
+    pane_number = pane_id.lstrip("%")
+    if server_pid is None:
+        return cache.CACHE_DIRECTORY / f"unanswered-{pane_number}"
+    return cache.CACHE_DIRECTORY / f"unanswered-{server_pid}-{pane_number}"
 
 
 def _backoff(pane_id: str) -> tuple[float, float] | None:
@@ -1544,11 +1550,17 @@ _SCRIPT_TEMPORARY_NAME = re.compile(r"\.vaf-[0-9a-f]{6}\.vim\.[0-9a-f]{8}")
 _DEFINE_ROWS_NAME = re.compile(r"define-rows-[0-9]+")
 
 
+# A backoff mark of either naming (_unanswered_path): one older than the
+# backoff holds nothing, and a pane or server that is gone never removes it.
+_UNANSWERED_NAME = re.compile(r"unanswered-(?:\d+-)?\d+")
+
+
 def _sweep_scripts(current: Path) -> None:
     """Delete, from `current`'s directory and nowhere else, the scripts
     (`vaf-<6 hex>.vim`) and the long-define-line notes (`define-rows-<pane>`,
     _log_long_define_line) unused for _SCRIPT_MAX_AGE_SECONDS, and the
-    temporaries (`.vaf-<6 hex>.vim.<8 hex>`) older than
+    backoff marks (`unanswered-…`) and temporaries (`.vaf-<6 hex>.vim.<8 hex>`)
+    older than
     _PATH_HANDLE_MAX_AGE_SECONDS that _script_file leaves when a write is cut
     off before its rename. `current` always stays. Nothing else is touched,
     and a missing or unwritable directory, or a file another hook swept
@@ -1575,7 +1587,7 @@ def _sweep_scripts(current: Path) -> None:
             continue
         if _SCRIPT_NAME.fullmatch(entry.name) or _DEFINE_ROWS_NAME.fullmatch(entry.name):
             maximum_age = _SCRIPT_MAX_AGE_SECONDS
-        elif _SCRIPT_TEMPORARY_NAME.fullmatch(entry.name):
+        elif _SCRIPT_TEMPORARY_NAME.fullmatch(entry.name) or _UNANSWERED_NAME.fullmatch(entry.name):
             maximum_age = _PATH_HANDLE_MAX_AGE_SECONDS
         else:
             continue

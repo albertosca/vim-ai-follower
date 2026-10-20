@@ -441,3 +441,31 @@ def test_the_readonly_token_is_a_six_digit_number_vim_reads_as_decimal() -> None
     tokens = {tmux_vim._readonly_token() for _ in range(500)}
     assert all(100000 <= token <= 999999 for token in tokens)
     assert len(tokens) > 400
+
+
+def test_the_unanswered_backoff_is_per_server() -> None:
+    # Final review: pane ids start again from %0 on every tmux server, and
+    # the cache is shared between servers, so a pane of ONE server that left
+    # a landing unanswered must not hold a same-numbered pane of another.
+    with patch("vim_ai_follower.binding.tmux_server_pid", return_value=111):
+        marker = tmux_vim._unanswered_path("%2")
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.touch()
+        assert tmux_vim._backoff("%2") is not None
+    with patch("vim_ai_follower.binding.tmux_server_pid", return_value=222):
+        assert tmux_vim._backoff("%2") is None
+    with patch("vim_ai_follower.binding.tmux_server_pid", return_value=None):
+        assert tmux_vim._unanswered_path("%2").name == "unanswered-2"
+
+
+def test_the_sweep_removes_expired_backoff_marks_of_either_naming(tmp_path: Path) -> None:
+    current = tmp_path / "vaf-abcdef.vim"
+    current.write_text("")
+    stale = time.time() - tmux_vim._PATH_HANDLE_MAX_AGE_SECONDS - 1
+    names = ("unanswered-2", "unanswered-111-2")
+    for name in names:
+        (tmp_path / name).touch()
+        os.utime(tmp_path / name, (stale, stale))
+    (tmp_path / "unanswered-111-3").touch()
+    tmux_vim._sweep_scripts(current)
+    assert sorted(path.name for path in tmp_path.glob("unanswered-*")) == ["unanswered-111-3"]
