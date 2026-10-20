@@ -612,6 +612,35 @@ def _give_back_hijacked_windows(nvim: pynvim.Nvim, shown_before: dict[int, int])
             _wipe_if_scratch(nvim, now, buffer_handle)
 
 
+def _undo_new_tab(
+    nvim: pynvim.Nvim, tabs_before: set[int], shown_before: dict[int, int], original: int
+) -> None:
+    """Take back a new tab that failed: close every tab not in `tabs_before`
+    (the one `:tabnew` added, or a user autocommand's on top of it), wipe the
+    empty scratch each showed, give hijacked windows their buffers back and
+    make `original` current again. A user `TabNew` that throws, or a
+    `WinEnter * tabfirst` that moves the cursor off it, made the new tab
+    fail with the tab still open, one more per Read (T8 matrix m1/m3).
+
+    `nvim_win_close` with force hides a modified buffer instead of refusing
+    (E37 under 'nohidden'); nothing is discarded. Best effort: a step nvim
+    refuses is skipped, the caller raises NavigationFailed either way."""
+    with contextlib.suppress(pynvim.NvimError):
+        for tab in nvim.api.list_tabpages():
+            if tab.handle in tabs_before:
+                continue
+            for window in nvim.api.tabpage_list_wins(tab):
+                shown = nvim.api.win_get_buf(window)
+                with contextlib.suppress(pynvim.NvimError):
+                    nvim.api.win_close(window, True)
+                    _wipe_if_scratch(nvim, shown, -1)
+    with contextlib.suppress(pynvim.NvimError):
+        _give_back_hijacked_windows(nvim, shown_before)
+    with contextlib.suppress(pynvim.NvimError):
+        if nvim.api.win_is_valid(original):
+            nvim.api.set_current_win(original)
+
+
 @dataclass(frozen=True)
 class NvimFollower:
     """Follower backend that animates edits in a real Neovim over the RPC API.
@@ -910,18 +939,23 @@ class NvimFollower:
         shown_before = {
             window.handle: nvim.api.win_get_buf(window).handle for window in nvim.api.list_wins()
         }
-        nvim.command("tabnew")
-        added = [tab for tab in nvim.api.list_tabpages() if tab.handle not in before]
-        if not added:
-            raise NavigationFailed(f"the follower's nvim did not open a tab for {file_path}")
-        window: pynvim.api.Window = nvim.api.tabpage_get_win(added[0])
+        original = nvim.api.get_current_win().handle
         try:
+            nvim.command("tabnew")
+            added = [tab for tab in nvim.api.list_tabpages() if tab.handle not in before]
+            if not added:
+                raise NavigationFailed(f"the follower's nvim did not open a tab for {file_path}")
+            window: pynvim.api.Window = nvim.api.tabpage_get_win(added[0])
             _give_back_hijacked_windows(nvim, shown_before)
+            _show_in_window(nvim, window, buffer, file_path)
         except pynvim.NvimError as error:
+            _undo_new_tab(nvim, before, shown_before, original)
             raise NavigationFailed(
                 f"the follower's nvim could not open a tab for {file_path}: {error}"
             ) from error
-        _show_in_window(nvim, window, buffer, file_path)
+        except NavigationFailed:
+            _undo_new_tab(nvim, before, shown_before, original)
+            raise
         return window
 
     def _run_ops(

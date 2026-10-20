@@ -261,3 +261,47 @@ def test_a_replaced_buffer_its_own_bufhidden_wiped_is_left_alone() -> None:
     assert _follower()._fresh_buffer(nvim, "/tmp/f.py", False) == 7
     nvim.api.buf_is_valid.assert_any_call(1)
     assert call("silent! bwipeout 1") not in nvim.command.call_args_list
+
+
+@pytest.mark.parametrize("original_valid", [True, False], ids=["original-kept", "original-gone"])
+def test_a_failed_new_tab_is_taken_back_by_handle(original_valid: bool) -> None:
+    """T8 matrix m1/m3: every tab not in the record is closed (forced, so a
+    modified buffer is hidden, never discarded), its empty scratch wiped,
+    and the window that was current goes back to being current, unless it
+    is gone. A close nvim refuses does not stop the rest."""
+    from vim_ai_follower.backends.nvim import _undo_new_tab
+
+    old_tab, new_tab = MagicMock(handle=1), MagicMock(handle=2)
+    refused, closed = MagicMock(handle=2001), MagicMock(handle=2002)
+    scratch = _buffer(9, "")
+    nvim = _after_tabnew({2001: scratch, 2002: scratch}, {1000}, set())
+    nvim.api.list_tabpages.return_value = [old_tab, new_tab]
+    nvim.api.tabpage_list_wins.side_effect = lambda tab: [refused, closed] if tab is new_tab else []
+    nvim.api.win_get_buf.side_effect = lambda window: scratch
+
+    def win_close(window: MagicMock, force: bool) -> None:
+        if window is refused:
+            raise pynvim.NvimError("E444: Cannot close last window")
+
+    nvim.api.win_close.side_effect = win_close
+    nvim.api.buf_is_valid.side_effect = lambda handle: handle == 9
+    nvim.api.win_is_valid.side_effect = lambda handle: original_valid and handle == 1000
+    _undo_new_tab(nvim, {1}, {}, 1000)
+    assert nvim.api.win_close.call_args_list == [call(refused, True), call(closed, True)]
+    nvim.command.assert_called_once_with("silent! bwipeout 9")
+    assert nvim.api.set_current_win.call_args_list == ([call(1000)] if original_valid else [])
+
+
+def test_a_tabnew_that_throws_is_navigation_failed_and_taken_back() -> None:
+    nvim, buffer = _mock()
+
+    def command(text: str) -> None:
+        if text == "tabnew":
+            raise pynvim.NvimError('TabNew Autocommands for "*": user TabNew failed')
+
+    nvim.command.side_effect = command
+    with pytest.raises(NavigationFailed, match="user TabNew failed"):
+        _follower()._fresh_buffer(nvim, "/tmp/f.py", True)
+    nvim.api.win_set_buf.assert_not_called()
+    nvim.api.tabpage_list_wins.assert_called()
+    nvim.command.assert_any_call(f"silent! bwipeout! {buffer.handle}")
