@@ -194,3 +194,53 @@ def test_the_mode_file_names_every_class_the_hook_tells_apart(
     expect([":%normal Ix", "Enter"], "n")
     time.sleep(0.3)
     assert written() == before
+
+
+def test_a_stopped_mode_timer_restarts(tmp_path: Path, private_tmux: list[str]) -> None:
+    # A plugin's timer_stopall() kills the 0 ms timer a ModeChanged started
+    # before it ran (a mapping runs no timer): its flag stayed set and
+    # s:note_mode returned early for good, so the file kept its last mode.
+    cache.CACHE_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    script = _script(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    edited = tmp_path / "file.txt"
+    edited.write_text("a\nb\n")
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in ("TMUX", "TMUX_PANE", "VIMINIT")
+    }
+    subprocess.run(
+        [
+            *private_tmux,
+            "new-session",
+            "-d",
+            "-x",
+            "80",
+            "-y",
+            "20",
+            f"env HOME={home} vim -u NONE -i NONE -N -n -c 'set ttimeout ttimeoutlen=10'"
+            f" -c 'source {script}'"
+            " -c 'nnoremap <F2> i<C-o>:call timer_stopall()<CR><Esc>'"
+            f" {edited}",
+        ],
+        env=environment,
+        check=True,
+    )
+
+    def mode() -> str:
+        found = next(iter(cache.CACHE_DIRECTORY.glob("mode-*.txt")), None)
+        return found.read_text().split()[1] if found else ""
+
+    def expect(key: str, wanted: str, timeout: float) -> None:
+        subprocess.run([*private_tmux, "send-keys", key], env=environment, check=True)
+        deadline = time.monotonic() + timeout
+        while mode() != wanted:
+            assert time.monotonic() < deadline, f"after {key}: {mode()!r}, wanted {wanted!r}"
+            time.sleep(0.05)
+
+    expect("Escape", "n", 5.0)
+    expect("F2", "n", 5.0)
+    time.sleep(0.3)
+    expect("i", "i", 1.0)

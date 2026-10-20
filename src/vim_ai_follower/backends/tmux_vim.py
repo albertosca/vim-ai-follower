@@ -1216,6 +1216,12 @@ function! s:flush_mode(timer) abort
 endfunction
 
 function! s:note_mode() abort
+  " A timer a plugin's timer_stopall() killed before it ran left the flag set
+  " and the file frozen at its last mode (sweep-4 N4): a flag with no timer
+  " behind it is dropped.
+  if get(s:, 'mode_timer', -1) >= 0 && empty(timer_info(s:mode_timer))
+    let s:mode_timer = -1
+  endif
   if get(s:, 'mode_timer', -1) >= 0 || s:mode_class(mode(1)) ==# get(s:, 'mode_written', '')
     return
   endif
