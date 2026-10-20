@@ -65,7 +65,7 @@ _HAND_OVER = call_spelled("hand_over", 0)
 # that notes the user's readonly and claims the option, the lock's claim, and
 # the restore every animation exit sends (its answer for pane %2).
 _ADOPTED_UNLOCK = call_spelled("unlock")
-_ADOPTED_LOCK_READONLY = ":setlocal readonly nomodifiable | let b:vaf_ro_ours = 1" + _CLEARED
+_ADOPTED_LOCK_READONLY = call_spelled("lock")
 
 
 # The token every readonly restore in this file carries (see the autouse
@@ -528,11 +528,11 @@ def test_resume_show_fresh_replays_remaining_lines_and_relocks_with_readonly(
                 ops=[EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))],
                 pace_seconds=0.0,
             ),
-            ":setlocal nomodifiable nopaste|unlet! g:vaf_user_paste" + _CLEARED,
+            call_spelled("lock_back", 0, 0),
         ),
         (
             control.PendingShowFresh(lines=("b", "c"), pace_seconds=0.0),
-            ":setlocal readonly nomodifiable nopaste|unlet! g:vaf_user_paste" + _CLEARED,
+            call_spelled("lock_back", 1, 0),
         ),
     ],
     ids=["apply_edit", "show_fresh"],
@@ -706,7 +706,7 @@ def test_a_read_whose_state_a_stop_cleared_gives_its_lock_back() -> None:
         follower.ensure_showing("/tmp/a.py")
     texts = [text for text, literal in _sent_commands(run) if literal]
     assert texts[-2:] == [
-        ":setlocal readonly nomodifiable | let b:vaf_ro_ours = 1" + _CLEARED,
+        call_spelled("lock"),
         call_spelled("release_all"),
     ]
 

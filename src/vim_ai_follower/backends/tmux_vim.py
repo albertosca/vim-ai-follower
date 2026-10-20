@@ -141,16 +141,15 @@ DEDICATED_COMMAND = f"vim --cmd {shlex.quote(DEDICATED_MARK)}"
 # (a global, as the option is) unless an earlier unlock of the same run holds
 # it already (rewrite_buffer's, then resume's, where 'paste' is already the
 # follower's), and every hand-off puts it back (_RESTORE_PASTE, hand_over).
-# The completion relocks forget the record, so the next run takes a fresh one.
+# So do the completion relocks (s:lock_back): they used to turn 'paste' off
+# whatever the user had (sweep-3 final review). Each give-back forgets the
+# record, so the next run takes a fresh one.
 _LOCK_READONLY = ":setlocal readonly nomodifiable"
 _RECORD_USER_PASTE = "let g:vaf_user_paste = get(g:, 'vaf_user_paste', &paste)"
 _FORGET_USER_PASTE = "unlet! g:vaf_user_paste"
 _UNLOCK_FOR_ANIMATION = f":{_RECORD_USER_PASTE}|setlocal noreadonly modifiable paste"
-_RELOCK = f":setlocal nomodifiable nopaste|{_FORGET_USER_PASTE}"
-_RELOCK_READONLY = f":setlocal readonly nomodifiable nopaste|{_FORGET_USER_PASTE}"
 _GIVE_BACK_PASTE = f"let &paste = get(g:, 'vaf_user_paste', 0)|{_FORGET_USER_PASTE}"
 _RESTORE_PASTE = f":{_GIVE_BACK_PASTE}"
-_ADOPTED_LOCK_READONLY = _LOCK_READONLY + " | let b:vaf_ro_ours = 1"
 # Vim leaves a typed Ex command on its bottom row until something redraws
 # it: after every Read the lock line stayed there, and in a pane wide enough
 # for a call to fit one row, every call did (review I1 of T23, 2026-10-17: 12
@@ -161,7 +160,6 @@ _ADOPTED_LOCK_READONLY = _LOCK_READONLY + " | let b:vaf_ro_ours = 1"
 # can be the last one an entry point types (_cleared). An error stops the
 # line first, so an error message still shows.
 _CLEAR_COMMAND_LINE = "|redraw|echo ''"
-_OUR_READONLY_CLAIM = " | let b:vaf_ro_ours = 1"
 # The restore also leaves its answer for user_readonly (the hand-off cue) in
 # `readonly-<pane>.txt`: whether the buffer is now readonly by the user's
 # setting. Written here, by the line the follower sends anyway, so the cue
@@ -201,6 +199,33 @@ function! s:hand_over(adopted) abort
   endif
   if !a:adopted || has_key(b:, 'vaf_user_ma')
     setlocal modifiable
+  endif
+endfunction
+
+" A Read's lock in an adopted Vim, which claims the follower's readonly. A
+" call, not a typed line: the follower's own option changes run inside the
+" dispatcher, where s:note_user_lock does not take them for the user's.
+function! s:lock() abort
+  setlocal readonly nomodifiable
+  let b:vaf_ro_ours = 1
+endfunction
+
+" A lock option the USER changes while the follower holds a claim on it
+" (OptionSet, adopted Vim only) becomes the record the release and the
+" give-backs put back: a 'nomodifiable' the user set under the follower's
+" relock claim was turned back on at the release (T24c re-review). The
+" follower's own changes run inside the dispatcher (g:vaf_setting).
+function! s:note_user_lock() abort
+  if get(g:, 'vaf_setting') || get(v:, 'option_command', '') ==# 'setglobal'
+    return
+  endif
+  if !get(b:, 'vaf_ro_ours') && !get(b:, 'vaf_ma_ours')
+    return
+  endif
+  if expand('<amatch>') ==# 'readonly'
+    let b:vaf_user_ro = &l:readonly
+  else
+    let b:vaf_user_ma = &l:modifiable
   endif
 endfunction
 
@@ -421,7 +446,27 @@ endfunction
 # locked.
 # The relocks that set the follower's own readonly in an adopted Vim also
 # mark the follower's claim on it (`claim`, see s:note_user_readonly).
+# s:lock_back is the lock alone, without the `:e!`: the catch-up's relock,
+# whose disk already holds the next edit (see resume). Both give the user's
+# 'paste' back from its record, and turn it off only when there is none.
 _VIM_RELOCK = r"""
+function! s:lock_back(readonly, claim) abort
+  if a:readonly
+    setlocal readonly nomodifiable
+  else
+    setlocal nomodifiable
+  endif
+  if exists('g:vaf_user_paste')
+    let &paste = g:vaf_user_paste
+    unlet g:vaf_user_paste
+  else
+    set nopaste
+  endif
+  if a:claim
+    let b:vaf_ro_ours = 1
+  endif
+endfunction
+
 function! s:relock(readonly, claim) abort
   call s:swap_answer_open()
   try
@@ -430,15 +475,7 @@ function! s:relock(readonly, claim) abort
   finally
     call s:swap_answer_close()
   endtry
-  if a:readonly
-    setlocal readonly nomodifiable nopaste
-  else
-    setlocal nomodifiable nopaste
-  endif
-  unlet! g:vaf_user_paste
-  if a:claim
-    let b:vaf_ro_ours = 1
-  endif
+  call s:lock_back(a:readonly, a:claim)
 endfunction
 """
 
@@ -1197,6 +1234,7 @@ if exists('##ModeChanged') && !get(g:, 'vaf_dedicated', 0)
   augroup vim_ai_follower_mode
     autocmd! vim_ai_follower_mode
     autocmd ModeChanged * call s:note_mode()
+    autocmd OptionSet modifiable,readonly call s:note_user_lock()
     autocmd VimLeave * call s:forget_mode()
   augroup END
   call s:write_mode()
@@ -1264,7 +1302,12 @@ _VIM_SCRIPT = (
     + r"""
 if @HELPERS@
 function! @NAME@(op, ...) abort
-  let l:result = call('s:' . a:op, a:000)
+  let g:vaf_setting = 1
+  try
+    let l:result = call('s:' . a:op, a:000)
+  finally
+    unlet! g:vaf_setting
+  endtry
   redraw
   echo ''
   return l:result
@@ -1954,15 +1997,8 @@ class _Relock:
 
     def line(self, adopted: bool) -> str:
         claim = adopted and self.readonly
-        if self.synced:
-            return _call_line("relock", int(self.readonly), int(claim))
-        plain = _RELOCK_READONLY if self.readonly else _RELOCK
-        if adopted:
-            # Never the last line: an adopted Vim's readonly restore, a
-            # dispatcher call (which clears the command line), always follows
-            # it, and the claim with the clear would pass two screen rows.
-            return plain + (_OUR_READONLY_CLAIM if claim else "")
-        return _cleared(plain)
+        operation = "relock" if self.synced else "lock_back"
+        return _call_line(operation, int(self.readonly), int(claim))
 
 
 _RELOCK_SYNCED = _Relock(synced=True, readonly=False)
@@ -2514,7 +2550,7 @@ class TmuxVimFollower:
         s:note_user_readonly)."""
         adopted = self._is_adopted()
         pane.send_line(_call_line("reload", int(discard), int(adopted)))
-        pane.send_line(_cleared(_ADOPTED_LOCK_READONLY if adopted else _LOCK_READONLY))
+        pane.send_line(_call_line("lock") if adopted else _cleared(_LOCK_READONLY))
 
     def goto_file(self, file_path: str) -> None:
         """The defensive preamble: land on the tab showing file_path (by

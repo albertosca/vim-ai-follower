@@ -339,6 +339,8 @@ def test_every_typed_call_fits_two_screen_rows(
         tmux_vim._call_line("restore_readonly", number, 999999),
         tmux_vim._call_line("reload", 1, 1),
         tmux_vim._call_line("relock", 1, 1),
+        tmux_vim._call_line("lock_back", 1, 1),
+        tmux_vim._call_line("lock"),
         tmux_vim._call_line("hand_over", 1),
         tmux_vim._HOME_CHECK.format(
             marker=tmux_vim._vim_string(f"~/.cache/claude-vim-follower/h{number}-abcdef")
@@ -358,9 +360,6 @@ def test_every_typed_call_fits_two_screen_rows(
     # ones that can end an entry point carry the command-line clear.
     lines += [
         tmux_vim._UNLOCK_FOR_ANIMATION,
-        tmux_vim._RELOCK_READONLY_PLAIN.line(adopted=True),
-        tmux_vim._RELOCK_READONLY_PLAIN.line(adopted=False),
-        tmux_vim._cleared(tmux_vim._ADOPTED_LOCK_READONLY),
         tmux_vim._cleared(tmux_vim._RESTORE_PASTE),
         tmux_vim._cleared(":exe 999999"),
     ]
