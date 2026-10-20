@@ -86,3 +86,54 @@ def test_a_no_is_remembered_until_the_mode_changes(world: E2EFollower) -> None:
         assert "Traceback" not in _hook_log(world)
     finally:
         world.tmux("send-keys", "-t", pane_id, "Escape")
+
+
+def _recorded_mode(world: E2EFollower) -> str:
+    found = next(iter(world.cache_dir.glob("mode-*.txt")), None)
+    try:
+        return found.read_text().split()[1] if found else ""
+    except (OSError, IndexError):
+        return ""
+
+
+def test_a_declined_answer_is_forgotten_after_the_mode_changes_twice(
+    world: E2EFollower,
+) -> None:
+    # Out of insert mode and back between two hooks: no hook saw the Normal
+    # mode in between, but the mode file was written since the question, so
+    # the "no" was for an insert mode that is over (sweep-4 N3).
+    _question_seconds(world, 3)
+    users_file = world.workdir / "a.txt"
+    users_file.write_text("aaa\n")
+    claudes_file = world.workdir / "file.py"
+    claudes_file.write_text("one\ntwo\n")
+    pane_id, observed = _users_vim(world, users_file, claudes_file, showmode=False)
+    _adopted_state(world, pane_id, claudes_file)
+    read = world.cli("hook", "post", stdin=payload("Read", claudes_file))
+    assert read.returncode == 0, read.stderr
+    world.wait_until(
+        lambda: (_observed(observed) or {}).get("buffer") == os.path.realpath(claudes_file),
+        "the Read's navigation",
+        timeout=10.0,
+    )
+    world.tmux("send-keys", "-t", pane_id, "-l", ":tabfirst\r")
+    world.wait_until(
+        lambda: (_observed(observed) or {}).get("buffer") == os.path.realpath(users_file),
+        "the user back in their file",
+        timeout=10.0,
+    )
+    _type_half(world, pane_id, observed, users_file)
+    try:
+        _edit_answered(world, claudes_file, "n")
+        world.tmux("send-keys", "-t", pane_id, "Escape")
+        world.wait_until(lambda: _recorded_mode(world) == "n", "Normal mode recorded", 10.0)
+        world.tmux("send-keys", "-t", pane_id, "A")
+        world.wait_until(lambda: _recorded_mode(world) == "i", "insert mode recorded", 10.0)
+        claudes_file.write_text("one\ntwo\n")
+        _edit_answered(world, claudes_file, "n")
+        skipped = _skipped_lines(world)
+        assert len(skipped) == 2, _hook_log(world)
+        assert "(in insert mode), not taken over (answered no)" in skipped[1], skipped
+        assert "Traceback" not in _hook_log(world)
+    finally:
+        world.tmux("send-keys", "-t", pane_id, "Escape")

@@ -3750,12 +3750,19 @@ def test_a_yes_keeps_reading_while_any_reason_is_read() -> None:
 
 
 def _vim_asked(
-    typing: str | None, answer: str, *, pid: int | None = 202, window_id: str = "@1"
+    typing: str | None,
+    answer: str,
+    *,
+    pid: int | None = 202,
+    window_id: str = "@1",
+    written: int | None = None,
 ) -> tuple[str | None, int]:
     """_busy_follower for the adopted Vim %7 reading `typing`, its question
-    answered `answer`: (the skip reason, how many times it was asked)."""
+    answered `answer`, its mode file written at `written` (st_mtime_ns, None
+    for none): (the skip reason, how many times it was asked)."""
     reads = iter([typing])
     with (
+        patch("vim_ai_follower.backends.tmux_vim.mode_file_written", return_value=written),
         # After a yes the mode is read again (final review M3): not typing.
         patch(
             "vim_ai_follower.backends.tmux_vim.typing_mode",
@@ -3780,6 +3787,26 @@ def test_a_declined_question_is_not_asked_again_in_the_same_mode(answer: str) ->
         f"not taken over ({answer} earlier in this mode)",
         0,
     )
+
+
+@pytest.mark.parametrize(
+    ("first", "then", "asked_again"),
+    [
+        (1000, 1000, False),
+        (1000, 999, False),
+        (1000, 1001, True),
+        (None, 1000, True),
+        (None, None, False),
+    ],
+    ids=["same-write", "older", "written-since", "file-appeared", "no-file"],
+)
+def test_a_mode_file_written_since_the_question_forgets_the_answer(
+    first: int | None, then: int | None, asked_again: bool
+) -> None:
+    # Sweep-4 N3: the mode file is written only on a class change, so a newer
+    # one means the user left the mode and came back between two hooks.
+    _vim_asked("in insert mode", "answered no", written=first)
+    assert _vim_asked("in insert mode", "answered no", written=then)[1] == int(asked_again)
 
 
 @pytest.mark.parametrize(

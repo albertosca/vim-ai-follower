@@ -2166,6 +2166,17 @@ def _recorded_mode(vim: _VimProcess) -> str | None:
     return None
 
 
+def mode_file_written(pid: int) -> int | None:
+    """When the mode file of the Vim with `pid` was last written (st_mtime_ns),
+    or None without one. The file is written only when the mode CLASS
+    changes (s:note_mode), so a newer one means the user left a mode and
+    came back (hooks._declined_earlier)."""
+    try:
+        return (cache.CACHE_DIRECTORY / f"mode-{pid}.txt").stat().st_mtime_ns
+    except OSError:
+        return None
+
+
 def _release_mark_path(pid: int) -> Path:
     return cache.CACHE_DIRECTORY / f"release-{pid}.txt"
 

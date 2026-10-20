@@ -777,3 +777,11 @@ def test_a_release_mark_cut_off_between_listing_and_reading_is_no_release() -> N
         patch.object(Path, "read_text", vanished),
     ):
         assert not tmux_vim._take_release_mark("%5")
+
+
+def test_the_mode_file_stamp_is_its_write_time_or_none(tmp_path: Path) -> None:
+    with patch.object(cache, "CACHE_DIRECTORY", tmp_path):
+        assert tmux_vim.mode_file_written(4321) is None
+        (tmp_path / "mode-4321.txt").write_text("4321 i\n")
+        os.utime(tmp_path / "mode-4321.txt", ns=(5_000_000_000, 7_000_000_000))
+        assert tmux_vim.mode_file_written(4321) == 7_000_000_000

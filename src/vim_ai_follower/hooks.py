@@ -1238,16 +1238,22 @@ def _busy_follower(
 # (the popup shows over the client's CURRENT window, often Claude's). While
 # the same editor (a Vim by pid, an nvim by socket) reads the same typing
 # mode, the hook skips without asking; a different mode, a non-typing one,
-# another editor, or a `y` ends it. Only an answer the prompt read is
-# remembered (`answered no`, `answered timeout`): "not asked" (no client,
+# another editor, or a `y` ends it. On a Vim, so does a mode file written
+# since the question (`written`, its st_mtime_ns: it is written only when the
+# mode class changes, so the user left the mode and came back between two
+# hooks, sweep-4 N3); an nvim has no such signal. Only an answer the prompt
+# read is remembered (`answered no`, `answered timeout`): "not asked" (no client,
 # a dropped popup) and "no answer" saw no question.
 def _declined_path(window_id: str) -> Path:
     return cache.CACHE_DIRECTORY / f"{window_id}.declined"
 
 
-def _declined_earlier(window_id: str, editor: str, mode: str) -> str | None:
+def _declined_earlier(
+    window_id: str, editor: str, mode: str, written: int | None = None
+) -> str | None:
     """The answer this window's question got from `editor` in `mode`, or
-    None when there is none to honour."""
+    None when there is none to honour: none recorded, or the mode file
+    written after it (`written` newer than the record's)."""
     if not window_id or not editor:
         return None
     try:
@@ -1259,10 +1265,15 @@ def _declined_earlier(window_id: str, editor: str, mode: str) -> str | None:
     answer = record.get("answer")
     if record.get("mode") != mode or not isinstance(answer, str):
         return None
+    recorded = record.get("written")
+    if written is not None and (not isinstance(recorded, int) or written > recorded):
+        return None
     return answer
 
 
-def _remember_declined(window_id: str, editor: str, mode: str, answer: str) -> None:
+def _remember_declined(
+    window_id: str, editor: str, mode: str, answer: str, written: int | None = None
+) -> None:
     if not window_id or not editor or not answer.startswith("answered "):
         _forget_declined(window_id)
         return
@@ -1271,7 +1282,8 @@ def _remember_declined(window_id: str, editor: str, mode: str, answer: str) -> N
     with contextlib.suppress(OSError):
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary.write_text(
-            json.dumps({"editor": editor, "mode": mode, "answer": answer}), encoding="utf-8"
+            json.dumps({"editor": editor, "mode": mode, "answer": answer, "written": written}),
+            encoding="utf-8",
         )
         temporary.replace(path)
 
@@ -1283,18 +1295,24 @@ def _forget_declined(window_id: str) -> None:
 
 
 def _ask_unless_declined(
-    window_id: str, editor: str, mode: str, waiting: str, ask: functools.partial[str]
+    window_id: str,
+    editor: str,
+    mode: str,
+    waiting: str,
+    ask: functools.partial[str],
+    written: int | None = None,
 ) -> str | None:
     """None for a `y`; otherwise the skip reason, from this question or from
-    the one this editor declined earlier in the same mode."""
-    earlier = _declined_earlier(window_id, editor, mode)
+    the one this editor declined earlier in the same mode. `written` is the
+    Vim's mode-file stamp, read before the question (_declined_earlier)."""
+    earlier = _declined_earlier(window_id, editor, mode, written)
     if earlier is not None:
         return f"{waiting}, not taken over ({earlier} earlier in this mode)"
     answer = ask()
     if answer == take_over.YES:
         _forget_declined(window_id)
         return None
-    _remember_declined(window_id, editor, mode, answer)
+    _remember_declined(window_id, editor, mode, answer, written)
     return f"{waiting}, not taken over ({answer})"
 
 
@@ -1331,6 +1349,7 @@ def _busy_vim(
         typing,
         waiting,
         functools.partial(take_over.ask, current.target, "Vim", question_seconds),
+        tmux_vim.mode_file_written(pid) if pid is not None else None,
     )
     if skipped is not None:
         return skipped
