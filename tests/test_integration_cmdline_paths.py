@@ -241,7 +241,7 @@ def test_no_absolute_path_ever_reaches_the_command_line(
     # The instrument saw the follower's commands at all (a broken logger
     # would pass the absence checks below).
     assert typed.count("ENTER") >= 20, typed
-    assert any("setlocal" in line for line in typed), typed
+    assert any("call VafFollower_" in line for line in typed), typed
     hand_off = [
         f"'hand_over',{int(adopted)})",
         "let &paste = get(g:, 'vaf_user_paste', 0)|unlet! g:vaf_user_paste",
@@ -396,3 +396,69 @@ def test_a_vim_that_lost_the_functions_gets_them_again_on_the_next_call(
     assert "Press ENTER" not in screen, screen
     assert "E117" not in screen, screen
     assert follower.probe_buffer(str(target), BEFORE) == "holds"
+
+
+SIX_DIGIT_PANE = "%123456"
+
+
+@pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
+def test_a_six_digit_pane_id_fits_every_typed_call(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+    adopted: bool,
+    request: pytest.FixtureRequest,
+) -> None:
+    """The pane id is in every handle a typed call names (`p<pane>-<hex>`)
+    and in the readonly restore's token, so the two-row budget must hold for
+    the longest pane ids a server hands out in practice. The follower is
+    given `%123456` while every tmux call it makes goes to the real pane:
+    each entry point's lines must still run and answer (the landing and
+    probe files are named after the same id on both sides), and none may
+    pass two screen rows."""
+    root = Path(os.path.realpath(tmp_path))
+    (root / "proj").mkdir()
+    home_parent = Path(tempfile.mkdtemp(prefix="vafh-", dir="/tmp"))
+    request.addfinalizer(lambda: shutil.rmtree(home_parent, ignore_errors=True))
+    home = home_parent / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", home / ".cache" / "claude-vim-follower")
+    pane = _logged_vim(tmux_session, monkeypatch, tmp_path, home)
+    window_id = _tmux("display-message", "-p", "-t", pane, "#{window_id}")
+    real_run = subprocess.run
+
+    def to_the_real_pane(arguments: object, *positional: object, **keywords: object) -> object:
+        if isinstance(arguments, list):
+            arguments = [pane if argument == SIX_DIGIT_PANE else argument for argument in arguments]
+        return real_run(arguments, *positional, **keywords)  # type: ignore[call-overload]
+
+    monkeypatch.setattr(subprocess, "run", to_the_real_pane)
+    FollowerState.set(
+        window_id, backend="tmux", target=SIX_DIGIT_PANE, adopted=adopted, speed="instant"
+    )
+    follower = TmuxVimFollower(pane_id=SIX_DIGIT_PANE, pace_seconds=0.0, window_id=window_id)
+    target = root / "proj" / "a.py"
+    target.write_text(BEFORE)
+
+    follower.show_fresh(str(target), BEFORE, in_new_tab=True)
+    assert follower.probe_buffer(str(target), BEFORE) == "holds"
+    target.write_text(AFTER)
+    follower.apply_edit(str(target), compute_edit_script(BEFORE, AFTER), BEFORE)
+    follower.goto_file(str(target))
+    follower.ensure_showing(str(target))
+    assert follower.probe_buffer(str(target), AFTER) == "holds"
+    follower.hand_over()
+    follower._with_unlocked(
+        _RELOCK_SYNCED, str(target), lambda _pane: AnimationResult("interrupted", 0)
+    )
+    follower.close_tab(str(target))
+    assert follower.probe_buffer(str(target), AFTER) == "absent"
+
+    typed, _messages = _dump(pane, tmp_path / "dump.txt", wait_until)
+    assert any("p123456-" in line for line in typed), typed
+    if adopted:
+        assert any("'restore_readonly',123456," in line for line in typed), typed
+    too_long = [line for line in _whole_lines(typed) if len(line) > MAXIMUM_LINE_LENGTH]
+    assert too_long == [], [(len(line), line) for line in too_long]
