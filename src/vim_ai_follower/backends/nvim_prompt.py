@@ -95,6 +95,7 @@ from pathlib import Path
 from typing import Any
 
 from vim_ai_follower import cache
+from vim_ai_follower.backends.nvim_connect import close_connection
 
 logger = logging.getLogger("vim_ai_follower")
 
@@ -311,27 +312,6 @@ def dismiss_prompt(
         while time.monotonic() < deadline and nvim.api.get_mode() == mode:
             time.sleep(_SETTLE_POLL_SECONDS)
         return mode
-
-
-def close_connection(nvim: Any) -> None:
-    """Close a pynvim connection so nvim drops the channel NOW.
-
-    pynvim's close() closes the socket transport and then, in the same breath,
-    its event loop — so asyncio never runs the callback that actually closes
-    the socket, and the channel stays open in nvim until the garbage collector
-    happens to reach it (measured 2026-09-25, pynvim 0.6.0: the channel still
-    listed by nvim_list_chans after close(), gone only after gc.collect(), with
-    a ResourceWarning). Closing the transport first and letting the loop run
-    one iteration (call_soon(stop) + run_forever) delivers that callback before
-    close() shuts the loop. The transport is reached through pynvim internals,
-    so any failure falls back to the plain close()."""
-    with contextlib.suppress(Exception):
-        nvim._session.loop._transport.close()
-        loop = nvim.loop
-        loop.call_soon(loop.stop)
-        loop.run_forever()
-    with contextlib.suppress(Exception):
-        nvim.close()
 
 
 class Watchdog:

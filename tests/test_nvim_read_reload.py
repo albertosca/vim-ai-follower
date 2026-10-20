@@ -25,7 +25,7 @@ def _nvim(*, clean: bool, swap: bool) -> MagicMock:
 def _ensure_showing(nvim: MagicMock, tmp_path: Path, *, adopted: bool) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch.object(NvimFollower, "goto_file"),
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
@@ -105,7 +105,7 @@ def _user_readonly(nvim: MagicMock, tmp_path: Path, *, adopted: bool | None) -> 
     """adopted=None: the state was written and is gone again."""
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=bool(adopted))

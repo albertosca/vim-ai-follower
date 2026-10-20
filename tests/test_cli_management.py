@@ -135,7 +135,9 @@ def test_stop_standalone_stops_the_backend_but_skips_tmux_side_effects() -> None
     state.FollowerState.set("term-x", "nvim", "/tmp/standalone.sock", origin="")
     with (
         patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session),
-        patch("pynvim.attach", return_value=MagicMock()) as attach,
+        patch(
+            "vim_ai_follower.backends.nvim_connect.open_session", return_value=MagicMock()
+        ) as attach,
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
@@ -162,7 +164,7 @@ def test_speed_standalone_updates_speed_but_skips_the_tmux_status_line() -> None
     state.FollowerState.set("term-x", "nvim", "/tmp/standalone.sock", origin="", speed="rapido")
     with (
         patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session),
-        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=MagicMock()),
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.commands.tmux.show_status") as show_status,
@@ -904,7 +906,9 @@ def test_stop_on_adopted_nvim_closes_tabs_over_rpc_not_tmux_send_keys(
     nvim_mock.exec_lua.return_value = 7
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
-        patch("pynvim.attach", return_value=nvim_mock) as attach,
+        patch(
+            "vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim_mock
+        ) as attach,
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
     ):
@@ -1326,7 +1330,7 @@ def test_stop_clears_the_state_before_a_teardown_that_fails() -> None:
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("vim_ai_follower.binding.tmux_server_pid", return_value=4242),
-        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=MagicMock()),
         patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.backends.nvim.NvimFollower.stop", side_effect=frozen_stop),
     ):
@@ -1521,7 +1525,7 @@ def test_stop_of_an_adopted_nvim_waiting_on_its_user_sends_nothing_and_logs_one_
     _nvim_follower(adopted=True, open_files=("/tmp/a.py", "/tmp/b.py"))
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
-        patch("pynvim.attach") as attach,
+        patch("vim_ai_follower.backends.nvim_connect.open_session") as attach,
         patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.commands.nvim_connect.last_probe_blocking", return_value=blocking),
         patch("vim_ai_follower.commands.nvim_connect.last_probe_mode", return_value=mode),
@@ -1546,7 +1550,7 @@ def test_stop_of_an_adopted_nvim_in_its_command_line_window_sends_nothing() -> N
     _nvim_follower(adopted=True, open_files=("/tmp/a.py",))
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
-        patch("pynvim.attach") as attach,
+        patch("vim_ai_follower.backends.nvim_connect.open_session") as attach,
         patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.commands.nvim_connect.last_probe_verdict", return_value="answers"),
         patch("vim_ai_follower.commands.nvim_connect.last_probe_blocking", return_value=False),
@@ -1621,7 +1625,7 @@ def test_stop_of_an_unreachable_adopted_nvim_never_touches_its_pane(verdict: str
     listing = f"%1\t100\tzsh\n%5\t200\tnvim --listen {_DEDICATED_SOCKET}\n"
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_tmux_with_panes(listing)) as run,
-        patch("pynvim.attach") as attach,
+        patch("vim_ai_follower.backends.nvim_connect.open_session") as attach,
         patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value=verdict),
         patch("vim_ai_follower.commands._send_signal") as send_signal,
     ):
@@ -1644,7 +1648,7 @@ def test_stop_of_a_silent_dedicated_nvim_closes_its_pane_and_reaps_what_survives
             "vim_ai_follower.tmux.subprocess.run",
             side_effect=_tmux_with_panes(listing, children="201\n"),
         ) as run,
-        patch("pynvim.attach") as attach,
+        patch("vim_ai_follower.backends.nvim_connect.open_session") as attach,
         patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="silent"),
         patch("vim_ai_follower.commands._process_alive", side_effect=lambda pid: alive[pid]),
         patch("vim_ai_follower.commands._REAP_GRACE_SECONDS", 0.05),
@@ -1718,7 +1722,7 @@ def test_stop_of_an_answering_dedicated_nvim_quits_it_and_kills_no_pane_that_clo
 
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_run) as run,
-        patch("pynvim.attach", return_value=nvim_mock),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim_mock),
         patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.commands._send_signal") as send_signal,
     ):
@@ -1735,7 +1739,7 @@ def test_stop_kills_the_pane_of_a_dedicated_nvim_that_did_not_quit() -> None:
     listing = f"%1\t100\tzsh\n%5\t200\tnvim --listen {_DEDICATED_SOCKET}\n"
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_tmux_with_panes(listing)) as run,
-        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=MagicMock()),
         patch("vim_ai_follower.commands.nvim_connect.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.commands._QUIT_GRACE_SECONDS", 0.05),
         patch("vim_ai_follower.commands._process_alive", return_value=False),

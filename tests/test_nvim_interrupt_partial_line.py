@@ -87,7 +87,7 @@ def test_show_fresh_interrupted_mid_line_buffer_call_holds_only_the_typed_prefix
     # char0("w") -> 2 more calls; the 6th call (char1, before 'x') interrupts.
     signals = [None, None, None, None, None, "interrupt"]
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=signals),
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
@@ -123,7 +123,7 @@ def test_apply_edit_interrupted_mid_op_line_reports_op_index_with_no_snap(
     # (char1, before 'x') interrupts.
     signals = [None, None, None, "interrupt"]
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=signals),
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):

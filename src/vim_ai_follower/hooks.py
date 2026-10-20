@@ -1481,7 +1481,7 @@ def _leave_typing_mode(socket_path: str) -> str | None:
         try:
             nvim.input("<C-\\><C-N>")
         finally:
-            nvim.close()
+            nvim_connect.close_connection(nvim)
     except (OSError, EOFError) as error:  # RpcTimeout is an OSError
         return f"it could not be sent CTRL-\\ CTRL-N: {error}"
     deadline = time.monotonic() + _LEAVE_TYPING_SECONDS

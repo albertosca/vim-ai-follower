@@ -19,9 +19,9 @@ import pytest
 from vim_ai_follower import state
 from vim_ai_follower.backends import nvim_prompt
 from vim_ai_follower.backends.nvim import NvimFollower
+from vim_ai_follower.backends.nvim_connect import close_connection
 from vim_ai_follower.backends.nvim_prompt import (
     WATCHDOG_THREAD_NAME,
-    close_connection,
     dismiss_prompt,
     exec_logged,
     prompt_guard,
@@ -695,11 +695,11 @@ def test_a_watchdog_that_will_not_stop_is_logged(caplog: pytest.LogCaptureFixtur
 def test_close_connection_closes_the_transport_and_runs_the_loop_before_close() -> None:
     nvim = MagicMock()
     close_connection(nvim)
-    loop = nvim.loop
+    loop = nvim._session.loop._loop
     assert nvim.mock_calls[:4] == [
         call._session.loop._transport.close(),
-        call.loop.call_soon(loop.stop),
-        call.loop.run_forever(),
+        call._session.loop._loop.call_soon(loop.stop),
+        call._session.loop._loop.run_forever(),
         call.close(),
     ]
 
@@ -708,7 +708,7 @@ def test_close_connection_still_closes_when_pynvim_internals_are_missing() -> No
     nvim = MagicMock()
     nvim._session.loop._transport.close.side_effect = AttributeError("no _transport")
     close_connection(nvim)
-    nvim.loop.run_forever.assert_not_called()
+    nvim._session.loop._loop.run_forever.assert_not_called()
     nvim.close.assert_called_once_with()
 
 
@@ -754,7 +754,7 @@ def test_a_dedicated_follower_sweeps_and_watches_its_entry_points() -> None:
     state.FollowerState.set("@1", backend="nvim", target="/tmp/x.sock")
     nvim = _follower_nvim()
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
-    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim) as attach:
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim) as attach:
         assert follower.probe_buffer("/tmp/f.py", "x\n") == "absent"
     nvim.api.input.assert_called_once_with("<CR>")
     assert attach.call_count == 2  # the entry point's connection + the watchdog's
@@ -766,7 +766,7 @@ def test_an_adopted_follower_sweeps_and_watches_its_entry_points() -> None:
     state.FollowerState.set("@1", backend="nvim", target="/tmp/x.sock", adopted=True)
     nvim = _follower_nvim()
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
-    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim) as attach:
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim) as attach:
         assert follower.probe_buffer("/tmp/f.py", "x\n") == "absent"
     nvim.api.input.assert_called_once_with("<CR>")
     assert attach.call_count == 2  # the entry point's connection + the watchdog's
@@ -776,7 +776,7 @@ def test_is_alive_asks_a_fast_request_that_a_prompt_cannot_block() -> None:
     # Liveness is a raw, bounded `nvim_get_mode` (answered even at a blocking
     # prompt), never a pynvim session whose requests a prompt can hold.
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach") as attach,
+        patch("vim_ai_follower.backends.nvim_connect.open_session") as attach,
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers") as probe,
     ):
         assert NvimFollower(socket_path="/tmp/x.sock").is_alive() is True
@@ -792,7 +792,7 @@ def test_a_follower_with_no_state_acts_as_adopted_and_still_sweeps() -> None:
     # a hit-enter or more-prompt, under the answer lock.
     nvim = _follower_nvim()
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
-    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim) as attach:
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim) as attach:
         assert follower.probe_buffer("/tmp/f.py", "x\n") == "absent"
     nvim.api.input.assert_called_once_with("<CR>")
     assert attach.call_count == 2
@@ -841,7 +841,7 @@ def test_the_sweep_names_a_more_prompt_in_the_log(caplog: pytest.LogCaptureFixtu
 def test_stop_sweeps_a_dedicated_follower_before_quitting() -> None:
     state.FollowerState.set("@1", backend="nvim", target="/tmp/x.sock")
     nvim = _nvim(_PROMPT, _PROMPT)
-    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim):
         NvimFollower(socket_path="/tmp/x.sock", window_id="@1").stop()
     assert nvim.mock_calls.index(call.api.input("<CR>")) < nvim.mock_calls.index(
         call.command("qall!")
@@ -852,7 +852,7 @@ def test_stop_presses_no_key_and_quits_nothing_when_the_state_is_gone() -> None:
     # `qall!` is the most destructive thing this backend sends: without a
     # state proving the nvim is the follower's own, it may be the user's.
     nvim = _nvim(_PROMPT, _PROMPT)
-    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim) as attach:
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim) as attach:
         NvimFollower(socket_path="/tmp/x.sock", window_id="@1").stop()
     nvim.api.input.assert_not_called()
     nvim.command.assert_not_called()

@@ -109,7 +109,7 @@ def test_a_failed_new_tab_never_wipes_a_buffer_it_did_not_create() -> None:
     nvim.api.get_current_buf.side_effect = None
     nvim.api.get_current_buf.return_value = MagicMock(handle=1)
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         pytest.raises(NavigationFailed),
     ):
         _follower().goto_file("/tmp/f.py")
@@ -125,7 +125,7 @@ def test_a_read_that_does_not_land_wipes_the_buffer_it_loaded() -> None:
     nvim.api.get_current_buf.side_effect = None
     nvim.api.get_current_buf.return_value = MagicMock(handle=1)
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         pytest.raises(NavigationFailed),
     ):
         _follower().ensure_showing("/tmp/f.py")
@@ -242,7 +242,7 @@ def test_only_a_proven_dedicated_follower_types_a_first_file_in_place(
         FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=state == "adopted")
     nvim, _buffer = _mock()
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
         _follower().show_fresh("/tmp/f.py", "a\n", in_new_tab=False)

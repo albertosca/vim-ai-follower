@@ -38,7 +38,7 @@ def test_ensure_showing_locks_an_existing_buffer_after_switching_to_it() -> None
     nvim.exec_lua.side_effect = _buffer_9_not_clean
     nvim.api.get_current_buf.return_value.handle = 9
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch.object(NvimFollower, "goto_file") as goto_file,
     ):
         follower.ensure_showing("/tmp/f.py")
@@ -57,7 +57,7 @@ def test_ensure_showing_locks_unconditionally_without_checking_prior_state() -> 
     nvim.exec_lua.side_effect = _buffer_9_not_clean
     nvim.api.get_current_buf.return_value.handle = 9
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch.object(NvimFollower, "goto_file") as goto_file,
     ):
         follower.ensure_showing("/tmp/f.py")
@@ -78,7 +78,7 @@ def test_ensure_showing_leaves_an_adopted_followers_existing_buffer_modifiable(
     nvim.exec_lua.side_effect = _buffer_9_not_clean
     nvim.api.get_current_buf.return_value.handle = 9
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch.object(NvimFollower, "goto_file"),
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
@@ -98,7 +98,7 @@ def test_ensure_showing_leaves_an_adopted_followers_disk_loaded_buffer_modifiabl
     tabnew_adds_a_tab(nvim)
     nvim.funcs.bufadd.return_value = 42
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch.object(NvimFollower, "goto_file") as goto_file,
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
@@ -123,7 +123,7 @@ def test_apply_edit_leaves_an_adopted_followers_disk_loaded_buffer_modifiable(
     nvim.funcs.bufadd.return_value = 42
     ops = [EditOp(kind="replace", start_line=3, end_line=3, new_lines=("C",))]
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch.object(NvimFollower, "goto_file") as goto_file,
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
@@ -145,7 +145,7 @@ def test_ensure_showing_locks_a_disk_loaded_buffer_for_a_never_seen_file() -> No
     tabnew_adds_a_tab(nvim)
     nvim.funcs.bufadd.return_value = 42
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch.object(NvimFollower, "goto_file") as goto_file,
     ):
         follower.ensure_showing("/tmp/f.py")
@@ -166,7 +166,7 @@ def test_apply_edit_locks_the_disk_loaded_buffer_when_the_original_vanished() ->
     nvim.funcs.bufadd.return_value = 42
     ops = [EditOp(kind="replace", start_line=3, end_line=3, new_lines=("C",))]
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch.object(NvimFollower, "goto_file") as goto_file,
     ):
         result = follower.apply_edit("/tmp/f.py", ops)
@@ -191,7 +191,7 @@ def test_goto_file_itself_never_touches_modifiable() -> None:
     nvim.api.list_tabpages.return_value = [tab]
     nvim.api.tabpage_list_wins.return_value = [win]
     nvim.api.win_get_buf.return_value = buffer
-    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim):
         follower.goto_file("/tmp/f.py")
     nvim.api.buf_set_option.assert_not_called()
 
@@ -218,7 +218,7 @@ def test_ensure_showing_with_the_state_gone_locks_nothing_and_logs_nothing(
     nvim.exec_lua.side_effect = lambda code, *arguments: True if code == _IS_CLEAN_LUA else 9
     nvim.api.get_current_buf.return_value.handle = 9
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch.object(NvimFollower, "goto_file"),
         patch("vim_ai_follower.backends.nvim.exec_logged") as exec_logged,
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
@@ -236,7 +236,7 @@ def test_ensure_showing_of_a_new_file_with_the_state_gone_locks_nothing(tmp_path
     tabnew_adds_a_tab(nvim)
     nvim.funcs.bufadd.return_value = 42
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.backends.nvim.exec_logged") as exec_logged,
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
@@ -254,7 +254,7 @@ def test_reload_and_relock_with_the_state_gone_locks_nothing(tmp_path: Path) -> 
     nvim = MagicMock()
     nvim.api.get_current_buf.return_value.handle = 9
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch.object(NvimFollower, "goto_file"),
         patch("vim_ai_follower.backends.nvim.exec_logged") as exec_logged,
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),

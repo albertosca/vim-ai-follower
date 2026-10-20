@@ -23,7 +23,7 @@ def test_ensure_showing_switches_to_an_existing_buffer_without_touching_disk() -
     nvim = MagicMock()
     nvim.exec_lua.return_value = 9
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch.object(NvimFollower, "goto_file") as goto_file,
     ):
         follower.ensure_showing("/tmp/f.py")
@@ -43,7 +43,7 @@ def test_ensure_showing_loads_the_real_disk_content_when_no_buffer_exists() -> N
     window = tabnew_adds_a_tab(nvim)
     nvim.funcs.bufadd.return_value = 42
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch.object(NvimFollower, "goto_file") as goto_file,
     ):
         follower.ensure_showing("/tmp/f.py")
@@ -75,7 +75,7 @@ def test_goto_line_clamps_an_offset_past_the_last_line() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
     nvim.api.buf_line_count.return_value = 2
-    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim):
         follower.goto_line(99)
     assert nvim.current.window.cursor == (2, 0)
 
@@ -84,7 +84,7 @@ def test_goto_line_keeps_an_in_range_offset() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock")
     nvim = MagicMock()
     nvim.api.buf_line_count.return_value = 10
-    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim):
         follower.goto_line(3)
     assert nvim.current.window.cursor == (3, 0)
 
@@ -104,7 +104,7 @@ def test_apply_edit_shows_disk_content_instead_of_animating_into_nothing() -> No
         EditOp(kind="replace", start_line=3, end_line=3, new_lines=("C",)),
     ]
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch.object(NvimFollower, "goto_file") as goto_file,
     ):
         result = follower.apply_edit("/tmp/f.py", ops)
@@ -132,7 +132,7 @@ def test_resume_apply_edit_returns_completed_and_touches_nothing_when_the_buffer
         file_path="/tmp/f.py",
     )
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch.object(NvimFollower, "goto_file") as goto_file,
     ):
         result = follower.resume(pending)
@@ -157,7 +157,7 @@ def test_resume_show_fresh_returns_completed_and_touches_nothing_when_the_buffer
         lines=("one", "two", "three"), pace_seconds=0.0, continuation=True, file_path="/tmp/f.py"
     )
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch.object(NvimFollower, "goto_file") as goto_file,
     ):
         result = follower.resume(pending, seeded=True)
@@ -177,7 +177,7 @@ def test_apply_edit_animates_normally_when_the_buffer_is_still_there(tmp_path: P
     nvim.api.buf_line_count.return_value = 1
     operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch.object(NvimFollower, "goto_file") as goto_file,

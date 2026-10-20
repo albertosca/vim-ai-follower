@@ -971,7 +971,12 @@ def test_a_frozen_nvim_times_out_the_bounded_attach_and_its_requests(headless_nv
     finally:
         hang_guard.cancel()
         os.kill(pid, signal.SIGCONT)
-    assert nvim_connect.bounded_attach(headless_nvim).api.get_mode()["mode"] == "n"
+        nvim_connect.close_connection(connected)
+    reconnected = nvim_connect.bounded_attach(headless_nvim)
+    try:
+        assert reconnected.api.get_mode()["mode"] == "n"
+    finally:
+        nvim_connect.close_connection(reconnected)
     assert nvim_connect.nvim_answers(headless_nvim) is True
 
 
@@ -1016,7 +1021,7 @@ def test_unbounded_requests_puts_the_deadline_back_after_an_exception_inside() -
 
     attached = SimpleNamespace(_session=SimpleNamespace(request=slow_request))
     with (
-        patch("pynvim.attach", return_value=attached),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=attached),
         patch("vim_ai_follower.backends.nvim_connect.RPC_TIMEOUT_SECONDS", 0.1),
     ):
         connected = nvim_connect.bounded_attach("/unused.sock")

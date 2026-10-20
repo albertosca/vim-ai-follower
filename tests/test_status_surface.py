@@ -215,16 +215,13 @@ def test_set_writer_creates_a_floating_window_when_none_exists() -> None:
     nvim.api.buf_get_lines.return_value = []
     nvim.api.win_get_cursor.return_value = (5, 0)
 
-    with patch("pynvim.attach", return_value=nvim) as attach:
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim) as attach:
         NvimStatusSurface(socket_path="/tmp/x.sock").set_writer("code-reviewer", "colour78")
 
     # Every connection targets the follower's socket (the cue's own, plus the
     # hit-enter watchdog's on a dedicated follower — see nvim_prompt).
     assert attach.call_args_list
-    assert all(
-        recorded_call == call("socket", path="/tmp/x.sock")
-        for recorded_call in attach.call_args_list
-    )
+    assert all(recorded_call == call("/tmp/x.sock") for recorded_call in attach.call_args_list)
     nvim.api.create_buf.assert_called_once_with(False, True)
     nvim.api.buf_set_name.assert_called_once()
     nvim.api.open_win.assert_called_once()
@@ -256,7 +253,7 @@ def test_set_writer_reuses_an_existing_floating_window_and_clears_the_color_when
     nvim.api.buf_get_lines.return_value = ["old-label", "Claude waiting"]
     nvim.api.win_get_cursor.return_value = (1, 0)
 
-    with patch("pynvim.attach", return_value=nvim):
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim):
         NvimStatusSurface(socket_path="/tmp/x.sock").set_writer("new-writer", None)
 
     nvim.api.create_buf.assert_not_called()
@@ -280,7 +277,7 @@ def test_set_state_centers_the_text_and_opens_a_window_if_needed() -> None:
     nvim.api.open_win.return_value = 3
     nvim.api.buf_get_lines.return_value = []
 
-    with patch("pynvim.attach", return_value=nvim):
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim):
         NvimStatusSurface(socket_path="/tmp/x.sock").set_state("Claude waiting")
 
     nvim.api.buf_set_lines.assert_any_call(7, 0, -1, True, _centered_box(["Claude waiting"]))
@@ -296,7 +293,7 @@ def test_set_state_reuses_an_existing_window_without_recreating_it() -> None:
     nvim.api.buf_get_name.return_value = "vaf-status"
     nvim.api.buf_get_lines.return_value = ["code-reviewer"]
 
-    with patch("pynvim.attach", return_value=nvim):
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim):
         NvimStatusSurface(socket_path="/tmp/x.sock").set_state("Claude waiting")
 
     nvim.api.open_win.assert_not_called()
@@ -311,7 +308,7 @@ def test_set_state_with_none_delegates_to_clear() -> None:
     nvim.api.buf_get_name.return_value = "vaf-status"
     nvim.api.get_current_buf.return_value = 1
 
-    with patch("pynvim.attach", return_value=nvim):
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim):
         NvimStatusSurface(socket_path="/tmp/x.sock").set_state(None)
 
     nvim.api.win_close.assert_called_once_with(3, True)
@@ -328,7 +325,7 @@ def test_clear_closes_the_window_wipes_its_buffer_and_clears_cursor_virtual_text
     nvim.api.buf_get_name.return_value = "vaf-status"
     nvim.api.get_current_buf.return_value = 1
 
-    with patch("pynvim.attach", return_value=nvim):
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim):
         NvimStatusSurface(socket_path="/tmp/x.sock").clear()
 
     nvim.api.win_close.assert_called_once_with(3, True)
@@ -343,7 +340,7 @@ def test_clear_with_no_window_still_clears_cursor_virtual_text_without_raising()
     nvim.api.list_wins.return_value = []
     nvim.api.get_current_buf.return_value = 1
 
-    with patch("pynvim.attach", return_value=nvim):
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim):
         NvimStatusSurface(socket_path="/tmp/x.sock").clear()
 
     nvim.api.win_close.assert_not_called()
@@ -351,7 +348,9 @@ def test_clear_with_no_window_still_clears_cursor_virtual_text_without_raising()
 
 
 def test_all_methods_swallow_a_dead_socket_instead_of_raising() -> None:
-    with patch("pynvim.attach", side_effect=OSError("no such socket")):
+    with patch(
+        "vim_ai_follower.backends.nvim_connect.open_session", side_effect=OSError("no such socket")
+    ):
         surface = NvimStatusSurface(socket_path="/tmp/dead.sock")
         surface.set_writer("code-reviewer", "colour78")
         surface.set_state("Claude waiting")
@@ -452,7 +451,7 @@ def test_a_dedicated_followers_cue_sweeps_a_leftover_prompt_before_drawing() -> 
     # a prompt left there would freeze the hook before the follower's own
     # entry point could sweep it.
     nvim = _prompt_blocked_nvim()
-    with patch("pynvim.attach", return_value=nvim):
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim):
         NvimStatusSurface(socket_path="/tmp/x.sock", adopted=False).set_state("Writing...")
     nvim.api.input.assert_called_once_with("<CR>")
     assert nvim.mock_calls.index(call.api.input("<CR>")) < nvim.mock_calls.index(
@@ -462,7 +461,7 @@ def test_a_dedicated_followers_cue_sweeps_a_leftover_prompt_before_drawing() -> 
 
 def test_an_adopted_editors_cue_never_answers_its_prompts() -> None:
     nvim = _prompt_blocked_nvim()
-    with patch("pynvim.attach", return_value=nvim) as attach:
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim) as attach:
         NvimStatusSurface(socket_path="/tmp/x.sock", adopted=True).set_state("Writing...")
     nvim.api.get_mode.assert_not_called()
     nvim.api.input.assert_not_called()
@@ -488,7 +487,7 @@ def test_a_surface_built_without_the_adopted_flag_never_answers_prompts() -> Non
     # Unknown must not press keys: only a caller that KNOWS the follower is
     # dedicated (status_surface_for, from FollowerState) turns the sweep on.
     nvim = _prompt_blocked_nvim()
-    with patch("pynvim.attach", return_value=nvim) as attach:
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim) as attach:
         NvimStatusSurface(socket_path="/tmp/x.sock").set_state("Writing...")
     nvim.api.get_mode.assert_not_called()
     nvim.api.input.assert_not_called()
@@ -511,7 +510,7 @@ def _no_window_nvim(columns: int) -> MagicMock:
 
 def test_the_float_widens_to_fit_the_hand_off_cue_on_one_row() -> None:
     nvim = _no_window_nvim(49)
-    with patch("pynvim.attach", return_value=nvim):
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim):
         NvimStatusSurface(socket_path="/tmp/x.sock").set_state(HANDOFF_CUE_READONLY)
     options = _float_opts(nvim)
     assert isinstance(options["width"], int) and isinstance(options["col"], int)
@@ -524,7 +523,7 @@ def test_the_float_widens_to_fit_the_hand_off_cue_on_one_row() -> None:
 
 def test_the_float_never_outgrows_a_narrow_editor() -> None:
     nvim = _no_window_nvim(30)
-    with patch("pynvim.attach", return_value=nvim):
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim):
         NvimStatusSurface(socket_path="/tmp/x.sock").set_state(HANDOFF_CUE_READONLY)
     options = _float_opts(nvim)
     assert isinstance(options["width"], int)
@@ -534,7 +533,7 @@ def test_the_float_never_outgrows_a_narrow_editor() -> None:
 
 def test_a_short_cue_keeps_the_minimum_width() -> None:
     nvim = _no_window_nvim(80)
-    with patch("pynvim.attach", return_value=nvim):
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim):
         NvimStatusSurface(socket_path="/tmp/x.sock").set_state("Paused")
     assert _float_opts(nvim)["width"] == 32
     assert _float_opts(nvim)["col"] == 80 - 32 - 2
@@ -547,7 +546,7 @@ def test_an_existing_float_is_resized_for_a_longer_cue() -> None:
     nvim.api.win_get_buf.return_value = 7
     nvim.api.buf_get_name.return_value = "vaf-status"
     nvim.api.get_option_value.side_effect = lambda name, options: 49
-    with patch("pynvim.attach", return_value=nvim):
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim):
         NvimStatusSurface(socket_path="/tmp/x.sock").set_state(HANDOFF_CUE_READONLY)
     nvim.api.open_win.assert_not_called()
     width = len(HANDOFF_CUE_READONLY) + 2

@@ -141,7 +141,7 @@ def test_pause_shows_paused_in_the_nvim_surface_not_a_tmux_popup() -> None:
     control.mark_animating("@1")
     surface = MagicMock()
     with (
-        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=MagicMock()),
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.commands.status_surface_for", return_value=surface),
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
@@ -164,7 +164,7 @@ def test_pause_resume_restores_writing_on_the_nvim_surface_not_a_tmux_popup() ->
     control.mark_animating("@1", state="paused")
     surface = MagicMock()
     with (
-        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=MagicMock()),
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.commands.status_surface_for", return_value=surface),
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
@@ -194,7 +194,7 @@ def test_pause_discards_a_crash_orphaned_nvim_pending_without_crashing(
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()),
         # get() -> is_alive() must see the adopted nvim as alive.
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=MagicMock()),
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
     ):
         assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 0
@@ -721,7 +721,7 @@ def test_a_pause_whose_hook_finished_before_its_cue_appeared_takes_the_cue_back(
 
     surface.set_state.side_effect = hook_drains_meanwhile
     with (
-        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=MagicMock()),
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.commands.status_surface_for", return_value=surface),
         patch("vim_ai_follower.hooks.status_surface_for", return_value=surface),
@@ -737,7 +737,7 @@ def test_a_pause_whose_hook_is_still_running_leaves_its_cue_up() -> None:
     control.mark_animating("@1")
     surface = MagicMock()
     with (
-        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=MagicMock()),
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.commands.status_surface_for", return_value=surface),
         patch("vim_ai_follower.hooks.status_surface_for", return_value=surface),
@@ -851,7 +851,7 @@ def test_on_nvim_a_busy_refusal_shows_on_the_float_for_a_moment(
     surface.set_state.side_effect = lambda text: events.append(("set", text))
     surface.retire_state.side_effect = lambda *texts: events.append(("retire", texts))
     with (
-        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=MagicMock()),
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.commands.status_surface_for", return_value=surface),
         patch("vim_ai_follower.commands.time.sleep", side_effect=events.append),

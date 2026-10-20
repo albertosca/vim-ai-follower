@@ -58,7 +58,7 @@ def _run_hook(target: Path, follower: MagicMock, monkeypatch: pytest.MonkeyPatch
         patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
         patch("vim_ai_follower.hooks.time.sleep"),
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()),
-        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=MagicMock()),
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0

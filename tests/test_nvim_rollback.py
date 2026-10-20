@@ -66,7 +66,7 @@ def test_interrupt_mid_line_restores_the_deleted_range_and_drops_the_typed_row(
     # op boundary + line0 boundary + char0("W") -> 3 calls; the 4th (char1,
     # before "X") interrupts.
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=[None, None, None, "interrupt"]),
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
@@ -90,7 +90,7 @@ def test_interrupt_at_the_first_char_of_the_first_new_line_still_rolls_back(
     operation = EditOp(kind="replace", start_line=2, end_line=2, new_lines=("WX",))
     # op boundary + line0 boundary -> 2 calls; the 3rd (char0) interrupts.
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=[None, None, "interrupt"]),
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
@@ -111,7 +111,7 @@ def test_interrupt_at_a_new_line_boundary_rolls_back_the_full_typed_region(
     # op boundary + line0 boundary + char0("W") -> 3; the 4th (line1
     # boundary) interrupts.
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=[None, None, None, "interrupt"]),
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
@@ -130,7 +130,7 @@ def test_interrupt_inside_a_wiping_op_swallows_the_implicit_blank(tmp_path: Path
     nvim = _mock_nvim([3, 1, 2], ["a", "b", "c"])
     operation = EditOp(kind="replace", start_line=1, end_line=3, new_lines=("XY", "Z"))
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=[None, None, None, "interrupt"]),
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
@@ -153,7 +153,7 @@ def test_an_op_boundary_interrupt_leaves_the_buffer_untouched(tmp_path: Path) ->
     nvim = _mock_nvim([], ["b"])
     operation = EditOp(kind="replace", start_line=2, end_line=2, new_lines=("WX",))
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=["interrupt"]),
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
@@ -174,7 +174,7 @@ def test_a_delete_only_op_is_neither_snapshotted_nor_rolled_back(tmp_path: Path)
         EditOp(kind="delete", start_line=1, end_line=1, new_lines=()),
     ]
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=[None, "interrupt"]),
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
@@ -191,7 +191,7 @@ def test_a_completed_op_never_rolls_back(tmp_path: Path) -> None:
     nvim = _mock_nvim([2], ["b"])
     operation = EditOp(kind="replace", start_line=2, end_line=2, new_lines=("WX",))
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
@@ -210,7 +210,7 @@ def test_a_stop_while_paused_mid_op_neither_rolls_back_nor_relocks(tmp_path: Pat
     operation = EditOp(kind="replace", start_line=2, end_line=2, new_lines=("WX",))
     # op boundary + line0 boundary + char0("W") -> 3 calls; the 4th pauses.
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=[None, None, None, "pause"]),
         patch("vim_ai_follower.backends.nvim._wait_while_paused", return_value="stopped"),
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
@@ -231,7 +231,7 @@ def test_a_stop_while_paused_at_an_op_boundary_ends_the_run(tmp_path: Path) -> N
         EditOp(kind="delete", start_line=1, end_line=1, new_lines=()),
     ]
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=[None, "pause"]),
         patch("vim_ai_follower.backends.nvim._wait_while_paused", return_value="stopped"),
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),

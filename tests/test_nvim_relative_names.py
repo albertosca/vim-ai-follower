@@ -44,7 +44,7 @@ def test_show_fresh_names_its_buffer_with_the_display_name(tmp_path: Path) -> No
     nvim = _nvim("sub/a.py")
     buffer = fresh_buffer(nvim)
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
@@ -56,7 +56,7 @@ def test_goto_file_names_the_buffer_it_creates_with_the_display_name() -> None:
     nvim = _nvim("sub/a.py")
     tabnew_adds_a_tab(nvim)
     buffer = nvim.api.create_buf.return_value
-    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim):
         NvimFollower(socket_path="/tmp/x.sock").goto_file("/p/sub/a.py")
     assert nvim.api.buf_set_name.call_args_list == [call(buffer, "sub/a.py")]
 
@@ -65,7 +65,7 @@ def test_ensure_showing_adds_the_buffer_under_the_display_name() -> None:
     nvim = _nvim("sub/a.py")
     tabnew_adds_a_tab(nvim)
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch.object(NvimFollower, "goto_file"),
     ):
         NvimFollower(socket_path="/tmp/x.sock").ensure_showing("/p/sub/a.py")

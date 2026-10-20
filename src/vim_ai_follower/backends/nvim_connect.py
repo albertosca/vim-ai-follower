@@ -47,7 +47,7 @@ from vim_ai_follower.tmux import TmuxPane
 # FileType autocmd) finishes well inside it; a prompt the watchdog sweeps
 # costs well under a second.
 RPC_TIMEOUT_SECONDS = 10.0
-# pynvim.attach, including the api-info request it makes on connecting.
+# open_session, including the api-info request it makes on connecting.
 CONNECT_TIMEOUT_SECONDS = 3.0
 # The liveness probe: nvim answers nvim_get_mode even at a hit-enter prompt,
 # confirm() or input(), but NOT while it runs `:!cmd`, `system()` or busy Lua
@@ -336,17 +336,65 @@ def rpc_deadline(seconds: float) -> Iterator[None]:
             signal.setitimer(signal.ITIMER_REAL, max(left, 0.001))
 
 
+def open_session(socket_path: str) -> Any:
+    """`pynvim.attach("socket", path=socket_path)`, except that a session
+    whose first request fails is closed: cut by bounded_attach's deadline (an
+    nvim that accepts and never answers), pynvim.attach raised with the
+    session out of reach, and its event loop and socket were left to the
+    garbage collector, an unclosed-transport warning in whatever ran next.
+    The one place the follower connects to an nvim, so tests stand in for it
+    here."""
+    import pynvim
+
+    session = pynvim.socket_session(socket_path)
+    try:
+        return pynvim.Nvim.from_session(session).with_decode(True)
+    except BaseException:
+        close_session(session)
+        raise
+
+
+def close_session(session: Any) -> None:
+    """Close a pynvim session so nvim drops the channel NOW.
+
+    pynvim's close() closes the socket transport and then, in the same breath,
+    its event loop — so asyncio never runs the callback that actually closes
+    the socket, and the channel stays open in nvim until the garbage collector
+    happens to reach it (measured 2026-09-25, pynvim 0.6.0: the channel still
+    listed by nvim_list_chans after close(), gone only after gc.collect(), with
+    a ResourceWarning). Closing the transport first and letting the loop run
+    one iteration (call_soon(stop) + run_forever) delivers that callback before
+    close() shuts the loop. The transport is reached through pynvim internals,
+    so any failure falls back to the plain close()."""
+    _close_transport_first(session)
+    with contextlib.suppress(Exception):
+        session.close()
+
+
+def close_connection(nvim: Any) -> None:
+    """close_session for a connection open_session returned."""
+    _close_transport_first(nvim._session)
+    with contextlib.suppress(Exception):
+        nvim.close()
+
+
+def _close_transport_first(session: Any) -> None:
+    with contextlib.suppress(Exception):
+        session.loop._transport.close()
+        loop = session.loop._loop
+        loop.call_soon(loop.stop)
+        loop.run_forever()
+
+
 def bounded_attach(socket_path: str) -> Any:
-    """`pynvim.attach` under CONNECT_TIMEOUT_SECONDS, with every later request
+    """open_session under CONNECT_TIMEOUT_SECONDS, with every later request
     on the connection run under RPC_TIMEOUT_SECONDS (main thread only, like
     rpc_deadline). pynvim 0.6.0 routes every API call — `nvim.api.*`,
     `nvim.command`, a Buffer's or Window's methods — through the one
     `Session.request` of the connection, so wrapping it covers them all.
     Inside unbounded_requests(nvim) the request deadline is lifted."""
-    import pynvim
-
     with rpc_deadline(CONNECT_TIMEOUT_SECONDS):
-        nvim = pynvim.attach("socket", path=socket_path)
+        nvim = open_session(socket_path)
     session = nvim._session
     unbounded_request = session.request
     bounds = {"lifted": 0}

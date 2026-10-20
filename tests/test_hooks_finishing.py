@@ -232,7 +232,7 @@ def test_a_press_addressed_to_a_read_is_drained_too(
     payload: dict[str, object] = {"tool_name": "Read", "tool_input": {"file_path": str(target)}}
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()),
-        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=MagicMock()),
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0

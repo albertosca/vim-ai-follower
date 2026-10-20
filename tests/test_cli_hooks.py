@@ -533,7 +533,7 @@ def test_eviction_wipes_the_buffer_for_the_nvim_backend(
     shows_the_buffer(nvim, number=7)  # goto_file switches to it, opens no tab
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
-        patch("pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
@@ -1069,7 +1069,7 @@ def test_auto_open_selects_nvim_backend_and_persists_launched(
         ) as resolve,
         # The follower's own connection (show_fresh) is mocked out — this test
         # only asserts the backend selection and persisted state.
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
     ):
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
@@ -1402,7 +1402,7 @@ def test_pace0_consume_routes_resume_to_the_nvim_follower(
 
     with (
         patch("vim_ai_follower.hooks.get_follower", return_value=fake),
-        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=MagicMock()),
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
     ):
@@ -2153,7 +2153,7 @@ def test_apply_writer_cue_routes_nvim_backed_windows_to_the_nvim_status_surface(
     )
     nvim = MagicMock()
     with (
-        patch("pynvim.attach", return_value=nvim) as attach,
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim) as attach,
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
     ):
         hooks._apply_writer_cue(
@@ -2163,7 +2163,7 @@ def test_apply_writer_cue_routes_nvim_backed_windows_to_the_nvim_status_surface(
     # watchdog's on a dedicated follower (see backends/nvim_prompt.py).
     assert attach.call_args_list
     assert all(
-        recorded_call.args == ("socket",) and recorded_call.kwargs == {"path": "/tmp/x.sock"}
+        recorded_call.args == ("/tmp/x.sock",) and recorded_call.kwargs == {}
         for recorded_call in attach.call_args_list
     )
     border_calls = [
@@ -2213,7 +2213,7 @@ def test_standalone_post_edit_hook_animates_via_nvim_backend(
     # (not the hooks.get_follower fake above) to check is_alive() — give it
     # a socket that answers.
     with (
-        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=MagicMock()),
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
     ):
         assert hooks.cmd_hook_post({"TERM_SESSION_ID": "x"}, payload) == 0
@@ -2236,7 +2236,7 @@ def test_maybe_auto_open_standalone_nvim_auto_launches_and_persists(
 
     with (
         patch("vim_ai_follower.hooks.launch_standalone_nvim", return_value="/s.sock") as launch,
-        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=MagicMock()),
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
     ):
         result = hooks._maybe_auto_open(standalone, "/tmp/f.txt", loaded_config)
@@ -2267,7 +2267,7 @@ def test_maybe_auto_open_in_tmux_nvim_window_always_uses_standalone_launcher(
         patch("vim_ai_follower.hooks.launch_standalone_nvim", return_value="/s.sock") as launch,
         patch("vim_ai_follower.hooks.resolve_nvim_target") as resolve,
         patch("vim_ai_follower.hooks.keybindings.register"),
-        patch("pynvim.attach", return_value=MagicMock()),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=MagicMock()),
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="answers"),
     ):
         result = hooks._maybe_auto_open(in_tmux, "/tmp/f.txt", loaded_config)
@@ -3569,7 +3569,7 @@ def test_a_reopen_whose_split_never_answers_keeps_the_old_state_and_backs_off(
     )
     with (
         patch("vim_ai_follower.binding.tmux_server_pid", return_value=MOCK_SERVER_PID),
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", side_effect=OSError("dead")),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", side_effect=OSError("dead")),
         patch("vim_ai_follower.backends.nvim.probe_nvim", return_value="absent"),
         patch(
             "vim_ai_follower.hooks.resolve_nvim_target", side_effect=_split_never_answered()

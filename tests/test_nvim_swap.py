@@ -43,7 +43,7 @@ def test_ensure_showing_disables_the_buffers_swapfile_before_loading_it() -> Non
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = _disk_loading_nvim()
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch.object(NvimFollower, "goto_file"),
     ):
         follower.ensure_showing("/tmp/f.py")
@@ -65,7 +65,7 @@ def test_apply_edits_vanished_buffer_branch_also_disables_the_swapfile() -> None
     nvim = _disk_loading_nvim()
     ops = [EditOp(kind="replace", start_line=3, end_line=3, new_lines=("C",))]
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch.object(NvimFollower, "goto_file"),
     ):
         result = follower.apply_edit("/tmp/f.py", ops)
@@ -82,7 +82,7 @@ def test_the_disk_loading_branch_writes_exactly_three_buffer_options() -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = _disk_loading_nvim()
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch.object(NvimFollower, "goto_file"),
     ):
         follower.ensure_showing("/tmp/f.py")
@@ -110,7 +110,7 @@ def test_an_adopted_follower_still_disables_the_swapfile_but_not_modifiable(
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = _disk_loading_nvim()
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch.object(NvimFollower, "goto_file"),
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
@@ -129,7 +129,7 @@ def test_switching_to_an_existing_buffer_never_touches_its_swapfile() -> None:
     nvim = MagicMock()
     nvim.exec_lua.return_value = 9
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch.object(NvimFollower, "goto_file"),
     ):
         follower.ensure_showing("/tmp/f.py")
@@ -149,7 +149,7 @@ def test_goto_file_opts_the_buffer_it_creates_out_of_swap_before_naming_it() -> 
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     tabnew_adds_a_tab(nvim)
     buffer = nvim.api.create_buf.return_value
-    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim):
         follower.goto_file("/tmp/f.py")
     assert nvim.api.buf_set_option.call_args_list == [call(buffer, "swapfile", False)]
     assert nvim.api.buf_set_name.call_args_list == [call(buffer, "/tmp/f.py")]
@@ -167,7 +167,7 @@ def test_show_fresh_opts_its_new_buffer_out_of_swap_before_naming_it(tmp_path: P
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     buffer = fresh_buffer(nvim)
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
@@ -186,7 +186,7 @@ def _goto_hidden_buffer(loaded: bool) -> tuple[MagicMock, MagicMock]:
     nvim.exec_lua.return_value = 5
     window = tabnew_adds_a_tab(nvim)
     nvim.api.buf_is_loaded.return_value = loaded
-    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim):
         follower.goto_file("/tmp/f.py")
     return nvim, window
 
@@ -226,7 +226,7 @@ def test_show_fresh_turns_swap_back_on_after_naming_only_when_adopted(
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     buffer = fresh_buffer(nvim)
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
@@ -248,7 +248,7 @@ def test_show_fresh_turns_swap_back_on_when_the_state_is_gone(tmp_path: Path) ->
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     fresh_buffer(nvim)
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
@@ -269,7 +269,7 @@ def test_goto_file_turns_swap_back_on_after_loading_only_when_adopted(
     route_exec_lua(nvim, buffer=existing, display_name="/tmp/f.py")
     tabnew_adds_a_tab(nvim)
     nvim.api.buf_is_loaded.return_value = False
-    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim):
         follower.goto_file("/tmp/f.py")
     calls = nvim.api.mock_calls
     back_on = call.exec2(_SWAP_BACK_ON, {"output": True})
@@ -288,7 +288,7 @@ def test_goto_file_leaves_a_loaded_buffers_swap_alone_even_when_adopted() -> Non
     nvim.exec_lua.return_value = 5
     tabnew_adds_a_tab(nvim)
     nvim.api.buf_is_loaded.return_value = True
-    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim):
         follower.goto_file("/tmp/f.py")
     assert call.exec2(_SWAP_BACK_ON, {"output": True}) not in nvim.api.mock_calls
 
@@ -303,7 +303,7 @@ def test_open_from_disk_turns_swap_back_on_after_loading_only_when_adopted(
     route_exec_lua(nvim, buffer=-1, display_name="/tmp/f.py")
     window = tabnew_adds_a_tab(nvim)
     nvim.funcs.bufadd.return_value = 42
-    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim):
         follower.ensure_showing("/tmp/f.py")
     calls = nvim.api.mock_calls
     back_on = call.exec2(_SWAP_BACK_ON, {"output": True})
@@ -333,7 +333,7 @@ def test_a_swap_that_cannot_be_turned_back_on_is_logged_and_left_off(
 
     nvim.api.exec2.side_effect = exec2
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):

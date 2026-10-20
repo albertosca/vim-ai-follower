@@ -132,7 +132,7 @@ def _nvim_close(
         return {_FIND_BUFFER_LUA: found, _EVICT_LUA: verdict}.get(code, 0)
 
     nvim.exec_lua.side_effect = answer
-    with patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim):
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim):
         NvimFollower(socket_path="/tmp/s.sock", window_id="@6").close_tab(
             "/w/f.py", spare_current_tab=spare_current_tab
         )

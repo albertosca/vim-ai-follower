@@ -66,7 +66,7 @@ def test_show_fresh_pause_records_the_fully_typed_prefix_as_the_partial(tmp_path
     saved: list[tuple[str | None, bool]] = []
 
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         # line 0 typed, pause at line 1's boundary, resume, line 1 typed.
         patch("vim_ai_follower.control.check_signal", side_effect=[None, "pause", "pause", None]),
         patch("vim_ai_follower.control.save_pending_show_fresh", _fresh_partial_spy(saved)),
@@ -92,7 +92,7 @@ def test_show_fresh_mid_char_pause_leaves_the_half_typed_line_out_of_the_partial
     saved: list[tuple[str | None, bool]] = []
 
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         # line0 boundary, "a"; line1 boundary, "b"; pause before "c"; resume.
         patch(
             "vim_ai_follower.control.check_signal",
@@ -122,7 +122,7 @@ def test_run_ops_pause_records_the_applied_prefix_as_the_partial(tmp_path: Path)
     saved: list[str | None] = []
 
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         # op0 boundary + its one line; pause at op1's boundary; resume; op1.
         patch(
             "vim_ai_follower.control.check_signal",
@@ -155,7 +155,7 @@ def test_resume_fresh_pause_records_the_buffer_prefix_plus_the_typed_lines(
     )
 
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=[None, "pause", "pause", None]),
         patch("vim_ai_follower.control.save_pending_show_fresh", _fresh_partial_spy(saved)),
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
@@ -182,7 +182,7 @@ def test_resume_fresh_pause_excludes_the_trailing_seed_blank_from_the_partial(
     )
 
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=[None, "pause", "pause", None]),
         patch("vim_ai_follower.control.save_pending_show_fresh", _fresh_partial_spy(saved)),
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),

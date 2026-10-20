@@ -78,7 +78,7 @@ def test_get_active_follower_relaunches_dead_nvim_via_resolve(tmp_path: Path) ->
     # (never re-adopted) nvim via resolve_nvim_target(adopt=False).
     state.FollowerState.set("@1", "nvim", "/tmp/old.sock", origin="%1", on_failure="reopen")
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", side_effect=OSError("dead")),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", side_effect=OSError("dead")),
         patch(
             "vim_ai_follower.hooks.resolve_nvim_target",
             return_value=("/tmp/new.sock", True),
@@ -98,7 +98,7 @@ def test_get_active_follower_relaunches_dead_nvim_via_resolve(tmp_path: Path) ->
 def test_get_active_follower_nvim_relaunch_failure_logs_and_returns_none(tmp_path: Path) -> None:
     state.FollowerState.set("@1", "nvim", "/tmp/old.sock", origin="%1", on_failure="reopen")
     with (
-        patch("vim_ai_follower.backends.nvim.pynvim.attach", side_effect=OSError("dead")),
+        patch("vim_ai_follower.backends.nvim_connect.open_session", side_effect=OSError("dead")),
         patch(
             "vim_ai_follower.hooks.resolve_nvim_target",
             side_effect=subprocess.CalledProcessError(1, ["tmux", "split-window"]),
