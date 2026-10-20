@@ -35,7 +35,7 @@ def test_ensure_showing_a_never_seen_file_locks_the_loaded_buffer(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     FollowerState.set(
         "@1", "nvim", headless_nvim, adopted=False, speed="instant"
@@ -58,7 +58,7 @@ def test_ensure_showing_a_never_seen_file_leaves_an_adopted_buffer_modifiable(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     FollowerState.set("@1", "nvim", headless_nvim, adopted=True)
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
 
@@ -80,7 +80,7 @@ def test_ensure_showing_an_existing_unlocked_buffer_switches_to_it_and_locks_it(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     FollowerState.set(
         "@1", "nvim", headless_nvim, adopted=False, speed="instant"
@@ -114,7 +114,7 @@ def test_ensure_showing_an_adopted_followers_existing_buffer_stays_modifiable(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     FollowerState.set("@1", "nvim", headless_nvim, adopted=True)
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
 
@@ -143,7 +143,7 @@ def test_apply_edit_on_a_vanished_buffer_locks_the_disk_loaded_buffer(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     FollowerState.set(
         "@1", "nvim", headless_nvim, adopted=False, speed="instant"
@@ -175,7 +175,7 @@ def test_apply_edit_on_a_vanished_buffer_leaves_an_adopted_disk_loaded_buffer_mo
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     FollowerState.set("@1", "nvim", headless_nvim, adopted=True)
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
 
@@ -210,7 +210,7 @@ def test_read_navigation_then_a_real_edit_on_the_same_file_still_animates(
     live edit on the tmux backend."""
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     FollowerState.set(
         "@1", "nvim", headless_nvim, adopted=False, speed="instant"
@@ -248,7 +248,7 @@ def test_read_navigation_then_show_fresh_on_the_same_file_still_animates(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     FollowerState.set(
         "@1", "nvim", headless_nvim, adopted=False, speed="instant"

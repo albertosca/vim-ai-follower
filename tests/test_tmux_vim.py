@@ -119,7 +119,7 @@ def test_apply_edit_unlocks_the_buffer_only_for_the_animation(tmp_path: Path) ->
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
         result = follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
@@ -150,7 +150,7 @@ def test_apply_edit_uses_configured_pace_seconds(tmp_path: Path) -> None:
     follower = TmuxVimFollower(pane_id="%2", pace_seconds=0.15, window_id="@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run"),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value=None),
         patch("vim_ai_follower.animate.time.sleep") as sleep,
     ):
@@ -162,7 +162,7 @@ def test_apply_edit_skips_relock_when_interrupted(tmp_path: Path) -> None:
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
     ):
         result = follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
@@ -180,7 +180,7 @@ def test_a_completed_animation_never_sends_the_paste_restore(tmp_path: Path) -> 
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
         follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
@@ -197,7 +197,7 @@ def test_apply_edit_relocks_after_pause_and_resume(tmp_path: Path) -> None:
 
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", side_effect=_pause_then_resume),
     ):
         result = follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
@@ -219,7 +219,7 @@ def test_apply_edit_renavigates_to_its_own_tab_on_resume(tmp_path: Path) -> None
 
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", side_effect=_pause_then_resume),
     ):
         result = follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
@@ -244,7 +244,7 @@ def test_apply_edit_relocks_with_a_silent_disk_sync(tmp_path: Path) -> None:
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
         follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
@@ -256,7 +256,7 @@ def test_show_fresh_relocks_with_a_silent_disk_sync(tmp_path: Path) -> None:
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
         follower.show_fresh("/tmp/f.txt", "a\nb\n")
@@ -268,7 +268,7 @@ def test_interrupted_animation_never_sends_a_disk_sync_reload(tmp_path: Path) ->
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
     ):
         result = follower.show_fresh("/tmp/f.txt", "a\nb\n")
@@ -313,7 +313,7 @@ def test_show_fresh_renames_in_place_and_reads_the_file_only_on_the_rename_line(
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
         result = follower.show_fresh("/tmp/f.txt", "a\nb\n")
@@ -361,7 +361,7 @@ def test_show_fresh_with_empty_content_still_wipes_and_relocks(tmp_path: Path) -
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
         result = follower.show_fresh("/tmp/f.txt", "")
@@ -397,7 +397,7 @@ def test_show_fresh_uses_configured_pace_seconds(tmp_path: Path) -> None:
     follower = TmuxVimFollower(pane_id="%2", pace_seconds=0.15, window_id="@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run"),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value=None),
         patch("vim_ai_follower.animate.time.sleep") as sleep,
     ):
@@ -409,7 +409,7 @@ def test_show_fresh_skips_relock_when_interrupted(tmp_path: Path) -> None:
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
     ):
         result = follower.show_fresh("/tmp/f.txt", "a\nb\n")
@@ -464,7 +464,7 @@ def test_resume_apply_edit_replays_remaining_ops_and_relocks(tmp_path: Path) -> 
     pending = control.PendingApplyEdit(ops=[operation], pace_seconds=0.0)
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
         result = follower.resume(pending)
@@ -487,7 +487,7 @@ def test_resume_show_fresh_replays_remaining_lines_and_relocks_with_readonly(
     pending = control.PendingShowFresh(lines=("b", "c"), pace_seconds=0.0)
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
         result = follower.resume(pending)
@@ -524,7 +524,7 @@ def test_resume_without_reload_relocks_without_reading_disk(
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
         result = follower.resume(pending, reload=False)
@@ -540,7 +540,7 @@ def test_resume_navigates_to_the_pending_files_tab_first(tmp_path: Path) -> None
     pending = control.PendingApplyEdit(ops=[operation], pace_seconds=0.0, file_path="/tmp/f.py")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
         follower.resume(pending)
@@ -565,7 +565,7 @@ def test_resume_skips_navigation_when_pending_has_no_file_path(tmp_path: Path) -
     pending = control.PendingApplyEdit(ops=[operation], pace_seconds=0.0)
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
         follower.resume(pending)
@@ -580,7 +580,7 @@ def test_resume_skips_relock_when_interrupted_again(tmp_path: Path) -> None:
     pending = control.PendingApplyEdit(ops=[operation], pace_seconds=0.0)
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
     ):
         result = follower.resume(pending)
@@ -601,7 +601,7 @@ def test_rewrite_buffer_types_the_whole_partial_and_leaves_an_s_for_the_replay(
     check = MagicMock(return_value="interrupt")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", check),
         patch.object(TmuxVimFollower, "goto_file"),
     ):
@@ -1049,8 +1049,8 @@ def test_an_adopted_hand_over_restores_the_readonly() -> None:
 def test_a_dedicated_follower_never_asks_whose_readonly_it_is() -> None:
     _register_fake_follower("@1", "%2")
     state.FollowerState.update("@1", adopted=False)
-    (cache.CACHE_DIR / "readonly-2.asked").touch()  # even with a request on disk
-    (cache.CACHE_DIR / "readonly-2.txt").write_text("1\n")  # and a "yes" answer
+    (cache.CACHE_DIRECTORY / "readonly-2.asked").touch()  # even with a request on disk
+    (cache.CACHE_DIRECTORY / "readonly-2.txt").write_text("1\n")  # and a "yes" answer
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         assert follower.user_readonly("/tmp/f.txt") is False
@@ -1062,7 +1062,7 @@ def test_an_adopted_vim_answers_from_the_restore_it_just_ran(answer: str, expect
     follower = _adopted_follower()
     with patch("vim_ai_follower.tmux.subprocess.run"):
         follower.hand_over()
-    (cache.CACHE_DIR / "readonly-2.txt").write_text(f"{answer}\n{_READONLY_TOKEN}\n")
+    (cache.CACHE_DIRECTORY / "readonly-2.txt").write_text(f"{answer}\n{_READONLY_TOKEN}\n")
     assert follower.user_readonly("/tmp/f.txt") is expected
 
 
@@ -1075,7 +1075,7 @@ def test_an_answer_to_another_restore_is_never_read_as_this_ones(
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.hand_over()
     assert (_restore(), True) in _sent_commands(run)
-    (cache.CACHE_DIR / "readonly-2.txt").write_text("1\n654321\n")
+    (cache.CACHE_DIRECTORY / "readonly-2.txt").write_text("1\n654321\n")
     with (
         patch("vim_ai_follower.backends.tmux_vim._PROBE_TIMEOUT_SECONDS", 0.05),
         patch("vim_ai_follower.backends.tmux_vim.time.sleep"),
@@ -1098,11 +1098,11 @@ def test_no_answer_from_the_restore_is_the_plain_cue(caplog: pytest.LogCaptureFi
 
 def test_the_restore_requests_the_answer_user_readonly_then_consumes() -> None:
     follower = _adopted_follower()
-    request = cache.CACHE_DIR / "readonly-2.asked"
+    request = cache.CACHE_DIRECTORY / "readonly-2.asked"
     with patch("vim_ai_follower.tmux.subprocess.run"):
         follower.hand_over()
     assert request.exists()
-    (cache.CACHE_DIR / "readonly-2.txt").write_text(f"1\n{_READONLY_TOKEN}\n")
+    (cache.CACHE_DIRECTORY / "readonly-2.txt").write_text(f"1\n{_READONLY_TOKEN}\n")
     assert follower.user_readonly("/tmp/f.txt") is True
     assert not request.exists()
     # Asked once per hand-off: the same answer is never read twice.
@@ -1147,7 +1147,7 @@ def test_an_unwritable_answer_directory_never_breaks_the_hand_off(
 def test_the_restore_clears_the_last_answer_before_it_is_sent() -> None:
     """A stale answer from an earlier hand-off must never be read as this one's."""
     follower = _adopted_follower()
-    answer = cache.CACHE_DIR / "readonly-2.txt"
+    answer = cache.CACHE_DIRECTORY / "readonly-2.txt"
     answer.parent.mkdir(parents=True, exist_ok=True)
     answer.write_text("1\n")
     with patch("vim_ai_follower.tmux.subprocess.run"):

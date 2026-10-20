@@ -57,7 +57,7 @@ def other_live_followers(window_id: str) -> list[OtherFollower]:
     backend probe (a tmux shell-out, an nvim RPC connect). Callers on the hook
     path must throttle this, never run it per edit."""
     others = []
-    for path in sorted(cache.CACHE_DIR.glob("*.pane")):
+    for path in sorted(cache.CACHE_DIRECTORY.glob("*.pane")):
         key = path.stem
         if key == window_id:
             continue
@@ -75,11 +75,11 @@ def other_live_followers(window_id: str) -> list[OtherFollower]:
     return others
 
 
-def _standalone_id(env: dict[str, str]) -> str:
-    term = env.get("TERM_SESSION_ID")
+def _standalone_id(environment: dict[str, str]) -> str:
+    term = environment.get("TERM_SESSION_ID")
     if term:
         return f"term-{term}"
-    iterm = env.get("ITERM_SESSION_ID")
+    iterm = environment.get("ITERM_SESSION_ID")
     if iterm:
         return f"iterm-{iterm}"
     try:
@@ -212,14 +212,14 @@ def _recover_window_from_ancestry() -> tuple[str, str] | None:
     return None
 
 
-def resolve_session(env: dict[str, str]) -> Session | None:
-    if env.get("TMUX_PANE"):
-        window = TmuxWindow.from_env(env)
+def resolve_session(environment: dict[str, str]) -> Session | None:
+    if environment.get("TMUX_PANE"):
+        window = TmuxWindow.from_env(environment)
         if window is None:
             return None
-        return Session(window_id=window.window_id, origin=env["TMUX_PANE"], in_tmux=True)
+        return Session(window_id=window.window_id, origin=environment["TMUX_PANE"], in_tmux=True)
     recovered = _recover_window_from_ancestry()
     if recovered is not None:
         pane_id, window_id = recovered
         return Session(window_id=window_id, origin=pane_id, in_tmux=True, recovered_via_pid=True)
-    return Session(window_id=_standalone_id(env), origin=None, in_tmux=False)
+    return Session(window_id=_standalone_id(environment), origin=None, in_tmux=False)

@@ -7,4 +7,4 @@ from __future__ import annotations
 
 from pathlib import Path
 
-CACHE_DIR = Path.home() / ".cache" / "claude-vim-follower"
+CACHE_DIRECTORY = Path.home() / ".cache" / "claude-vim-follower"

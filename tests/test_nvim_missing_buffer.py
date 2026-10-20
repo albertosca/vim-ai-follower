@@ -179,7 +179,7 @@ def test_apply_edit_animates_normally_when_the_buffer_is_still_there(tmp_path: P
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch.object(NvimFollower, "goto_file") as goto_file,
     ):
         result = follower.apply_edit("/tmp/f.py", [operation])

@@ -89,7 +89,7 @@ def typing_reason(mode: str | None) -> str | None:
 
 
 def _answer_path(token: str) -> Path:
-    return cache.CACHE_DIR / f"take-over-{token}.txt"
+    return cache.CACHE_DIRECTORY / f"take-over-{token}.txt"
 
 
 # Answer files (and their write temporaries) older than this are an earlier
@@ -105,7 +105,7 @@ def _sweep_answers() -> None:
     deleted stays."""
     cutoff = time.time() - _SWEEP_AFTER_SECONDS
     for pattern in ("take-over-*.txt", ".take-over-*.txt.*"):
-        for path in cache.CACHE_DIR.glob(pattern):
+        for path in cache.CACHE_DIRECTORY.glob(pattern):
             try:
                 if path.stat().st_mtime < cutoff:
                     path.unlink()
@@ -160,7 +160,7 @@ def ask(target_pane: str, editor: str, seconds: float) -> str:
         )
     token = secrets.token_hex(8)
     answer_path = _answer_path(token)
-    cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache.CACHE_DIRECTORY.mkdir(parents=True, exist_ok=True)
     prompt = shlex.join(
         [
             "env",
@@ -191,7 +191,7 @@ def ask(target_pane: str, editor: str, seconds: float) -> str:
                     # A fixed start directory, not the target pane's current
                     # one (a user's project).
                     "-d",
-                    str(cache.CACHE_DIR),
+                    str(cache.CACHE_DIRECTORY),
                     "-w",
                     str(_POPUP_WIDTH),
                     "-h",
@@ -234,7 +234,7 @@ def _read_answer(answer_path: Path, token: str) -> str:
 
 
 def read_key_answer(
-    input_fd: int,
+    input_file_descriptor: int,
     seconds: float,
     clock: Callable[[], float] = time.monotonic,
 ) -> str:
@@ -246,23 +246,25 @@ def read_key_answer(
         remaining = seconds - (clock() - started)
         if remaining <= 0:
             return "timeout"
-        ready, _, _ = select.select([input_fd], [], [], remaining)
+        ready, _, _ = select.select([input_file_descriptor], [], [], remaining)
         if not ready:
             continue
-        data = os.read(input_fd, 64)
+        data = os.read(input_file_descriptor, 64)
         if data == b"y" and clock() - started >= ARM_SECONDS:
             return YES
         return "no"
 
 
-def run_prompt(input_fd: int, output: Callable[[str], None], seconds: float, editor: str) -> str:
+def run_prompt(
+    input_file_descriptor: int, output: Callable[[str], None], seconds: float, editor: str
+) -> str:
     """The popup's side: show the question, read the answer with the terminal
     raw (restored after), and return it."""
-    saved = termios.tcgetattr(input_fd)
+    saved = termios.tcgetattr(input_file_descriptor)
     # TCSANOW, never setraw's default TCSAFLUSH: that discards a key typed
     # before the switch (which must answer "no" here, not vanish), and it
     # waits for pending output to drain first.
-    tty.setraw(input_fd, termios.TCSANOW)
+    tty.setraw(input_file_descriptor, termios.TCSANOW)
     try:
         output(
             f"Claude is editing a file, and your {editor}\r\n"
@@ -270,9 +272,9 @@ def run_prompt(input_fd: int, output: Callable[[str], None], seconds: float, edi
             "Take it over to show the edit?\r\n"
             f"  y = yes    any other key = no  ({seconds:g} s)\r\n"
         )
-        return read_key_answer(input_fd, seconds)
+        return read_key_answer(input_file_descriptor, seconds)
     finally:
-        termios.tcsetattr(input_fd, termios.TCSANOW, saved)
+        termios.tcsetattr(input_file_descriptor, termios.TCSANOW, saved)
 
 
 def _write_answer(answer_path: Path, token: str, answer: str) -> None:

@@ -23,18 +23,18 @@ def _pid_or_none(value: object) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _state_path(window_id: str, base_dir: Path | None) -> Path:
-    directory = base_dir if base_dir is not None else cache.CACHE_DIR
+def _state_path(window_id: str, base_directory: Path | None) -> Path:
+    directory = base_directory if base_directory is not None else cache.CACHE_DIRECTORY
     return directory / f"{window_id}.pane"
 
 
-def stopped_path(window_id: str, base_dir: Path | None = None) -> Path:
+def stopped_path(window_id: str, base_directory: Path | None = None) -> Path:
     """The tombstone `claude-follow stop` leaves for a window: it holds the
     tmux server pid the stop ran under ('' standalone). While it holds, no
     state is written for the window and auto-open does not reopen it, until
     `start` or toggle clear it. Never named "*.pane": the orphan scan in
     commands._other_live_follower collects those."""
-    directory = base_dir if base_dir is not None else cache.CACHE_DIR
+    directory = base_directory if base_directory is not None else cache.CACHE_DIRECTORY
     return directory / f"{window_id}.stopped"
 
 
@@ -45,14 +45,14 @@ def mark_stopped(
     window_id: str,
     server_pid: int | None,
     in_tmux: bool,
-    base_dir: Path | None = None,
+    base_directory: Path | None = None,
     server_started: int | None = None,
 ) -> None:
     """Write the tombstone: the tmux server pid the stop ran under, followed
     by that server's start time when it is known ("<pid> <start>"), '' for a
     standalone window, or "unknown" for a stop inside tmux that could not
     learn its server's pid (see is_stopped for what each one holds)."""
-    path = stopped_path(window_id, base_dir)
+    path = stopped_path(window_id, base_directory)
     path.parent.mkdir(parents=True, exist_ok=True)
     if not in_tmux:
         path.write_text("")
@@ -77,7 +77,7 @@ def _recorded_server(recorded: str) -> tuple[str, int | None]:
 def is_stopped(
     window_id: str,
     server_pid: int | None,
-    base_dir: Path | None = None,
+    base_directory: Path | None = None,
     server_started: int | None = None,
 ) -> bool:
     """True while the window's tombstone holds. A tombstone written under a
@@ -96,7 +96,7 @@ def is_stopped(
     later is a new one that got the old pid, which a reboot makes common
     (final review M10). Either one unknown leaves the pid to decide."""
     try:
-        recorded = stopped_path(window_id, base_dir).read_text().strip()
+        recorded = stopped_path(window_id, base_directory).read_text().strip()
     except OSError:
         return False
     if recorded == "":
@@ -109,48 +109,50 @@ def is_stopped(
     return started is None or server_started is None or started == server_started
 
 
-def clear_stopped(window_id: str, base_dir: Path | None = None) -> None:
-    stopped_path(window_id, base_dir).unlink(missing_ok=True)
-    stopped_note_path(window_id, base_dir).unlink(missing_ok=True)
+def clear_stopped(window_id: str, base_directory: Path | None = None) -> None:
+    stopped_path(window_id, base_directory).unlink(missing_ok=True)
+    stopped_note_path(window_id, base_directory).unlink(missing_ok=True)
 
 
-def stopping_path(window_id: str, base_dir: Path | None = None) -> Path:
+def stopping_path(window_id: str, base_directory: Path | None = None) -> Path:
     """A copy of the state a `stop` is tearing down, kept until its teardown
     is over (commands._state_to_tear_down). Never named "*.pane"."""
-    directory = base_dir if base_dir is not None else cache.CACHE_DIR
+    directory = base_directory if base_directory is not None else cache.CACHE_DIRECTORY
     return directory / f"{window_id}.stopping"
 
 
-def keep_stopping_record(window_id: str, base_dir: Path | None = None) -> None:
+def keep_stopping_record(window_id: str, base_directory: Path | None = None) -> None:
     """Copy the window's state to its stopping_path; best-effort."""
     with contextlib.suppress(OSError):
-        stopping_path(window_id, base_dir).write_bytes(
-            _state_path(window_id, base_dir).read_bytes()
+        stopping_path(window_id, base_directory).write_bytes(
+            _state_path(window_id, base_directory).read_bytes()
         )
 
 
-def stopped_note_path(window_id: str, base_dir: Path | None = None) -> Path:
+def stopped_note_path(window_id: str, base_directory: Path | None = None) -> Path:
     """Marks that auto-open already said, once, why it is not reopening this
     stopped window; it goes with the tombstone."""
-    directory = base_dir if base_dir is not None else cache.CACHE_DIR
+    directory = base_directory if base_directory is not None else cache.CACHE_DIRECTORY
     return directory / f"{window_id}.stopped-noted"
 
 
-def _stopped_here(window_id: str, base_dir: Path | None) -> bool:
+def _stopped_here(window_id: str, base_directory: Path | None) -> bool:
     """is_stopped for the CURRENT tmux server, asking tmux only when a
     tombstone exists, so an ordinary write costs one stat."""
-    if not stopped_path(window_id, base_dir).exists():
+    if not stopped_path(window_id, base_directory).exists():
         return False
     from vim_ai_follower import binding  # late: binding imports this module
 
-    return stopped_under(window_id, current_server_pid(), binding.tmux_server_started(), base_dir)
+    return stopped_under(
+        window_id, current_server_pid(), binding.tmux_server_started(), base_directory
+    )
 
 
 def stopped_under(
     window_id: str,
     server_pid: int | None,
     server_started: int | None,
-    base_dir: Path | None = None,
+    base_directory: Path | None = None,
 ) -> bool:
     """is_stopped, sweeping a tombstone that is PROVEN to be an earlier
     server's: this server has its pid but started later, or its pid is
@@ -158,10 +160,10 @@ def stopped_under(
     `.stopped-noted` then kept auto-open from saying why it stayed off. A
     tombstone of another LIVE server is kept: the cache is shared, and that
     server's window may have the same id; one naming no server is kept too."""
-    if is_stopped(window_id, server_pid, base_dir, server_started):
+    if is_stopped(window_id, server_pid, base_directory, server_started):
         return True
     try:
-        recorded = stopped_path(window_id, base_dir).read_text().strip()
+        recorded = stopped_path(window_id, base_directory).read_text().strip()
     except OSError:
         return False
     pid_text, _started = _recorded_server(recorded)
@@ -169,12 +171,12 @@ def stopped_under(
         return False  # '' or "unknown": no server to prove gone
     if pid_text == str(server_pid):
         # Not held under the same pid: both start times known, and different.
-        clear_stopped(window_id, base_dir)
+        clear_stopped(window_id, base_directory)
         return False
     try:
         os.kill(int(pid_text), 0)
     except ProcessLookupError:
-        clear_stopped(window_id, base_dir)
+        clear_stopped(window_id, base_directory)
     except OSError:
         pass  # EPERM: alive under another user; anything else proves nothing
     return False
@@ -188,7 +190,7 @@ UNREADABLE_STATE_ERRORS = (OSError, ValueError, KeyError, TypeError, AttributeEr
 
 
 def follower_stopped(
-    window_id: str, follower: tuple[str, str] | None, base_dir: Path | None = None
+    window_id: str, follower: tuple[str, str] | None, base_directory: Path | None = None
 ) -> bool:
     """Whether `claude-follow stop` ended the follower `follower` (its
     (backend, target), None when the caller does not know it) while a hook
@@ -204,12 +206,12 @@ def follower_stopped(
     unreadable state proves nothing (a write caught mid-way, or garbage):
     only the tombstone decides then."""
     try:
-        now = FollowerState.read(window_id, base_dir)
+        now = FollowerState.read(window_id, base_directory)
     except UNREADABLE_STATE_ERRORS:
         now = None
     if now is not None and follower is not None and (now.backend, now.target) != follower:
         return True
-    return _stopped_here(window_id, base_dir)
+    return _stopped_here(window_id, base_directory)
 
 
 def current_server_pid() -> int | None:
@@ -260,7 +262,7 @@ def unproven_here(state: FollowerState) -> bool:
     return _records_a_server(state.backend, state.origin) and not proven_here(state)
 
 
-def nvim_socket_path(window_id: str, base_dir: Path | None = None) -> Path:
+def nvim_socket_path(window_id: str, base_directory: Path | None = None) -> Path:
     """Deterministic per-window RPC socket path. The Neovim side must call
     vim.fn.serverstart() at this exact path (the README documents no such integration).
     Colons in window_id (present in iTerm's TERM_SESSION_ID, shaped like
@@ -269,7 +271,7 @@ def nvim_socket_path(window_id: str, base_dir: Path | None = None) -> Path:
     getaddrinfo, so a literal colon here makes nvim reject the path with
     "unknown node or service" instead of treating it as a unix socket
     (live finding 2026-09-03, confirmed in isolation 2026-09-04)."""
-    directory = base_dir if base_dir is not None else cache.CACHE_DIR
+    directory = base_directory if base_directory is not None else cache.CACHE_DIRECTORY
     safe_window_id = window_id.replace(":", "_")
     return directory / f"nvim-{safe_window_id}.sock"
 
@@ -305,19 +307,21 @@ class FollowerState:
     server_pid: int | None = None
 
     @classmethod
-    def read(cls, window_id: str, base_dir: Path | None = None) -> FollowerState | None:
+    def read(
+        state_class, window_id: str, base_directory: Path | None = None
+    ) -> FollowerState | None:
         """Returns the persisted state without checking whether the
         follower is still alive — used by recovery logic that needs the
         origin pane even when the current one has died."""
-        return cls.read_path(_state_path(window_id, base_dir))
+        return state_class.read_path(_state_path(window_id, base_directory))
 
     @classmethod
-    def read_path(cls, path: Path) -> FollowerState | None:
+    def read_path(state_class, path: Path) -> FollowerState | None:
         """read() of a state file at an explicit path (a stopping record)."""
         if not path.exists():
             return None
         data = json.loads(path.read_text())
-        return cls(
+        return state_class(
             backend=data["backend"],
             target=data["target"],
             current_file=data.get("current_file"),
@@ -339,8 +343,10 @@ class FollowerState:
         )
 
     @classmethod
-    def get(cls, window_id: str, base_dir: Path | None = None) -> FollowerState | None:
-        state = cls.read(window_id, base_dir)
+    def get(
+        state_class, window_id: str, base_directory: Path | None = None
+    ) -> FollowerState | None:
+        state = state_class.read(window_id, base_directory)
         if state is None:
             return None
         if from_another_server(state):
@@ -353,7 +359,7 @@ class FollowerState:
 
     @classmethod
     def set(
-        cls,
+        state_class,
         window_id: str,
         backend: str,
         target: str,
@@ -368,7 +374,7 @@ class FollowerState:
         shown_any: bool = False,
         writers: tuple[str, ...] = (),
         writer_labels: tuple[str, ...] = (),
-        base_dir: Path | None = None,
+        base_directory: Path | None = None,
         server_pid: int | Literal["measure"] | None = "measure",
     ) -> bool:
         """Write the state, and say whether it was written (False under a
@@ -377,7 +383,7 @@ class FollowerState:
         tmux server's pid for a state that lives in tmux; update() passes
         the stored one through, so a later write never re-proves a state
         that was not written under this server."""
-        if _stopped_here(window_id, base_dir):
+        if _stopped_here(window_id, base_directory):
             # `claude-follow stop` ran for this window after this writer read
             # the state: a hook finishing its animation, or an auto-open
             # racing the stop. Writing now would resurrect the follower the
@@ -386,7 +392,7 @@ class FollowerState:
             return False
         if server_pid == "measure":
             server_pid = current_server_pid() if _records_a_server(backend, origin) else None
-        path = _state_path(window_id, base_dir)
+        path = _state_path(window_id, base_directory)
         path.parent.mkdir(parents=True, exist_ok=True)
         # Enforce stale_files is a subset of open_files here rather than at
         # each caller, because not every caller knows the field exists:
@@ -424,7 +430,7 @@ class FollowerState:
         temporary_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
         temporary_path.write_text(payload)
         temporary_path.replace(path)
-        if _stopped_here(window_id, base_dir):
+        if _stopped_here(window_id, base_directory):
             # The check above and the replace are not one step: a whole
             # `stop` can run between them (mark_stopped, then a clear that
             # finds nothing yet), and this write then lands under its
@@ -440,16 +446,18 @@ class FollowerState:
         return True
 
     @classmethod
-    def update(cls, window_id: str, base_dir: Path | None = None, **changes: Any) -> bool:
+    def update(
+        state_class, window_id: str, base_directory: Path | None = None, **changes: Any
+    ) -> bool:
         """Persist a partial change on top of the stored state, alive or not
         (a toggle must be able to re-enable a follower whose pane died).
         False when nothing was written: no state, or `set` refused the write
         (a `stop` of this window), so a command can say so (final review M11)."""
-        current = cls.read(window_id, base_dir)
+        current = state_class.read(window_id, base_directory)
         if current is None:
             return False
         updated = dataclasses.replace(current, **changes)
-        return cls.set(
+        return state_class.set(
             window_id,
             updated.backend,
             updated.target,
@@ -464,13 +472,13 @@ class FollowerState:
             shown_any=updated.shown_any,
             writers=updated.writers,
             writer_labels=updated.writer_labels,
-            base_dir=base_dir,
+            base_directory=base_directory,
             server_pid=updated.server_pid,
         )
 
     @classmethod
     def update_current_file(
-        cls, window_id: str, file_path: str | None, base_dir: Path | None = None
+        state_class, window_id: str, file_path: str | None, base_directory: Path | None = None
     ) -> None:
         """Record (display-only, see the current_file field) the file now
         shown, or None to clear the pointer after a handoff. Freshness is
@@ -478,13 +486,15 @@ class FollowerState:
         a full retype on the next edit — that edit is still a diff
         (apply_edit) against the pre-edit snapshot.
         Gated on get() — a dead follower's file pointer is not worth keeping."""
-        current = cls.get(window_id, base_dir)
+        current = state_class.get(window_id, base_directory)
         if current is None:
             return
-        cls.update(window_id, base_dir=base_dir, current_file=file_path)
+        state_class.update(window_id, base_directory=base_directory, current_file=file_path)
 
     @classmethod
-    def mark_stale(cls, window_id: str, file_path: str, base_dir: Path | None = None) -> None:
+    def mark_stale(
+        state_class, window_id: str, file_path: str, base_directory: Path | None = None
+    ) -> None:
         """Record that the follower's tab for file_path holds a buffer that
         disk has moved on from, so the next touch must retype it whole
         instead of animating a diff onto a base that was never applied.
@@ -504,17 +514,19 @@ class FollowerState:
         a still-live animator's marker survives (cmd_stop never touches its
         own marker). Deduped: repeated collisions on one file are one mark.
         """
-        current = cls.read(window_id, base_dir)
+        current = state_class.read(window_id, base_directory)
         if current is None or file_path not in current.open_files:
             return
-        cls.update(
+        state_class.update(
             window_id,
-            base_dir=base_dir,
+            base_directory=base_directory,
             stale_files=tuple(dict.fromkeys((*current.stale_files, file_path))),
         )
 
     @classmethod
-    def clear_stale(cls, window_id: str, file_path: str, base_dir: Path | None = None) -> None:
+    def clear_stale(
+        state_class, window_id: str, file_path: str, base_directory: Path | None = None
+    ) -> None:
         """Drop file_path's stale mark: an animation for it just finished, so
         its buffer now holds the whole file and matches what the next diff
         will be computed against.
@@ -526,22 +538,22 @@ class FollowerState:
         resync a stale one — but the mark is kept anyway, so the next Edit
         still retypes that file in full: a wasted retype, never a diff
         applied to the wrong base. Same no-state no-op as mark_stale."""
-        current = cls.read(window_id, base_dir)
+        current = state_class.read(window_id, base_directory)
         if current is None:
             return
-        cls.update(
+        state_class.update(
             window_id,
-            base_dir=base_dir,
+            base_directory=base_directory,
             stale_files=tuple(stale for stale in current.stale_files if stale != file_path),
         )
 
     @classmethod
-    def clear(cls, window_id: str, base_dir: Path | None = None) -> None:
-        _state_path(window_id, base_dir).unlink(missing_ok=True)
+    def clear(state_class, window_id: str, base_directory: Path | None = None) -> None:
+        _state_path(window_id, base_directory).unlink(missing_ok=True)
 
 
 def owned_state(
-    window_id: str, backend: str, target: str, base_dir: Path | None = None
+    window_id: str, backend: str, target: str, base_directory: Path | None = None
 ) -> FollowerState | None:
     """The window's FollowerState if it is readable AND names this follower
     (its backend and target), else None. What a follower asks before it acts
@@ -550,7 +562,7 @@ def owned_state(
     sweep-4 T4+T5, N1: the adopted editor's eviction wiped the user's
     unsaved buffer on such a state) proves nothing about this one."""
     try:
-        state = FollowerState.read(window_id, base_dir)
+        state = FollowerState.read(window_id, base_directory)
     except UNREADABLE_STATE_ERRORS:
         return None
     if state is None or state.backend != backend or state.target != target:
@@ -559,7 +571,7 @@ def owned_state(
 
 
 def touch_open_files(
-    open_files: tuple[str, ...], file_path: str, max_tabs: int
+    open_files: tuple[str, ...], file_path: str, maximum_tabs: int
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Recency bump: file_path becomes most recent; anything past max_tabs
     falls off the old end. The touched file is by construction never in the
@@ -572,4 +584,4 @@ def touch_open_files(
     chokepoint also covers the writers that never see this function (notably
     cmd_toggle's un-mute, which zeroes open_files directly)."""
     files = (*(open_file for open_file in open_files if open_file != file_path), file_path)
-    return files[-max_tabs:], files[:-max_tabs]
+    return files[-maximum_tabs:], files[:-maximum_tabs]

@@ -79,7 +79,7 @@ def _payload(tool: str, target: Path) -> dict[str, Any]:
 def _observed_nvim(
     headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[Path, Any]:
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     FollowerState.set(_WINDOW, "nvim", headless_nvim, origin="", shown_any=False)
     log = tmp_path / "observer.log"
     nvim = pynvim.attach("socket", path=headless_nvim)

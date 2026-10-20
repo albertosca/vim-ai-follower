@@ -48,7 +48,7 @@ def test_show_fresh_pause_persists_only_the_lines_already_retyped(tmp_path: Path
     seen: list[object] = []
     with (
         patch("vim_ai_follower.tmux.subprocess.run"),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", side_effect=_pause_once(tmp_path, 5, seen)),
     ):
         result = follower.show_fresh("/tmp/f.txt", "one\ntwo\nthree\n")
@@ -74,7 +74,7 @@ def test_apply_edit_pause_persists_the_ops_already_applied_to_before(tmp_path: P
     seen: list[object] = []
     with (
         patch("vim_ai_follower.tmux.subprocess.run"),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", side_effect=_pause_once(tmp_path, 11, seen)),
     ):
         result = follower.apply_edit("/tmp/f.txt", ops, before="a\nb\nc\n")
@@ -92,7 +92,7 @@ def test_apply_edit_without_a_before_still_records_no_partial(tmp_path: Path) ->
     seen: list[object] = []
     with (
         patch("vim_ai_follower.tmux.subprocess.run"),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", side_effect=_pause_once(tmp_path, 11, seen)),
     ):
         follower.apply_edit("/tmp/f.txt", ops)

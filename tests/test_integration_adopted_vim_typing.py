@@ -137,7 +137,7 @@ def _adopted_state(world: E2EFollower, pane_id: str, claudes_file: Path) -> None
         shown_any=True,
         open_files=(os.path.realpath(claudes_file),),
         speed="instant",
-        base_dir=world.cache_dir,
+        base_directory=world.cache_dir,
     )
 
 
@@ -194,7 +194,7 @@ def _edit_answered(
         world.wait_for_hook_exit(post, timeout=40.0)
         seconds = time.monotonic() - started
     assert post.returncode == 0, world.background_log(post)
-    state = FollowerState.read(world.window_id, base_dir=world.cache_dir)
+    state = FollowerState.read(world.window_id, base_directory=world.cache_dir)
     assert state is not None
     return seconds, state
 

@@ -112,7 +112,7 @@ def test_an_adopted_follower_still_disables_the_swapfile_but_not_modifiable(
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch.object(NvimFollower, "goto_file"),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=True)
         follower.ensure_showing("/tmp/f.py")
@@ -169,7 +169,7 @@ def test_show_fresh_opts_its_new_buffer_out_of_swap_before_naming_it(tmp_path: P
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         follower.show_fresh("/tmp/f.py", "a\n")
     calls = nvim.api.mock_calls
@@ -228,7 +228,7 @@ def test_show_fresh_turns_swap_back_on_after_naming_only_when_adopted(
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=adopted)
         follower.show_fresh("/tmp/f.py", "a\n")
@@ -250,7 +250,7 @@ def test_show_fresh_turns_swap_back_on_when_the_state_is_gone(tmp_path: Path) ->
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=False)
         state.FollowerState.clear("@1")
@@ -335,7 +335,7 @@ def test_a_swap_that_cannot_be_turned_back_on_is_logged_and_left_off(
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=True)
         result = follower.show_fresh("/tmp/f.py", "a\nb\n")

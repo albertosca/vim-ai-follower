@@ -27,7 +27,7 @@ def _ensure_showing(nvim: MagicMock, tmp_path: Path, *, adopted: bool) -> None:
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch.object(NvimFollower, "goto_file"),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=adopted)
         follower.ensure_showing("/tmp/f.py")
@@ -106,7 +106,7 @@ def _user_readonly(nvim: MagicMock, tmp_path: Path, *, adopted: bool | None) -> 
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=bool(adopted))
         if adopted is None:

@@ -190,14 +190,14 @@ class TmuxPane:
             subprocess.run(["tmux", "resize-pane", "-Z", "-t", self.pane_id], check=False)
 
     @classmethod
-    def split_from(cls, target_pane: str, command: str) -> TmuxPane:
+    def split_from(pane_class, target_pane: str, command: str) -> TmuxPane:
         result = subprocess.run(
             ["tmux", "split-window", "-h", "-t", target_pane, "-P", "-F", "#{pane_id}", command],
             capture_output=True,
             text=True,
             check=True,
         )
-        return cls(pane_id=result.stdout.strip())
+        return pane_class(pane_id=result.stdout.strip())
 
 
 def adopt_target(origin: str) -> str | None:
@@ -219,8 +219,8 @@ class TmuxWindow:
     window_id: str
 
     @classmethod
-    def from_env(cls, env: dict[str, str]) -> TmuxWindow | None:
-        pane_id = env.get("TMUX_PANE")
+    def from_env(window_class, environment: dict[str, str]) -> TmuxWindow | None:
+        pane_id = environment.get("TMUX_PANE")
         if not pane_id:
             return None
         result = subprocess.run(
@@ -234,7 +234,7 @@ class TmuxWindow:
         window_id = result.stdout.strip()
         if not window_id:
             return None
-        return cls(window_id=window_id)
+        return window_class(window_id=window_id)
 
 
 # How long a popup stays up.

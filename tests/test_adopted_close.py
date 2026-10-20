@@ -67,7 +67,7 @@ def _tmux_close(adopted: bool | None, answer: str | None) -> list[str]:
     def _record(self: object, text: str) -> None:
         sent.append(resolve_typed_paths(text))
         if "('evict'," in text and answer is not None:
-            (cache.CACHE_DIR / "evict-3.txt").write_text(f"{answer}\n{TOKEN}\n")
+            (cache.CACHE_DIRECTORY / "evict-3.txt").write_text(f"{answer}\n{TOKEN}\n")
 
     with (
         patch("vim_ai_follower.backends.tmux_vim.TmuxPane.send_text", _record),
@@ -92,17 +92,17 @@ def test_an_adopted_vim_asks_s_evict_and_logs_its_verdict(
     assert sent[-1] == evict_spelled("/w/f.py")
     assert not any("'wipe'" in line for line in sent)
     assert "unsaved changes" in caplog.text
-    assert not (cache.CACHE_DIR / "evict-3.txt").exists()
+    assert not (cache.CACHE_DIRECTORY / "evict-3.txt").exists()
 
 
 def test_an_adopted_vim_that_never_answers_is_logged(
     caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(tmux_vim, "_PROBE_TIMEOUT_SECONDS", 0.01)
-    record = cache.CACHE_DIR / "home-3"
+    record = cache.CACHE_DIRECTORY / "home-3"
     record.parent.mkdir(parents=True, exist_ok=True)
     record.write_text("123 h3-aaaaaa\n")
-    (cache.CACHE_DIR / "h3-aaaaaa").write_text("")
+    (cache.CACHE_DIRECTORY / "h3-aaaaaa").write_text("")
     caplog.set_level(logging.INFO, logger="vim_ai_follower")
     _tmux_close(adopted=True, answer=None)
     assert "asking about its HOME again" in caplog.text
@@ -239,7 +239,7 @@ def test_only_a_readable_dedicated_state_naming_this_follower_is_dedicated(
 ) -> None:
     window_id = "@7"
     if raw is not None:
-        path = cache.CACHE_DIR / f"{window_id}.pane"
+        path = cache.CACHE_DIRECTORY / f"{window_id}.pane"
         path.parent.mkdir(parents=True, exist_ok=True)
         other = "tmux" if backend == "nvim" else "nvim"
         path.write_text(raw.format(backend=backend, target=_OWN[backend], other=other))

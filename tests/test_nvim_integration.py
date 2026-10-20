@@ -44,7 +44,7 @@ def test_show_fresh_types_the_content_into_the_named_buffer(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
 
     result = follower.show_fresh("/tmp/x.py", "def f():\n    return 1\n")
@@ -62,7 +62,7 @@ def test_apply_edit_animates_a_line_change(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
 
     follower.show_fresh("/tmp/x.py", "def f():\n    return 1\n")
@@ -80,7 +80,7 @@ def test_apply_edit_inserts_and_deletes_lines(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
 
     before = "a\nb\nc\n"
@@ -109,7 +109,7 @@ def test_multiple_fresh_files_open_as_separate_tabs(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     # A dedicated follower: only it types its first file in the current window.
     FollowerState.set("@1", "nvim", headless_nvim, adopted=False)
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
@@ -132,7 +132,7 @@ def test_editing_an_earlier_file_switches_back_to_its_tab(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     # A dedicated follower: only it types its first file in the current window.
     FollowerState.set("@1", "nvim", headless_nvim, adopted=False)
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
@@ -155,7 +155,7 @@ def test_close_tab_removes_the_tab_not_just_the_buffer(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     # A dedicated follower: only it types its first file in the current window.
     FollowerState.set("@1", "nvim", headless_nvim, adopted=False)
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
@@ -177,7 +177,7 @@ def test_pause_stops_the_animation_then_resumes_to_the_full_content(
     from vim_ai_follower import cache
 
     cache_directory = tmp_path / "cache"
-    monkeypatch.setattr(cache, "CACHE_DIR", cache_directory)
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", cache_directory)
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
 
     lines = [f"line {index}" for index in range(5)]
@@ -210,7 +210,7 @@ def test_interrupt_leaves_the_buffer_modifiable_for_hand_over(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
 
     calls = {"n": 0}
@@ -238,7 +238,7 @@ def test_stop_quits_a_launched_nvim(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     # Recorded not adopted -> stop() quits the dedicated nvim (its split closes).
     FollowerState.set("@1", "nvim", headless_nvim, adopted=False)
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1")
@@ -255,7 +255,7 @@ def test_goto_file_navigates_between_buffers_and_close_tab_evicts(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     nvim = pynvim.attach("socket", path=headless_nvim)
 
@@ -335,7 +335,7 @@ def test_goto_file_finds_the_buffer_despite_a_symlinked_path_component(
     # pre-resolves and would hide the bug) to exercise the real symlink.
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     nvim = pynvim.attach("socket", path=headless_nvim)
 
@@ -366,7 +366,7 @@ def test_touch_and_evict_wipes_the_evicted_buffer_on_real_nvim(
     from vim_ai_follower import cache, hooks
     from vim_ai_follower.state import FollowerState
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     nvim = pynvim.attach("socket", path=headless_nvim)
 
@@ -385,7 +385,7 @@ def test_touch_and_evict_wipes_the_evicted_buffer_on_real_nvim(
     current = FollowerState.read("@1")
     assert current is not None
 
-    hooks._touch_and_evict("@1", follower, current, second_file, max_tabs=1)
+    hooks._touch_and_evict("@1", follower, current, second_file, maximum_tabs=1)
     follower.show_fresh(second_file, "b = 1\n")
 
     names = [nvim.api.buf_get_name(buffer) for buffer in nvim.api.list_bufs()]
@@ -405,7 +405,7 @@ def test_reload_and_relock_reloads_disk_and_relocks_a_launched_follower(
     # launched (non-adopted) follower IS relocked.
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     first_file = str(tmp_path / "a.py")
     Path(first_file).write_text("final = 1\n")
     FollowerState.set(
@@ -433,7 +433,7 @@ def test_reload_and_relock_leaves_an_adopted_follower_modifiable(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     first_file = str(tmp_path / "a.py")
     Path(first_file).write_text("final = 1\n")
     FollowerState.set(
@@ -460,7 +460,7 @@ def test_des_interrupt_replays_a_show_fresh_remainder_to_exact_content(
     # dropped line.
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     FollowerState.set(
         "@1", "nvim", headless_nvim, adopted=False, speed="instant"
@@ -495,7 +495,7 @@ def test_des_interrupt_replays_an_apply_edit_remainder_to_exact_content(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     first_file = str(tmp_path / "a.py")
     before = "a\nb\nc\n"
@@ -531,7 +531,7 @@ def test_pace0_consume_of_an_interrupted_show_fresh_lands_at_full_content(
     # seed and still land at EXACTLY the full content.
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     first_file = str(tmp_path / "a.py")
     content = "l0\nl1\nl2\nl3\n"
@@ -566,7 +566,7 @@ def test_des_interrupt_replays_a_remainder_after_consecutive_trailing_blanks(
     # the full content with both blanks preserved.
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     first_file = str(tmp_path / "a.py")
     content = "a\n\n\nb\nc\n"
@@ -608,7 +608,7 @@ def test_pace0_consume_after_consecutive_trailing_blanks_lands_at_full_content(
     # content blanks.
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     first_file = str(tmp_path / "a.py")
     content = "a\n\n\nb\nc\n"
@@ -641,7 +641,7 @@ def test_resume_from_scratch_types_the_whole_file_when_nothing_was_shown(
     # with no leading or trailing stray blank.
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     first_file = str(tmp_path / "a.py")
     content = "x\ny\nz\n"
@@ -668,7 +668,7 @@ def test_hand_over_reasserts_the_buffer_is_modifiable(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     FollowerState.set(
         "@1", "nvim", headless_nvim, adopted=False, speed="instant"
@@ -696,7 +696,7 @@ def test_resume_persists_a_remainder_when_paused_mid_replay(
     from vim_ai_follower import cache
 
     cache_directory = tmp_path / "cache"
-    monkeypatch.setattr(cache, "CACHE_DIR", cache_directory)
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", cache_directory)
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     first_file = str(tmp_path / "a.py")
     follower.show_fresh(first_file, "p\n")  # a one-line prefix already on screen
@@ -743,7 +743,7 @@ def test_standalone_hook_post_edit_animates_a_headless_nvim_end_to_end(
     # it, and drive a real headless nvim end to end — no TMUX_PANE anywhere.
     from vim_ai_follower import cache, hooks
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     window_id = "term-qa"  # session._standalone_id("qa") -> "term-qa"
     FollowerState.set(window_id, "nvim", headless_nvim, origin="", shown_any=False)
 
@@ -770,7 +770,7 @@ def test_resume_without_a_file_path_operates_on_the_current_buffer(
     # the goto_file re-select and replay onto whatever buffer is current.
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     first_file = str(tmp_path / "a.py")
     follower.show_fresh(first_file, "one\n")  # current buffer, one line, no seed
@@ -869,7 +869,7 @@ def test_the_status_float_follows_the_backend_into_a_new_tab(
     the new tab with no visible cue (whole-branch review, 2026-09-23)."""
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     surface = NvimStatusSurface(socket_path=headless_nvim)
     first = tmp_path / "first.py"
@@ -927,7 +927,7 @@ def test_show_freshs_read_then_clear_leaves_no_undo_step(
     # file back in one step. Oldest reachable state = the cleared buffer.
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     FollowerState.set("@1", "nvim", headless_nvim, adopted=False, speed="instant")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     target = tmp_path / "big.py"

@@ -219,7 +219,7 @@ def test_rewrite_buffer_navigates_through_the_guard(tmp_path: Path) -> None:
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
         follower.rewrite_buffer("/tmp/f.py", "a\n")
@@ -241,7 +241,7 @@ def test_apply_edit_navigates_through_the_guard_including_on_resume(
 
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", side_effect=_pause_then_resume),
     ):
         follower.apply_edit("/tmp/f.py", compute_edit_script("a\n", "b\n"))

@@ -130,7 +130,7 @@ def test_the_tmux_driver_persists_the_blank_ending_prefix_in_terminated_form(
     seen: list[object] = []
     with patch("vim_ai_follower.control.check_signal", side_effect=_pause_at(9, tmp_path, seen)):
         result = run_ops(
-            pane, "@1", _OPS, pace_seconds=0.0, base_dir=tmp_path, base_content=_BEFORE
+            pane, "@1", _OPS, pace_seconds=0.0, base_directory=tmp_path, base_content=_BEFORE
         )
     assert result == AnimationResult("completed", 2)
     # Proof the pause landed at the op boundary and not somewhere that would
@@ -172,7 +172,7 @@ def test_the_nvim_backend_persists_the_blank_ending_prefix_in_terminated_form(
             side_effect=[None, None, "pause", "pause", None, None],
         ),
         patch("vim_ai_follower.control.save_pending_apply_edit", _spy),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         assert follower.apply_edit("/tmp/f.py", _OPS) == AnimationResult("completed", 2)
 

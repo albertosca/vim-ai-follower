@@ -61,18 +61,18 @@ def _launch_standalone_or_report(window_id: str) -> str | None:
     clear_launch_backoff(window_id)
     try:
         return launch_standalone_nvim(window_id)
-    except subprocess.CalledProcessError as exc:
-        print(f"claude-follow: could not open a standalone nvim window ({exc})", file=sys.stderr)
+    except subprocess.CalledProcessError as error:
+        print(f"claude-follow: could not open a standalone nvim window ({error})", file=sys.stderr)
         return None
-    except NvimNeverListened as exc:
+    except NvimNeverListened as error:
         print(
-            f"claude-follow: could not open a standalone nvim window ({exc}) — check that "
-            f"{exc.launcher} can start nvim, then run start again",
+            f"claude-follow: could not open a standalone nvim window ({error}) — check that "
+            f"{error.launcher} can start nvim, then run start again",
             file=sys.stderr,
         )
         return None
-    except StandaloneLaunchFailed as exc:
-        print(f"claude-follow: could not open a standalone nvim window ({exc})", file=sys.stderr)
+    except StandaloneLaunchFailed as error:
+        print(f"claude-follow: could not open a standalone nvim window ({error})", file=sys.stderr)
         return None
 
 
@@ -88,11 +88,11 @@ def _split_nvim_or_report(origin: str, window_id: str, adopt: bool) -> tuple[str
         return resolve_nvim_target(
             origin, window_id, adopt=adopt, wait_seconds=nvim_connect.START_SPLIT_WAIT_SECONDS
         )
-    except (nvim_connect.SplitNvimNeverAnswered, StandaloneLaunchFailed) as exc:
+    except (nvim_connect.SplitNvimNeverAnswered, StandaloneLaunchFailed) as error:
         nvim_connect.record_launch_failure(window_id)
-        message = str(exc)
-    except subprocess.CalledProcessError as exc:  # tmux refused the split: no backoff
-        detail = (exc.stderr or "").strip() or str(exc)
+        message = str(error)
+    except subprocess.CalledProcessError as error:  # tmux refused the split: no backoff
+        detail = (error.stderr or "").strip() or str(error)
         message = f"tmux could not split a pane for nvim: {detail}"
     hooks._configure_logging()
     hooks.logger.warning("start: %s", message)
@@ -100,7 +100,7 @@ def _split_nvim_or_report(origin: str, window_id: str, adopt: bool) -> tuple[str
     return None
 
 
-def _unresolvable_pane(env: dict[str, str]) -> str:
+def _unresolvable_pane(environment: dict[str, str]) -> str:
     """The message for a `resolve_session` that came back None.
 
     That happens ONLY when TMUX_PANE is set and tmux could not resolve it —
@@ -108,7 +108,7 @@ def _unresolvable_pane(env: dict[str, str]) -> str:
     synthetic identity instead. The old wording ("not running inside tmux")
     said the opposite of the one condition that produces it, and reading it
     at face value cost half an hour on 2026-09-22."""
-    pane = env.get("TMUX_PANE", "")
+    pane = environment.get("TMUX_PANE", "")
     return (
         f"claude-follow: tmux could not resolve TMUX_PANE={pane} — the pane is gone, "
         "or the tmux server was restarted since this shell started"
@@ -126,7 +126,7 @@ def _claim_keys(take_keys: bool) -> keybindings.Claim:
 
 
 def cmd_start(
-    env: dict[str, str],
+    environment: dict[str, str],
     backend: str | None = None,
     on_failure: str | None = None,
     speed: str | None = None,
@@ -136,9 +136,9 @@ def cmd_start(
         nvim_prompt.sweep_answer_locks()
     with contextlib.suppress(OSError):
         nvim_connect.sweep_stale_sockets()
-    session = resolve_session(env)
+    session = resolve_session(environment)
     if session is None:
-        print(_unresolvable_pane(env), file=sys.stderr)
+        print(_unresolvable_pane(environment), file=sys.stderr)
         return 1
     if FollowerState.get(session.window_id) is not None:
         # A live follower under a tombstone (a stop that raced its start):
@@ -317,7 +317,7 @@ def _other_live_follower() -> bool:
     anything else is legacy session-keyed state whose scope no longer
     exists, collected regardless of pane liveness."""
     found_live = False
-    for path in sorted(cache.CACHE_DIR.glob("*.pane")):
+    for path in sorted(cache.CACHE_DIRECTORY.glob("*.pane")):
         key = path.stem
         if key.startswith("@") and control.animating_state(key) is not None:
             # A live hook animates or waits there: its editor only LOOKS dead
@@ -342,7 +342,7 @@ _REAP_GRACE_SECONDS = 1.0
 _POLL_SECONDS = 0.05
 
 
-def cmd_stop(env: dict[str, str]) -> int:
+def cmd_stop(environment: dict[str, str]) -> int:
     """Stop this window's follower, in an order that cannot be left half done.
 
     The state goes FIRST, before anything talks to the editor: a teardown
@@ -362,15 +362,15 @@ def cmd_stop(env: dict[str, str]) -> int:
         nvim_prompt.sweep_answer_locks()
     with contextlib.suppress(OSError):
         nvim_connect.sweep_stale_sockets()
-    session = resolve_session(env)
+    session = resolve_session(environment)
     if session is None:
-        print(_unresolvable_pane(env), file=sys.stderr)
+        print(_unresolvable_pane(environment), file=sys.stderr)
         return 1
     window_id = session.window_id
     existing = _state_to_tear_down(window_id)
     mark_stopped(
         window_id,
-        binding.tmux_server_pid_from(env) if session.in_tmux else None,
+        binding.tmux_server_pid_from(environment) if session.in_tmux else None,
         session.in_tmux,
         server_started=binding.tmux_server_started() if session.in_tmux else None,
     )
@@ -764,7 +764,7 @@ def _identity_label(session: Session) -> str:
     return f"{session.window_id} ({'tmux' if session.in_tmux else 'not in tmux'})"
 
 
-def cmd_status(env: dict[str, str]) -> int:
+def cmd_status(environment: dict[str, str]) -> int:
     """Always says WHICH identity it is answering about.
 
     A bare "no follower active" is what made the 2026-09-22 incident cost half
@@ -779,9 +779,9 @@ def cmd_status(env: dict[str, str]) -> int:
     followers in several windows at once — and this is a CLI he reads often."""
     with contextlib.suppress(OSError):
         nvim_connect.sweep_stale_sockets()
-    session = resolve_session(env)
+    session = resolve_session(environment)
     if session is None:
-        print(_unresolvable_pane(env))
+        print(_unresolvable_pane(environment))
         return 0
     existing = FollowerState.get(session.window_id)
     if existing is not None:
@@ -877,10 +877,10 @@ def _resave_pending(
         )
 
 
-def cmd_pause(env: dict[str, str]) -> int:
-    session = resolve_session(env)
+def cmd_pause(environment: dict[str, str]) -> int:
+    session = resolve_session(environment)
     if session is None:
-        print(_unresolvable_pane(env), file=sys.stderr)
+        print(_unresolvable_pane(environment), file=sys.stderr)
         return 1
     current = FollowerState.get(session.window_id)
 
@@ -987,10 +987,10 @@ def cmd_pause(env: dict[str, str]) -> int:
     return 0
 
 
-def cmd_interrupt(env: dict[str, str]) -> int:
-    session = resolve_session(env)
+def cmd_interrupt(environment: dict[str, str]) -> int:
+    session = resolve_session(environment)
     if session is None:
-        print(_unresolvable_pane(env), file=sys.stderr)
+        print(_unresolvable_pane(environment), file=sys.stderr)
         return 1
     current = FollowerState.get(session.window_id)
 
@@ -1050,10 +1050,10 @@ def cmd_interrupt(env: dict[str, str]) -> int:
 _STOPPED_MEANWHILE = "claude-follow: this window's follower was stopped meanwhile; {what}"
 
 
-def cmd_speed(env: dict[str, str], direction: Literal["up", "down"]) -> int:
-    session = resolve_session(env)
+def cmd_speed(environment: dict[str, str], direction: Literal["up", "down"]) -> int:
+    session = resolve_session(environment)
     if session is None:
-        print(_unresolvable_pane(env), file=sys.stderr)
+        print(_unresolvable_pane(environment), file=sys.stderr)
         return 1
     current = FollowerState.get(session.window_id)
     if current is None:
@@ -1083,10 +1083,10 @@ def cmd_speed(env: dict[str, str], direction: Literal["up", "down"]) -> int:
     return 0
 
 
-def cmd_toggle(env: dict[str, str]) -> int:
-    session = resolve_session(env)
+def cmd_toggle(environment: dict[str, str]) -> int:
+    session = resolve_session(environment)
     if session is None:
-        print(_unresolvable_pane(env), file=sys.stderr)
+        print(_unresolvable_pane(environment), file=sys.stderr)
         return 1
     raw = FollowerState.read(session.window_id)
     if raw is not None and state_module.unproven_here(raw):

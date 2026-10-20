@@ -175,7 +175,7 @@ def test_ask_is_yes_only_for_its_own_token() -> None:
     assert "vim_ai_follower.take_over" in popup[-1] and popup[-1].endswith(" 10 Vim")
     assert f"PYTHONPATH={Path(take_over.__file__).resolve().parent.parent}" in popup[-1]
     assert run.call_args_list[1].kwargs["timeout"] == 15.0
-    assert list(cache.CACHE_DIR.glob("take-over-*")) == []
+    assert list(cache.CACHE_DIRECTORY.glob("take-over-*")) == []
 
 
 def test_ask_ignores_an_answer_with_another_token() -> None:
@@ -256,17 +256,17 @@ def test_ask_sweeps_the_answer_files_earlier_questions_left_behind() -> None:
     # timed out, the hook was killed) writes its answer file after `ask`'s
     # `finally` removed it, and nothing else ever did. Each ask removes the
     # ones older than _SWEEP_AFTER_SECONDS, far past any question.
-    cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache.CACHE_DIRECTORY.mkdir(parents=True, exist_ok=True)
     old = time.time() - take_over._SWEEP_AFTER_SECONDS - 60
     stale = [
-        cache.CACHE_DIR / "take-over-00aa.txt",
-        cache.CACHE_DIR / ".take-over-00bb.txt.00bb",
+        cache.CACHE_DIRECTORY / "take-over-00aa.txt",
+        cache.CACHE_DIRECTORY / ".take-over-00bb.txt.00bb",
     ]
     fresh = [
-        cache.CACHE_DIR / "take-over-11aa.txt",
-        cache.CACHE_DIR / ".take-over-11bb.txt.11bb",
+        cache.CACHE_DIRECTORY / "take-over-11aa.txt",
+        cache.CACHE_DIRECTORY / ".take-over-11bb.txt.11bb",
     ]
-    unrelated = cache.CACHE_DIR / "mode-12.txt"
+    unrelated = cache.CACHE_DIRECTORY / "mode-12.txt"
     for path in [*stale, *fresh, unrelated]:
         path.write_text("x\n")
     for path in [*stale, unrelated]:
@@ -279,8 +279,8 @@ def test_ask_sweeps_the_answer_files_earlier_questions_left_behind() -> None:
 
 
 def test_a_sweep_that_cannot_delete_still_asks() -> None:
-    cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    stuck = cache.CACHE_DIR / "take-over-00aa.txt"
+    cache.CACHE_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    stuck = cache.CACHE_DIRECTORY / "take-over-00aa.txt"
     stuck.mkdir()
     old = time.time() - take_over._SWEEP_AFTER_SECONDS - 60
     os.utime(stuck, (old, old))
@@ -289,7 +289,7 @@ def test_a_sweep_that_cannot_delete_still_asks() -> None:
 
 
 def test_a_sweep_with_no_cache_dir_still_asks() -> None:
-    assert not cache.CACHE_DIR.exists()
+    assert not cache.CACHE_DIRECTORY.exists()
     with patch("vim_ai_follower.take_over.subprocess.run", _tmux(popup=_answering("no"))):
         assert take_over.ask("%3", "Vim", 10) == "answered no"
 

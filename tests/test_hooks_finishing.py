@@ -80,8 +80,8 @@ def _no_signal_left(tmp_path: Path) -> None:
     assert control.check_signal("@1") is None
     from vim_ai_follower import cache
 
-    assert sorted(path.name for path in cache.CACHE_DIR.glob("@1.pause*")) == []
-    assert sorted(path.name for path in cache.CACHE_DIR.glob("@1.interrupt*")) == []
+    assert sorted(path.name for path in cache.CACHE_DIRECTORY.glob("@1.pause*")) == []
+    assert sorted(path.name for path in cache.CACHE_DIRECTORY.glob("@1.interrupt*")) == []
 
 
 @pytest.mark.parametrize(

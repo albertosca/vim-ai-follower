@@ -53,7 +53,7 @@ MAXIMUM_LINE_LENGTH = 97
 @pytest.mark.parametrize("path", HOSTILE)
 def test_the_handle_holds_the_exact_bytes_and_the_call_does_not_spell_them(path: str) -> None:
     handle = tmux_vim._path_handle("%3", path)
-    assert handle.parent == cache.CACHE_DIR
+    assert handle.parent == cache.CACHE_DIRECTORY
     assert re.fullmatch(r"p3-[0-9a-f]{6}", handle.name)
     assert handle.read_bytes() == os.fsencode(path)
     line = tmux_vim._call_line("goto", handle.name, 0)
@@ -78,15 +78,15 @@ def test_old_handles_of_every_pane_are_swept_and_nothing_else() -> None:
     """Vim deletes a handle as it reads it; the ones no Vim ever read (a
     pane that died, a Vim without the functions) are swept by any pane's
     next call, never anything that is not a handle."""
-    cache.CACHE_DIR.mkdir(parents=True)
-    old = cache.CACHE_DIR / "p3-dead00"
+    cache.CACHE_DIRECTORY.mkdir(parents=True)
+    old = cache.CACHE_DIRECTORY / "p3-dead00"
     old.write_bytes(b"/tmp/old.py")
-    recent = cache.CACHE_DIR / "p3-cafe00"
+    recent = cache.CACHE_DIRECTORY / "p3-cafe00"
     recent.write_bytes(b"/tmp/recent.py")
-    other_pane = cache.CACHE_DIR / "p33-dead00"
+    other_pane = cache.CACHE_DIRECTORY / "p33-dead00"
     other_pane.write_bytes(b"/tmp/other.py")
     unrelated = [
-        cache.CACHE_DIR / name
+        cache.CACHE_DIRECTORY / name
         for name in (
             "probe-3.txt",
             "p3-notahandle",
@@ -112,16 +112,16 @@ def test_old_handles_of_every_pane_are_swept_and_nothing_else() -> None:
 
 
 def test_a_handle_another_hook_swept_first_is_not_an_error() -> None:
-    cache.CACHE_DIR.mkdir(parents=True)
-    ghost = cache.CACHE_DIR / "p3-dead00"
+    cache.CACHE_DIRECTORY.mkdir(parents=True)
+    ghost = cache.CACHE_DIRECTORY / "p3-dead00"
     with patch.object(Path, "glob", return_value=iter([ghost])):
         handle = tmux_vim._path_handle("%3", "/tmp/f.py")
     assert handle.read_bytes() == b"/tmp/f.py"
 
 
 def test_a_taken_handle_name_is_never_reused() -> None:
-    cache.CACHE_DIR.mkdir(parents=True)
-    taken = cache.CACHE_DIR / "p3-aaaaaa"
+    cache.CACHE_DIRECTORY.mkdir(parents=True)
+    taken = cache.CACHE_DIRECTORY / "p3-aaaaaa"
     taken.write_bytes(b"/tmp/someone-else.py")
     with patch(
         "vim_ai_follower.backends.tmux_vim.secrets.token_hex", side_effect=["aaaaaa", "bbbbbb"]
@@ -155,7 +155,9 @@ def test_the_other_unicode_spellings_go_next_to_the_handle_when_they_are_one_fil
             "/w/" + unicodedata.normalize("NFD", mixed)
         )
         plain = tmux_vim._path_handle("%3", "/w/plain.py")
-        assert sorted(path.name for path in cache.CACHE_DIR.glob(plain.name + "*")) == [plain.name]
+        assert sorted(path.name for path in cache.CACHE_DIRECTORY.glob(plain.name + "*")) == [
+            plain.name
+        ]
 
 
 def test_a_spelling_that_is_another_file_or_cannot_be_checked_is_not_handed_over(
@@ -175,9 +177,9 @@ def test_a_spelling_that_is_another_file_or_cannot_be_checked_is_not_handed_over
 
 
 def test_old_other_spelling_files_are_swept_like_their_handles() -> None:
-    cache.CACHE_DIR.mkdir(parents=True)
-    old = [cache.CACHE_DIR / name for name in ("p3-dead00.1", "p3-dead00.2")]
-    kept = cache.CACHE_DIR / "p3-dead00.3"
+    cache.CACHE_DIRECTORY.mkdir(parents=True)
+    old = [cache.CACHE_DIRECTORY / name for name in ("p3-dead00.1", "p3-dead00.2")]
+    kept = cache.CACHE_DIRECTORY / "p3-dead00.3"
     long_ago = time.time() - tmux_vim._PATH_HANDLE_MAX_AGE_SECONDS - 60
     for path in (*old, kept):
         path.write_bytes(b"/tmp/old.py")
@@ -188,8 +190,8 @@ def test_old_other_spelling_files_are_swept_like_their_handles() -> None:
 
 
 def test_a_handle_vim_did_not_read_goes_with_its_other_spellings() -> None:
-    cache.CACHE_DIR.mkdir(parents=True)
-    handle = cache.CACHE_DIR / "p3-abcdef"
+    cache.CACHE_DIRECTORY.mkdir(parents=True)
+    handle = cache.CACHE_DIRECTORY / "p3-abcdef"
     files = [handle, handle.with_name("p3-abcdef.1"), handle.with_name("p3-abcdef.2")]
     for path in files:
         path.write_bytes(b"/tmp/f.py")
@@ -210,8 +212,8 @@ def test_the_dispatcher_is_named_after_the_script_and_its_cache_directory(
     name, text = tmux_vim._vim_functions()
     assert re.fullmatch(r"VafFollower_[0-9a-f]{6}", name)
     assert f"function! {name}(op, ...) abort" in text
-    assert f"let s:dir = '{cache.CACHE_DIR}/'" in text
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "another")
+    assert f"let s:dir = '{cache.CACHE_DIRECTORY}/'" in text
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "another")
     other, _ = tmux_vim._vim_functions()
     assert other != name
     monkeypatch.setattr(tmux_vim, "_VIM_SCRIPT", tmux_vim._VIM_SCRIPT + '" changed\n')
@@ -234,7 +236,7 @@ def test_every_function_in_the_script_stops_at_its_first_error() -> None:
 def test_the_script_file_is_written_once_and_rewritten_when_it_differs() -> None:
     name, text = tmux_vim._vim_functions()
     path = tmux_vim._script_file(name, text)
-    assert path == cache.CACHE_DIR / f"vaf-{name.removeprefix('VafFollower_')}.vim"
+    assert path == cache.CACHE_DIRECTORY / f"vaf-{name.removeprefix('VafFollower_')}.vim"
     assert path.read_text() == text
     written = path.stat().st_mtime_ns
     os.utime(path, ns=(written - 10**9, written - 10**9))
@@ -246,7 +248,7 @@ def test_the_script_file_is_written_once_and_rewritten_when_it_differs() -> None
     tmux_vim._script_file(name, text)
     assert path.read_text() == text
     # The rewrite goes through a temporary file and a rename.
-    assert [entry.name for entry in cache.CACHE_DIR.iterdir()] == [path.name]
+    assert [entry.name for entry in cache.CACHE_DIRECTORY.iterdir()] == [path.name]
 
 
 def test_old_scripts_and_stale_temporaries_are_swept_and_nothing_else() -> None:
@@ -255,11 +257,11 @@ def test_old_scripts_and_stale_temporaries_are_swept_and_nothing_else() -> None:
     stays, and so does a script or temporary another hook may still be about
     to use: a script written or used within a day, a temporary younger than
     the handles' 600 s."""
-    cache.CACHE_DIR.mkdir(parents=True)
+    cache.CACHE_DIRECTORY.mkdir(parents=True)
     now = time.time()
 
     def aged(name: str, seconds: float) -> Path:
-        path = cache.CACHE_DIR / name
+        path = cache.CACHE_DIRECTORY / name
         path.write_text("x\n")
         os.utime(path, (now - seconds, now - seconds))
         return path
@@ -279,7 +281,7 @@ def test_old_scripts_and_stale_temporaries_are_swept_and_nothing_else() -> None:
         )
     ]
     name, text = tmux_vim._vim_functions()
-    current = cache.CACHE_DIR / f"vaf-{name.removeprefix('VafFollower_')}.vim"
+    current = cache.CACHE_DIRECTORY / f"vaf-{name.removeprefix('VafFollower_')}.vim"
     current.write_text(text)
     os.utime(current, (now - 3 * 86400, now - 3 * 86400))
 
@@ -350,7 +352,7 @@ def test_every_typed_call_fits_two_screen_rows(
         patch.object(tmux_vim, "_home_relative", return_value=None),
         monkeypatch.context() as context,
     ):
-        context.setattr(cache, "CACHE_DIR", _cache_with_script_path_of_length(short_root, 88))
+        context.setattr(cache, "CACHE_DIRECTORY", _cache_with_script_path_of_length(short_root, 88))
         lines.append(tmux_vim._define_line(pane))
     # And the plain lines typed whole, with no call, as they are typed: the
     # ones that can end an entry point carry the command-line clear.
@@ -378,7 +380,7 @@ def home_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / "home"
     home.symlink_to(real)
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setattr(cache, "CACHE_DIR", home / ".cache" / "claude-vim-follower")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", home / ".cache" / "claude-vim-follower")
     return home
 
 
@@ -433,7 +435,7 @@ def test_a_vim_on_another_home_sources_the_script_by_its_absolute_path(home_cach
     sent: list[str] = []
     sourced = _sourced(_define(4242, False, sent))
     # The cache path in full; `/tmp/…` is safe to type bare.
-    assert sourced.startswith(f"sil! so {cache.CACHE_DIR}/vaf-")
+    assert sourced.startswith(f"sil! so {cache.CACHE_DIRECTORY}/vaf-")
     assert len(sent) == 1
     # Not asked again for the same Vim: the answer is the marker's absence.
     _define(4242, False, sent)
@@ -444,11 +446,11 @@ def test_an_absolute_path_with_unsafe_characters_goes_through_fnameescape(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """`:source` would expand `$b`, `*` or a space-split in a bare name."""
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "a $b*" / "it's")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "a $b*" / "it's")
     with patch.object(TmuxPane, "pane_pid", return_value=None):
         sourced = _sourced(tmux_vim._define_line("%3"))
     name = tmux_vim._vim_functions()[0].removeprefix("VafFollower_")
-    escaped = str(cache.CACHE_DIR / f"vaf-{name}.vim").replace("'", "''")
+    escaped = str(cache.CACHE_DIRECTORY / f"vaf-{name}.vim").replace("'", "''")
     assert sourced == f"exe 'sil! so ' . fnameescape('{escaped}')"
 
 
@@ -478,11 +480,13 @@ def test_a_long_absolute_script_path_drops_the_guard_to_stay_within_two_rows(
     rows, with the guard. Without it, the script is sourced on every call
     (a file read and the cleanup loop), and the line fits up to an 88-character
     path."""
-    monkeypatch.setattr(cache, "CACHE_DIR", _cache_with_script_path_of_length(short_root, length))
+    monkeypatch.setattr(
+        cache, "CACHE_DIRECTORY", _cache_with_script_path_of_length(short_root, length)
+    )
     with patch.object(tmux_vim, "_home_relative", return_value=None):
         line = tmux_vim._define_line("%3")
     name = tmux_vim._vim_functions()[0].removeprefix("VafFollower_")
-    script = cache.CACHE_DIR / f"vaf-{name}.vim"
+    script = cache.CACHE_DIRECTORY / f"vaf-{name}.vim"
     assert len(str(script)) == length
     assert line == f":sil! so {script}"
     assert len(line) <= MAXIMUM_LINE_LENGTH
@@ -491,7 +495,7 @@ def test_a_long_absolute_script_path_drops_the_guard_to_stay_within_two_rows(
 def test_a_short_absolute_script_path_keeps_the_guard(
     short_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(cache, "CACHE_DIR", _cache_with_script_path_of_length(short_root, 48))
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", _cache_with_script_path_of_length(short_root, 48))
     with patch.object(tmux_vim, "_home_relative", return_value=None):
         line = tmux_vim._define_line("%3")
     assert line.startswith(":if !exists('*VafFollower_")
@@ -504,7 +508,7 @@ def test_a_too_long_script_path_keeps_the_guard_and_says_so_once_per_pane(
     """Past 88 characters even the bare `:sil! so` takes a third row; the
     guard then at least keeps the source to a Vim that lacks the functions."""
     caplog.set_level(logging.INFO, logger="vim_ai_follower")
-    monkeypatch.setattr(cache, "CACHE_DIR", _cache_with_script_path_of_length(short_root, 89))
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", _cache_with_script_path_of_length(short_root, 89))
     with patch.object(tmux_vim, "_home_relative", return_value=None):
         line = tmux_vim._define_line("%3")
         assert tmux_vim._define_line("%3") == line
@@ -525,12 +529,12 @@ def test_a_long_define_line_marker_lives_while_used_and_is_swept_a_day_after(
     sweep removes one unused for a day, so a pane id reused after a tmux
     restart logs again within a day and the notes do not pile up."""
     caplog.set_level(logging.INFO, logger="vim_ai_follower")
-    monkeypatch.setattr(cache, "CACHE_DIR", _cache_with_script_path_of_length(short_root, 89))
-    cache.CACHE_DIR.mkdir(parents=True)
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", _cache_with_script_path_of_length(short_root, 89))
+    cache.CACHE_DIRECTORY.mkdir(parents=True)
     now = time.time()
 
     def aged(name: str, seconds: float) -> Path:
-        path = cache.CACHE_DIR / name
+        path = cache.CACHE_DIRECTORY / name
         path.write_text("")
         os.utime(path, (now - seconds, now - seconds))
         return path
@@ -555,7 +559,7 @@ def test_a_long_define_line_note_that_cannot_be_written_is_no_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.INFO, logger="vim_ai_follower")
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "missing")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "missing")
     tmux_vim._log_long_define_line("%3", ":" + "x" * 120)
     assert caplog.records == []
 
@@ -563,11 +567,11 @@ def test_a_long_define_line_note_that_cannot_be_written_is_no_error(
 def test_a_long_path_with_unsafe_characters_drops_the_guard_too(
     short_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(cache, "CACHE_DIR", short_root / "a $b" / ("c" * 15))
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", short_root / "a $b" / ("c" * 15))
     with patch.object(tmux_vim, "_home_relative", return_value=None):
         line = tmux_vim._define_line("%3")
     name = tmux_vim._vim_functions()[0].removeprefix("VafFollower_")
-    script = str(cache.CACHE_DIR / f"vaf-{name}.vim")
+    script = str(cache.CACHE_DIRECTORY / f"vaf-{name}.vim")
     assert line == f":exe 'sil! so ' . fnameescape('{script}')"
     assert len(line) <= MAXIMUM_LINE_LENGTH
 
@@ -596,26 +600,29 @@ def test_a_new_vim_in_the_pane_is_asked_again(home_cache: Path) -> None:
 def test_asking_again_clears_every_marker_of_the_pane_and_no_other(home_cache: Path) -> None:
     """Two hooks asking at once each leave a marker, and only the last one is
     recorded; the next question sweeps them all."""
-    cache.CACHE_DIR.mkdir(parents=True)
-    unrecorded = cache.CACHE_DIR / "h3-0a0a0a"
+    cache.CACHE_DIRECTORY.mkdir(parents=True)
+    unrecorded = cache.CACHE_DIRECTORY / "h3-0a0a0a"
     unrecorded.write_text("")
-    other_pane = cache.CACHE_DIR / "h33-0a0a0a"
+    other_pane = cache.CACHE_DIRECTORY / "h33-0a0a0a"
     other_pane.write_text("")
-    (cache.CACHE_DIR / "home-3").write_text("4242 h3-0b0b0b\n")
-    (cache.CACHE_DIR / "h3-0b0b0b").write_text("")
+    (cache.CACHE_DIRECTORY / "home-3").write_text("4242 h3-0b0b0b\n")
+    (cache.CACHE_DIRECTORY / "h3-0b0b0b").write_text("")
     sent: list[str] = []
     assert "sil! so ~/" in _define(5151, True, sent)
     assert len(sent) == 1
     asked = re.search(r"(h3-[0-9a-f]{6})", sent[0])
     assert asked
-    assert {path.name for path in cache.CACHE_DIR.glob("h3*-*")} == {"h33-0a0a0a", asked.group(1)}
+    assert {path.name for path in cache.CACHE_DIRECTORY.glob("h3*-*")} == {
+        "h33-0a0a0a",
+        asked.group(1),
+    }
 
 
 @pytest.mark.usefixtures("guarded_define_line")
 def test_a_cache_dir_outside_home_is_named_in_full_without_asking(
     home_cache: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "elsewhere" / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "elsewhere" / "cache")
     sent: list[str] = []
     assert _sourced(_define(4242, True, sent)).startswith(f"sil! so {tmp_path}/elsewhere/cache/")
     assert sent == []
@@ -632,7 +639,7 @@ def test_a_cache_dir_expand_would_misread_is_named_in_full_without_asking(
 ) -> None:
     """expand() and `:source` also expand wildcards and `$NAME`, so only a
     plain cache path is typed through `~`."""
-    monkeypatch.setattr(cache, "CACHE_DIR", home_cache / "a $b*" / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", home_cache / "a $b*" / "cache")
     sent: list[str] = []
     assert "fnameescape(" in _define(4242, True, sent)
     assert sent == []
@@ -640,7 +647,7 @@ def test_a_cache_dir_expand_would_misread_is_named_in_full_without_asking(
 
 def test_a_cache_file_with_an_unsafe_name_is_never_home_relative(home_cache: Path) -> None:
     with patch.object(TmuxPane, "pane_pid") as pane_pid:
-        assert tmux_vim._home_relative("%3", cache.CACHE_DIR / "odd name*") is None
+        assert tmux_vim._home_relative("%3", cache.CACHE_DIRECTORY / "odd name*") is None
     pane_pid.assert_not_called()
 
 
@@ -724,7 +731,7 @@ def test_a_real_vim_with_a_wildignore_over_the_cache_still_answers_and_sources(
     The real Vim runs with the hook's HOME and such a wildignore, answers
     the question, sources the script through the define line and reads a
     handle back."""
-    cache.CACHE_DIR.mkdir(parents=True)
+    cache.CACHE_DIRECTORY.mkdir(parents=True)
     question = tmux_vim._HOME_CHECK.format(
         marker=tmux_vim._vim_string("~/.cache/claude-vim-follower/h3-0c0c0c")
     )
@@ -759,7 +766,7 @@ def test_a_real_vim_with_a_wildignore_over_the_cache_still_answers_and_sources(
         timeout=30,
         env={**os.environ, "HOME": str(home_cache)},
     )
-    assert (cache.CACHE_DIR / "h3-0c0c0c").exists()
+    assert (cache.CACHE_DIRECTORY / "h3-0c0c0c").exists()
     assert out.read_bytes() == b"/tmp/it's here.py"
 
 
@@ -811,7 +818,7 @@ def test_a_real_vims_probe_gives_no_answer_when_its_handle_is_missing(tmp_path: 
     '' would be the empty list of a missing buffer, "absent"."""
     missing = tmux_vim._path_handle("%3", "/tmp/f.py")
     missing.unlink()
-    probe = cache.CACHE_DIR / "probe-3.txt"
+    probe = cache.CACHE_DIRECTORY / "probe-3.txt"
     out = tmp_path / "out.txt"
     _real_vim(
         tmux_vim._call_line("probe", missing.name, 0).removeprefix(":"),
@@ -839,9 +846,9 @@ def test_a_real_vim_drops_the_dispatchers_of_other_versions_and_nothing_else(
     the hook's HOME the "Last set from" line reads `~/.cache/…` for a cache
     directory the script spells through the link, and with another HOME it
     reads the resolved absolute path."""
-    cache.CACHE_DIR.mkdir(parents=True)
+    cache.CACHE_DIRECTORY.mkdir(parents=True)
     name, text = tmux_vim._vim_functions()
-    older = cache.CACHE_DIR / "vaf-0a0b0c.vim"
+    older = cache.CACHE_DIRECTORY / "vaf-0a0b0c.vim"
     older.write_text("function! VafFollower_0a0b0c(op, ...) abort\nendfunction\n")
     elsewhere = tmp_path / "elsewhere" / "vaf-123abc.vim"
     elsewhere.parent.mkdir()
@@ -896,17 +903,21 @@ def test_a_real_vim_keeps_a_function_whose_path_only_contains_the_scripts(
     user function set from a directory that ends in the script's path as
     Vim would show it (`x~/.cache/…`, or `y/` + the resolved path), or from
     `vaf-<hash>.vim.bak` in the cache dir itself, stays."""
-    cache.CACHE_DIR.mkdir(parents=True)
+    cache.CACHE_DIRECTORY.mkdir(parents=True)
     name, text = tmux_vim._vim_functions()
-    resolved = Path(os.path.realpath(cache.CACHE_DIR))
+    resolved = Path(os.path.realpath(cache.CACHE_DIRECTORY))
     users = {
         # Contains `~/.cache/claude-vim-follower/vaf-0d0d0d.vim`, as Vim on
         # the hook's HOME shows the script.
-        "VafFollower_0d0d0d": tmp_path / "x~" / ".cache" / cache.CACHE_DIR.name / "vaf-0d0d0d.vim",
+        "VafFollower_0d0d0d": tmp_path
+        / "x~"
+        / ".cache"
+        / cache.CACHE_DIRECTORY.name
+        / "vaf-0d0d0d.vim",
         # Contains the resolved path, as Vim on another HOME shows it.
         "VafFollower_0e0e0e": tmp_path / "y" / resolved.relative_to("/") / "vaf-0e0e0e.vim",
         # The script's path followed by more name.
-        "VafFollower_0f0f0f": cache.CACHE_DIR / "vaf-0f0f0f.vim.bak",
+        "VafFollower_0f0f0f": cache.CACHE_DIRECTORY / "vaf-0f0f0f.vim.bak",
     }
     commands: list[str] = []
     for function_name, path in users.items():
@@ -996,8 +1007,8 @@ def test_a_real_vim_drops_an_older_dispatcher_whose_script_was_swept(tmp_path: P
     """The cleanup loop goes by the "Last set from" path Vim recorded, not by
     the file: a Vim that sourced an older version, whose script the sweep
     has since deleted, still loses that dispatcher to the current one."""
-    cache.CACHE_DIR.mkdir(parents=True)
-    older = cache.CACHE_DIR / "vaf-0a0b0c.vim"
+    cache.CACHE_DIRECTORY.mkdir(parents=True)
+    older = cache.CACHE_DIRECTORY / "vaf-0a0b0c.vim"
     older.write_text("function! VafFollower_0a0b0c(op, ...) abort\nendfunction\n")
     name = tmux_vim._vim_functions()[0]
     with patch.object(tmux_vim, "_home_relative", return_value=None):
@@ -1042,7 +1053,7 @@ def test_a_real_vim_on_another_home_sources_the_unguarded_line_on_every_call(
 ) -> None:
     """The unguarded define line re-sources the script into a Vim that already
     has it: no error, and the calls keep working."""
-    monkeypatch.setattr(cache, "CACHE_DIR", _cache_with_script_path_of_length(short_root, 80))
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", _cache_with_script_path_of_length(short_root, 80))
     with patch.object(tmux_vim, "_home_relative", return_value=None):
         define = tmux_vim._define_line("%3")
     assert define.startswith(":sil! so /")
@@ -1124,11 +1135,13 @@ def test_a_vim_without_eval_runs_nothing_from_the_define_line(
     question, so it gets the absolute define line: guarded (48), unguarded
     (70) or guarded again (89). Whatever the line, its buffer must survive."""
     image = _vim_tiny_image()
-    monkeypatch.setattr(cache, "CACHE_DIR", _cache_with_script_path_of_length(short_root, length))
+    monkeypatch.setattr(
+        cache, "CACHE_DIRECTORY", _cache_with_script_path_of_length(short_root, length)
+    )
     with patch.object(tmux_vim, "_home_relative", return_value=None):
         define = tmux_vim._define_line("%3")
     hash_part = tmux_vim._vim_functions()[0].removeprefix("VafFollower_")
-    script = cache.CACHE_DIR / f"vaf-{hash_part}.vim"
+    script = cache.CACHE_DIRECTORY / f"vaf-{hash_part}.vim"
     # No bind mount (Docker Desktop shares neither the Mac's /tmp nor
     # /private/tmp by default): the script goes in on stdin, at the path the
     # define line types, and the user's buffer comes back on stdout.
@@ -1153,7 +1166,7 @@ def test_a_vim_without_eval_runs_nothing_from_the_define_line(
         ]
     )
     shell = (
-        f"mkdir -p {shlex.quote(str(cache.CACHE_DIR))} /work"
+        f"mkdir -p {shlex.quote(str(cache.CACHE_DIRECTORY))} /work"
         f" && cat > {shlex.quote(str(script))}"
         " && printf 'user line 1\\nuser line 2\\n' > /work/user.txt"
         f" && {vim}; cat /work/dump.txt"

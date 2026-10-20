@@ -25,7 +25,7 @@ def test_ensure_showing_a_never_seen_file_shows_its_disk_content_in_a_new_tab(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
 
     typed = tmp_path / "typed.py"
@@ -51,7 +51,7 @@ def test_goto_line_past_eof_lands_on_the_last_line_instead_of_raising(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
 
     short = tmp_path / "short.py"
@@ -69,7 +69,7 @@ def test_apply_edit_after_the_buffer_was_wiped_shows_the_disk_content(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
 
     target = tmp_path / "wiped.py"
@@ -98,7 +98,7 @@ def test_resume_after_the_buffer_was_wiped_creates_no_buffer(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
 
     target = tmp_path / "wiped.py"
@@ -132,7 +132,7 @@ def test_resume_then_apply_edit_after_a_wipe_ends_on_the_disk_content(
     # buffer gone, neither may raise and the file must end up showing disk.
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
 
     target = tmp_path / "wiped.py"
@@ -160,7 +160,7 @@ def test_ensure_showing_an_existing_modified_buffer_never_reloads_it(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
 
     target = tmp_path / "live.py"

@@ -53,7 +53,7 @@ def test_catchup_after_a_mid_line_show_fresh_stop_does_not_duplicate_the_partial
     # no hand-off). The next edit hook consumes the pending at pace 0.
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.01)
     first_file = str(tmp_path / "a.py")
     content = "ab\nwxyz\nq\n"
@@ -98,7 +98,7 @@ def test_catchup_after_a_mid_op_mid_line_apply_edit_stop_lands_at_full_content(
     # which is why this case needs a multi-line op.)
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     first_file = str(tmp_path / "a.py")
     before = "a\nb\nc\n"
     after = "a\nWW\nXX\nYY\nc\n"
@@ -151,7 +151,7 @@ def test_catchup_with_a_clean_boundary_tail_still_converges(
     # seed blank rather than a half-typed line.
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     first_file = str(tmp_path / "a.py")
     content = "ab\nwxyz\nq\n"
@@ -192,7 +192,7 @@ def test_catchup_from_a_legacy_pending_without_a_partial_still_converges(
     # boundary that still lands on the full content.
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     first_file = str(tmp_path / "a.py")
     content = "ab\nwxyz\nq\n"

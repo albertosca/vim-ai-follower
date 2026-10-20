@@ -29,7 +29,7 @@ def test_apply_edit_on_a_single_line_file_leaves_no_trailing_blank(
     # past the retyped content instead of it being consumed.
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
 
     follower.show_fresh("/tmp/x.py", "a = 1\n")
@@ -50,7 +50,7 @@ def test_apply_edit_that_wipes_a_multiline_buffer_leaves_no_trailing_blank(
     # a buffer of exactly one line.
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
 
     before = "a\nb\nc\n"
@@ -73,7 +73,7 @@ def test_apply_edit_deletion_that_leaves_other_lines_is_unaffected(
     # blank line and the fix must not touch this path at all.
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
 
     before = "a\nb\nc\n"
@@ -96,7 +96,7 @@ def test_apply_edit_preserves_a_genuinely_intended_trailing_blank_line(
     # BEFORE the position the implicit blank gets pushed to, not at it.
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
 
     before = "a = 1\n"
@@ -121,7 +121,7 @@ def test_apply_edit_interrupted_mid_wipe_leaves_a_sane_buffer(
     # first needs a buffer nvim itself is happy to keep operating on.
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.05)
 
     follower.show_fresh("/tmp/x.py", "a = 1\n")

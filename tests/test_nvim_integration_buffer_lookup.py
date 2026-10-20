@@ -43,7 +43,7 @@ def _buffers_for(nvim: Any, path: Path) -> list[int]:
 def _follower(headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> NvimFollower:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     return NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
 
 

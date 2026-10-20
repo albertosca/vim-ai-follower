@@ -92,7 +92,7 @@ def _user_vim(
     home = root / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setattr(cache, "CACHE_DIR", home / ".cache" / "claude-vim-follower")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", home / ".cache" / "claude-vim-follower")
     pane = _tmux(
         "split-window", "-h", "-t", tmux_session, "-c", str(cwd or root), "-P", "-F", "#{pane_id}",
         "env", "-i", f"HOME={home}", f"PATH={os.environ['PATH']}", "TERM=xterm-256color",
@@ -546,7 +546,7 @@ def test_a_symlink_loop_among_the_buffers_blocks_no_navigation(
     edited = _state(pane, tmp_path / "s3.txt", wait_until)
     assert (edited["BUF"], edited["LINES"]) == ("a.txt", AFTER.splitlines()), edited
 
-    record = cache.CACHE_DIR / f"home-{pane.lstrip('%')}"
+    record = cache.CACHE_DIRECTORY / f"home-{pane.lstrip('%')}"
     assert record.exists()
     # A loop target: answered (its buffer is listed but not loaded), and the
     # pane's HOME answer stands.

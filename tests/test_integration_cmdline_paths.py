@@ -164,7 +164,7 @@ def test_no_absolute_path_ever_reaches_the_command_line(
     request: pytest.FixtureRequest,
 ) -> None:
     """The hook's HOME is spelled through the /tmp symlink, as in the demo
-    (HOME under /tmp -> /private/tmp), and CACHE_DIR is under it. With the Vim
+    (HOME under /tmp -> /private/tmp), and CACHE_DIRECTORY is under it. With the Vim
     on the same HOME, the typed lines name the cache HOME-relative (`~/…`),
     so no absolute directory at all reaches the command line. With the Vim on
     ANOTHER HOME, `~` would be a different directory: the follower must
@@ -179,7 +179,7 @@ def test_no_absolute_path_ever_reaches_the_command_line(
     home.mkdir()
     assert os.path.realpath(home) != str(home)  # really a symlinked spelling
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setattr(cache, "CACHE_DIR", home / ".cache" / "claude-vim-follower")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", home / ".cache" / "claude-vim-follower")
     vim_home_directory = home
     if vim_home == "other-home":
         vim_home_directory = root / "other-home"
@@ -269,7 +269,7 @@ def test_no_absolute_path_ever_reaches_the_command_line(
         assert home_relative, typed
     else:
         # The cache in full: `~` in this Vim is not the hook's HOME.
-        assert any(str(cache.CACHE_DIR) in line for line in typed), typed
+        assert any(str(cache.CACHE_DIRECTORY) in line for line in typed), typed
         assert [line for line in home_relative if "readfile(" in line] == []
 
     # Every line is short: one or two screen rows at the pane's 49 columns,
@@ -279,7 +279,7 @@ def test_no_absolute_path_ever_reaches_the_command_line(
     # line may be longer by exactly the difference between the spellings.
     longest = MAXIMUM_LINE_LENGTH
     if vim_home == "other-home":
-        longest += len(str(cache.CACHE_DIR)) - len("~/.cache/claude-vim-follower")
+        longest += len(str(cache.CACHE_DIRECTORY)) - len("~/.cache/claude-vim-follower")
     too_long = [line for line in _whole_lines(typed) if len(line) > longest]
     assert too_long == [], [(len(line), line) for line in too_long]
 
@@ -331,7 +331,7 @@ def test_a_vim_that_lost_the_functions_gets_them_again_on_the_next_call(
     home.mkdir()
     proj.mkdir()
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setattr(cache, "CACHE_DIR", home / ".cache" / "claude-vim-follower")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", home / ".cache" / "claude-vim-follower")
     target = proj / "target.py"
     target.write_text(BEFORE)
     user = proj / "user.txt"

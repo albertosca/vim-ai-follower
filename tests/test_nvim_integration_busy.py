@@ -91,17 +91,17 @@ def test_a_stop_elsewhere_keeps_a_busy_followers_state(world: E2EFollower) -> No
         server_pid=world.server_pid,
         adopted=True,
         open_files=(str(tracked),),
-        base_dir=world.cache_dir,
+        base_directory=world.cache_dir,
     )
     control.save_pending_apply_edit(
         busy_window,
         compute_edit_script("a\n", "a\nb\n"),
         0.0,
-        base_dir=world.cache_dir,
+        base_directory=world.cache_dir,
         file_path=str(tracked),
         partial="a\n",
     )
-    snapshot.save(busy_window, str(tracked), "a\n", base_dir=world.cache_dir / "snapshots")
+    snapshot.save(busy_window, str(tracked), "a\n", base_directory=world.cache_dir / "snapshots")
     pane_file = world.cache_dir / f"{busy_window}.pane"
     pending_file = world.cache_dir / f"{busy_window}.pending_animation.json"
     snapshot_directory = world.cache_dir / "snapshots" / busy_window

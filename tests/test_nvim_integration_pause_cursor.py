@@ -191,7 +191,7 @@ def test_every_entry_point_types_with_the_followers_own_kind(
 ) -> None:
     # Only a dedicated follower may fall back to another window showing its
     # buffer; show_fresh, apply_edit and resume each say which one it is.
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     state.FollowerState.set("@1", "nvim", headless_nvim, adopted=adopted)
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     real_animate = nvim_backend._animate_lines
@@ -234,7 +234,7 @@ def test_a_pause_in_one_op_never_hands_the_next_op_the_users_window(
     # first one typed (the bottom one). Each op used to record "the window
     # current now" as the follower's own, so the second op took the window
     # the user had left current and dragged its cursor ([1, 0] -> [6, 26]).
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     state.FollowerState.set(_WINDOW_ID, "nvim", headless_nvim, adopted=True)
     target = tmp_path / "two_hunks.py"
     target.write_text(_TWO_HUNK_BEFORE)

@@ -50,7 +50,7 @@ def _cursor_columns(nvim: MagicMock) -> list[int]:
 def test_typing_inserts_each_character_at_its_byte_column() -> None:
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", return_value=None):
-        result = _animate_lines(nvim, 7, (_MIXED,), 0, lambda: 0.05, "@1", ns=3)
+        result = _animate_lines(nvim, 7, (_MIXED,), 0, lambda: 0.05, "@1", namespace_id=3)
     assert result == AnimationResult("completed", 1)
     # 0, 1, 3, 6 — byte offsets. The buggy version produced the code-point
     # sequence 0, 1, 2, 3, which splits é and — across the row.
@@ -67,7 +67,7 @@ def test_typing_inserts_an_astral_character_at_its_four_byte_width() -> None:
     # but four bytes; the next insert must clear all four.
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", return_value=None):
-        _animate_lines(nvim, 7, ("\U0001f600x",), 0, lambda: 0.05, "@1", ns=3)
+        _animate_lines(nvim, 7, ("\U0001f600x",), 0, lambda: 0.05, "@1", namespace_id=3)
     assert _insert_columns(nvim) == [0, 4]
 
 
@@ -82,7 +82,7 @@ def test_typing_a_combining_sequence_advances_per_code_point() -> None:
     decomposed = "e\u0301x"
     assert len(decomposed) == 3  # 3 code points, 4 bytes
     with patch("vim_ai_follower.control.check_signal", return_value=None):
-        _animate_lines(nvim, 7, (decomposed,), 0, lambda: 0.05, "@1", ns=3)
+        _animate_lines(nvim, 7, (decomposed,), 0, lambda: 0.05, "@1", namespace_id=3)
     assert _insert_columns(nvim) == [0, 1, 3]
 
 
@@ -91,7 +91,7 @@ def test_cursor_follows_the_typed_prefix_in_byte_columns() -> None:
     # cursor sits at the byte length of everything typed so far.
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", return_value=None):
-        _animate_lines(nvim, 7, (_MIXED,), 4, lambda: 0.05, "@1", ns=3)
+        _animate_lines(nvim, 7, (_MIXED,), 4, lambda: 0.05, "@1", namespace_id=3)
     assert _cursor_columns(nvim) == [1, 3, 6, 7]
     # row is 1-indexed for the cursor and unchanged by the byte conversion
     assert {
@@ -105,7 +105,7 @@ def test_each_line_restarts_the_byte_column_at_zero() -> None:
     # insert.
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", return_value=None):
-        _animate_lines(nvim, 7, ("é", "é"), 0, lambda: 0.05, "@1", ns=3)
+        _animate_lines(nvim, 7, ("é", "é"), 0, lambda: 0.05, "@1", namespace_id=3)
     assert nvim.api.buf_set_text.call_args_list == [
         call(7, 0, 0, 0, 0, ["é"]),
         call(7, 1, 0, 1, 0, ["é"]),
@@ -117,7 +117,7 @@ def test_pace_zero_whole_line_insert_stays_at_column_zero() -> None:
     # byte-safe (0 is 0 in both currencies), and it must stay a single call.
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", return_value=None):
-        _animate_lines(nvim, 7, (_MIXED,), 2, lambda: 0.0, "@1", ns=1)
+        _animate_lines(nvim, 7, (_MIXED,), 2, lambda: 0.0, "@1", namespace_id=1)
     nvim.api.buf_set_text.assert_called_once_with(7, 2, 0, 2, 0, [_MIXED])
 
 
@@ -132,7 +132,7 @@ def test_interrupt_after_a_multi_byte_character_leaves_a_whole_prefix() -> None:
     # calls: line boundary, char0, char1, char2, char3 -> interrupt on the 5th
     signals = [None, None, None, None, "interrupt"]
     with patch("vim_ai_follower.control.check_signal", side_effect=signals):
-        result = _animate_lines(nvim, 7, (_MIXED,), 0, lambda: 0.05, "@1", ns=3)
+        result = _animate_lines(nvim, 7, (_MIXED,), 0, lambda: 0.05, "@1", namespace_id=3)
     assert result == AnimationResult("interrupted", 0)
     assert nvim.api.buf_set_text.call_args_list == [
         call(7, 0, 0, 0, 0, ["a"]),
@@ -152,7 +152,7 @@ def test_pause_resumes_at_the_same_byte_column(tmp_path: Path) -> None:
     signals = [None, None, None, "pause", "pause", None, None]
     with patch("vim_ai_follower.control.check_signal", side_effect=signals):
         result = _animate_lines(
-            nvim, 7, (_MIXED,), 0, lambda: 0.05, "@1", ns=3, base_dir=base_directory
+            nvim, 7, (_MIXED,), 0, lambda: 0.05, "@1", namespace_id=3, base_directory=base_directory
         )
     assert result == AnimationResult("completed", 1)
     assert _insert_columns(nvim) == [0, 1, 3, 6]

@@ -45,7 +45,7 @@ def _buffer(nvim: Any, name: str) -> Any:
 def test_an_edit_of_a_crlf_file_is_one_typed_insert(
     headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, adopted: bool
 ) -> None:
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     FollowerState.set(_WINDOW, "nvim", headless_nvim, origin="", shown_any=False, adopted=adopted)
     log = tmp_path / "observer.log"
     nvim = pynvim.attach("socket", path=headless_nvim)
@@ -115,7 +115,7 @@ def test_a_save_after_an_edit_writes_the_line_endings_claude_wrote(
     way 'bomb' does (_format_from_disk). At f9d35d1 the buffer kept its
     pre-edit format, so this save wrote the OLD line endings."""
     before, after = FORMAT_CHANGES[change]
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     FollowerState.set(_WINDOW, "nvim", headless_nvim, origin="", shown_any=False, adopted=adopted)
     nvim = pynvim.attach("socket", path=headless_nvim)
     target = (tmp_path / "a.py").resolve()
@@ -145,7 +145,7 @@ def test_a_read_reload_takes_the_line_endings_of_the_file_on_disk(
     """A Read re-reads a clean buffer (`_reload_if_clean`'s `edit!`), and
     nvim's own load detects 'fileformat' again."""
     before, after = FORMAT_CHANGES[change]
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     FollowerState.set(_WINDOW, "nvim", headless_nvim, origin="", shown_any=False)
     nvim = pynvim.attach("socket", path=headless_nvim)
     target = (tmp_path / "a.py").resolve()
@@ -170,7 +170,7 @@ def test_a_mixed_ending_file_holds_its_base(
     ["a\\r", "b"]. A dedicated follower's own retype splits lines with
     splitlines() and holds ["a", "b"]: buffer_forms accepts that form too,
     or every Edit of the file would wipe and retype it."""
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     FollowerState.set(_WINDOW, "nvim", headless_nvim, origin="", shown_any=False, adopted=adopted)
     nvim = pynvim.attach("socket", path=headless_nvim)
     target = (tmp_path / "a.py").resolve()
@@ -204,7 +204,7 @@ def test_an_adopted_buffer_the_user_stripped_of_its_crs_is_left_alone(
     """T12+T13 review I1: the CR-stripped form of a mixed-ending file is the
     buffer only the follower's own retype leaves; a user's modified buffer
     in that form is not the base, and an adopted editor leaves it alone."""
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     FollowerState.set(_WINDOW, "nvim", headless_nvim, origin="", shown_any=False, adopted=True)
     nvim = pynvim.attach("socket", path=headless_nvim)
     target = (tmp_path / "a.py").resolve()
@@ -231,7 +231,7 @@ def test_an_adopted_buffer_the_follower_retyped_still_holds_its_base(
     into an adopted nvim (nothing held it, so a Write retypes it) carries no
     CR, and is stamped clean at the end of that animation; the next Edit is
     a diff onto it, not a buffer left alone forever."""
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     FollowerState.set(_WINDOW, "nvim", headless_nvim, origin="", shown_any=False, adopted=True)
     nvim = pynvim.attach("socket", path=headless_nvim)
     target = (tmp_path / "a.py").resolve()
@@ -262,7 +262,7 @@ def test_an_adopted_clean_buffer_stays_clean_when_only_its_format_followed(
     lines and format equal the file. A buffer the animation typed into is
     really modified and stays so."""
     before, after = FORMAT_CHANGES[change]
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     FollowerState.set(_WINDOW, "nvim", headless_nvim, origin="", shown_any=False, adopted=True)
     nvim = pynvim.attach("socket", path=headless_nvim)
     target = (tmp_path / "a.py").resolve()

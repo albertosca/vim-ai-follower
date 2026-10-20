@@ -1018,7 +1018,7 @@ def test_sweep_stale_sockets_removes_only_unnamed_sockets_nobody_answers_on(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with _short_socket_dir() as directory:
-        monkeypatch.setattr(cache, "CACHE_DIR", directory)
+        monkeypatch.setattr(cache, "CACHE_DIRECTORY", directory)
         dead = directory / "nvim-@71.sock"
         _dead_nvims_socket(dead)
         named_by_its_window = directory / "nvim-@73.sock"
@@ -1026,7 +1026,7 @@ def test_sweep_stale_sockets_removes_only_unnamed_sockets_nobody_answers_on(
         (directory / "@73.pane").write_text("{not json")
         named_for_target = directory / "nvim-@75.sock"
         _dead_nvims_socket(named_for_target)
-        FollowerState.set("@74", "nvim", str(named_for_target), base_dir=directory)
+        FollowerState.set("@74", "nvim", str(named_for_target), base_directory=directory)
         non_socket = directory / "nvim-@76.sock"
         non_socket.write_text("")
         booting = directory / "nvim-@77.sock"
@@ -1057,7 +1057,7 @@ def test_sweep_stale_sockets_never_unlinks_a_socket_someone_listens_on(
     # Silent is an nvim busy in `:!make` (or stopped); garbled is a listener
     # that is not an nvim. Neither is "absent": the file stays under them.
     with _short_socket_dir() as directory:
-        monkeypatch.setattr(cache, "CACHE_DIR", directory)
+        monkeypatch.setattr(cache, "CACHE_DIRECTORY", directory)
         listened_on = directory / "nvim-@79.sock"
         with fake_nvim(listened_on, reply=reply):
             _age(listened_on, nvim_connect.SOCKET_SWEEP_GRACE_SECONDS + 5)
@@ -1226,13 +1226,13 @@ def test_probe_nvim_forgets_the_mode_of_an_nvim_that_stopped_answering() -> None
 def test_sweep_stale_sockets_with_no_cache_dir_removes_nothing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "missing")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "missing")
     assert nvim_connect.sweep_stale_sockets() == []
 
 
 def test_answering_socket_adopts_only_an_nvim(monkeypatch: pytest.MonkeyPatch) -> None:
     with _short_socket_dir() as directory:
-        monkeypatch.setattr(cache, "CACHE_DIR", directory)
+        monkeypatch.setattr(cache, "CACHE_DIRECTORY", directory)
         path = directory / "nvim-@1.sock"
         with fake_nvim(path, reply=None):
             assert nvim_connect.answering_socket("@1") is None
@@ -1362,7 +1362,7 @@ def test_a_refused_socket_a_live_nvim_listens_on_is_never_cleared_or_swept(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with _short_socket_dir() as directory:
-        monkeypatch.setattr(cache, "CACHE_DIR", directory)
+        monkeypatch.setattr(cache, "CACHE_DIRECTORY", directory)
         sock = directory / "nvim-@1.sock"
         _dead_nvims_socket(sock)
         _age(sock, nvim_connect.SOCKET_SWEEP_GRACE_SECONDS + 5)

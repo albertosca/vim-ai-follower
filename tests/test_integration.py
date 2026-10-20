@@ -710,7 +710,7 @@ def test_registered_keybinding_command_pauses_via_run_shell(
     wrapper = Path(__file__).resolve().parents[1] / "bin" / "claude-follow"
     monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(wrapper.parents[1]))
     # The spawned claude-follow is a separate process that the in-process
-    # cache.CACHE_DIR patch cannot reach: it resolves the cache from HOME.
+    # cache.CACHE_DIRECTORY patch cannot reach: it resolves the cache from HOME.
     # run-shell jobs take the server's GLOBAL environment, so give it a
     # throwaway HOME there — never the developer's own cache.
     home = tmp_path / "home"

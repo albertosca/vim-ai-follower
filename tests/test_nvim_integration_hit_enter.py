@@ -361,7 +361,7 @@ from vim_ai_follower import cache
 from vim_ai_follower.backends import nvim_prompt
 
 sock, cache_dir, barriers, me, peers, kind = sys.argv[1:7]
-cache.CACHE_DIR = Path(cache_dir)
+cache.CACHE_DIRECTORY = Path(cache_dir)
 seen, send = Path(barriers, "seen"), Path(barriers, "send")
 sent = []
 

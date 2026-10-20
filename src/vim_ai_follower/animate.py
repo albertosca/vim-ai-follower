@@ -21,7 +21,7 @@ DEFAULT_PACE_SECONDS = 0.05
 # budget recomputed per call (per line / per op half) never ran out, so a long
 # file was paced line by line with no cap at all. Time spent paused does not
 # count: the deadline moves back by the length of every pause.
-MAX_ANIMATION_SECONDS = 60.0
+MAXIMUM_ANIMATION_SECONDS = 60.0
 
 
 def _terminated(lines: Sequence[str]) -> str:
@@ -87,30 +87,30 @@ class ApplyResult:
     sent_count: int
 
 
-def _delete_sequences(op: EditOp) -> list[KeySequence]:
+def _delete_sequences(operation: EditOp) -> list[KeySequence]:
     """One (":Nd", Enter) pair per deleted line — always at start_line,
     since the remaining lines shift up after each delete. Per-line pairs
     make deletions paced and visible like insertions (a single :s,ed made
     whole blocks vanish in one frame), and each pair is its own undo unit
     for the rollback bookkeeping in run_ops."""
-    if op.end_line < op.start_line:
+    if operation.end_line < operation.start_line:
         return []
     sequences: list[KeySequence] = []
-    for _ in range(op.end_line - op.start_line + 1):
-        sequences.append(KeySequence(f":{op.start_line}d"))
+    for _ in range(operation.end_line - operation.start_line + 1):
+        sequences.append(KeySequence(f":{operation.start_line}d"))
         sequences.append(KeySequence("Enter", literal=False))
     return sequences
 
 
-def _insert_sequences(op: EditOp) -> tuple[list[KeySequence], int]:
+def _insert_sequences(operation: EditOp) -> tuple[list[KeySequence], int]:
     """Keystrokes for an op's insert half, plus the length of its cursor-
     positioning prefix (the sequences before any text lands — once the last
     prefix key is sent, Vim has opened a line, i.e. recorded a change). The
     length is derived from the prefix list itself so the two can't desync."""
-    if not op.new_lines:
+    if not operation.new_lines:
         return [], 0
     prefix: list[KeySequence] = []
-    anchor = op.start_line - 1
+    anchor = operation.start_line - 1
     if anchor >= 1:
         prefix.append(KeySequence(f":{anchor}"))
         prefix.append(KeySequence("Enter", literal=False))
@@ -119,8 +119,8 @@ def _insert_sequences(op: EditOp) -> tuple[list[KeySequence], int]:
         prefix.append(KeySequence("gg"))
         prefix.append(KeySequence("O"))
     sequences = list(prefix)
-    last_index = len(op.new_lines) - 1
-    for index, line in enumerate(op.new_lines):
+    last_index = len(operation.new_lines) - 1
+    for index, line in enumerate(operation.new_lines):
         sequences.append(KeySequence(line))
         if index < last_index:
             sequences.append(KeySequence("Enter", literal=False))
@@ -159,29 +159,29 @@ def _exit_insert_mode(pane: TmuxPane) -> None:
     pane.send_key("Escape")
 
 
-def _serving_follower(window_id: str, base_dir: Path | None) -> tuple[str, str] | None:
+def _serving_follower(window_id: str, base_directory: Path | None) -> tuple[str, str] | None:
     """The (backend, target) of the follower this run serves, read when a
     pause starts: what the stop test below compares a later state with."""
     # Imported here: state imports the backends package, which imports this module.
     from vim_ai_follower import state
 
     try:
-        current = state.FollowerState.read(window_id, base_dir)
+        current = state.FollowerState.read(window_id, base_directory)
     except state.UNREADABLE_STATE_ERRORS:
         return None
     return None if current is None else (current.backend, current.target)
 
 
-def _stopped(window_id: str, follower: tuple[str, str] | None, base_dir: Path | None) -> bool:
+def _stopped(window_id: str, follower: tuple[str, str] | None, base_directory: Path | None) -> bool:
     from vim_ai_follower import state
 
-    return state.follower_stopped(window_id, follower, base_dir)
+    return state.follower_stopped(window_id, follower, base_directory)
 
 
 def _wait_while_paused(
     window_id: str,
     save_pending: Callable[[], None],
-    base_dir: Path | None,
+    base_directory: Path | None,
 ) -> PauseEnd:
     """Block in place until the user resumes ("resumed"), interrupts
     ("interrupted"), or stops the follower ("stopped").
@@ -195,22 +195,22 @@ def _wait_while_paused(
     clears the signals and, for the last follower, the P/S keys, so a wait
     that only read signals held Claude until the hook's 600 s timeout. The
     pending goes on every exit, so a stop leaves no remainder."""
-    follower = _serving_follower(window_id, base_dir)
+    follower = _serving_follower(window_id, base_directory)
     save_pending()
-    control.mark_animating(window_id, base_dir, state="paused")
+    control.mark_animating(window_id, base_directory, state="paused")
     try:
         while True:
-            signal = control.check_signal(window_id, base_dir)
+            signal = control.check_signal(window_id, base_directory)
             if signal == "interrupt":
                 return "interrupted"
             if signal == "pause":  # the P toggle: a second press resumes
                 return "resumed"
-            if _stopped(window_id, follower, base_dir):
+            if _stopped(window_id, follower, base_directory):
                 return "stopped"
             time.sleep(PAUSE_POLL_SECONDS)
     finally:
-        control.discard_pending_animation(window_id, base_dir)
-        control.mark_animating(window_id, base_dir, state="running")
+        control.discard_pending_animation(window_id, base_directory)
+        control.mark_animating(window_id, base_directory, state="running")
 
 
 def _resume(on_resume: Callable[[], None] | None, save_pending: Callable[[], None]) -> None:
@@ -238,7 +238,7 @@ def run_ops(
     window_id: str,
     ops: list[EditOp],
     pace_seconds: float | Callable[[], float],
-    base_dir: Path | None = None,
+    base_directory: Path | None = None,
     file_path: str = "",
     on_resume: Callable[[], None] | None = None,
     base_content: str | None = None,
@@ -259,11 +259,11 @@ def run_ops(
     # control._request). Clearing at start is what lost the early pause.
     # Only a state change: the slot is released by whoever acquired it (the
     # hook), never by a driver — see control.mark_animating.
-    control.mark_animating(window_id, base_dir)
-    deadline = time.monotonic() + MAX_ANIMATION_SECONDS
+    control.mark_animating(window_id, base_directory)
+    deadline = time.monotonic() + MAXIMUM_ANIMATION_SECONDS
     index = 0
     while index < len(ops):
-        op = ops[index]
+        operation = ops[index]
         # One evaluation per op — the line-boundary cadence — shared by
         # its delete and insert halves, so the two halves can't end up
         # pacing at different speeds.
@@ -274,7 +274,7 @@ def run_ops(
                 window_id,
                 ops[index:],
                 current_pace,
-                base_dir,
+                base_directory,
                 file_path=file_path,
                 # Op-granular, matching the remainder: each op's line
                 # numbers are relative to the state its predecessors
@@ -284,15 +284,15 @@ def run_ops(
                 partial=(None if base_content is None else apply_ops(base_content, ops[:index])),
             )
 
-        delete_seq = _delete_sequences(op)
-        if delete_seq:
+        delete_sequence = _delete_sequences(operation)
+        if delete_sequence:
             result = send_paced(
                 pane,
-                delete_seq,
+                delete_sequence,
                 current_pace,
                 window_id,
                 deadline=deadline,
-                control_base_dir=base_dir,
+                control_base_directory=base_directory,
             )
             if result.outcome != "completed":
                 _exit_insert_mode(pane)
@@ -303,26 +303,26 @@ def run_ops(
                 if result.outcome == "interrupted":
                     return AnimationResult("interrupted", index)
                 paused_at = time.monotonic()
-                ended = _wait_while_paused(window_id, save_pending, base_dir)
+                ended = _wait_while_paused(window_id, save_pending, base_directory)
                 if ended != "resumed":
                     return AnimationResult(ended, index)
                 deadline += time.monotonic() - paused_at
                 _resume(on_resume, save_pending)
                 continue  # resumed: retry this op from its clean boundary
 
-        insert_seq, prefix_len = _insert_sequences(op)
-        if insert_seq:
+        insert_sequence, prefix_length = _insert_sequences(operation)
+        if insert_sequence:
             result = send_paced(
                 pane,
-                insert_seq,
+                insert_sequence,
                 current_pace,
                 window_id,
                 deadline=deadline,
-                control_base_dir=base_dir,
+                control_base_directory=base_directory,
             )
             if result.outcome != "completed":
                 _exit_insert_mode(pane)
-                if result.sent_count >= prefix_len:
+                if result.sent_count >= prefix_length:
                     pane.send_text("u")
                 # The delete half already ran, one undo unit per line;
                 # roll all of it back so the buffer sits on a clean op
@@ -330,12 +330,12 @@ def run_ops(
                 # against lines that have shifted, and the interrupt
                 # notification would claim less was shown than actually
                 # happened.
-                for _ in range(len(delete_seq) // 2):
+                for _ in range(len(delete_sequence) // 2):
                     pane.send_text("u")
                 if result.outcome == "interrupted":
                     return AnimationResult("interrupted", index)
                 paused_at = time.monotonic()
-                ended = _wait_while_paused(window_id, save_pending, base_dir)
+                ended = _wait_while_paused(window_id, save_pending, base_directory)
                 if ended != "resumed":
                     return AnimationResult(ended, index)
                 deadline += time.monotonic() - paused_at
@@ -372,7 +372,7 @@ def run_lines(
     window_id: str,
     lines: tuple[str, ...],
     pace_seconds: float | Callable[[], float],
-    base_dir: Path | None = None,
+    base_directory: Path | None = None,
     continuation: bool = False,
     file_path: str = "",
     on_resume: Callable[[], None] | None = None,
@@ -404,8 +404,8 @@ def run_lines(
     # control._request). Clearing at start is what lost the early pause.
     # Only a state change: the slot is released by whoever acquired it (the
     # hook), never by a driver — see control.mark_animating.
-    control.mark_animating(window_id, base_dir)
-    deadline = time.monotonic() + MAX_ANIMATION_SECONDS
+    control.mark_animating(window_id, base_directory)
+    deadline = time.monotonic() + MAXIMUM_ANIMATION_SECONDS
     index = 0
     while index < len(lines):
         line = lines[index]
@@ -423,7 +423,7 @@ def run_lines(
             current_pace,
             window_id,
             deadline=deadline,
-            control_base_dir=base_dir,
+            control_base_directory=base_directory,
             obey_signals=obey_signals,
         )
         if result.outcome != "completed":
@@ -439,7 +439,7 @@ def run_lines(
                     lines[index:],
                     current_pace,
                     continuation=continuation or index > 0,
-                    base_dir=base_dir,
+                    base_directory=base_directory,
                     file_path=file_path,
                     partial=(
                         None
@@ -449,7 +449,7 @@ def run_lines(
                 )
 
             paused_at = time.monotonic()
-            ended = _wait_while_paused(window_id, save_pending, base_dir)
+            ended = _wait_while_paused(window_id, save_pending, base_directory)
             if ended != "resumed":
                 return AnimationResult(ended, index)
             deadline += time.monotonic() - paused_at
@@ -466,7 +466,7 @@ def send_paced(
     window_id: str,
     *,
     deadline: float,
-    control_base_dir: Path | None = None,
+    control_base_directory: Path | None = None,
     obey_signals: bool = True,
 ) -> ApplyResult:
     """Paces at pace_seconds per sequence, checking for a pause/interrupt
@@ -474,9 +474,9 @@ def send_paced(
     immediately — without sending that sequence — if one is found. Stops
     pacing (but keeps sending) once time.monotonic() reaches `deadline`, the
     whole animation's budget that run_lines/run_ops compute once (see
-    MAX_ANIMATION_SECONDS). obey_signals=False reads none (see run_lines)."""
+    MAXIMUM_ANIMATION_SECONDS). obey_signals=False reads none (see run_lines)."""
     for sent_count, sequence in enumerate(sequences):
-        signal = control.check_signal(window_id, control_base_dir) if obey_signals else None
+        signal = control.check_signal(window_id, control_base_directory) if obey_signals else None
         if signal is not None:
             outcome: Literal["paused", "interrupted"] = (
                 "interrupted" if signal == "interrupt" else "paused"

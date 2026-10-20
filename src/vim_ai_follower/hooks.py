@@ -50,7 +50,7 @@ from vim_ai_follower.state import FollowerState, owned_state, touch_open_files
 from vim_ai_follower.status_surface import StatusSurface, status_surface_for
 from vim_ai_follower.tmux import POPUP_SECONDS, adopt_target, show_popup
 
-LOG_PATH = cache.CACHE_DIR / "hook.log"
+LOG_PATH = cache.CACHE_DIRECTORY / "hook.log"
 
 logger = logging.getLogger("vim_ai_follower")
 
@@ -92,8 +92,8 @@ def _file_path(payload: dict[str, Any]) -> str | None:
     return os.path.realpath(value)
 
 
-def _passes_policy(cfg: config.Config, file_path: str) -> bool:
-    return cfg.open_policy != "code" or config.is_code_file(file_path)
+def _passes_policy(loaded_config: config.Config, file_path: str) -> bool:
+    return loaded_config.open_policy != "code" or config.is_code_file(file_path)
 
 
 def _get_active_follower(window_id: str) -> FollowerState | None:
@@ -136,8 +136,8 @@ def _get_active_follower(window_id: str) -> FollowerState | None:
 
     try:
         started = TmuxVimFollower.start(raw.origin)
-    except subprocess.CalledProcessError as exc:
-        logger.warning("failed to reopen follower pane from origin %s: %s", raw.origin, exc)
+    except subprocess.CalledProcessError as error:
+        logger.warning("failed to reopen follower pane from origin %s: %s", raw.origin, error)
         return None
 
     recorded = FollowerState.set(
@@ -182,7 +182,7 @@ def _identity_warning_marker(window_id: str) -> Path:
     """Throttle marker for this identity's lost-window warning. The suffix is
     deliberately not ".pane": cmd_stop's orphan scan globs *.pane and would
     treat the marker as abandoned follower state."""
-    return cache.CACHE_DIR / f"{window_id}.identity-warn"
+    return cache.CACHE_DIRECTORY / f"{window_id}.identity-warn"
 
 
 def _claim_identity_warning(window_id: str) -> bool:
@@ -207,7 +207,7 @@ def _claim_identity_warning(window_id: str) -> bool:
 
 def _foreign_keys_warning_marker() -> Path:
     # Not ".pane": cmd_stop's orphan scan globs *.pane.
-    return cache.CACHE_DIR / "keys-foreign-owner.warn"
+    return cache.CACHE_DIRECTORY / "keys-foreign-owner.warn"
 
 
 def _claim_foreign_keys_warning() -> bool:
@@ -232,8 +232,8 @@ def _heal_keybindings() -> None:
     already work. Never raises: hooks must not fail the tool call."""
     try:
         result = keybindings.claim()
-    except (OSError, subprocess.CalledProcessError) as exc:
-        logger.warning("keybinding heal failed: %s", exc)
+    except (OSError, subprocess.CalledProcessError) as error:
+        logger.warning("keybinding heal failed: %s", error)
         return
     note = keybindings.describe(result)
     if note is None:
@@ -287,7 +287,7 @@ def _warn_lost_window_identity(session: Session) -> None:
         session.window_id,
         session.in_tmux,
         len(others),
-        ", ".join(f"{o.window_id} ({o.backend} {o.target})" for o in others),
+        ", ".join(f"{other.window_id} ({other.backend} {other.target})" for other in others),
     )
 
 
@@ -338,7 +338,7 @@ def _recover_window_from_binding(session: Session, session_id: str) -> Session |
     return Session(window_id=window_id, origin=live.origin, in_tmux=True)
 
 
-def _resolve_session_for(env: dict[str, str], payload: dict[str, Any]) -> Session | None:
+def _resolve_session_for(environment: dict[str, str], payload: dict[str, Any]) -> Session | None:
     """resolve_session, plus the session→window binding in both directions.
 
     The single entry point every hook uses, so pre and post can never disagree
@@ -353,7 +353,7 @@ def _resolve_session_for(env: dict[str, str], payload: dict[str, Any]) -> Sessio
          session proved. On any doubt, fall through to the session as resolved,
          which is exactly today's behavior (synthetic identity + the existing
          lost-identity warning)."""
-    session = resolve_session(env)
+    session = resolve_session(environment)
     if session is None:
         return None
     session_id = _payload_session_id(payload)
@@ -384,7 +384,7 @@ def _launch_standalone_or_log(window_id: str) -> str | None:
         return launch_standalone_nvim(
             window_id, wait_seconds=nvim_connect.AUTO_OPEN_SOCKET_WAIT_SECONDS
         )
-    except (subprocess.CalledProcessError, StandaloneLaunchFailed) as exc:
+    except (subprocess.CalledProcessError, StandaloneLaunchFailed) as error:
         # Every hook blocks the tool call it runs in: retrying on each one
         # stalled every Edit/Write/Read for the whole wait. Back off, once.
         nvim_connect.record_launch_failure(window_id)
@@ -392,7 +392,7 @@ def _launch_standalone_or_log(window_id: str) -> str | None:
             "standalone nvim launch failed for %s: %s — not auto-opening %s again for "
             "%d minutes (`claude-follow start` retries at once)",
             window_id,
-            exc,
+            error,
             window_id,
             nvim_connect.LAUNCH_BACKOFF_SECONDS // 60,
         )
@@ -415,18 +415,18 @@ def _split_nvim_or_log(origin: str, window_id: str, adopt: bool) -> tuple[str, b
             return None  # a recent split failed: already logged, not retried yet
     try:
         target = resolve_nvim_target(origin, window_id, adopt=adopt)
-    except subprocess.CalledProcessError as exc:
-        logger.warning("nvim auto-open failed from origin %s: %s", origin, exc)
+    except subprocess.CalledProcessError as error:
+        logger.warning("nvim auto-open failed from origin %s: %s", origin, error)
         return None
-    except (nvim_connect.SplitNvimNeverAnswered, StandaloneLaunchFailed) as exc:
+    except (nvim_connect.SplitNvimNeverAnswered, StandaloneLaunchFailed) as error:
         nvim_connect.record_launch_failure(window_id)
         logger.warning(
             "%s — not auto-opening %s again for %d minutes (`claude-follow start` retries at once)",
-            exc,
+            error,
             window_id,
             nvim_connect.LAUNCH_BACKOFF_SECONDS // 60,
         )
-        print(f"claude-follow: {exc}", file=sys.stderr)
+        print(f"claude-follow: {error}", file=sys.stderr)
         return None
     if target[1]:
         nvim_connect.clear_launch_backoff(window_id)
@@ -459,8 +459,10 @@ def _stopped_window(session: Session) -> bool:
     return True
 
 
-def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> FollowerState | None:
-    if cfg.open_policy == "manual" or not _passes_policy(cfg, file_path):
+def _maybe_auto_open(
+    session: Session, file_path: str, loaded_config: config.Config
+) -> FollowerState | None:
+    if loaded_config.open_policy == "manual" or not _passes_policy(loaded_config, file_path):
         return None
     if _stopped_window(session):
         return None
@@ -469,11 +471,11 @@ def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> Fo
         # server to bind keys on (keybindings are tmux prefix-key bindings),
         # so registration is skipped here — only the in-tmux path below
         # registers them.
-        if cfg.backend != "nvim":
+        if loaded_config.backend != "nvim":
             # The tmux backend drives a tmux split — nothing to attach to
             # standalone, and no tmux session to fail gracefully into.
             return None
-        if cfg.nvim_window == "never":
+        if loaded_config.nvim_window == "never":
             return None
         sock = _launch_standalone_or_log(session.window_id)
         if sock is None:
@@ -483,8 +485,8 @@ def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> Fo
             "nvim",
             sock,
             origin="",
-            on_failure=cfg.on_failure,
-            speed=cfg.speed,
+            on_failure=loaded_config.on_failure,
+            speed=loaded_config.speed,
             adopted=False,
         )
         return _launched_follower(session.window_id, "nvim", sock, recorded)
@@ -494,14 +496,14 @@ def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> Fo
     # hook, and the follower still opens — it works without the prefix keys.
     try:
         claimed = keybindings.claim(repair=True)
-    except (OSError, subprocess.CalledProcessError) as exc:
-        logger.warning("keybinding claim failed: %s", exc)
+    except (OSError, subprocess.CalledProcessError) as error:
+        logger.warning("keybinding claim failed: %s", error)
     else:
         note = keybindings.describe(claimed)
         if note is not None:
             logger.info(note)
-    if cfg.backend == "nvim":
-        if cfg.nvim_window == "always":
+    if loaded_config.backend == "nvim":
+        if loaded_config.nvim_window == "always":
             # nvim_window=always opens a standalone window even inside tmux —
             # honor it on the auto-open path too, matching cmd_start.
             sock = _launch_standalone_or_log(session.window_id)
@@ -512,13 +514,13 @@ def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> Fo
                 "nvim",
                 sock,
                 origin=origin,
-                on_failure=cfg.on_failure,
-                speed=cfg.speed,
+                on_failure=loaded_config.on_failure,
+                speed=loaded_config.speed,
                 adopted=False,
             )
             return _launched_follower(session.window_id, "nvim", sock, recorded)
         # Same adopt-or-launch selection as cmd_start, but from the hook path.
-        target = _split_nvim_or_log(origin, session.window_id, adopt=cfg.adopt_existing)
+        target = _split_nvim_or_log(origin, session.window_id, adopt=loaded_config.adopt_existing)
         if target is None:
             return None
         sock, launched = target
@@ -527,15 +529,15 @@ def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> Fo
             "nvim",
             sock,
             origin=origin,
-            on_failure=cfg.on_failure,
-            speed=cfg.speed,
+            on_failure=loaded_config.on_failure,
+            speed=loaded_config.speed,
             adopted=not launched,
         )
         if not launched:
             # Adopted: the user's own nvim, nothing to close if refused.
             return FollowerState.get(session.window_id) if recorded else None
         return _launched_follower(session.window_id, "nvim", sock, recorded)
-    adopt = adopt_target(origin) if cfg.adopt_existing else None
+    adopt = adopt_target(origin) if loaded_config.adopt_existing else None
     if adopt is not None:
         # shown_any=True from the first moment: an adopted Vim's current tab
         # belongs to the user and must never be renamed over.
@@ -544,24 +546,24 @@ def _maybe_auto_open(session: Session, file_path: str, cfg: config.Config) -> Fo
             "tmux",
             adopt,
             origin=origin,
-            on_failure=cfg.on_failure,
-            speed=cfg.speed,
+            on_failure=loaded_config.on_failure,
+            speed=loaded_config.speed,
             adopted=True,
             shown_any=True,
         )
     else:
         try:
             started = TmuxVimFollower.start(origin)
-        except subprocess.CalledProcessError as exc:
-            logger.warning("auto-open failed from origin %s: %s", origin, exc)
+        except subprocess.CalledProcessError as error:
+            logger.warning("auto-open failed from origin %s: %s", origin, error)
             return None
         recorded = FollowerState.set(
             session.window_id,
             "tmux",
             started.pane_id,
             origin=origin,
-            on_failure=cfg.on_failure,
-            speed=cfg.speed,
+            on_failure=loaded_config.on_failure,
+            speed=loaded_config.speed,
         )
         return _launched_follower(session.window_id, "tmux", started.pane_id, recorded)
     return FollowerState.get(session.window_id)
@@ -591,14 +593,14 @@ def _ensure_buffer(window_id: str, follower: Follower, file_path: str) -> None:
 
 
 def _touch_and_evict(
-    window_id: str, follower: Follower, current: FollowerState, file_path: str, max_tabs: int
+    window_id: str, follower: Follower, current: FollowerState, file_path: str, maximum_tabs: int
 ) -> None:
     """Bump file_path to most-recent in the tab list and close whatever now
     falls past max_tabs. close_tab wipes the buffer on nvim (which, since
     the buffer is that tab's only window, closes the tab too) and closes
     the tab directly on tmux — both backends implement the Follower
     protocol's close_tab, so eviction is generic here."""
-    new_open, evicted = touch_open_files(current.open_files, file_path, max_tabs)
+    new_open, evicted = touch_open_files(current.open_files, file_path, maximum_tabs)
     for old in evicted:
         follower.close_tab(old)
     FollowerState.update(window_id, open_files=new_open, shown_any=True)
@@ -1003,7 +1005,7 @@ class _Readable(Protocol):
     def read(self) -> str: ...
 
 
-def run_hook(hook_command: str, env: dict[str, str], stdin: _Readable) -> int:
+def run_hook(hook_command: str, environment: dict[str, str], stdin: _Readable) -> int:
     """Entry point for the `hook pre|post|failure` CLI subcommands, and ONLY those:
     the design intent ("Hooks never fail a tool call", guide/en/faq.md) does
     not cover start/stop/status/etc, which must keep raising normally.
@@ -1027,21 +1029,21 @@ def run_hook(hook_command: str, env: dict[str, str], stdin: _Readable) -> int:
         _configure_logging()
         payload: dict[str, Any] = json.loads(stdin.read())
         if hook_command == "pre":
-            return cmd_hook_pre(env, payload)
+            return cmd_hook_pre(environment, payload)
         if hook_command == "failure":
-            return cmd_hook_failure(env, payload)
-        return cmd_hook_post(env, payload)
+            return cmd_hook_failure(environment, payload)
+        return cmd_hook_post(environment, payload)
     except Exception:
         with contextlib.suppress(Exception):
             logger.exception("hook %s crashed", hook_command)
         return 0
 
 
-def cmd_hook_pre(env: dict[str, str], payload: dict[str, Any]) -> int:
+def cmd_hook_pre(environment: dict[str, str], payload: dict[str, Any]) -> int:
     _configure_logging()
     if payload.get("tool_name") not in _EDIT_TOOLS:
         return 0
-    session = _resolve_session_for(env, payload)
+    session = _resolve_session_for(environment, payload)
     if session is None:
         return 0
     raw = FollowerState.read(session.window_id)
@@ -1064,7 +1066,7 @@ def cmd_hook_pre(env: dict[str, str], payload: dict[str, Any]) -> int:
     return 0
 
 
-def cmd_hook_failure(env: dict[str, str], payload: dict[str, Any]) -> int:
+def cmd_hook_failure(environment: dict[str, str], payload: dict[str, Any]) -> int:
     """PostToolUseFailure (the tool was allowed and failed while executing)
     and PermissionDenied (auto mode denied it): the Edit will never post, so
     its in-flight mark is dropped — when the mark is this writer's, or its
@@ -1080,7 +1082,7 @@ def cmd_hook_failure(env: dict[str, str], payload: dict[str, Any]) -> int:
     _configure_logging()
     if payload.get("tool_name") not in _EDIT_TOOLS:
         return 0
-    session = _resolve_session_for(env, payload)
+    session = _resolve_session_for(environment, payload)
     if session is None:
         return 0
     file_path = _file_path(payload)
@@ -1145,8 +1147,8 @@ def _refresh_writer_cue(window_id: str, target: str, payload: dict[str, Any]) ->
     status_surface_for(current, target=target).clear()
 
 
-def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
-    session = _resolve_session_for(env, payload)
+def _handle_hook_post_edit(environment: dict[str, str], payload: dict[str, Any]) -> int:
+    session = _resolve_session_for(environment, payload)
     if session is None:
         return 0
     file_path = _file_path(payload)
@@ -1158,8 +1160,8 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         # it would silence Reads of the file until it expired.
         snapshot.clear_in_flight(session.window_id, file_path)
         return 0
-    cfg = config.load()
-    if not _passes_policy(cfg, file_path):
+    loaded_config = config.load()
+    if not _passes_policy(loaded_config, file_path):
         snapshot.clear_in_flight(session.window_id, file_path)
         return 0
     try:
@@ -1194,7 +1196,7 @@ def _handle_hook_post_edit(env: dict[str, str], payload: dict[str, Any]) -> int:
         FollowerState.mark_stale(session.window_id, file_path)
         return 0
     try:
-        return _animate_edit(payload, session, file_path, cfg)
+        return _animate_edit(payload, session, file_path, loaded_config)
     except (NavigationFailed, nvim_connect.RpcTimeout) as failure:
         # RpcTimeout: an nvim that stopped answering outside the typing (which
         # waits, see NvimFollower._drive) — at the connect or a navigation, a
@@ -1235,7 +1237,7 @@ def _busy_follower(
 # remembered (`answered no`, `answered timeout`): "not asked" (no client,
 # a dropped popup) and "no answer" saw no question.
 def _declined_path(window_id: str) -> Path:
-    return cache.CACHE_DIR / f"{window_id}.declined"
+    return cache.CACHE_DIRECTORY / f"{window_id}.declined"
 
 
 def _declined_earlier(window_id: str, editor: str, mode: str) -> str | None:
@@ -1756,7 +1758,7 @@ def _ground_caught_up_buffer(
     current: FollowerState,
     file_path: str,
     probe: BufferProbe,
-    cfg: config.Config,
+    loaded_config: config.Config,
 ) -> None:
     """A catch-up just completed, but the buffer it left is still not this
     edit's base: something outside Claude (a formatter hook, `sed -i`, a
@@ -1797,7 +1799,7 @@ def _ground_caught_up_buffer(
     # catch-up. Nor is it marked: the buffer now matches disk.
     FollowerState.update_current_file(window_id, file_path)
     status_surface_for(current).retire_state(BASE_DIFFERS_CUE, PROBE_UNKNOWN_CUE)
-    _touch_and_evict(window_id, follower, current, file_path, cfg.max_tabs)
+    _touch_and_evict(window_id, follower, current, file_path, loaded_config.max_tabs)
 
 
 _WHY = {
@@ -1935,16 +1937,20 @@ def _animate_edit(
     payload: dict[str, Any],
     session: Session,
     file_path: str,
-    cfg: config.Config,
+    loaded_config: config.Config,
 ) -> int:
     """Animate one edit (show_fresh for a new file, apply_edit for a diff).
     The caller holds this window's animation slot for the whole call and
     releases it in a finally, so no parallel hook animates the same pane."""
-    current = _live_follower_healing_keys(session) or _maybe_auto_open(session, file_path, cfg)
+    current = _live_follower_healing_keys(session) or _maybe_auto_open(
+        session, file_path, loaded_config
+    )
     if current is None:
         _warn_lost_window_identity(session)
         return 0
-    busy = _busy_follower(current, cfg.take_over_question_seconds, window_id=session.window_id)
+    busy = _busy_follower(
+        current, loaded_config.take_over_question_seconds, window_id=session.window_id
+    )
     if busy is not None:
         # Skipped like an unreachable edit, minus the cue: none was raised,
         # and taking one down would wait on the same silent nvim.
@@ -1955,8 +1961,8 @@ def _animate_edit(
     _apply_writer_cue(session.window_id, current.target, payload)
     try:
         raw_after = Path(file_path).read_bytes()
-    except OSError as exc:
-        logger.warning("failed to read %s: %s", file_path, exc)
+    except OSError as error:
+        logger.warning("failed to read %s: %s", file_path, error)
         return 0
 
     follower = get_follower(
@@ -2034,7 +2040,7 @@ def _animate_edit(
         # fresh or not: an already-open one was rewritten on disk and its
         # clean buffer must be re-read, or the old bytes stay on screen.
         _ensure_buffer(session.window_id, follower, file_path)
-        _touch_and_evict(session.window_id, follower, current, file_path, cfg.max_tabs)
+        _touch_and_evict(session.window_id, follower, current, file_path, loaded_config.max_tabs)
         return 0
 
     after = raw_after.decode("utf-8", errors="replace")
@@ -2074,7 +2080,7 @@ def _animate_edit(
             held = _caught_up_buffer_held(session.window_id, follower, current, file_path, pending)
             if held == "holds":
                 _ground_caught_up_buffer(
-                    session.window_id, follower, current, file_path, probe, cfg
+                    session.window_id, follower, current, file_path, probe, loaded_config
                 )
             else:
                 _leave_adopted_buffer_alone(
@@ -2102,7 +2108,7 @@ def _animate_edit(
     # mid-typing — touch_open_files never puts the just-touched file_path in
     # the evicted slice, so the file about to be animated can never be the
     # one just closed.
-    _touch_and_evict(session.window_id, follower, current, file_path, cfg.max_tabs)
+    _touch_and_evict(session.window_id, follower, current, file_path, loaded_config.max_tabs)
 
     if is_fresh:
         result = follower.show_fresh(file_path, typed_after, in_new_tab=current.shown_any)
@@ -2244,8 +2250,8 @@ def _edit_in_flight(window_id: str, file_path: str, reader: str | None) -> bool:
     return on_disk != load_snapshot(window_id, file_path).encode("utf-8")
 
 
-def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
-    session = _resolve_session_for(env, payload)
+def _handle_hook_post_read(environment: dict[str, str], payload: dict[str, Any]) -> int:
+    session = _resolve_session_for(environment, payload)
     if session is None:
         return 0
     raw = FollowerState.read(session.window_id)
@@ -2254,8 +2260,8 @@ def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
     file_path = _file_path(payload)
     if file_path is None:
         return 0
-    cfg = config.load()
-    if not _passes_policy(cfg, file_path):
+    loaded_config = config.load()
+    if not _passes_policy(loaded_config, file_path):
         return 0
     # The Read holds this window's animation slot for its whole navigation,
     # taken with the same try-acquire as an Edit (final review of
@@ -2273,7 +2279,7 @@ def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
         # no buffer behind disk, so there is nothing to mark stale.
         return 0
     try:
-        return _navigate_for_read(session, payload, file_path, cfg)
+        return _navigate_for_read(session, payload, file_path, loaded_config)
     except nvim_connect.RpcTimeout as timeout:
         # An nvim that stopped answering mid-Read (a prompt the user has up in
         # an adopted nvim, a `:!make` started meanwhile): the Read changes no
@@ -2288,7 +2294,7 @@ def _handle_hook_post_read(env: dict[str, str], payload: dict[str, Any]) -> int:
 
 
 def _navigate_for_read(
-    session: Session, payload: dict[str, Any], file_path: str, cfg: config.Config
+    session: Session, payload: dict[str, Any], file_path: str, loaded_config: config.Config
 ) -> int:
     """The Read's navigation; the caller holds the window's slot."""
     reader = writer_cue.writer_identity(payload)
@@ -2308,11 +2314,13 @@ def _navigate_for_read(
             whose,
         )
         return 0
-    current = _live_follower_healing_keys(session) or _maybe_auto_open(session, file_path, cfg)
+    current = _live_follower_healing_keys(session) or _maybe_auto_open(
+        session, file_path, loaded_config
+    )
     if current is None:
         _warn_lost_window_identity(session)
         return 0
-    question_seconds = min(cfg.take_over_question_seconds, READ_QUESTION_SECONDS)
+    question_seconds = min(loaded_config.take_over_question_seconds, READ_QUESTION_SECONDS)
     busy = _busy_follower(current, question_seconds, window_id=session.window_id)
     if busy is not None:
         logger.warning("skipped the Read of %s: %s", file_path, busy)
@@ -2327,18 +2335,18 @@ def _navigate_for_read(
         # move the cursor in whatever buffer is current.
         logger.warning("skipped the Read of %s: %s", file_path, failure)
         return 0
-    _touch_and_evict(session.window_id, follower, current, file_path, cfg.max_tabs)
+    _touch_and_evict(session.window_id, follower, current, file_path, loaded_config.max_tabs)
     offset = _tool_input(payload).get("offset")
     if isinstance(offset, int) and offset > 0:
         follower.goto_line(offset)
     return 0
 
 
-def cmd_hook_post(env: dict[str, str], payload: dict[str, Any]) -> int:
+def cmd_hook_post(environment: dict[str, str], payload: dict[str, Any]) -> int:
     _configure_logging()
     tool_name = payload.get("tool_name")
     if tool_name == "Read":
-        return _handle_hook_post_read(env, payload)
+        return _handle_hook_post_read(environment, payload)
     if tool_name in _EDIT_TOOLS:
-        return _handle_hook_post_edit(env, payload)
+        return _handle_hook_post_edit(environment, payload)
     return 0

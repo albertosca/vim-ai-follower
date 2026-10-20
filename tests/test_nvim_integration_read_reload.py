@@ -53,7 +53,7 @@ def _buffer(nvim: Any, target: Path) -> list[str]:
 def dedicated(
     headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[NvimFollower, Any]:
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     state.FollowerState.set("@1", "nvim", headless_nvim)
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     return follower, pynvim.attach("socket", path=headless_nvim)
@@ -205,7 +205,7 @@ def _adopted_on(
 ) -> tuple[NvimFollower, Any, Path]:
     """An adopted nvim with the target open as the user would have it: loaded
     with its own swap, while a second live nvim holds the file's main swap."""
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     target = tmp_path / "held.py"
     target.write_text(WRITTEN)
     _owner_holding(swap_aware_nvim(), target)

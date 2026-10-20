@@ -78,7 +78,7 @@ def test_show_fresh_types_multi_byte_content_byte_identically(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.001)
     lines = [_PORTUGUESE, _EMOJI, _CJK, "plain ascii"]
     content = "".join(line + "\n" for line in lines)
@@ -95,7 +95,7 @@ def test_apply_edit_replaces_a_line_with_a_multi_byte_one_byte_identically(
 ) -> None:
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.001)
     first_file = str(tmp_path / "edit.py")
     before = "primeira\nsegunda\nterceira\n"
@@ -122,7 +122,7 @@ def test_interrupt_after_a_multi_byte_character_leaves_a_decodable_prefix(
     # remainder) must converge byte-for-byte.
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.01)
     first_file = str(tmp_path / "interrompe.py")
     lines = ["ok", "ação", "fim"]
@@ -158,7 +158,7 @@ def test_pause_across_a_multi_byte_character_converges_byte_identically(
     # line lands where it belongs.
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.01)
     lines = [_PORTUGUESE, _CJK]
     content = "".join(line + "\n" for line in lines)

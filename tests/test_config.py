@@ -57,7 +57,7 @@ def test_load_rejects_bool_max_tabs(tmp_path: Path) -> None:
     # sneak through as a 1-tab limit instead of falling back to the default.
     path = tmp_path / "config.json"
     path.write_text('{"max_tabs": true}')
-    assert config.load(path).max_tabs == config.DEFAULT_MAX_TABS
+    assert config.load(path).max_tabs == config.DEFAULT_MAXIMUM_TABS
 
 
 def test_next_speed_steps_and_clamps() -> None:

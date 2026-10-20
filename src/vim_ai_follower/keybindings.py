@@ -101,13 +101,13 @@ def _durable_wrapper(wrapper: Path) -> Path:
     parent."""
     if not _may_be_in_linked_worktree(wrapper.parent):
         return wrapper  # main checkout, plain clone, or no repo: already durable
-    dirs = _git_dirs(wrapper.parent)
-    if dirs is None:
+    directories = _git_dirs(wrapper.parent)
+    if directories is None:
         return wrapper
-    common_dir, git_dir, toplevel = dirs
-    if common_dir == git_dir:
+    common_directory, git_directory, toplevel = directories
+    if common_directory == git_directory:
         return wrapper  # the main checkout (or a plain clone): already durable
-    candidate = Path(common_dir.parent, os.path.relpath(wrapper, toplevel))
+    candidate = Path(common_directory.parent, os.path.relpath(wrapper, toplevel))
     if not candidate.exists():
         # Nothing there to bind — an absent path is deader than an ephemeral
         # one, which at least works until the worktree goes away.
@@ -140,7 +140,7 @@ def _claude_follow_executable() -> str:
 
 
 def _saved_bindings_path() -> Path:
-    return cache.CACHE_DIR / "saved-keybindings.json"
+    return cache.CACHE_DIRECTORY / "saved-keybindings.json"
 
 
 @dataclass(frozen=True)
@@ -153,7 +153,7 @@ class Owner:
 
 
 def _owner_path() -> Path:
-    return cache.CACHE_DIR / "keybindings-owner.json"
+    return cache.CACHE_DIRECTORY / "keybindings-owner.json"
 
 
 def _installation_id(executable: str) -> str:
@@ -190,14 +190,14 @@ def _write_owner(owner: Owner) -> None:
     file lives beside the target (os.replace is only atomic within one
     filesystem) and is removed if the rename fails."""
     path = _owner_path()
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
-        tmp.write_text(
+        temporary_path.write_text(
             json.dumps({"executable": owner.executable, "installation": owner.installation})
         )
-        tmp.replace(path)
+        temporary_path.replace(path)
     except OSError:
-        tmp.unlink(missing_ok=True)
+        temporary_path.unlink(missing_ok=True)
         raise
 
 
@@ -358,12 +358,12 @@ def claim(force: bool = False, repair: bool = False) -> Claim:
     nothing; `start` and auto-open pass repair=True because a restarted tmux
     server drops the bindings while the cache still names us as owner, and
     `start` must stay a real repair for that."""
-    me = current_owner()
+    own_owner = current_owner()
     previous = read_owner()
     if previous is None:
         outcome = ClaimOutcome.TAKEN
-    elif previous.installation == me.installation:
-        same = previous.executable == me.executable
+    elif previous.installation == own_owner.installation:
+        same = previous.executable == own_owner.executable
         outcome = ClaimOutcome.UNCHANGED if same else ClaimOutcome.REFRESHED
     elif not _is_alive(previous):
         outcome = ClaimOutcome.TAKEN_FROM_DEAD
@@ -377,28 +377,28 @@ def claim(force: bool = False, repair: bool = False) -> Claim:
         outcome is not ClaimOutcome.UNCHANGED or repair
     ):
         register()
-    return Claim(outcome, previous, me)
+    return Claim(outcome, previous, own_owner)
 
 
 def describe(result: Claim) -> str | None:
     """One line worth saying about `result`, or None when nothing changed
     hands (a first take is today's silent start path)."""
-    prev = result.previous
-    if prev is None or result.outcome in (ClaimOutcome.TAKEN, ClaimOutcome.UNCHANGED):
+    previous = result.previous
+    if previous is None or result.outcome in (ClaimOutcome.TAKEN, ClaimOutcome.UNCHANGED):
         return None
     if result.outcome is ClaimOutcome.REFRESHED:
-        return f"keybindings re-pointed from {prev.executable} to {result.current.executable}"
+        return f"keybindings re-pointed from {previous.executable} to {result.current.executable}"
     if result.outcome is ClaimOutcome.TAKEN_FROM_DEAD:
-        return f"keybindings moved here from {prev.executable}, which no longer exists"
+        return f"keybindings moved here from {previous.executable}, which no longer exists"
     if result.outcome is ClaimOutcome.TAKEN_FROM_STALE:
         return (
-            f"keybindings moved here: the record named {prev.executable},"
+            f"keybindings moved here: the record named {previous.executable},"
             " but no key was bound to it (tmux restarted?)"
         )
     if result.outcome is ClaimOutcome.TAKEN_BY_FORCE:
-        return f"keybindings taken from {prev.installation} ({prev.executable})"
+        return f"keybindings taken from {previous.installation} ({previous.executable})"
     return (
-        f"keybindings belong to {prev.installation} ({prev.executable}) — left there;"
+        f"keybindings belong to {previous.installation} ({previous.executable}) — left there;"
         " rerun `claude-follow start --take-keys` to move them here"
     )
 

@@ -19,105 +19,107 @@ from vim_ai_follower.diff import EditOp
 def animating(tmp_path: Path) -> None:
     """This test process owns @1's animation, as a hook does while it types:
     signals are addressed to the live owner."""
-    control.mark_animating("@1", base_dir=tmp_path)
+    control.mark_animating("@1", base_directory=tmp_path)
 
 
 def test_check_signal_returns_none_when_nothing_set(tmp_path: Path) -> None:
-    assert control.check_signal("@1", base_dir=tmp_path) is None
+    assert control.check_signal("@1", base_directory=tmp_path) is None
 
 
 @pytest.mark.usefixtures("animating")
 def test_check_signal_returns_and_consumes_pause(tmp_path: Path) -> None:
-    control.request_pause("@1", base_dir=tmp_path)
-    assert control.check_signal("@1", base_dir=tmp_path) == "pause"
-    assert control.check_signal("@1", base_dir=tmp_path) is None
+    control.request_pause("@1", base_directory=tmp_path)
+    assert control.check_signal("@1", base_directory=tmp_path) == "pause"
+    assert control.check_signal("@1", base_directory=tmp_path) is None
 
 
 @pytest.mark.usefixtures("animating")
 def test_check_signal_returns_and_consumes_interrupt(tmp_path: Path) -> None:
-    control.request_interrupt("@1", base_dir=tmp_path)
-    assert control.check_signal("@1", base_dir=tmp_path) == "interrupt"
-    assert control.check_signal("@1", base_dir=tmp_path) is None
+    control.request_interrupt("@1", base_directory=tmp_path)
+    assert control.check_signal("@1", base_directory=tmp_path) == "interrupt"
+    assert control.check_signal("@1", base_directory=tmp_path) is None
 
 
 @pytest.mark.usefixtures("animating")
 def test_check_signal_interrupt_takes_priority_over_pause(tmp_path: Path) -> None:
-    control.request_pause("@1", base_dir=tmp_path)
-    control.request_interrupt("@1", base_dir=tmp_path)
-    assert control.check_signal("@1", base_dir=tmp_path) == "interrupt"
+    control.request_pause("@1", base_directory=tmp_path)
+    control.request_interrupt("@1", base_directory=tmp_path)
+    assert control.check_signal("@1", base_directory=tmp_path) == "interrupt"
     # pause is left alone, still pending
-    assert control.check_signal("@1", base_dir=tmp_path) == "pause"
+    assert control.check_signal("@1", base_directory=tmp_path) == "pause"
 
 
 @pytest.mark.usefixtures("animating")
 def test_clear_signals_removes_both_without_erroring_if_absent(tmp_path: Path) -> None:
-    control.clear_signals("@1", base_dir=tmp_path)  # nothing to clear, no error
-    control.request_pause("@1", base_dir=tmp_path)
-    control.request_interrupt("@1", base_dir=tmp_path)
-    control.clear_signals("@1", base_dir=tmp_path)
-    assert control.check_signal("@1", base_dir=tmp_path) is None
+    control.clear_signals("@1", base_directory=tmp_path)  # nothing to clear, no error
+    control.request_pause("@1", base_directory=tmp_path)
+    control.request_interrupt("@1", base_directory=tmp_path)
+    control.clear_signals("@1", base_directory=tmp_path)
+    assert control.check_signal("@1", base_directory=tmp_path) is None
 
 
 def test_has_pending_animation_false_when_none_saved(tmp_path: Path) -> None:
-    assert control.has_pending_animation("@1", base_dir=tmp_path) is False
+    assert control.has_pending_animation("@1", base_directory=tmp_path) is False
 
 
 def test_save_and_load_pending_apply_edit(tmp_path: Path) -> None:
     ops = [EditOp(kind="replace", start_line=2, end_line=2, new_lines=("X",))]
-    control.save_pending_apply_edit("@1", ops, 0.05, base_dir=tmp_path)
-    assert control.has_pending_animation("@1", base_dir=tmp_path) is True
+    control.save_pending_apply_edit("@1", ops, 0.05, base_directory=tmp_path)
+    assert control.has_pending_animation("@1", base_directory=tmp_path) is True
 
-    loaded = control.load_pending_animation("@1", base_dir=tmp_path)
+    loaded = control.load_pending_animation("@1", base_directory=tmp_path)
     assert isinstance(loaded, control.PendingApplyEdit)
     assert loaded.ops == ops
     assert loaded.pace_seconds == 0.05
     # consumed on load
-    assert control.has_pending_animation("@1", base_dir=tmp_path) is False
+    assert control.has_pending_animation("@1", base_directory=tmp_path) is False
 
 
 def test_save_and_load_pending_show_fresh(tmp_path: Path) -> None:
-    control.save_pending_show_fresh("@1", ("a", "b"), 0.1, base_dir=tmp_path)
-    loaded = control.load_pending_animation("@1", base_dir=tmp_path)
+    control.save_pending_show_fresh("@1", ("a", "b"), 0.1, base_directory=tmp_path)
+    loaded = control.load_pending_animation("@1", base_directory=tmp_path)
     assert isinstance(loaded, control.PendingShowFresh)
     assert loaded.lines == ("a", "b")
     assert loaded.pace_seconds == 0.1
 
 
 def test_pending_show_fresh_round_trips_continuation(tmp_path: Path) -> None:
-    control.save_pending_show_fresh("@1", ("x",), 0.05, continuation=True, base_dir=tmp_path)
+    control.save_pending_show_fresh("@1", ("x",), 0.05, continuation=True, base_directory=tmp_path)
     pending = control.load_pending_animation("@1", tmp_path)
     assert pending == control.PendingShowFresh(("x",), 0.05, continuation=True)
 
 
 def test_pending_show_fresh_defaults_continuation_false(tmp_path: Path) -> None:
-    control.save_pending_show_fresh("@1", ("x",), 0.05, base_dir=tmp_path)
+    control.save_pending_show_fresh("@1", ("x",), 0.05, base_directory=tmp_path)
     pending = control.load_pending_animation("@1", tmp_path)
     assert pending == control.PendingShowFresh(("x",), 0.05, continuation=False)
 
 
 def test_pending_round_trips_file_path(tmp_path: Path) -> None:
-    control.save_pending_show_fresh("@1", ("a",), 0.03, base_dir=tmp_path, file_path="/tmp/f.py")
-    pending = control.load_pending_animation("@1", base_dir=tmp_path)
+    control.save_pending_show_fresh(
+        "@1", ("a",), 0.03, base_directory=tmp_path, file_path="/tmp/f.py"
+    )
+    pending = control.load_pending_animation("@1", base_directory=tmp_path)
     assert pending is not None and pending.file_path == "/tmp/f.py"
 
 
 def test_pending_defaults_file_path_for_old_payloads(tmp_path: Path) -> None:
-    control.save_pending_apply_edit("@1", [], 0.03, base_dir=tmp_path)
-    pending = control.load_pending_animation("@1", base_dir=tmp_path)
+    control.save_pending_apply_edit("@1", [], 0.03, base_directory=tmp_path)
+    pending = control.load_pending_animation("@1", base_directory=tmp_path)
     assert pending is not None and pending.file_path == ""
 
 
 def test_load_pending_animation_returns_none_when_absent(tmp_path: Path) -> None:
-    assert control.load_pending_animation("@1", base_dir=tmp_path) is None
+    assert control.load_pending_animation("@1", base_directory=tmp_path) is None
 
 
 def test_discard_pending_animation_removes_file_without_erroring_if_absent(
     tmp_path: Path,
 ) -> None:
-    control.discard_pending_animation("@1", base_dir=tmp_path)  # no error
-    control.save_pending_apply_edit("@1", [], 0.0, base_dir=tmp_path)
-    control.discard_pending_animation("@1", base_dir=tmp_path)
-    assert control.has_pending_animation("@1", base_dir=tmp_path) is False
+    control.discard_pending_animation("@1", base_directory=tmp_path)  # no error
+    control.save_pending_apply_edit("@1", [], 0.0, base_directory=tmp_path)
+    control.discard_pending_animation("@1", base_directory=tmp_path)
+    assert control.has_pending_animation("@1", base_directory=tmp_path) is False
 
 
 @pytest.mark.usefixtures("animating")
@@ -142,12 +144,12 @@ def test_pending_write_is_atomic_no_partial_file_visible(tmp_path: Path) -> None
     assert leftovers == ["@1.pending_animation.json"]  # no .tmp residue
     # and the write goes through an atomic rename, not a direct write:
     with patch.object(Path, "replace", autospec=True, side_effect=Path.replace) as replace:
-        control.save_pending_show_fresh("@1", ("y",), 0.1, base_dir=tmp_path)
+        control.save_pending_show_fresh("@1", ("y",), 0.1, base_directory=tmp_path)
     assert replace.called
 
 
 def test_load_pending_returns_none_when_file_vanishes_mid_read(tmp_path: Path) -> None:
-    control.save_pending_show_fresh("@1", ("y",), 0.1, base_dir=tmp_path)
+    control.save_pending_show_fresh("@1", ("y",), 0.1, base_directory=tmp_path)
     with patch.object(Path, "read_text", side_effect=FileNotFoundError):
         assert control.load_pending_animation("@1", tmp_path) is None
     # the real file is still there for the next, non-racing loader:
@@ -475,29 +477,29 @@ def test_a_state_change_replaces_the_marker_never_truncates_it(tmp_path: Path) -
 def test_a_signal_with_no_live_animation_to_address_is_not_written(tmp_path: Path) -> None:
     # P read "running", then the animation ended before the signal was written:
     # there is no one to pause, and the NEXT animation must not inherit it.
-    control.request_pause("@1", base_dir=tmp_path)
-    control.request_interrupt("@1", base_dir=tmp_path)
-    control.mark_animating("@1", base_dir=tmp_path)  # the next animation starts
-    assert control.check_signal("@1", base_dir=tmp_path) is None
+    control.request_pause("@1", base_directory=tmp_path)
+    control.request_interrupt("@1", base_directory=tmp_path)
+    control.mark_animating("@1", base_directory=tmp_path)  # the next animation starts
+    assert control.check_signal("@1", base_directory=tmp_path) is None
 
 
 def test_a_signal_addressed_to_a_dead_animation_is_dropped_not_obeyed(tmp_path: Path) -> None:
     earlier = subprocess.Popen(["sleep", "30"])
     try:
         (tmp_path / "@1.animating").write_text(f"{earlier.pid} running")
-        control.request_pause("@1", base_dir=tmp_path)
+        control.request_pause("@1", base_directory=tmp_path)
     finally:
         earlier.kill()
         earlier.wait()
     assert (tmp_path / "@1.pause").read_text() == str(earlier.pid)  # addressed to it
-    control.mark_animating("@1", base_dir=tmp_path)  # a new animation, this process
-    assert control.check_signal("@1", base_dir=tmp_path) is None
+    control.mark_animating("@1", base_directory=tmp_path)  # a new animation, this process
+    assert control.check_signal("@1", base_directory=tmp_path) is None
     assert not (tmp_path / "@1.pause").exists()  # consumed as stale, not left behind
 
 
 def test_a_signal_is_addressed_to_the_owner_the_key_press_saw(tmp_path: Path) -> None:
-    control.mark_animating("@1", base_dir=tmp_path)
-    control.request_interrupt("@1", base_dir=tmp_path)
+    control.mark_animating("@1", base_directory=tmp_path)
+    control.request_interrupt("@1", base_directory=tmp_path)
     assert (tmp_path / "@1.interrupt").read_text() == str(os.getpid())
     assert not list(tmp_path.glob("*.tmp"))  # written atomically, no half file left
 
@@ -505,11 +507,11 @@ def test_a_signal_is_addressed_to_the_owner_the_key_press_saw(tmp_path: Path) ->
 def test_a_request_says_whether_it_reached_a_live_owner(tmp_path: Path) -> None:
     # The CLI reads "running" first and writes the signal after; an owner that
     # died in between gets nothing written, and the caller must know it.
-    assert control.request_pause("@1", base_dir=tmp_path) is False
-    assert control.request_interrupt("@1", base_dir=tmp_path) is False
-    control.mark_animating("@1", base_dir=tmp_path)
-    assert control.request_pause("@1", base_dir=tmp_path) is True
-    assert control.request_interrupt("@1", base_dir=tmp_path) is True
+    assert control.request_pause("@1", base_directory=tmp_path) is False
+    assert control.request_interrupt("@1", base_directory=tmp_path) is False
+    control.mark_animating("@1", base_directory=tmp_path)
+    assert control.request_pause("@1", base_directory=tmp_path) is True
+    assert control.request_interrupt("@1", base_directory=tmp_path) is True
 
 
 def _dead_pid() -> int:
@@ -536,7 +538,7 @@ def test_clearing_signals_sweeps_what_killed_processes_left_behind(tmp_path: Pat
     unrelated_leftover = tmp_path / "@1.pause.x.tmp"
     unrelated_leftover.write_text("1")
 
-    control.clear_signals("@1", base_dir=tmp_path)
+    control.clear_signals("@1", base_directory=tmp_path)
 
     left = sorted(path.name for path in tmp_path.iterdir())
     assert left == sorted(
@@ -546,8 +548,8 @@ def test_clearing_signals_sweeps_what_killed_processes_left_behind(tmp_path: Pat
 
 
 def test_sweeping_signal_leftovers_with_none_is_quiet(tmp_path: Path) -> None:
-    control.sweep_signal_leftovers("@1", base_dir=tmp_path / "missing")
-    control.sweep_signal_leftovers("@1", base_dir=tmp_path)
+    control.sweep_signal_leftovers("@1", base_directory=tmp_path / "missing")
+    control.sweep_signal_leftovers("@1", base_directory=tmp_path)
     assert list(tmp_path.iterdir()) == []
 
 
@@ -557,7 +559,7 @@ def test_the_leftover_sweep_reads_a_window_id_literally(tmp_path: Path) -> None:
     lookalike = tmp_path / f"term-a.pause.{dead}.claimed"
     bracketed.write_text("1")
     lookalike.write_text("1")
-    control.sweep_signal_leftovers("term-[ab]", base_dir=tmp_path)
+    control.sweep_signal_leftovers("term-[ab]", base_directory=tmp_path)
     assert [path.name for path in tmp_path.iterdir()] == [lookalike.name]
 
 
@@ -570,7 +572,7 @@ def test_an_empty_signal_is_dropped_with_one_warning_about_version_skew(
     # obeyed (it names no owner), but the drop must not be silent.
     (tmp_path / "@1.pause").write_text("")
     with caplog.at_level("WARNING", logger="vim_ai_follower"):
-        assert control.check_signal("@1", base_dir=tmp_path) is None
+        assert control.check_signal("@1", base_directory=tmp_path) is None
     warnings = [record for record in caplog.records if record.levelname == "WARNING"]
     assert len(warnings) == 1
     assert "empty pause signal" in warnings[0].getMessage()
@@ -584,7 +586,7 @@ def test_a_signal_for_another_owner_is_dropped_without_a_warning(
 ) -> None:
     (tmp_path / "@1.interrupt").write_text("1")
     with caplog.at_level("WARNING", logger="vim_ai_follower"):
-        assert control.check_signal("@1", base_dir=tmp_path) is None
+        assert control.check_signal("@1", base_directory=tmp_path) is None
     assert caplog.records == []
 
 

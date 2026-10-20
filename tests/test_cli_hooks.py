@@ -553,7 +553,7 @@ def test_touch_and_evict_closes_the_evicted_tab_on_any_follower(
     # Generic eviction (Task 6): _touch_and_evict must call close_tab on
     # whatever follower it's given — not just TmuxVimFollower — proven here
     # with a bare mock that is deliberately NOT a TmuxVimFollower instance.
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     state.FollowerState.set(
         "@1", "nvim", "/tmp/x.sock", open_files=("/tmp/a.py", "/tmp/b.py"), shown_any=True
     )
@@ -561,7 +561,7 @@ def test_touch_and_evict_closes_the_evicted_tab_on_any_follower(
     assert current is not None
 
     follower = MagicMock()
-    hooks._touch_and_evict("@1", follower, current, "/tmp/c.py", max_tabs=2)
+    hooks._touch_and_evict("@1", follower, current, "/tmp/c.py", maximum_tabs=2)
 
     follower.close_tab.assert_called_once_with("/tmp/a.py")
     refreshed = state.FollowerState.read("@1")
@@ -1912,7 +1912,7 @@ _CONCURRENT_EDIT = """
 import sys, time
 from pathlib import Path
 from vim_ai_follower import cache, control
-cache.CACHE_DIR = Path(sys.argv[1])
+cache.CACHE_DIRECTORY = Path(sys.argv[1])
 print(control.try_acquire_animating("@1"), flush=True)
 time.sleep(30)
 """
@@ -1937,7 +1937,7 @@ def test_a_read_holds_the_slot_while_it_navigates(tmp_path: Path) -> None:
 
     def concurrent_edit_then_check(window_id: str, file_path: str, reader: str | None) -> bool:
         process = subprocess.Popen(
-            [sys.executable, "-c", _CONCURRENT_EDIT, str(cache.CACHE_DIR)],
+            [sys.executable, "-c", _CONCURRENT_EDIT, str(cache.CACHE_DIRECTORY)],
             stdout=subprocess.PIPE,
             text=True,
         )
@@ -1995,7 +1995,7 @@ def test_dead_marker_does_not_block_the_edit(tmp_path: Path) -> None:
     target = tmp_path / "a.py"
     target.write_text("new content\n")
     _register_fake_follower("@1", "%2", shown_any=True)
-    marker = cache.CACHE_DIR / "@1.animating"
+    marker = cache.CACHE_DIRECTORY / "@1.animating"
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text("99999999 running")
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
@@ -3794,7 +3794,7 @@ def test_a_declined_question_is_not_asked_again_in_the_same_mode(answer: str) ->
 def test_a_question_nobody_answered_is_asked_again(answer: str) -> None:
     assert _vim_asked("in insert mode", answer)[1] == 1
     assert _vim_asked("in insert mode", answer)[1] == 1
-    assert not (cache.CACHE_DIR / "@1.declined").exists()
+    assert not (cache.CACHE_DIRECTORY / "@1.declined").exists()
 
 
 @pytest.mark.parametrize(
@@ -3813,7 +3813,7 @@ def test_another_mode_or_another_vim_is_asked_again(second: str, pid: int | None
 def test_a_vim_seen_not_typing_forgets_the_answer() -> None:
     _vim_asked("in insert mode", "answered no")
     assert _vim_asked(None, "answered no") == (None, 0)
-    assert not (cache.CACHE_DIR / "@1.declined").exists()
+    assert not (cache.CACHE_DIRECTORY / "@1.declined").exists()
     assert _vim_asked("in insert mode", "answered no")[1] == 1
 
 
@@ -3825,17 +3825,17 @@ def test_a_vim_seen_at_a_prompt_forgets_the_answer() -> None:
 
 def test_a_yes_forgets_the_answer() -> None:
     _vim_asked("in insert mode", "answered no")
-    (cache.CACHE_DIR / "@1.declined").write_text(
+    (cache.CACHE_DIRECTORY / "@1.declined").write_text(
         json.dumps({"editor": "vim:202", "mode": "in visual mode", "answer": "answered no"})
     )
     assert _vim_asked("in insert mode", take_over.YES) == (None, 1)
-    assert not (cache.CACHE_DIR / "@1.declined").exists()
+    assert not (cache.CACHE_DIRECTORY / "@1.declined").exists()
 
 
 def test_no_window_remembers_nothing() -> None:
     _vim_asked("in insert mode", "answered no", window_id="")
     assert _vim_asked("in insert mode", "answered no", window_id="")[1] == 1
-    assert not list(cache.CACHE_DIR.glob("*.declined"))
+    assert not list(cache.CACHE_DIRECTORY.glob("*.declined"))
 
 
 @pytest.mark.parametrize(
@@ -3847,14 +3847,14 @@ def test_no_window_remembers_nothing() -> None:
     ],
 )
 def test_an_unreadable_record_is_no_answer(record: str) -> None:
-    cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    (cache.CACHE_DIR / "@1.declined").write_text(record)
+    cache.CACHE_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    (cache.CACHE_DIRECTORY / "@1.declined").write_text(record)
     assert _vim_asked("in insert mode", "answered no")[1] == 1
 
 
 def test_a_record_that_cannot_be_written_still_skips() -> None:
-    cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    (cache.CACHE_DIR / "@1.declined").mkdir()
+    cache.CACHE_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    (cache.CACHE_DIRECTORY / "@1.declined").mkdir()
     busy, asked = _vim_asked("in insert mode", "answered no")
     assert asked == 1
     assert busy is not None
@@ -3884,7 +3884,7 @@ def test_a_declined_nvim_question_is_remembered_by_socket() -> None:
     assert busy("/tmp/other.sock", "i", "answered no")[1] == 1  # another nvim
     assert busy("/tmp/other.sock", "v", "answered no")[1] == 1  # another mode
     assert busy("/tmp/other.sock", "n", "answered no") == (None, 0)  # not typing
-    assert not (cache.CACHE_DIR / "@1.declined").exists()
+    assert not (cache.CACHE_DIRECTORY / "@1.declined").exists()
     assert busy("/tmp/other.sock", "v", take_over.YES) == (None, 1)
 
 

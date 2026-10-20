@@ -132,7 +132,7 @@ _lock_errors_guard = threading.Lock()
 
 # A lock file untouched this long belongs to a socket nobody has answered on
 # for a week. Taking a lock refreshes its mtime, so one in use is never old.
-ANSWER_LOCK_MAX_AGE_SECONDS = 7 * 24 * 3600.0
+ANSWER_LOCK_MAXIMUM_AGE_SECONDS = 7 * 24 * 3600.0
 
 # The fallback when the file lock is unusable: one threading.Lock per socket,
 # so the guards of ONE process (a sweep and a watchdog) still answer a prompt
@@ -159,10 +159,10 @@ def _answer_lock_path(socket_path: str) -> Path:
 
 
 def _answer_locks_directory() -> Path:
-    return cache.CACHE_DIR / "answer-locks"
+    return cache.CACHE_DIRECTORY / "answer-locks"
 
 
-def sweep_answer_locks(max_age_seconds: float = ANSWER_LOCK_MAX_AGE_SECONDS) -> int:
+def sweep_answer_locks(maximum_age_seconds: float = ANSWER_LOCK_MAXIMUM_AGE_SECONDS) -> int:
     """Remove answer-lock files untouched for `max_age_seconds`; return how many
     went. Nothing else ever deletes them, and each socket path leaves one.
     Unlinking a file some guard holds at that very instant only splits the lock
@@ -170,7 +170,7 @@ def sweep_answer_locks(max_age_seconds: float = ANSWER_LOCK_MAX_AGE_SECONDS) -> 
     is refreshed on every answer, so in practice it is never old. A file that
     cannot be stat'ed or removed is skipped."""
     removed = 0
-    cutoff = time.time() - max_age_seconds
+    cutoff = time.time() - maximum_age_seconds
     for path in _answer_locks_directory().glob("*.lock"):
         try:
             if path.stat().st_mtime < cutoff:
@@ -219,8 +219,11 @@ def _answer_lock(socket_path: str) -> Iterator[bool]:
         held = True
         with contextlib.suppress(OSError):
             os.utime(descriptor)
-    except OSError as exc:
-        busy = isinstance(exc, BlockingIOError) or exc.errno in (errno.EWOULDBLOCK, errno.EAGAIN)
+    except OSError as error:
+        busy = isinstance(error, BlockingIOError) or error.errno in (
+            errno.EWOULDBLOCK,
+            errno.EAGAIN,
+        )
         if not busy:
             with _lock_errors_guard:
                 first_failure = socket_path not in _lock_errors_logged
@@ -230,7 +233,7 @@ def _answer_lock(socket_path: str) -> Iterator[bool]:
                     "nvim follower: answer lock unusable for %s, "
                     "answering under a per-process lock only: %s",
                     socket_path,
-                    exc,
+                    error,
                 )
             fallback = _process_lock(socket_path)
             held = fallback.acquire(blocking=False)
@@ -364,9 +367,9 @@ class Watchdog:
     def _run(self) -> None:
         try:
             nvim = self._connect()
-        except Exception as exc:
+        except Exception as error:
             logger.warning(
-                "nvim follower: prompt watchdog could not connect (%s): %s", self._label, exc
+                "nvim follower: prompt watchdog could not connect (%s): %s", self._label, error
             )
             return
         try:
@@ -374,9 +377,11 @@ class Watchdog:
                 if not self.suspended.is_set():
                     dismiss_prompt(nvim, self._key, self._answered)
                 self._stop.wait(POLL_SECONDS)
-        except Exception as exc:
+        except Exception as error:
             if not self._stop.is_set():
-                logger.warning("nvim follower: prompt watchdog stopped (%s): %s", self._label, exc)
+                logger.warning(
+                    "nvim follower: prompt watchdog stopped (%s): %s", self._label, error
+                )
         finally:
             close_connection(nvim)
 
@@ -394,8 +399,8 @@ def _log_messages_tail(nvim: Any, label: str) -> None:
         result = nvim.api.exec2("messages", {"output": True})
         tail = str(result.get("output", "")).strip().splitlines()[-_MESSAGES_TAIL:]
         logger.warning("nvim follower: :messages after %s: %s", label, " | ".join(tail))
-    except Exception as exc:
-        logger.warning("nvim follower: could not read :messages after %s: %s", label, exc)
+    except Exception as error:
+        logger.warning("nvim follower: could not read :messages after %s: %s", label, error)
 
 
 def _log_sweep(seen: dict[str, Any], label: str) -> None:

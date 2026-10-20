@@ -40,10 +40,10 @@ def _vim(verdict: str | None, sent: list[str], reads_handle: bool = True) -> obj
         sent.append(text)
         handle = _HANDLE.search(text)
         if reads_handle and handle:
-            (cache.CACHE_DIR / handle.group(1)).unlink(missing_ok=True)
+            (cache.CACHE_DIRECTORY / handle.group(1)).unlink(missing_ok=True)
         match = _LANDED.search(text)
         if verdict is not None and match:
-            answer = cache.CACHE_DIR / f"landed-{match.group(2)}.txt"
+            answer = cache.CACHE_DIRECTORY / f"landed-{match.group(2)}.txt"
             answer.write_text(f"{verdict}\n{match.group(1)}\n")
 
     return send_text
@@ -93,7 +93,7 @@ def test_nothing_follows_a_navigation_vim_did_not_confirm(name: str, verdict: bo
     # filetype, keystrokes or relock after it.
     assert _LANDED.search(sent[-1]), sent
     assert not any(_LANDED.search(text) for text in sent[:-1])
-    assert not (cache.CACHE_DIR / "landed-2.txt").exists()
+    assert not (cache.CACHE_DIRECTORY / "landed-2.txt").exists()
 
 
 @pytest.mark.parametrize("name", ACTING)
@@ -102,12 +102,12 @@ def test_a_confirmed_navigation_goes_on(name: str) -> None:
     assert error is None
     if name != "goto_file":
         assert not _LANDED.search(sent[-1]), sent
-    assert not (cache.CACHE_DIR / "landed-2.txt").exists()
+    assert not (cache.CACHE_DIRECTORY / "landed-2.txt").exists()
 
 
 def test_a_stale_confirmation_from_an_earlier_line_is_not_taken() -> None:
     """A late answer to an earlier navigation carries that line's nonce."""
-    answer = cache.CACHE_DIR / "landed-2.txt"
+    answer = cache.CACHE_DIRECTORY / "landed-2.txt"
     answer.parent.mkdir(parents=True)
 
     def stale(self: object, text: str) -> None:
@@ -128,10 +128,10 @@ def test_a_stale_confirmation_from_an_earlier_line_is_not_taken() -> None:
 
 
 def _record(marker_exists: bool) -> tuple[Path, Path]:
-    cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    record = cache.CACHE_DIR / "home-2"
+    cache.CACHE_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    record = cache.CACHE_DIRECTORY / "home-2"
     record.write_text("4242 h2-abcdef\n")
-    marker = cache.CACHE_DIR / "h2-abcdef"
+    marker = cache.CACHE_DIRECTORY / "h2-abcdef"
     if marker_exists:
         marker.write_text("")
     return record, marker
@@ -145,7 +145,7 @@ def test_no_answer_and_an_unread_handle_forget_a_yes() -> None:
     assert isinstance(error, NavigationFailed)
     assert "asking about its HOME again" in str(error)
     assert not record.exists()
-    assert not list(cache.CACHE_DIR.glob("p2-*"))  # the unread handle goes
+    assert not list(cache.CACHE_DIRECTORY.glob("p2-*"))  # the unread handle goes
 
 
 @pytest.mark.parametrize(
@@ -189,7 +189,7 @@ def test_an_unanswered_probe_forgets_a_yes() -> None:
 
 def test_an_unanswered_readonly_question_forgets_a_yes() -> None:
     record, _marker = _record(True)
-    (cache.CACHE_DIR / "readonly-2.asked").touch()  # a restore requested it
+    (cache.CACHE_DIRECTORY / "readonly-2.asked").touch()  # a restore requested it
     tmux_vim._SENT_READONLY_TOKENS["%2"] = 123456  # and this process sent it
     with (
         patch.object(tmux_vim, "_PROBE_TIMEOUT_SECONDS", 0.05),
@@ -205,17 +205,17 @@ def test_a_vim_whose_state_is_gone_is_still_asked_about_readonly() -> None:
     # the `:w!` cue instead of a plain one that ends in E45.
     FollowerState.set("@9", backend="tmux", target="%2", adopted=True)
     FollowerState.clear("@9")
-    answer = cache.CACHE_DIR / "readonly-2.txt"
+    answer = cache.CACHE_DIRECTORY / "readonly-2.txt"
     answer.parent.mkdir(parents=True, exist_ok=True)
     answer.write_text("1\n123456\n")
-    (cache.CACHE_DIR / "readonly-2.asked").touch()  # a restore requested it
+    (cache.CACHE_DIRECTORY / "readonly-2.asked").touch()  # a restore requested it
     tmux_vim._SENT_READONLY_TOKENS["%2"] = 123456  # and this process sent it
     assert TmuxVimFollower(pane_id="%2", window_id="@9").user_readonly("/tmp/t.py") is True
 
 
 def test_a_dedicated_vim_is_never_asked_about_readonly() -> None:
     FollowerState.set("@9", backend="tmux", target="%2", adopted=False)
-    answer = cache.CACHE_DIR / "readonly-2.txt"
+    answer = cache.CACHE_DIRECTORY / "readonly-2.txt"
     answer.parent.mkdir(parents=True, exist_ok=True)
     answer.write_text("1\n")
     assert TmuxVimFollower(pane_id="%2", window_id="@9").user_readonly("/tmp/t.py") is False
@@ -229,7 +229,7 @@ def test_an_unrequested_readonly_answer_is_never_waited_for_or_read(
     # EARLIER hand-off's. Only a restore this cycle requested is waited for.
     FollowerState.set("@9", backend="tmux", target="%2", adopted=True)
     FollowerState.clear("@9")
-    stale = cache.CACHE_DIR / "readonly-2.txt"
+    stale = cache.CACHE_DIRECTORY / "readonly-2.txt"
     stale.parent.mkdir(parents=True, exist_ok=True)
     stale.write_text("1\n")
     with patch(
@@ -361,7 +361,7 @@ def test_an_error_the_navigation_caught_is_logged_and_the_verdict_decides(
         landed(self, text)  # type: ignore[operator]
         match = _LANDED.search(text)
         if match:
-            answer = cache.CACHE_DIR / f"landed-{match.group(2)}.txt"
+            answer = cache.CACHE_DIRECTORY / f"landed-{match.group(2)}.txt"
             answer.write_text(f"{verdict}\nVim(echoerr):x\n{match.group(1)}\n")
 
     with (
@@ -381,7 +381,7 @@ def test_an_error_the_navigation_caught_is_logged_and_the_verdict_decides(
 
 def test_distrust_without_a_record_or_with_a_garbled_one_does_nothing() -> None:
     assert tmux_vim._distrust_home("%2") is False
-    record = cache.CACHE_DIR / "home-2"
+    record = cache.CACHE_DIRECTORY / "home-2"
     record.parent.mkdir(parents=True)
     record.write_text("garbled")
     assert tmux_vim._distrust_home("%2") is False
@@ -395,10 +395,10 @@ def test_a_real_vims_landing_left_by_an_earlier_call_never_confirms_a_new_one(
     """The check answers "landed" only for the landing its own acting call
     recorded: an earlier call's leftovers (a garbled one never reached its
     `unlet!`) name another token, and an acting call forgets them first."""
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     name, text = tmux_vim._vim_functions()
     script = tmux_vim._script_file(name, text)
-    answer = cache.CACHE_DIR / "landed-2.txt"
+    answer = cache.CACHE_DIRECTORY / "landed-2.txt"
     out = tmp_path / "out.txt"
     subprocess.run(
         [

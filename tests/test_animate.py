@@ -13,7 +13,7 @@ import pytest
 from vim_ai_follower import control, state
 from vim_ai_follower.animate import (
     _EXIT_INSERT,
-    MAX_ANIMATION_SECONDS,
+    MAXIMUM_ANIMATION_SECONDS,
     PAUSE_POLL_SECONDS,
     AnimationResult,
     ApplyResult,
@@ -215,7 +215,7 @@ def test_apply_passes_window_id_and_base_dir_to_check_signal() -> None:
             pace_seconds=0.0,
             window_id="@7",
             deadline=_NO_DEADLINE,
-            control_base_dir=Path("/tmp/x"),
+            control_base_directory=Path("/tmp/x"),
         )
     check.assert_called_once_with("@7", Path("/tmp/x"))
 
@@ -280,7 +280,7 @@ def _signal_left_by_a_finished_animation(
     earlier = subprocess.Popen(["sleep", "30"])
     try:
         (base_directory / "@1.animating").write_text(f"{earlier.pid} running")
-        request("@1", base_dir=base_directory)
+        request("@1", base_directory=base_directory)
     finally:
         earlier.kill()
         earlier.wait()
@@ -298,7 +298,7 @@ def test_run_ops_ignores_a_pause_left_for_an_earlier_animation(tmp_path: Path) -
     pane = cast(TmuxPane, MagicMock())
     ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))]
     with _signal_left_by_a_finished_animation(tmp_path, control.request_pause):
-        result = run_ops(pane, "@1", ops, pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", ops, pace_seconds=0.0, base_directory=tmp_path)
     # the stale pause from before this call started must not affect it
     assert result == AnimationResult("completed", 1)
     assert not (tmp_path / "@1.pause").exists()  # and it does not linger
@@ -310,7 +310,7 @@ def _resume_on_first_poll(base_directory: Path, seen: list[str | None]) -> Calla
 
     def poll(_seconds: float) -> None:
         seen.append(control.animating_state("@1", base_directory))
-        control.request_pause("@1", base_dir=base_directory)
+        control.request_pause("@1", base_directory=base_directory)
 
     return poll
 
@@ -322,14 +322,14 @@ def test_run_ops_honors_a_pause_pressed_before_its_first_keystroke(tmp_path: Pat
     # "Paused" flashed and the whole edit typed through (BACKLOG D1: 5 of 5
     # runs of the m-pause0 measurement).
     assert control.try_acquire_animating("@1", tmp_path)  # the hook's announce
-    control.request_pause("@1", base_dir=tmp_path)  # P, while it navigates
+    control.request_pause("@1", base_directory=tmp_path)  # P, while it navigates
     pane = cast(TmuxPane, MagicMock())
     ops = [EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))]
     seen: list[str | None] = []
     with patch(
         "vim_ai_follower.animate.time.sleep", side_effect=_resume_on_first_poll(tmp_path, seen)
     ):
-        result = run_ops(pane, "@1", ops, pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", ops, pace_seconds=0.0, base_directory=tmp_path)
     assert seen == ["paused"]
     assert result == AnimationResult("completed", 1)
     # paused before anything was typed: the first keys are the pause's Escapes
@@ -392,7 +392,7 @@ def test_run_ops_interrupted_mid_insert_undoes_the_insert(tmp_path: Path) -> Non
     # insert mode is now entered — then "interrupt" fires before "a" is sent.
     operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a", "b"))
     with patch("vim_ai_follower.control.check_signal", side_effect=[None, None, "interrupt"]):
-        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_directory=tmp_path)
     assert result == AnimationResult("interrupted", 0)
     sent_texts = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent_texts == ["gg", "O", "u"]
@@ -408,7 +408,7 @@ def test_run_ops_interrupted_before_insert_mode_entered_skips_undo(tmp_path: Pat
     # signal fires on the very first check inside the insert-half send_paced()
     # call — before "gg" is even sent, so insert mode was never entered
     with patch("vim_ai_follower.control.check_signal", side_effect=["interrupt"]):
-        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_directory=tmp_path)
     assert result == AnimationResult("interrupted", 0)
     assert pane.send_key.call_args_list == [  # type: ignore[attr-defined]
         call("Escape"),
@@ -423,7 +423,7 @@ def test_run_ops_interrupted_during_delete_needs_no_undo(tmp_path: Path) -> None
     # the first pair's command text (":2d") gets typed, but the signal fires
     # before its Enter — no pair committed, so Escape alone is enough
     with patch("vim_ai_follower.control.check_signal", side_effect=[None, "interrupt"]):
-        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_directory=tmp_path)
     assert result == AnimationResult("interrupted", 0)
     pane.send_text.assert_called_once_with(":2d")  # type: ignore[attr-defined]
     assert pane.send_key.call_args_list == [  # type: ignore[attr-defined]
@@ -453,7 +453,7 @@ def test_run_ops_pause_in_insert_half_rolls_back_both_halves_then_resumes(
         return None
 
     with patch("vim_ai_follower.control.check_signal", side_effect=_check):
-        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_directory=tmp_path)
     assert result == AnimationResult("completed", 1)
     sent_texts = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent_texts.count("u") == 2  # insert undone AND delete undone before waiting
@@ -473,7 +473,7 @@ def test_run_ops_pause_before_insert_prefix_still_rolls_back_the_delete(
         return "pause" if calls["n"] in (3, 4) else None  # pause at insert's 1st check, resume
 
     with patch("vim_ai_follower.control.check_signal", side_effect=_check):
-        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_directory=tmp_path)
     assert result == AnimationResult("completed", 1)
     sent_texts = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent_texts.count("u") == 1  # only the delete needed rolling back
@@ -491,7 +491,7 @@ def test_run_ops_interrupt_in_insert_half_of_replace_restores_the_op_boundary(
         "vim_ai_follower.control.check_signal",
         side_effect=[None, None, None, None, None, "interrupt"],
     ):
-        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_directory=tmp_path)
     assert result == AnimationResult("interrupted", 0)
     sent_texts = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent_texts.count("u") == 2
@@ -515,7 +515,7 @@ def test_run_ops_interrupt_during_pause_wait_discards_pending(tmp_path: Path) ->
         return None
 
     with patch("vim_ai_follower.control.check_signal", side_effect=_check):
-        result = run_ops(pane, "@1", ops, pace_seconds=0.1, base_dir=tmp_path)
+        result = run_ops(pane, "@1", ops, pace_seconds=0.1, base_directory=tmp_path)
     assert result == AnimationResult("interrupted", 1)
     assert control.has_pending_animation("@1", tmp_path) is False  # wait discards on wake
 
@@ -523,7 +523,7 @@ def test_run_ops_interrupt_during_pause_wait_discards_pending(tmp_path: Path) ->
 def test_run_lines_ignores_an_interrupt_left_for_an_earlier_animation(tmp_path: Path) -> None:
     pane = cast(TmuxPane, MagicMock())
     with _signal_left_by_a_finished_animation(tmp_path, control.request_interrupt):
-        result = run_lines(pane, "@1", ("a",), pace_seconds=0.0, base_dir=tmp_path)
+        result = run_lines(pane, "@1", ("a",), pace_seconds=0.0, base_directory=tmp_path)
     # the stale interrupt from before this call started must not affect it
     assert result == AnimationResult("completed", 1)
     assert not (tmp_path / "@1.interrupt").exists()
@@ -532,13 +532,13 @@ def test_run_lines_ignores_an_interrupt_left_for_an_earlier_animation(tmp_path: 
 def test_run_lines_honors_a_pause_pressed_before_its_first_keystroke(tmp_path: Path) -> None:
     # The show_fresh twin of the run_ops case above (same D1 race).
     assert control.try_acquire_animating("@1", tmp_path)
-    control.request_pause("@1", base_dir=tmp_path)
+    control.request_pause("@1", base_directory=tmp_path)
     pane = cast(TmuxPane, MagicMock())
     seen: list[str | None] = []
     with patch(
         "vim_ai_follower.animate.time.sleep", side_effect=_resume_on_first_poll(tmp_path, seen)
     ):
-        result = run_lines(pane, "@1", ("a",), pace_seconds=0.0, base_dir=tmp_path)
+        result = run_lines(pane, "@1", ("a",), pace_seconds=0.0, base_directory=tmp_path)
     assert seen == ["paused"]
     assert result == AnimationResult("completed", 1)
     assert pane.method_calls[:3] == [  # type: ignore[attr-defined]
@@ -551,9 +551,9 @@ def test_run_lines_honors_a_pause_pressed_before_its_first_keystroke(tmp_path: P
 def test_an_interrupt_pressed_before_the_first_keystroke_is_honored_too(tmp_path: Path) -> None:
     # S reads the same "running" marker, so it raced the same clear.
     assert control.try_acquire_animating("@1", tmp_path)
-    control.request_interrupt("@1", base_dir=tmp_path)
+    control.request_interrupt("@1", base_directory=tmp_path)
     pane = cast(TmuxPane, MagicMock())
-    result = run_lines(pane, "@1", ("a",), pace_seconds=0.0, base_dir=tmp_path)
+    result = run_lines(pane, "@1", ("a",), pace_seconds=0.0, base_directory=tmp_path)
     assert result == AnimationResult("interrupted", 0)
     pane.send_text.assert_not_called()  # type: ignore[attr-defined]
 
@@ -609,7 +609,7 @@ def test_run_lines_interrupted_after_bare_i_skips_undo(tmp_path: Path) -> None:
     # the line's text) is "interrupt". 'i' + Escape with no text typed never
     # creates an undo entry — sending 'u' here would undo the PREVIOUS change
     with patch("vim_ai_follower.control.check_signal", side_effect=[None, "interrupt"]):
-        result = run_lines(pane, "@1", ("a",), pace_seconds=0.0, base_dir=tmp_path)
+        result = run_lines(pane, "@1", ("a",), pace_seconds=0.0, base_directory=tmp_path)
     assert result == AnimationResult("interrupted", 0)
     sent_texts = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent_texts == ["i"]
@@ -624,7 +624,7 @@ def test_run_lines_interrupted_after_text_undoes_the_partial_line(tmp_path: Path
     # "i" and the text both go through; interrupt fires before Escape — a
     # real change exists now, so the partial line must be undone
     with patch("vim_ai_follower.control.check_signal", side_effect=[None, None, "interrupt"]):
-        result = run_lines(pane, "@1", ("a",), pace_seconds=0.0, base_dir=tmp_path)
+        result = run_lines(pane, "@1", ("a",), pace_seconds=0.0, base_directory=tmp_path)
     assert result == AnimationResult("interrupted", 0)
     sent_texts = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent_texts == ["i", "a", "u"]
@@ -639,7 +639,7 @@ def test_run_lines_interrupted_after_bare_o_undoes_the_opened_line(tmp_path: Pat
         "vim_ai_follower.control.check_signal",
         side_effect=[None] * 5 + ["interrupt"],
     ):
-        result = run_lines(pane, "@1", ("a", "b"), pace_seconds=0.0, base_dir=tmp_path)
+        result = run_lines(pane, "@1", ("a", "b"), pace_seconds=0.0, base_directory=tmp_path)
     assert result == AnimationResult("interrupted", 1)
     sent_texts = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent_texts == ["i", "a", "o", "u"]
@@ -660,7 +660,7 @@ def test_run_lines_pause_mid_first_line_waits_then_retries_with_i(tmp_path: Path
         return None
 
     with patch("vim_ai_follower.control.check_signal", side_effect=_check):
-        result = run_lines(pane, "@1", ("a", "b"), pace_seconds=0.0, base_dir=tmp_path)
+        result = run_lines(pane, "@1", ("a", "b"), pace_seconds=0.0, base_directory=tmp_path)
     assert result == AnimationResult("completed", 2)
     sent_texts = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     # rollback undid the partial line; the retry re-opens with 'i' (virgin buffer)
@@ -683,7 +683,7 @@ def test_run_lines_pause_on_later_line_arms_continuation_fallback(tmp_path: Path
         return None
 
     with patch("vim_ai_follower.control.check_signal", side_effect=_check):
-        result = run_lines(pane, "@1", ("a", "b", "c"), pace_seconds=0.2, base_dir=tmp_path)
+        result = run_lines(pane, "@1", ("a", "b", "c"), pace_seconds=0.2, base_directory=tmp_path)
     assert result == AnimationResult("completed", 3)
     assert pending_seen == [control.PendingShowFresh(("b", "c"), 0.2, continuation=True)]
 
@@ -692,7 +692,7 @@ def test_run_lines_interrupt_during_pause_wait_of_continuation_run(tmp_path: Pat
     pane = cast(TmuxPane, MagicMock())
     with patch("vim_ai_follower.control.check_signal", side_effect=["pause", "interrupt"]):
         result = run_lines(
-            pane, "@1", ("x", "y"), pace_seconds=0.0, base_dir=tmp_path, continuation=True
+            pane, "@1", ("x", "y"), pace_seconds=0.0, base_directory=tmp_path, continuation=True
         )
     assert result == AnimationResult("interrupted", 0)
     assert control.has_pending_animation("@1", tmp_path) is False
@@ -701,7 +701,7 @@ def test_run_lines_interrupt_during_pause_wait_of_continuation_run(tmp_path: Pat
 def test_run_lines_empty_tuple_completes_immediately(tmp_path: Path) -> None:
     pane = cast(TmuxPane, MagicMock())
     with patch("vim_ai_follower.control.check_signal", return_value=None):
-        result = run_lines(pane, "@1", (), pace_seconds=0.0, base_dir=tmp_path)
+        result = run_lines(pane, "@1", (), pace_seconds=0.0, base_directory=tmp_path)
     assert result == AnimationResult("completed", 0)
     pane.send_text.assert_not_called()  # type: ignore[attr-defined]
 
@@ -720,7 +720,7 @@ def test_run_lines_marks_animating_and_leaves_the_slot_to_its_owner(tmp_path: Pa
         return
 
     with patch("vim_ai_follower.control.check_signal", side_effect=_check):
-        result = run_lines(pane, "@1", ("a", "b"), pace_seconds=0.0, base_dir=tmp_path)
+        result = run_lines(pane, "@1", ("a", "b"), pace_seconds=0.0, base_directory=tmp_path)
     assert result == AnimationResult("completed", 2)
     assert seen and all(seen)  # marker present at every keystroke check
     assert control.animating_state("@1", tmp_path) == "running"  # still the owner's
@@ -736,7 +736,7 @@ def test_run_ops_leaves_the_slot_to_its_owner_after_interrupt_during_wait(
     pane = cast(TmuxPane, MagicMock())
     operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("a",))
     with patch("vim_ai_follower.control.check_signal", side_effect=["pause", "interrupt"]):
-        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_directory=tmp_path)
     assert result == AnimationResult("interrupted", 0)
     assert control.animating_state("@1", tmp_path) == "running"
 
@@ -767,10 +767,10 @@ def test_no_second_hook_gets_the_slot_between_one_hooks_drivers(tmp_path: Path) 
     # catch-up's driver had cleared it on exit: two animations in one pane.
     assert control.try_acquire_animating("@1", tmp_path)
     pane = cast(TmuxPane, MagicMock())
-    run_lines(pane, "@1", ("caught up",), pace_seconds=0.0, base_dir=tmp_path)
+    run_lines(pane, "@1", ("caught up",), pace_seconds=0.0, base_directory=tmp_path)
     assert _another_hook_acquires(tmp_path) is False, "a second hook took the slot mid-hook"
     operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("edit",))
-    run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
+    run_ops(pane, "@1", [operation], pace_seconds=0.0, base_directory=tmp_path)
     assert _another_hook_acquires(tmp_path) is False
     control.clear_animating("@1", tmp_path)  # the hook's own release
     assert _another_hook_acquires(tmp_path) is True
@@ -793,7 +793,7 @@ def test_run_ops_pause_wait_polls_until_the_resume_arrives(tmp_path: Path) -> No
         patch("vim_ai_follower.control.check_signal", side_effect=_check),
         patch("vim_ai_follower.animate.time.sleep") as sleep,
     ):
-        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_directory=tmp_path)
     assert result == AnimationResult("completed", 1)
     sleep.assert_any_call(PAUSE_POLL_SECONDS)
 
@@ -803,7 +803,7 @@ def test_run_ops_interrupt_during_delete_half_pause_wait(tmp_path: Path) -> None
     operation = EditOp(kind="replace", start_line=2, end_line=3, new_lines=("X",))
     # pause before the delete's Enter (check 2); interrupt lands in the wait
     with patch("vim_ai_follower.control.check_signal", side_effect=[None, "pause", "interrupt"]):
-        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_directory=tmp_path)
     assert result == AnimationResult("interrupted", 0)
     assert control.has_pending_animation("@1", tmp_path) is False
 
@@ -822,7 +822,7 @@ def test_run_ops_calls_on_resume_exactly_once_when_resumed_from_a_pause(
     on_resume = MagicMock()
     with patch("vim_ai_follower.control.check_signal", side_effect=_pause_then_resume):
         result = run_ops(
-            pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path, on_resume=on_resume
+            pane, "@1", [operation], pace_seconds=0.0, base_directory=tmp_path, on_resume=on_resume
         )
     assert result == AnimationResult("completed", 1)
     on_resume.assert_called_once_with()
@@ -843,7 +843,7 @@ def test_run_ops_calls_on_resume_when_paused_in_the_delete_half(tmp_path: Path) 
     on_resume = MagicMock()
     with patch("vim_ai_follower.control.check_signal", side_effect=_pause_then_resume):
         result = run_ops(
-            pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path, on_resume=on_resume
+            pane, "@1", [operation], pace_seconds=0.0, base_directory=tmp_path, on_resume=on_resume
         )
     assert result == AnimationResult("completed", 1)
     on_resume.assert_called_once_with()
@@ -855,7 +855,7 @@ def test_run_ops_does_not_call_on_resume_when_never_paused(tmp_path: Path) -> No
     on_resume = MagicMock()
     with patch("vim_ai_follower.control.check_signal", return_value=None):
         result = run_ops(
-            pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path, on_resume=on_resume
+            pane, "@1", [operation], pace_seconds=0.0, base_directory=tmp_path, on_resume=on_resume
         )
     assert result == AnimationResult("completed", 1)
     on_resume.assert_not_called()
@@ -874,7 +874,7 @@ def test_run_lines_calls_on_resume_exactly_once_when_resumed_from_a_pause(
     on_resume = MagicMock()
     with patch("vim_ai_follower.control.check_signal", side_effect=_pause_then_resume):
         result = run_lines(
-            pane, "@1", ("hello",), pace_seconds=0.0, base_dir=tmp_path, on_resume=on_resume
+            pane, "@1", ("hello",), pace_seconds=0.0, base_directory=tmp_path, on_resume=on_resume
         )
     assert result == AnimationResult("completed", 1)
     on_resume.assert_called_once_with()
@@ -894,7 +894,7 @@ def test_run_lines_re_reads_pace_from_provider_each_line(tmp_path: Path) -> None
     with (
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
-        result = run_lines(pane, "@1", ("a", "b"), provider, base_dir=tmp_path)
+        result = run_lines(pane, "@1", ("a", "b"), provider, base_directory=tmp_path)
     assert result == AnimationResult("completed", 2)
     assert len(calls) >= 2  # one evaluation per line, not one per run
 
@@ -916,7 +916,7 @@ def test_run_ops_re_reads_pace_from_provider_once_per_op(tmp_path: Path) -> None
     with (
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
-        result = run_ops(pane, "@1", ops, provider, base_dir=tmp_path)
+        result = run_ops(pane, "@1", ops, provider, base_directory=tmp_path)
     assert result == AnimationResult("completed", 2)
     assert len(calls) >= 2  # one evaluation per op, not one per run
 
@@ -936,7 +936,7 @@ def test_delete_half_pause_rolls_back_each_committed_line_delete(tmp_path: Path)
         return "pause" if calls["n"] in (5, 6) else None
 
     with patch("vim_ai_follower.control.check_signal", side_effect=_pause_after_two_pairs):
-        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_directory=tmp_path)
     assert result.outcome == "completed"
     sent_texts = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     first_retry = sent_texts.index(":2d", sent_texts.index("u"))
@@ -958,13 +958,13 @@ def test_insert_half_rollback_undoes_every_line_of_the_delete_half(tmp_path: Pat
         return "interrupt" if calls["n"] == 10 else None
 
     with patch("vim_ai_follower.control.check_signal", side_effect=_interrupt_in_insert):
-        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_directory=tmp_path)
     assert result.outcome == "interrupted"
     sent_texts = [recorded_call.args[0] for recorded_call in pane.send_text.call_args_list]  # type: ignore[attr-defined]
     assert sent_texts.count("u") == 4  # 1 insert + 3 line deletes
 
 
-# One pacing budget per ANIMATION (MAX_ANIMATION_SECONDS), not per call of
+# One pacing budget per ANIMATION (MAXIMUM_ANIMATION_SECONDS), not per call of
 # send_paced: run_lines/run_ops call it once per line / op half, so a budget
 # recomputed per call never ran out and a huge Write was paced line by line
 # with no cap at all. These run on a fake clock: monotonic() reads it and
@@ -1013,7 +1013,7 @@ def _run_on_fake_clock(
     ):
         if animation == "lines":
             lines = tuple(f"line {number}" for number in range(100))  # 4 sequences each: 400 s
-            result = run_lines(cast(TmuxPane, pane), "@1", lines, 1.0, base_dir=tmp_path)
+            result = run_lines(cast(TmuxPane, pane), "@1", lines, 1.0, base_directory=tmp_path)
         else:
             # 50 one-line replacements, bottom-up like compute_edit_script:
             # 2 delete + 6 insert sequences each, 400 s at 1 s per sequence.
@@ -1023,7 +1023,7 @@ def _run_on_fake_clock(
                 )
                 for number in range(100, 1, -2)
             ]
-            result = run_ops(cast(TmuxPane, pane), "@1", ops, 1.0, base_dir=tmp_path)
+            result = run_ops(cast(TmuxPane, pane), "@1", ops, 1.0, base_directory=tmp_path)
     return result, pane
 
 
@@ -1034,7 +1034,7 @@ def test_a_long_animation_is_paced_for_sixty_seconds_in_total(
     clock = _FakeClock()
     result, pane = _run_on_fake_clock(clock, tmp_path, animation)
     assert result.outcome == "completed"
-    assert clock.slept == MAX_ANIMATION_SECONDS
+    assert clock.slept == MAXIMUM_ANIMATION_SECONDS
     # Past the deadline everything is still sent, just unpaced.
     sent = pane.send_text.call_count + pane.send_key.call_count
     assert sent == 400
@@ -1049,8 +1049,8 @@ def test_time_spent_paused_does_not_eat_the_pacing_budget(tmp_path: Path, animat
     )
     assert result.outcome == "completed"
     # 30 s before the pause, then the rest of the 60 s budget after it.
-    assert clock.slept == MAX_ANIMATION_SECONDS
-    assert clock.now == MAX_ANIMATION_SECONDS + 100.0
+    assert clock.slept == MAXIMUM_ANIMATION_SECONDS
+    assert clock.now == MAXIMUM_ANIMATION_SECONDS + 100.0
 
 
 def _pause_at_check(pause_check: int) -> Callable[..., str | None]:
@@ -1089,7 +1089,7 @@ def test_run_ops_keeps_the_remainder_when_the_post_pause_goto_fails(tmp_path: Pa
             "@1",
             ops,
             pace_seconds=0.0,
-            base_dir=tmp_path,
+            base_directory=tmp_path,
             file_path="/x.py",
             on_resume=_failed_goto,
             base_content="z\n",
@@ -1111,7 +1111,7 @@ def test_run_lines_keeps_the_remainder_when_the_post_pause_goto_fails(tmp_path: 
             "@1",
             ("a", "b", "c"),
             pace_seconds=0.0,
-            base_dir=tmp_path,
+            base_directory=tmp_path,
             file_path="/x.py",
             on_resume=_failed_goto,
             base_content="",
@@ -1134,14 +1134,14 @@ def test_run_ops_ends_stopped_when_a_stop_lands_in_the_pause_wait(tmp_path: Path
             return "pause"
         if calls["count"] == 2:  # the first wait poll: the stop lands now
             assert control.has_pending_animation("@1", tmp_path) is True
-            state.mark_stopped("@1", None, in_tmux=False, base_dir=tmp_path)
+            state.mark_stopped("@1", None, in_tmux=False, base_directory=tmp_path)
         return None
 
     with (
         patch("vim_ai_follower.control.check_signal", side_effect=_check),
         patch("vim_ai_follower.animate.time.sleep"),
     ):
-        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_directory=tmp_path)
     assert result == AnimationResult("stopped", 0)
     assert control.has_pending_animation("@1", tmp_path) is False  # no remainder
     sent_texts = [each.args[0] for each in pane.send_text.call_args_list]  # type: ignore[attr-defined]
@@ -1153,7 +1153,7 @@ def test_run_lines_ends_stopped_when_a_stop_and_start_replace_the_follower(
 ) -> None:
     # A stop followed by a start lifts the tombstone; the state then names
     # another follower, which is a stop for this run all the same.
-    state.FollowerState.set("@1", "tmux", "%1", base_dir=tmp_path, server_pid=None)
+    state.FollowerState.set("@1", "tmux", "%1", base_directory=tmp_path, server_pid=None)
     pane = cast(TmuxPane, MagicMock())
     calls = {"count": 0}
 
@@ -1162,14 +1162,14 @@ def test_run_lines_ends_stopped_when_a_stop_and_start_replace_the_follower(
         if calls["count"] == 1:
             return "pause"
         if calls["count"] == 2:
-            state.FollowerState.set("@1", "tmux", "%9", base_dir=tmp_path, server_pid=None)
+            state.FollowerState.set("@1", "tmux", "%9", base_directory=tmp_path, server_pid=None)
         return None
 
     with (
         patch("vim_ai_follower.control.check_signal", side_effect=_check),
         patch("vim_ai_follower.animate.time.sleep"),
     ):
-        result = run_lines(pane, "@1", ("x", "y"), pace_seconds=0.0, base_dir=tmp_path)
+        result = run_lines(pane, "@1", ("x", "y"), pace_seconds=0.0, base_directory=tmp_path)
     assert result == AnimationResult("stopped", 0)
     assert control.has_pending_animation("@1", tmp_path) is False
 
@@ -1186,14 +1186,14 @@ def test_the_pause_wait_with_an_unreadable_state_ends_only_on_the_tombstone(
         if calls["count"] == 1:
             return "pause"
         if calls["count"] == 3:  # two polls passed: the bad state alone is no stop
-            state.mark_stopped("@1", None, in_tmux=False, base_dir=tmp_path)
+            state.mark_stopped("@1", None, in_tmux=False, base_directory=tmp_path)
         return None
 
     with (
         patch("vim_ai_follower.control.check_signal", side_effect=_check),
         patch("vim_ai_follower.animate.time.sleep") as sleep,
     ):
-        result = run_lines(pane, "@1", ("x",), pace_seconds=0.0, base_dir=tmp_path)
+        result = run_lines(pane, "@1", ("x",), pace_seconds=0.0, base_directory=tmp_path)
     assert result == AnimationResult("stopped", 0)
     sleep.assert_any_call(PAUSE_POLL_SECONDS)
 
@@ -1210,12 +1210,12 @@ def test_run_ops_ends_stopped_when_a_stop_lands_in_the_delete_half_pause_wait(
         if calls["count"] == 2:  # before the delete's Enter
             return "pause"
         if calls["count"] == 3:
-            state.mark_stopped("@1", None, in_tmux=False, base_dir=tmp_path)
+            state.mark_stopped("@1", None, in_tmux=False, base_directory=tmp_path)
         return None
 
     with (
         patch("vim_ai_follower.control.check_signal", side_effect=_check),
         patch("vim_ai_follower.animate.time.sleep"),
     ):
-        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_dir=tmp_path)
+        result = run_ops(pane, "@1", [operation], pace_seconds=0.0, base_directory=tmp_path)
     assert result == AnimationResult("stopped", 0)

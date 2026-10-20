@@ -68,7 +68,7 @@ def test_interrupt_mid_line_restores_the_deleted_range_and_drops_the_typed_row(
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=[None, None, None, "interrupt"]),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("interrupted", 0)
@@ -92,7 +92,7 @@ def test_interrupt_at_the_first_char_of_the_first_new_line_still_rolls_back(
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=[None, None, "interrupt"]),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("interrupted", 0)
@@ -113,7 +113,7 @@ def test_interrupt_at_a_new_line_boundary_rolls_back_the_full_typed_region(
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=[None, None, None, "interrupt"]),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("interrupted", 0)
@@ -132,7 +132,7 @@ def test_interrupt_inside_a_wiping_op_swallows_the_implicit_blank(tmp_path: Path
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=[None, None, None, "interrupt"]),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("interrupted", 0)
@@ -155,7 +155,7 @@ def test_an_op_boundary_interrupt_leaves_the_buffer_untouched(tmp_path: Path) ->
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=["interrupt"]),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("interrupted", 0)
@@ -176,7 +176,7 @@ def test_a_delete_only_op_is_neither_snapshotted_nor_rolled_back(tmp_path: Path)
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=[None, "interrupt"]),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", ops)
     assert result == AnimationResult("interrupted", 1)  # op 0 genuinely done
@@ -193,7 +193,7 @@ def test_a_completed_op_never_rolls_back(tmp_path: Path) -> None:
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("completed", 1)
@@ -213,7 +213,7 @@ def test_a_stop_while_paused_mid_op_neither_rolls_back_nor_relocks(tmp_path: Pat
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=[None, None, None, "pause"]),
         patch("vim_ai_follower.backends.nvim._wait_while_paused", return_value="stopped"),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", [operation], before="a\nb\nc\n")
     assert result == AnimationResult("stopped", 0)
@@ -234,7 +234,7 @@ def test_a_stop_while_paused_at_an_op_boundary_ends_the_run(tmp_path: Path) -> N
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=[None, "pause"]),
         patch("vim_ai_follower.backends.nvim._wait_while_paused", return_value="stopped"),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", ops)
     assert result == AnimationResult("stopped", 1)

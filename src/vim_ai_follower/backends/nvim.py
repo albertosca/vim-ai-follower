@@ -134,13 +134,13 @@ return 0
 
 def _animate_lines(
     nvim: pynvim.Nvim,
-    buf: int,
+    buffer: int,
     lines: tuple[str, ...],
     start_row: int,
     pace_provider: Callable[[], float],
     window_id: str,
-    ns: int,
-    base_dir: Path | None = None,
+    namespace_id: int,
+    base_directory: Path | None = None,
     save_pending: Callable[[int], None] | None = None,
     prompt_key: str = "",
     dedicated: bool = False,
@@ -212,29 +212,31 @@ def _animate_lines(
         window = (
             follower_window
             if follower_window != -1
-            else nvim.exec_lua(_FOLLOWER_WINDOW_LUA, buf, -1, own_only)
+            else nvim.exec_lua(_FOLLOWER_WINDOW_LUA, buffer, -1, own_only)
         )
     while index < len(lines):
-        signal = control.check_signal(window_id, base_dir)
+        signal = control.check_signal(window_id, base_directory)
         if signal == "interrupt":
             return AnimationResult("interrupted", index)
         if signal == "pause":
             with nvim_prompt.paused(prompt_key):
-                ended = _wait_while_paused(window_id, _bind_save(save_pending, index), base_dir)
+                ended = _wait_while_paused(
+                    window_id, _bind_save(save_pending, index), base_directory
+                )
             if ended != "resumed":
                 return AnimationResult(ended, index)
             continue  # resumed: retype this line from its clean boundary
         row = start_row + index
-        nvim.api.buf_set_lines(buf, row, row, True, [""])
-        window = nvim.exec_lua(_FOLLOWER_WINDOW_LUA, buf, window, own_only)
+        nvim.api.buf_set_lines(buffer, row, row, True, [""])
+        window = nvim.exec_lua(_FOLLOWER_WINDOW_LUA, buffer, window, own_only)
         line = lines[index]
         pace = pace_provider()
         if pace <= 0:  # pace-0 catch-up: type the whole line at once, no anim
             if line:
-                nvim.api.buf_set_text(buf, row, 0, row, 0, [line])
+                nvim.api.buf_set_text(buffer, row, 0, row, 0, [line])
             index += 1
             continue
-        mark = nvim.api.buf_set_extmark(buf, ns, row, 0, {"line_hl_group": _TYPING_HL})
+        mark = nvim.api.buf_set_extmark(buffer, namespace_id, row, 0, {"line_hl_group": _TYPING_HL})
         char = 0
         # nvim's API columns are BYTE offsets; `char` counts CODE POINTS. They
         # coincide only while the line stays ASCII, so carry the byte offset
@@ -246,16 +248,18 @@ def _animate_lines(
         # (QA visual battery, 2026-09-21). `char` keeps its own meaning
         # untouched — the pace loop, the signal checks and every persisted
         # remainder stay character-granular.
-        col = 0
+        column = 0
         interrupted = False
         while char < len(line):
-            signal = control.check_signal(window_id, base_dir)
+            signal = control.check_signal(window_id, base_directory)
             if signal == "interrupt":
                 interrupted = True
                 break
             if signal == "pause":
                 with nvim_prompt.paused(prompt_key):
-                    ended = _wait_while_paused(window_id, _bind_save(save_pending, index), base_dir)
+                    ended = _wait_while_paused(
+                        window_id, _bind_save(save_pending, index), base_directory
+                    )
                 if ended == "stopped":
                     # The stop tears this nvim down (a dedicated one quits):
                     # not one more request, not even the extmark's removal.
@@ -264,19 +268,19 @@ def _animate_lines(
                     interrupted = True
                     break
                 # The user may have moved to another window while paused.
-                window = nvim.exec_lua(_FOLLOWER_WINDOW_LUA, buf, window, own_only)
+                window = nvim.exec_lua(_FOLLOWER_WINDOW_LUA, buffer, window, own_only)
                 continue  # resumed: retype from the same character
-            nvim.api.buf_set_text(buf, row, col, row, col, [line[char]])
-            col += len(line[char].encode("utf-8"))
+            nvim.api.buf_set_text(buffer, row, column, row, column, [line[char]])
+            column += len(line[char].encode("utf-8"))
             char += 1
             if window:
                 with contextlib.suppress(Exception):
                     # Byte-based too, so the cursor trails the typed prefix by
                     # its byte length, not its character count.
-                    nvim.api.win_set_cursor(window, [row + 1, col])
+                    nvim.api.win_set_cursor(window, [row + 1, column])
             nvim.command("redraw")
             time.sleep(pace)
-        nvim.api.buf_del_extmark(buf, ns, mark)
+        nvim.api.buf_del_extmark(buffer, namespace_id, mark)
         if interrupted:
             # Leave the line exactly as far as it was typed (no snap) and
             # don't count it as shown — see the docstring above.
@@ -352,7 +356,7 @@ def _fileformat_of(data: bytes) -> str | None:
     return "dos" if crlf == breaks else "unix"
 
 
-def _format_from_disk(nvim: pynvim.Nvim, buf: int, file_path: str) -> None:
+def _format_from_disk(nvim: pynvim.Nvim, buffer: int, file_path: str) -> None:
     """Set `buf`'s 'bomb' and 'fileformat' from the file at file_path.
 
     Both editors keep a leading BOM in 'bomb' and a CRLF file's line breaks
@@ -380,15 +384,15 @@ def _format_from_disk(nvim: pynvim.Nvim, buf: int, file_path: str) -> None:
         data = Path(file_path).read_bytes()
     except OSError:
         return
-    was_modified = nvim.api.buf_get_option(buf, "modified")
-    nvim.api.buf_set_option(buf, "bomb", data[:3] == b"\xef\xbb\xbf")
+    was_modified = nvim.api.buf_get_option(buffer, "modified")
+    nvim.api.buf_set_option(buffer, "bomb", data[:3] == b"\xef\xbb\xbf")
     fileformat = _fileformat_of(data)
-    if fileformat is not None and nvim.api.buf_get_option(buf, "fileformat") != fileformat:
-        nvim.api.buf_set_option(buf, "fileformat", fileformat)
+    if fileformat is not None and nvim.api.buf_get_option(buffer, "fileformat") != fileformat:
+        nvim.api.buf_set_option(buffer, "fileformat", fileformat)
     if not was_modified:
-        lines = nvim.api.buf_get_lines(buf, 0, -1, False)
+        lines = nvim.api.buf_get_lines(buffer, 0, -1, False)
         if classify_buffer(lines, data.decode("utf-8", errors="replace")) == "holds":
-            nvim.api.buf_set_option(buf, "modified", False)
+            nvim.api.buf_set_option(buffer, "modified", False)
 
 
 def _buffer_lines(content: str) -> list[str]:
@@ -502,7 +506,7 @@ def _display_name(nvim: pynvim.Nvim, file_path: str) -> str:
     return name
 
 
-def _name_without_swap(nvim: pynvim.Nvim, buf: pynvim.api.Buffer, file_path: str) -> None:
+def _name_without_swap(nvim: pynvim.Nvim, buffer: pynvim.api.Buffer, file_path: str) -> None:
     """Name a new, empty buffer after file_path, opted out of swap first.
 
     Naming a swap-enabled buffer runs nvim's swap check for the new name, so
@@ -516,11 +520,13 @@ def _name_without_swap(nvim: pynvim.Nvim, buf: pynvim.api.Buffer, file_path: str
     written, and `swapfile` is buffer-local, so the check still runs for
     every file the follower does not name. In an adopted nvim the caller
     turns swap back on once the buffer is current (_restore_swap_if_adopted)."""
-    nvim.api.buf_set_option(buf, "swapfile", False)
-    nvim.api.buf_set_name(buf, _display_name(nvim, file_path))
+    nvim.api.buf_set_option(buffer, "swapfile", False)
+    nvim.api.buf_set_name(buffer, _display_name(nvim, file_path))
 
 
-def _show_in_window(nvim: pynvim.Nvim, window: pynvim.api.Window, buf: int, file_path: str) -> None:
+def _show_in_window(
+    nvim: pynvim.Nvim, window: pynvim.api.Window, buffer: int, file_path: str
+) -> None:
     """Put the buffer `buf` in `window`, make that window current, and wipe
     the empty buffer it showed before (_wipe_if_scratch). NavigationFailed
     when the current buffer is not `buf` afterwards (an autocommand moved
@@ -529,14 +535,14 @@ def _show_in_window(nvim: pynvim.Nvim, window: pynvim.api.Window, buf: int, file
     NvimError (final review of backlog-sweep-3, N2/N3)."""
     try:
         replaced = nvim.api.win_get_buf(window)
-        nvim.api.win_set_buf(window, buf)
+        nvim.api.win_set_buf(window, buffer)
         nvim.api.set_current_win(window)
     except pynvim.NvimError as error:
         raise NavigationFailed(
             f"the follower's nvim could not show {file_path}: {error}"
         ) from error
-    _wipe_if_scratch(nvim, replaced, buf)
-    if nvim.api.get_current_buf().handle != buf:
+    _wipe_if_scratch(nvim, replaced, buffer)
+    if nvim.api.get_current_buf().handle != buffer:
         raise NavigationFailed(f"the follower's nvim did not land on {file_path}")
 
 
@@ -713,8 +719,8 @@ class NvimFollower:
             return
         try:
             nvim.api.exec2(_SWAP_BACK_ON, {"output": True})
-        except pynvim.NvimError as exc:
-            logger.warning("adopted nvim: could not turn swap back on, left off: %s", exc)
+        except pynvim.NvimError as error:
+            logger.warning("adopted nvim: could not turn swap back on, left off: %s", error)
             nvim.api.buf_set_option(nvim.api.get_current_buf(), "swapfile", False)
 
     def _exec(self, nvim: pynvim.Nvim, command: str) -> None:
@@ -725,7 +731,7 @@ class NvimFollower:
     def _drive(
         self,
         nvim: pynvim.Nvim,
-        buf: int,
+        buffer: int,
         run: Callable[[], AnimationResult],
         expected: Sequence[str] | None,
         format_from: str | None = None,
@@ -764,17 +770,17 @@ class NvimFollower:
         crashed the hook, left a half-typed line and the "Writing..." float
         up, and the abandoned request still landed at Enter."""
         with nvim_connect.unbounded_requests(nvim):
-            nvim.api.buf_set_option(buf, "modifiable", True)
+            nvim.api.buf_set_option(buffer, "modifiable", True)
             control.mark_animating(self.window_id)
             result = run()
             if result.outcome == "completed":
                 if format_from is not None:
-                    _format_from_disk(nvim, buf, format_from)
+                    _format_from_disk(nvim, buffer, format_from)
                 # Clean only if it holds exactly what Claude wrote: see _IS_CLEAN_LUA.
                 if expected is not None:
-                    nvim.exec_lua(_STAMP_IF_EXPECTED_LUA, buf, list(expected))
+                    nvim.exec_lua(_STAMP_IF_EXPECTED_LUA, buffer, list(expected))
                 if self._locks_buffers():
-                    nvim.api.buf_set_option(buf, "modifiable", False)
+                    nvim.api.buf_set_option(buffer, "modifiable", False)
         return result
 
     def show_fresh(self, file_path: str, content: str, in_new_tab: bool = False) -> AnimationResult:
@@ -799,27 +805,27 @@ class NvimFollower:
         nvim = self._connect()
         in_new_tab = in_new_tab or not self._is_dedicated()
         with self._guarded(nvim, "show_fresh"):
-            ns = nvim.api.create_namespace(_NAMESPACE)
+            namespace_id = nvim.api.create_namespace(_NAMESPACE)
             # Wipe by NUMBER and name via the API: the Ex forms take the path as a
             # pattern / command-line argument, so `[`, `{`, `*` missed the old
             # buffer (then E95 on the rename) and `#`/`%` raised E499.
             stale = _buffer_number(nvim, file_path)
             if stale != -1:
                 nvim.command(f"silent! bwipeout! {stale}")
-            buf = self._fresh_buffer(nvim, file_path, in_new_tab)
+            buffer = self._fresh_buffer(nvim, file_path, in_new_tab)
             # Read the file in and clear it, in ONE command (nvim redraws only
             # between requests, so the content is never on screen): naming
             # left the buffer "not edited", and a plain `:w` after an
             # interrupt failed with E13. Same fix and reasons as the tmux
             # backend's s:rename (_VIM_RENAME); swap is still off here.
-            nvim.exec_lua(_READ_THEN_CLEAR_LUA, buf)
+            nvim.exec_lua(_READ_THEN_CLEAR_LUA, buffer)
             self._restore_swap_if_adopted(nvim)
             self._exec(nvim, "filetype detect")
             nvim.command("setlocal buftype=")
             lines = tuple(content.splitlines())
 
             def run() -> AnimationResult:
-                nvim.api.buf_set_lines(buf, 0, -1, True, [""])
+                nvim.api.buf_set_lines(buffer, 0, -1, True, [""])
 
                 def save_pending(index: int) -> None:
                     control.save_pending_show_fresh(
@@ -839,12 +845,12 @@ class NvimFollower:
 
                 result = _animate_lines(
                     nvim,
-                    buf,
+                    buffer,
                     lines,
                     0,
                     self._pace_provider,
                     self.window_id,
-                    ns,
+                    namespace_id,
                     save_pending=save_pending,
                     prompt_key=self.socket_path,
                     dedicated=self._is_dedicated(),
@@ -852,10 +858,10 @@ class NvimFollower:
                 if result.outcome == "completed" and lines:
                     # Drop the seed blank line the retype pushed to the bottom, so
                     # the buffer holds exactly `content` with no trailing blank.
-                    nvim.api.buf_set_lines(buf, len(lines), len(lines) + 1, True, [])
+                    nvim.api.buf_set_lines(buffer, len(lines), len(lines) + 1, True, [])
                 return result
 
-            return self._drive(nvim, buf, run, list(lines) or [""], format_from=file_path)
+            return self._drive(nvim, buffer, run, list(lines) or [""], format_from=file_path)
 
     def _fresh_buffer(self, nvim: pynvim.Nvim, file_path: str, in_new_tab: bool) -> int:
         """A new buffer named file_path, shown in a new tab (in_new_tab,
@@ -883,7 +889,7 @@ class NvimFollower:
             raise
         return handle
 
-    def _show_in_new_tab(self, nvim: pynvim.Nvim, buf: int, file_path: str) -> pynvim.api.Window:
+    def _show_in_new_tab(self, nvim: pynvim.Nvim, buffer: int, file_path: str) -> pynvim.api.Window:
         """Show the existing buffer `buf` in one new tab and make it current;
         that tab's window, which the caller may mark as the follower's
         (`w:vaf_opened`).
@@ -915,14 +921,14 @@ class NvimFollower:
             raise NavigationFailed(
                 f"the follower's nvim could not open a tab for {file_path}: {error}"
             ) from error
-        _show_in_window(nvim, window, buf, file_path)
+        _show_in_window(nvim, window, buffer, file_path)
         return window
 
     def _run_ops(
         self,
         nvim: pynvim.Nvim,
-        buf: int,
-        ns: int,
+        buffer: int,
+        namespace_id: int,
         ops: list[EditOp],
         pace_provider: Callable[[], float],
         file_path: str,
@@ -938,17 +944,17 @@ class NvimFollower:
         # base every persisted partial below is computed from. Read once:
         # mid-run the buffer may end on a half-typed line, which is precisely
         # the shape a crash-fallback consumer must not have to interpret.
-        initial = _terminated(nvim.api.buf_get_lines(buf, 0, -1, True))
+        initial = _terminated(nvim.api.buf_get_lines(buffer, 0, -1, True))
         # An adopted follower's own window is recorded ONCE, right after the
         # navigation and before any op can pause, and every op types with it:
         # recorded per op, a pause in op 1 let op 2 take the window the user
         # left current (T24c re-review m2'). A dedicated one keeps the
         # fallbacks (-1: _animate_lines resolves them itself).
         dedicated = self._is_dedicated()
-        own_window = -1 if dedicated else nvim.exec_lua(_FOLLOWER_WINDOW_LUA, buf, -1, True)
+        own_window = -1 if dedicated else nvim.exec_lua(_FOLLOWER_WINDOW_LUA, buffer, -1, True)
         index = 0
         while index < len(ops):
-            op = ops[index]
+            operation = ops[index]
 
             # One callback serving both boundaries: _wait_while_paused calls it
             # with no args (op-boundary pause), _animate_lines with the line
@@ -991,32 +997,34 @@ class NvimFollower:
             # Snapshot the pre-delete count now: after the delete call it can
             # no longer tell a genuinely-emptied buffer from one that already
             # held a single real line.
-            wipes_buffer = op.start_line == 1 and op.end_line >= nvim.api.buf_line_count(buf)
+            wipes_buffer = (
+                operation.start_line == 1 and operation.end_line >= nvim.api.buf_line_count(buffer)
+            )
             # EditOp carries no old text, so keep the range we are about to
             # delete: an interrupt mid-op has to put it back (see below). Only
             # an op that animates new lines can stop mid-op — a delete-only op
             # runs to completion between two signal checks — so only that one
             # pays for the snapshot.
             old_lines = (
-                nvim.api.buf_get_lines(buf, op.start_line - 1, op.end_line, True)
-                if op.new_lines
+                nvim.api.buf_get_lines(buffer, operation.start_line - 1, operation.end_line, True)
+                if operation.new_lines
                 else []
             )
-            nvim.api.buf_set_lines(buf, op.start_line - 1, op.end_line, True, [])
-            if op.new_lines:
+            nvim.api.buf_set_lines(buffer, operation.start_line - 1, operation.end_line, True, [])
+            if operation.new_lines:
                 # How many rows sit where the op's range used to be, right
                 # after the delete: zero when the delete emptied the buffer
                 # (the one line nvim insists on keeping is the implicit
                 # blank, not content).
-                rows_after_delete = nvim.api.buf_line_count(buf) - (1 if wipes_buffer else 0)
+                rows_after_delete = nvim.api.buf_line_count(buffer) - (1 if wipes_buffer else 0)
                 result = _animate_lines(
                     nvim,
-                    buf,
-                    op.new_lines,
-                    op.start_line - 1,
+                    buffer,
+                    operation.new_lines,
+                    operation.start_line - 1,
                     pace_provider,
                     self.window_id,
-                    ns,
+                    namespace_id,
                     save_pending=save_pending,
                     prompt_key=self.socket_path,
                     dedicated=dedicated,
@@ -1042,9 +1050,9 @@ class NvimFollower:
                     # half-typed line occupies a row too, and a wiping op's
                     # implicit blank has to be swallowed by the same write or
                     # the restored buffer would carry a spurious trailing one.
-                    occupied = nvim.api.buf_line_count(buf) - rows_after_delete
-                    start = op.start_line - 1
-                    nvim.api.buf_set_lines(buf, start, start + occupied, True, old_lines)
+                    occupied = nvim.api.buf_line_count(buffer) - rows_after_delete
+                    start = operation.start_line - 1
+                    nvim.api.buf_set_lines(buffer, start, start + occupied, True, old_lines)
                     return AnimationResult("interrupted", index)
                 if wipes_buffer:
                     # Drop the implicit blank now pushed past every typed
@@ -1052,8 +1060,8 @@ class NvimFollower:
                     # A delete-only op (no new_lines, handled above) never
                     # reaches here: the implicit blank IS the correct final
                     # state for a buffer emptied with nothing to replace it.
-                    drop = op.start_line - 1 + len(op.new_lines)
-                    nvim.api.buf_set_lines(buf, drop, drop + 1, True, [])
+                    drop = operation.start_line - 1 + len(operation.new_lines)
+                    nvim.api.buf_set_lines(buffer, drop, drop + 1, True, [])
             index += 1
         return AnimationResult("completed", len(ops))
 
@@ -1093,12 +1101,14 @@ class NvimFollower:
                 self._open_from_disk(nvim, file_path)
                 return AnimationResult("completed", len(ops))
             self.goto_file(file_path)
-            ns = nvim.api.create_namespace(_NAMESPACE)
-            buf = nvim.api.get_current_buf().handle
+            namespace_id = nvim.api.create_namespace(_NAMESPACE)
+            buffer = nvim.api.get_current_buf().handle
             return self._drive(
                 nvim,
-                buf,
-                lambda: self._run_ops(nvim, buf, ns, ops, self._pace_provider, file_path),
+                buffer,
+                lambda: self._run_ops(
+                    nvim, buffer, namespace_id, ops, self._pace_provider, file_path
+                ),
                 None if before is None else _buffer_lines(apply_ops(before, ops)),
                 format_from=file_path,
             )
@@ -1117,8 +1127,8 @@ class NvimFollower:
             self.goto_file(file_path)
             self._exec(nvim, "edit!")
             if self._locks_buffers():
-                buf = nvim.api.get_current_buf().handle
-                nvim.api.buf_set_option(buf, "modifiable", False)
+                buffer = nvim.api.get_current_buf().handle
+                nvim.api.buf_set_option(buffer, "modifiable", False)
 
     def reload_from_disk(self, file_path: str) -> None:
         """Ground a buffer holding only follower text on the file on disk (a
@@ -1136,17 +1146,17 @@ class NvimFollower:
         nvim = self._connect()
         with self._guarded(nvim, "rewrite_buffer"):
             self.goto_file(file_path)
-            buf = nvim.api.get_current_buf().handle
-            nvim.api.buf_set_option(buf, "modifiable", True)
+            buffer = nvim.api.get_current_buf().handle
+            nvim.api.buf_set_option(buffer, "modifiable", True)
             lines = content.splitlines()
-            nvim.api.buf_set_lines(buf, 0, -1, True, lines or [""])
+            nvim.api.buf_set_lines(buffer, 0, -1, True, lines or [""])
             return AnimationResult("completed", len(lines))
 
     def _resume_fresh(
         self,
         nvim: pynvim.Nvim,
-        buf: int,
-        ns: int,
+        buffer: int,
+        namespace_id: int,
         lines: tuple[str, ...],
         pace_provider: Callable[[], float],
         file_path: str,
@@ -1166,7 +1176,7 @@ class NvimFollower:
         on the LIVE interrupted buffer, which still carries the trailing seed
         blank: type the remainder in front of it and drop it on completion,
         exactly as show_fresh does."""
-        existing = nvim.api.buf_get_lines(buf, 0, -1, True)
+        existing = nvim.api.buf_get_lines(buffer, 0, -1, True)
         start_row = len(existing) - 1 if seeded else len(existing)
         # Everything above start_row is the partial this replay is continuing
         # from — the seed blank, when there is one, sits below it and is not
@@ -1186,12 +1196,12 @@ class NvimFollower:
 
         result = _animate_lines(
             nvim,
-            buf,
+            buffer,
             lines,
             start_row,
             pace_provider,
             self.window_id,
-            ns,
+            namespace_id,
             save_pending=save_pending,
             prompt_key=self.socket_path,
             dedicated=self._is_dedicated(),
@@ -1199,7 +1209,7 @@ class NvimFollower:
         if result.outcome == "completed" and seeded:
             # Drop the seed blank the retype pushed to the bottom.
             drop = start_row + len(lines)
-            nvim.api.buf_set_lines(buf, drop, drop + 1, True, [])
+            nvim.api.buf_set_lines(buffer, drop, drop + 1, True, [])
         return result
 
     def resume(
@@ -1251,10 +1261,10 @@ class NvimFollower:
             if pending.file_path and _buffer_number(nvim, pending.file_path) == -1:
                 remaining = pending.ops if isinstance(pending, PendingApplyEdit) else pending.lines
                 return AnimationResult("completed", len(remaining))
-            ns = nvim.api.create_namespace(_NAMESPACE)
+            namespace_id = nvim.api.create_namespace(_NAMESPACE)
             if pending.file_path:
                 self.goto_file(pending.file_path)
-            buf = nvim.api.get_current_buf().handle
+            buffer = nvim.api.get_current_buf().handle
             provider = (lambda: 0.0) if pending.pace_seconds == 0.0 else self._pace_provider
             format_from = pending.file_path if reload and pending.file_path else None
             # What a completed replay leaves, from the remainder's own partial;
@@ -1262,8 +1272,10 @@ class NvimFollower:
             if isinstance(pending, PendingApplyEdit):
                 return self._drive(
                     nvim,
-                    buf,
-                    lambda: self._run_ops(nvim, buf, ns, pending.ops, provider, pending.file_path),
+                    buffer,
+                    lambda: self._run_ops(
+                        nvim, buffer, namespace_id, pending.ops, provider, pending.file_path
+                    ),
                     None
                     if pending.partial is None
                     else _buffer_lines(apply_ops(pending.partial, pending.ops)),
@@ -1271,9 +1283,9 @@ class NvimFollower:
                 )
             return self._drive(
                 nvim,
-                buf,
+                buffer,
                 lambda: self._resume_fresh(
-                    nvim, buf, ns, pending.lines, provider, pending.file_path, seeded
+                    nvim, buffer, namespace_id, pending.lines, provider, pending.file_path, seeded
                 ),
                 None
                 if pending.partial is None
@@ -1291,8 +1303,8 @@ class NvimFollower:
         navigate to."""
         nvim = self._connect()
         with self._guarded(nvim, "hand_over"):
-            buf = nvim.api.get_current_buf().handle
-            nvim.api.buf_set_option(buf, "modifiable", True)
+            buffer = nvim.api.get_current_buf().handle
+            nvim.api.buf_set_option(buffer, "modifiable", True)
 
     def goto_file(self, file_path: str) -> None:
         """Switch to the window showing file_path (by name, immune to the
@@ -1355,8 +1367,8 @@ class NvimFollower:
             # file in and clear it in one request (_READ_THEN_CLEAR_LUA, as
             # show_fresh does): naming left it "not edited", so a plain `:w`
             # after a hand-off hit E13 (C2-C5 (c)).
-            buf = self._fresh_buffer(nvim, file_path, in_new_tab=True)
-            nvim.exec_lua(_READ_THEN_CLEAR_LUA, buf)
+            buffer = self._fresh_buffer(nvim, file_path, in_new_tab=True)
+            nvim.exec_lua(_READ_THEN_CLEAR_LUA, buffer)
             self._restore_swap_if_adopted(nvim)
 
     def _open_from_disk(self, nvim: pynvim.Nvim, file_path: str) -> None:
@@ -1524,14 +1536,14 @@ class NvimFollower:
         with self._guarded(nvim, "ensure_showing"):
             if _buffer_number(nvim, file_path) != -1:
                 self.goto_file(file_path)
-                buf = nvim.api.get_current_buf().handle
-                self._reload_if_clean(nvim, buf)
+                buffer = nvim.api.get_current_buf().handle
+                self._reload_if_clean(nvim, buffer)
                 if self._locks_buffers():
-                    nvim.api.buf_set_option(buf, "modifiable", False)
+                    nvim.api.buf_set_option(buffer, "modifiable", False)
                 return
             self._open_from_disk(nvim, file_path)
 
-    def _reload_if_clean(self, nvim: pynvim.Nvim, buf: int) -> None:
+    def _reload_if_clean(self, nvim: pynvim.Nvim, buffer: int) -> None:
         """Re-read the CURRENT buffer `buf` from disk when it is clean
         (_IS_CLEAN_LUA); leave it alone otherwise. Never writes.
 
@@ -1549,7 +1561,7 @@ class NvimFollower:
         swap off. Turning swap off around the re-read, the way show_fresh and
         _open_from_disk opt out before a FIRST load, was tried: no test could
         tell it apart, and it deletes and recreates the user's swap file."""
-        if nvim.exec_lua(_IS_CLEAN_LUA, buf):
+        if nvim.exec_lua(_IS_CLEAN_LUA, buffer):
             self._exec(nvim, "silent edit!")
 
     def close_tab(

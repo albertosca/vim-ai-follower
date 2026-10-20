@@ -24,10 +24,10 @@ from vim_ai_follower.tmux import TmuxPane
 def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Redirect every on-disk location (cache dir shared by state, signals,
     pending files and saved keybindings; snapshots; hook log) to a per-test
-    tmp dir. cache.CACHE_DIR is read at call time by its consumers, so this
+    tmp dir. cache.CACHE_DIRECTORY is read at call time by its consumers, so this
     single setattr isolates all of them."""
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
-    monkeypatch.setattr(snapshot, "SNAPSHOT_DIR", tmp_path / "snapshots")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
+    monkeypatch.setattr(snapshot, "SNAPSHOT_DIRECTORY", tmp_path / "snapshots")
     monkeypatch.setattr(hooks, "LOG_PATH", tmp_path / "hook.log")
     # The user's real ~/.config/claude-vim-follower/config.json must never
     # leak into tests (a live open_policy=always there silently flipped
@@ -374,8 +374,8 @@ def follower(sent: list[str], tmp_path: Path) -> Iterator[TmuxVimFollower]:
     run_patcher = patch("vim_ai_follower.tmux.subprocess.run", side_effect=capture_run)
     run_patcher.start()
 
-    # Also patch cache.CACHE_DIR which is used by the follower
-    cache_patcher = patch("vim_ai_follower.cache.CACHE_DIR", tmp_path / "cache")
+    # Also patch cache.CACHE_DIRECTORY which is used by the follower
+    cache_patcher = patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path / "cache")
     cache_patcher.start()
 
     # Patch control.check_signal to return None (no interruptions)

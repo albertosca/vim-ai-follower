@@ -24,7 +24,7 @@ def compute_edit_script(before: str, after: str) -> list[EditOp]:
     matcher = difflib.SequenceMatcher(None, before_lines, after_lines, autojunk=False)
 
     ops: list[EditOp] = []
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+    for tag, before_start, before_end, after_start, after_end in matcher.get_opcodes():
         if tag == "equal":
             continue
         if tag == "replace":
@@ -36,9 +36,9 @@ def compute_edit_script(before: str, after: str) -> list[EditOp]:
         ops.append(
             EditOp(
                 kind=kind,
-                start_line=i1 + 1,
-                end_line=i2,
-                new_lines=tuple(after_lines[j1:j2]),
+                start_line=before_start + 1,
+                end_line=before_end,
+                new_lines=tuple(after_lines[after_start:after_end]),
             )
         )
     ops.reverse()
@@ -61,11 +61,11 @@ def apply_ops(before: str, ops: list[EditOp]) -> str:
     identical line numbering. An empty result stays "" (no lone newline) —
     both consumers derive `seeded` from the partial's truthiness."""
     lines = before.splitlines()
-    for op in ops:
-        if op.end_line >= op.start_line:
-            del lines[op.start_line - 1 : op.end_line]
-        insert_at = op.start_line - 1
-        lines[insert_at:insert_at] = list(op.new_lines)
+    for operation in ops:
+        if operation.end_line >= operation.start_line:
+            del lines[operation.start_line - 1 : operation.end_line]
+        insert_at = operation.start_line - 1
+        lines[insert_at:insert_at] = list(operation.new_lines)
     return "".join(line + "\n" for line in lines)
 
 

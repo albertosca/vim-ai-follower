@@ -5,23 +5,23 @@ import shutil
 import time
 from pathlib import Path
 
-SNAPSHOT_DIR = Path.home() / ".cache" / "claude-vim-follower" / "snapshots"
+SNAPSHOT_DIRECTORY = Path.home() / ".cache" / "claude-vim-follower" / "snapshots"
 
 
-def _snapshot_path(window_id: str, file_path: str, base_dir: Path | None) -> Path:
-    directory = base_dir if base_dir is not None else SNAPSHOT_DIR
+def _snapshot_path(window_id: str, file_path: str, base_directory: Path | None) -> Path:
+    directory = base_directory if base_directory is not None else SNAPSHOT_DIRECTORY
     digest = hashlib.sha256(file_path.encode("utf-8")).hexdigest()
     return directory / window_id / f"{digest}.before"
 
 
-def save(window_id: str, file_path: str, content: str, base_dir: Path | None = None) -> None:
-    path = _snapshot_path(window_id, file_path, base_dir)
+def save(window_id: str, file_path: str, content: str, base_directory: Path | None = None) -> None:
+    path = _snapshot_path(window_id, file_path, base_directory)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(content.encode("utf-8"))
 
 
-def load(window_id: str, file_path: str, base_dir: Path | None = None) -> str:
-    path = _snapshot_path(window_id, file_path, base_dir)
+def load(window_id: str, file_path: str, base_directory: Path | None = None) -> str:
+    path = _snapshot_path(window_id, file_path, base_directory)
     if not path.exists():
         return ""
     # Bytes, not read_text(): its universal newlines would turn a CRLF
@@ -43,45 +43,45 @@ def load(window_id: str, file_path: str, base_dir: Path | None = None) -> str:
 IN_FLIGHT_TTL_SECONDS = 300
 
 
-def in_flight_path(window_id: str, file_path: str, base_dir: Path | None = None) -> Path:
+def in_flight_path(window_id: str, file_path: str, base_directory: Path | None = None) -> Path:
     """The mark an Edit's pre hook leaves beside its snapshot until its post
     hook runs. Its mtime is the moment the edit started."""
-    return _snapshot_path(window_id, file_path, base_dir).with_suffix(".inflight")
+    return _snapshot_path(window_id, file_path, base_directory).with_suffix(".inflight")
 
 
 def mark_in_flight(
-    window_id: str, file_path: str, writer: str = "", base_dir: Path | None = None
+    window_id: str, file_path: str, writer: str = "", base_directory: Path | None = None
 ) -> None:
     """Record the edit as started now, by `writer` (the hook payload's writer
     identity, "" when it carries none). Rewriting restarts the clock."""
-    path = in_flight_path(window_id, file_path, base_dir)
+    path = in_flight_path(window_id, file_path, base_directory)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(writer)
 
 
-def in_flight_writer(window_id: str, file_path: str, base_dir: Path | None = None) -> str:
+def in_flight_writer(window_id: str, file_path: str, base_directory: Path | None = None) -> str:
     """The identity that set the mark, or "" when unknown or unreadable."""
     try:
-        return in_flight_path(window_id, file_path, base_dir).read_text().strip()
+        return in_flight_path(window_id, file_path, base_directory).read_text().strip()
     except (OSError, UnicodeDecodeError):
         return ""
 
 
-def clear_in_flight(window_id: str, file_path: str, base_dir: Path | None = None) -> None:
-    in_flight_path(window_id, file_path, base_dir).unlink(missing_ok=True)
+def clear_in_flight(window_id: str, file_path: str, base_directory: Path | None = None) -> None:
+    in_flight_path(window_id, file_path, base_directory).unlink(missing_ok=True)
 
 
-def in_flight(window_id: str, file_path: str, base_dir: Path | None = None) -> bool:
+def in_flight(window_id: str, file_path: str, base_directory: Path | None = None) -> bool:
     """True while an Edit of file_path has run its pre hook but not its post
     hook, and started less than IN_FLIGHT_TTL_SECONDS ago."""
     try:
-        started = in_flight_path(window_id, file_path, base_dir).stat().st_mtime
+        started = in_flight_path(window_id, file_path, base_directory).stat().st_mtime
     except OSError:
         return False
     return time.time() - started < IN_FLIGHT_TTL_SECONDS
 
 
-def clear(window_id: str, base_dir: Path | None = None) -> None:
+def clear(window_id: str, base_directory: Path | None = None) -> None:
     """Delete every stored snapshot for the window (stop/orphan cleanup)."""
-    directory = base_dir if base_dir is not None else SNAPSHOT_DIR
+    directory = base_directory if base_directory is not None else SNAPSHOT_DIRECTORY
     shutil.rmtree(directory / window_id, ignore_errors=True)

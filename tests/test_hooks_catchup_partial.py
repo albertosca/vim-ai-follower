@@ -334,7 +334,7 @@ def test_resaving_an_unusable_pending_keeps_its_partial(tmp_path: Path) -> None:
     cache_directory.mkdir()
     from vim_ai_follower import commands
 
-    with patch.object(cache, "CACHE_DIR", cache_directory):
+    with patch.object(cache, "CACHE_DIRECTORY", cache_directory):
         commands._resave_pending(
             "@1",
             control.PendingShowFresh(

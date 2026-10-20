@@ -40,7 +40,7 @@ def short_cache_directory(monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """The socket lives in the cache dir, and an AF_UNIX path must fit in
     ~104 bytes on macOS: pytest's tmp_path does not."""
     directory = Path(tempfile.mkdtemp(prefix="vaf19i", dir="/tmp"))
-    monkeypatch.setattr(cache, "CACHE_DIR", directory)
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", directory)
     try:
         yield directory
     finally:

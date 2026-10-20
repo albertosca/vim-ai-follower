@@ -10,7 +10,7 @@ from vim_ai_follower import binding
 
 def test_recall_returns_the_window_remembered_under_the_same_server(tmp_path: Path) -> None:
     with (
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.binding.tmux_server_pid", return_value=64091),
     ):
         binding.remember("sess-abc", "@18")
@@ -21,7 +21,7 @@ def test_recall_discards_a_binding_from_a_previous_tmux_server(tmp_path: Path) -
     # Window ids are reassigned when the server restarts, so @18 after a
     # restart is a DIFFERENT window — using the binding would animate into
     # someone else's project.
-    with patch("vim_ai_follower.cache.CACHE_DIR", tmp_path):
+    with patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path):
         with patch("vim_ai_follower.binding.tmux_server_pid", return_value=64091):
             binding.remember("sess-abc", "@18")
         with patch("vim_ai_follower.binding.tmux_server_pid", return_value=70001):
@@ -31,13 +31,13 @@ def test_recall_discards_a_binding_from_a_previous_tmux_server(tmp_path: Path) -
 
 
 def test_recall_is_none_for_an_unknown_session(tmp_path: Path) -> None:
-    with patch("vim_ai_follower.cache.CACHE_DIR", tmp_path):
+    with patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path):
         assert binding.recall("never-seen") is None
 
 
 def test_a_session_id_with_path_characters_cannot_escape_the_directory(tmp_path: Path) -> None:
     with (
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.binding.tmux_server_pid", return_value=1),
     ):
         binding.remember("../../etc/passwd", "@1")
@@ -50,7 +50,7 @@ def test_remember_writes_nothing_when_the_tmux_server_pid_is_unknown(tmp_path: P
     # one would either be dead weight or tempt a future recall into treating
     # "no pid" as "matches", the exact wrong-window hole the guard closes.
     with (
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.binding.tmux_server_pid", return_value=None),
     ):
         binding.remember("sess-no-server", "@1")
@@ -59,7 +59,7 @@ def test_remember_writes_nothing_when_the_tmux_server_pid_is_unknown(tmp_path: P
 
 def test_remember_skips_the_write_when_nothing_changed(tmp_path: Path) -> None:
     with (
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.binding.tmux_server_pid", return_value=64091),
     ):
         binding.remember("sess-steady", "@18")
@@ -72,7 +72,7 @@ def test_remember_skips_the_write_when_nothing_changed(tmp_path: Path) -> None:
 
 def test_remember_rewrites_when_the_window_changed(tmp_path: Path) -> None:
     with (
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.binding.tmux_server_pid", return_value=64091),
     ):
         binding.remember("sess-moved", "@18")
@@ -82,7 +82,7 @@ def test_remember_rewrites_when_the_window_changed(tmp_path: Path) -> None:
 
 def test_remember_swallows_an_os_error_while_writing(tmp_path: Path) -> None:
     with (
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.binding.tmux_server_pid", return_value=64091),
         patch.object(Path, "write_text", side_effect=OSError("disk full")),
     ):
@@ -93,7 +93,7 @@ def test_remember_swallows_an_os_error_while_writing(tmp_path: Path) -> None:
 def test_recall_returns_none_when_the_tmux_server_pid_cannot_be_measured(
     tmp_path: Path,
 ) -> None:
-    with patch("vim_ai_follower.cache.CACHE_DIR", tmp_path):
+    with patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path):
         with patch("vim_ai_follower.binding.tmux_server_pid", return_value=64091):
             binding.remember("sess-abc", "@18")
         with patch("vim_ai_follower.binding.tmux_server_pid", return_value=None):
@@ -104,7 +104,7 @@ def test_recall_returns_none_when_the_tmux_server_pid_cannot_be_measured(
 
 
 def test_recall_swallows_an_os_error_when_deleting_a_stale_binding(tmp_path: Path) -> None:
-    with patch("vim_ai_follower.cache.CACHE_DIR", tmp_path):
+    with patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path):
         with patch("vim_ai_follower.binding.tmux_server_pid", return_value=64091):
             binding.remember("sess-abc", "@18")
         with (

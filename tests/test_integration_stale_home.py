@@ -99,7 +99,7 @@ def test_a_failed_navigation_never_touches_the_users_buffer(
     for directory in (hook_home, other_home, proj):
         directory.mkdir()
     monkeypatch.setenv("HOME", str(hook_home))
-    monkeypatch.setattr(cache, "CACHE_DIR", hook_home / ".cache" / "claude-vim-follower")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", hook_home / ".cache" / "claude-vim-follower")
     target = proj / "target.py"
     target.write_text(BEFORE)
     user = proj / "user.txt"
@@ -129,8 +129,8 @@ def test_a_failed_navigation_never_touches_the_users_buffer(
     follower = TmuxVimFollower(pane_id=pane, pace_seconds=0.0, window_id=window_id)
     # Vim on the hook's HOME: the "yes" is recorded against the shell's pid.
     follower.goto_file(str(target))
-    record = (cache.CACHE_DIR / f"home-{pane.lstrip('%')}").read_text().split()
-    assert (cache.CACHE_DIR / record[1]).exists()
+    record = (cache.CACHE_DIRECTORY / f"home-{pane.lstrip('%')}").read_text().split()
+    assert (cache.CACHE_DIRECTORY / record[1]).exists()
     assert _state(pane, tmp_path / "s0.txt", wait_until)[0] == "BUF=target.py"
 
     # Same shell, Vim restarted on ANOTHER HOME, unsaved text in user.txt.

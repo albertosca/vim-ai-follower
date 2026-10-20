@@ -40,9 +40,9 @@ def _sanitize_session_id(session_id: str) -> str:
 
 
 def _bindings_dir() -> Path:
-    # cache.CACHE_DIR is read at call time (not bound at import) so a test's
+    # cache.CACHE_DIRECTORY is read at call time (not bound at import) so a test's
     # monkeypatch of the cache module is visible here too.
-    return cache.CACHE_DIR / "bindings"
+    return cache.CACHE_DIRECTORY / "bindings"
 
 
 def _binding_path(session_id: str) -> Path:
@@ -94,7 +94,7 @@ def tmux_server_started() -> int | None:
         return None
 
 
-def tmux_server_pid_from(env: dict[str, str]) -> int | None:
+def tmux_server_pid_from(environment: dict[str, str]) -> int | None:
     """tmux_server_pid, falling back to the pid tmux writes into $TMUX
     ("socket,pid,session") when the server cannot be asked: what `stop`
     records in its tombstone, which must name a server whenever one can be
@@ -102,7 +102,7 @@ def tmux_server_pid_from(env: dict[str, str]) -> int | None:
     asked = tmux_server_pid()
     if asked is not None:
         return asked
-    fields = env.get("TMUX", "").split(",")
+    fields = environment.get("TMUX", "").split(",")
     if len(fields) >= 2 and fields[1].isdigit():
         return int(fields[1])
     return None
@@ -140,9 +140,9 @@ def remember(session_id: str, window_id: str) -> None:
         )
         # Atomic write, same idiom as state.py/control.py: a reader always
         # sees the whole old or whole new file, never a half-written one.
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        tmp.write_text(payload)
-        tmp.replace(path)
+        temporary_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        temporary_path.write_text(payload)
+        temporary_path.replace(path)
     except OSError:
         pass
 

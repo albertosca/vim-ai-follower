@@ -198,7 +198,7 @@ _HANDLE = re.compile(r"'(p[0-9]+-[0-9a-f]{6})'")
 _READING_OPS = {"goto", "rename", "wipe", "probe", "evict", "give_back"}
 # Every handle the backend created during the test, by name (conftest's
 # autouse record_path_handles): a test may read its sends after its own
-# CACHE_DIR patch is gone, and the line names the handle only.
+# CACHE_DIRECTORY patch is gone, and the line names the handle only.
 PATH_HANDLES: dict[str, Path] = {}
 
 

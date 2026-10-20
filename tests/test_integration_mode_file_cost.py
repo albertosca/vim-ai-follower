@@ -72,7 +72,7 @@ def test_a_normal_command_over_a_thousand_lines_is_not_slowed_by_the_mode_file(
 ) -> None:
     # Shipped: 9.9 s for 1000 lines (2000: 19.8 s), against 0.08 s with no
     # script; the bound leaves a loaded machine twenty times the room.
-    cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache.CACHE_DIRECTORY.mkdir(parents=True, exist_ok=True)
     timed = _headless(
         tmp_path,
         _script(tmp_path),
@@ -87,7 +87,7 @@ def test_a_normal_command_over_a_thousand_lines_is_not_slowed_by_the_mode_file(
 
 def test_a_dedicated_vim_gets_no_mode_autocommands(tmp_path: Path) -> None:
     # Its mode is never read (hooks._busy_vim asks only adopted Vims).
-    cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache.CACHE_DIRECTORY.mkdir(parents=True, exist_ok=True)
     report = _headless(
         tmp_path,
         _script(tmp_path),
@@ -99,11 +99,11 @@ def test_a_dedicated_vim_gets_no_mode_autocommands(tmp_path: Path) -> None:
         before=[tmux_vim.DEDICATED_MARK],
     )
     assert report == ["0"]
-    assert not list(cache.CACHE_DIR.glob("*mode-*"))
+    assert not list(cache.CACHE_DIRECTORY.glob("*mode-*"))
 
 
 def test_an_adopted_vim_still_gets_them(tmp_path: Path) -> None:
-    cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache.CACHE_DIRECTORY.mkdir(parents=True, exist_ok=True)
     report = _headless(
         tmp_path,
         _script(tmp_path),
@@ -127,7 +127,7 @@ def private_tmux() -> Iterator[list[str]]:
 def test_the_mode_file_names_every_class_the_hook_tells_apart(
     tmp_path: Path, private_tmux: list[str]
 ) -> None:
-    cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache.CACHE_DIRECTORY.mkdir(parents=True, exist_ok=True)
     script = _script(tmp_path)
     home = tmp_path / "home"
     home.mkdir()
@@ -155,7 +155,7 @@ def test_the_mode_file_names_every_class_the_hook_tells_apart(
     )
 
     def mode_file() -> Path | None:
-        return next(iter(cache.CACHE_DIR.glob("mode-*.txt")), None)
+        return next(iter(cache.CACHE_DIRECTORY.glob("mode-*.txt")), None)
 
     def mode() -> str:
         found = mode_file()

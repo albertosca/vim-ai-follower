@@ -38,9 +38,13 @@ def _cterm_to_hex(number: int) -> str:
     if number >= 232:
         level = 8 + 10 * (number - 232)
         return f"#{level:02x}{level:02x}{level:02x}"
-    n = number - 16
-    r, g, b = _XTERM_CUBE[n // 36], _XTERM_CUBE[(n // 6) % 6], _XTERM_CUBE[n % 6]
-    return f"#{r:02x}{g:02x}{b:02x}"
+    cube_index = number - 16
+    red, green, blue = (
+        _XTERM_CUBE[cube_index // 36],
+        _XTERM_CUBE[(cube_index // 6) % 6],
+        _XTERM_CUBE[cube_index % 6],
+    )
+    return f"#{red:02x}{green:02x}{blue:02x}"
 
 
 def _window_width(columns: int, lines: list[str]) -> int:
@@ -236,24 +240,24 @@ class NvimStatusSurface:
             config = nvim.api.win_get_config(win)
             if config.get("relative", "") == "":
                 continue
-            buf = nvim.api.win_get_buf(win)
-            if nvim.api.buf_get_name(buf).endswith(_STATUS_BUFFER_NAME):
+            buffer = nvim.api.win_get_buf(win)
+            if nvim.api.buf_get_name(buffer).endswith(_STATUS_BUFFER_NAME):
                 return win
         return None
 
-    def _open_window(self, nvim: pynvim.Nvim, buf: Any, width: int, col: int) -> Any:
+    def _open_window(self, nvim: pynvim.Nvim, buffer: Any, width: int, column: int) -> Any:
         # Anchor to the TOP-RIGHT, not the top-left (0,0): a fresh retype types
         # its content and parks the cursor + the virtual-text writer label at
         # the top-left, so a status window there sits directly on top of the
         # animation and hides it (confirmed in the 2026-07-20 live smoke).
         # Placing it flush against the right edge keeps it clear of where the
         # text is being typed (`col`, see _ensure_window).
-        opts = {
+        options = {
             "relative": "editor",
             "width": width,
             "height": _WINDOW_HEIGHT,
             "row": 1,
-            "col": col,
+            "col": column,
             "style": "minimal",
             "border": "rounded",
             "title": _DEFAULT_TITLE,
@@ -262,7 +266,7 @@ class NvimStatusSurface:
             "noautocmd": True,
         }
         nvim.exec_lua(_FOLLOW_TABS_LUA, _STATUS_BUFFER_NAME)
-        return nvim.api.open_win(buf, False, opts)
+        return nvim.api.open_win(buffer, False, options)
 
     def _ensure_window(self, nvim: pynvim.Nvim, body: list[str]) -> tuple[Any, Any, int]:
         """Returns (window, buffer, width), reusing an existing floating
@@ -272,13 +276,13 @@ class NvimStatusSurface:
         columns = int(nvim.api.get_option_value("columns", {}))
         width = _window_width(columns, body)
         # -2 leaves room for the rounded border against the right edge.
-        col = max(0, columns - width - 2)
+        column = max(0, columns - width - 2)
         win = self._find_window(nvim)
         if win is not None:
             # Already on the current tab: the TabEnter autocmd registered by
             # _open_window carries it along on every tab switch, in nvim.
             nvim.api.win_set_config(
-                win, {"relative": "editor", "row": 1, "col": col, "width": width}
+                win, {"relative": "editor", "row": 1, "col": column, "width": width}
             )
             return win, nvim.api.win_get_buf(win), width
         # A buffer already carrying the name makes buf_set_name raise E95,
@@ -289,14 +293,14 @@ class NvimStatusSurface:
         for stale in nvim.api.list_bufs():
             if nvim.api.buf_get_name(stale).endswith(_STATUS_BUFFER_NAME):
                 nvim.command(f"silent! bwipeout! {stale.number}")
-        buf = nvim.api.create_buf(False, True)
+        buffer = nvim.api.create_buf(False, True)
         # scratch buffers default to bufhidden=hide: when the float's window
         # dies with its TAB (eviction past max_tabs) the buffer would survive
         # under the name and strand the next cue exactly as above.
-        nvim.api.buf_set_option(buf, "bufhidden", "wipe")
-        nvim.api.buf_set_name(buf, _STATUS_BUFFER_NAME)
-        win = self._open_window(nvim, buf, width, col)
-        return win, buf, width
+        nvim.api.buf_set_option(buffer, "bufhidden", "wipe")
+        nvim.api.buf_set_name(buffer, _STATUS_BUFFER_NAME)
+        win = self._open_window(nvim, buffer, width, column)
+        return win, buffer, width
 
     def _mark_cursor(self, nvim: pynvim.Nvim, label: str, color: str | None) -> None:
         """The "at the edit point" cue: a SUBTLE virtual-text extmark near the
@@ -304,14 +308,14 @@ class NvimStatusSurface:
         window itself, which is unfocusable). A small dot in the writer's
         color plus the label dimmed to Comment — the box already carries the
         prominent name, so this only whispers "who, right here"."""
-        cur_buf = nvim.api.get_current_buf()
-        ns = nvim.api.create_namespace(_CURSOR_NAMESPACE)
-        nvim.api.buf_clear_namespace(cur_buf, ns, 0, -1)
+        current_buffer = nvim.api.get_current_buf()
+        namespace_id = nvim.api.create_namespace(_CURSOR_NAMESPACE)
+        nvim.api.buf_clear_namespace(current_buffer, namespace_id, 0, -1)
         row, _col = nvim.api.win_get_cursor(0)
         dot_hl = _HIGHLIGHT_GROUP if color is not None else "Comment"
         nvim.api.buf_set_extmark(
-            cur_buf,
-            ns,
+            current_buffer,
+            namespace_id,
             row - 1,
             0,
             {"virt_text": [["  ● ", dot_hl], [label, "Comment"]], "virt_text_pos": "eol"},
@@ -326,7 +330,7 @@ class NvimStatusSurface:
         set_state's job. The identity color is set for both cterm and gui
         (guifg), so it shows under termguicolors too."""
         with contextlib.suppress(Exception), self._guarded() as nvim:
-            win, buf, width = self._ensure_window(nvim, [])
+            win, buffer, width = self._ensure_window(nvim, [])
             title_hl = "Title"
             if color is not None:
                 number = int(color.removeprefix("colour"))
@@ -341,9 +345,9 @@ class NvimStatusSurface:
                 win, {"title": [[f" {label} ", title_hl]], "title_pos": "center"}
             )
             # Identity lives in the title; the body stays blank (docstring).
-            nvim.api.buf_set_lines(buf, 0, -1, True, _centered_box([], width))
-            ns = nvim.api.create_namespace(_STATUS_NAMESPACE)
-            nvim.api.buf_clear_namespace(buf, ns, 0, -1)
+            nvim.api.buf_set_lines(buffer, 0, -1, True, _centered_box([], width))
+            namespace_id = nvim.api.create_namespace(_STATUS_NAMESPACE)
+            nvim.api.buf_clear_namespace(buffer, namespace_id, 0, -1)
             self._mark_cursor(nvim, label, color)
 
     def set_state(self, text: str | None) -> None:
@@ -353,8 +357,8 @@ class NvimStatusSurface:
             self.clear()
             return
         with contextlib.suppress(Exception), self._guarded() as nvim:
-            _, buf, width = self._ensure_window(nvim, [text])
-            nvim.api.buf_set_lines(buf, 0, -1, True, _centered_box([text], width))
+            _, buffer, width = self._ensure_window(nvim, [text])
+            nvim.api.buf_set_lines(buffer, 0, -1, True, _centered_box([text], width))
 
     def retire_state(self, *texts: str) -> None:
         """Take down the body when it shows one of `texts`: the float saves
@@ -402,7 +406,7 @@ class NvimStatusSurface:
 
 
 def status_surface_for(state: FollowerState, target: str | None = None) -> StatusSurface:
-    addr = state.target if target is None else target
+    address = state.target if target is None else target
     if state.backend == "nvim":
-        return NvimStatusSurface(socket_path=addr, adopted=state.adopted)
-    return TmuxStatusSurface(pane_id=addr)
+        return NvimStatusSurface(socket_path=address, adopted=state.adopted)
+    return TmuxStatusSurface(pane_id=address)

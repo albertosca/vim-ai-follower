@@ -102,7 +102,7 @@ def test_status_and_stop_return_promptly_with_a_frozen_nvim(world: E2EFollower) 
             origin=frozen_pane,
             adopted=False,
             server_pid=world.server_pid,
-            base_dir=world.cache_dir,
+            base_directory=world.cache_dir,
         )
 
         status, status_seconds = _timed_cli(world, "status", pane_id=observer_pane)

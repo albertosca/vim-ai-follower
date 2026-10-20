@@ -80,7 +80,7 @@ def test_ensure_showing_leaves_an_adopted_followers_existing_buffer_modifiable(
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch.object(NvimFollower, "goto_file"),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=True)
         follower.ensure_showing("/tmp/f.py")
@@ -100,7 +100,7 @@ def test_ensure_showing_leaves_an_adopted_followers_disk_loaded_buffer_modifiabl
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch.object(NvimFollower, "goto_file") as goto_file,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=True)
         follower.ensure_showing("/tmp/f.py")
@@ -125,7 +125,7 @@ def test_apply_edit_leaves_an_adopted_followers_disk_loaded_buffer_modifiable(
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch.object(NvimFollower, "goto_file") as goto_file,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=True)
         result = follower.apply_edit("/tmp/f.py", ops)
@@ -221,7 +221,7 @@ def test_ensure_showing_with_the_state_gone_locks_nothing_and_logs_nothing(
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch.object(NvimFollower, "goto_file"),
         patch("vim_ai_follower.backends.nvim.exec_logged") as exec_logged,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         _state_gone(tmp_path)
         follower.ensure_showing("/tmp/f.py")
@@ -238,7 +238,7 @@ def test_ensure_showing_of_a_new_file_with_the_state_gone_locks_nothing(tmp_path
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.backends.nvim.exec_logged") as exec_logged,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         _state_gone(tmp_path)
         follower.ensure_showing("/tmp/f.py")
@@ -257,7 +257,7 @@ def test_reload_and_relock_with_the_state_gone_locks_nothing(tmp_path: Path) -> 
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch.object(NvimFollower, "goto_file"),
         patch("vim_ai_follower.backends.nvim.exec_logged") as exec_logged,
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         _state_gone(tmp_path)
         follower.reload_and_relock("/tmp/f.py")
@@ -270,7 +270,7 @@ def test_a_completed_drive_with_the_state_gone_leaves_the_buffer_modifiable(
 ) -> None:
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
-    with patch("vim_ai_follower.cache.CACHE_DIR", tmp_path):
+    with patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path):
         _state_gone(tmp_path)
         result = follower._drive(nvim, 9, lambda: AnimationResult("completed", 1), ["x"])
     assert result == AnimationResult("completed", 1)

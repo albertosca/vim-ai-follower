@@ -70,7 +70,7 @@ def test_show_fresh_pause_records_the_fully_typed_prefix_as_the_partial(tmp_path
         # line 0 typed, pause at line 1's boundary, resume, line 1 typed.
         patch("vim_ai_follower.control.check_signal", side_effect=[None, "pause", "pause", None]),
         patch("vim_ai_follower.control.save_pending_show_fresh", _fresh_partial_spy(saved)),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         assert follower.show_fresh("/tmp/f.py", "a\nb\n") == AnimationResult("completed", 2)
 
@@ -99,7 +99,7 @@ def test_show_fresh_mid_char_pause_leaves_the_half_typed_line_out_of_the_partial
             side_effect=[None, None, None, None, "pause", "pause", None],
         ),
         patch("vim_ai_follower.control.save_pending_show_fresh", _fresh_partial_spy(saved)),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         assert follower.show_fresh("/tmp/f.py", "a\nbc\n") == AnimationResult("completed", 2)
 
@@ -129,7 +129,7 @@ def test_run_ops_pause_records_the_applied_prefix_as_the_partial(tmp_path: Path)
             side_effect=[None, None, "pause", "pause", None, None],
         ),
         patch("vim_ai_follower.control.save_pending_apply_edit", _ops_partial_spy(saved)),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         assert follower.apply_edit("/tmp/f.py", ops) == AnimationResult("completed", 2)
 
@@ -158,7 +158,7 @@ def test_resume_fresh_pause_records_the_buffer_prefix_plus_the_typed_lines(
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=[None, "pause", "pause", None]),
         patch("vim_ai_follower.control.save_pending_show_fresh", _fresh_partial_spy(saved)),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         assert follower.resume(pending) == AnimationResult("completed", 2)
 
@@ -185,7 +185,7 @@ def test_resume_fresh_pause_excludes_the_trailing_seed_blank_from_the_partial(
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=[None, "pause", "pause", None]),
         patch("vim_ai_follower.control.save_pending_show_fresh", _fresh_partial_spy(saved)),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         assert follower.resume(pending, seeded=True) == AnimationResult("completed", 2)
 

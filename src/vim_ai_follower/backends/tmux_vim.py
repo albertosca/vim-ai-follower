@@ -1324,7 +1324,7 @@ def _unanswered_path(pane_id: str) -> Path:
     its mtime is when. While it is younger than _UNANSWERED_BACKOFF_SECONDS
     the navigating calls fail at once and send nothing (_backoff_remaining);
     a confirmed landing removes it."""
-    return cache.CACHE_DIR / f"unanswered-{pane_id.lstrip('%')}"
+    return cache.CACHE_DIRECTORY / f"unanswered-{pane_id.lstrip('%')}"
 
 
 def _backoff(pane_id: str) -> tuple[float, float] | None:
@@ -1372,17 +1372,17 @@ def _raise_if_backing_off(pane_id: str, file_path: str) -> None:
 
 def _probe_path(pane_id: str) -> Path:
     """Where Vim writes probe_buffer's answer for this pane (s:probe)."""
-    return cache.CACHE_DIR / f"probe-{pane_id.lstrip('%')}.txt"
+    return cache.CACHE_DIRECTORY / f"probe-{pane_id.lstrip('%')}.txt"
 
 
 def _evict_answer_path(pane_id: str) -> Path:
     """Where s:evict leaves an adopted eviction's verdict for this pane."""
-    return cache.CACHE_DIR / f"evict-{pane_id.lstrip('%')}.txt"
+    return cache.CACHE_DIRECTORY / f"evict-{pane_id.lstrip('%')}.txt"
 
 
 def _readonly_answer_path(pane_id: str) -> Path:
     """Where s:restore_readonly leaves user_readonly's answer for this pane."""
-    return cache.CACHE_DIR / f"readonly-{pane_id.lstrip('%')}.txt"
+    return cache.CACHE_DIRECTORY / f"readonly-{pane_id.lstrip('%')}.txt"
 
 
 # The token of the last readonly restore THIS process sent, by pane id
@@ -1403,7 +1403,7 @@ def _readonly_request_path(pane_id: str) -> Path:
     """Marks that a readonly restore was sent for this pane and its answer is
     still to be read: user_readonly waits only for an answer requested this
     hand-off cycle, and consumes the mark."""
-    return cache.CACHE_DIR / f"readonly-{pane_id.lstrip('%')}.asked"
+    return cache.CACHE_DIRECTORY / f"readonly-{pane_id.lstrip('%')}.asked"
 
 
 def _read_probe(probe: Path, nonce: str) -> list[str] | None:
@@ -1437,7 +1437,7 @@ def _vim_functions() -> tuple[str, str]:
     script, or another cache directory, is another name (see the comment at
     the top)."""
     helpers = dict.fromkeys(re.findall(r"^function! s:(\w+)", _VIM_SCRIPT, re.MULTILINE))
-    text = _VIM_SCRIPT.replace("@DIR@", _vim_string(f"{cache.CACHE_DIR}/")).replace(
+    text = _VIM_SCRIPT.replace("@DIR@", _vim_string(f"{cache.CACHE_DIRECTORY}/")).replace(
         "@HELPERS@",
         # s:dir is the preamble's last statement (review of T9, m1).
         " && ".join(["exists('s:dir')", *(f"exists('*s:{helper}')" for helper in helpers)]),
@@ -1451,7 +1451,7 @@ def _script_file(name: str, text: str) -> Path:
     exactly `text`: through a temporary file and a rename, so a Vim never
     sources a half-written one. A file already right is only touched: its
     mtime is when a hook last used it, which is what _sweep_scripts ages."""
-    directory = cache.CACHE_DIR
+    directory = cache.CACHE_DIRECTORY
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"vaf-{name.removeprefix('VafFollower_')}.vim"
     data = text.encode()
@@ -1555,7 +1555,7 @@ def _sweep_mode_files(entries: list[Path]) -> None:
             continue
 
 
-def _call_line(op: str, *arguments: str | int) -> str:
+def _call_line(operation: str, *arguments: str | int) -> str:
     """The typed line that runs s:<op>(arguments) through the dispatcher, and
     does nothing — no E117, no prompt — in a Vim that does not have it.
 
@@ -1568,7 +1568,7 @@ def _call_line(op: str, *arguments: str | int) -> str:
     name, _text = _vim_functions()
     rendered = ",".join(
         _vim_string(argument) if isinstance(argument, str) else str(argument)
-        for argument in (op, *arguments)
+        for argument in (operation, *arguments)
     )
     return f":if exists('*{name}')|call {name}({rendered})|endif"
 
@@ -1623,7 +1623,7 @@ def _log_long_define_line(pane_id: str, line: str) -> None:
     keyed by pane id only, so a pane id that a restarted tmux server reuses
     logs again once the old note has aged out. Only that sweep deletes it;
     deleting a live one would only log once more."""
-    marker = cache.CACHE_DIR / f"define-rows-{pane_id.lstrip('%')}"
+    marker = cache.CACHE_DIRECTORY / f"define-rows-{pane_id.lstrip('%')}"
     try:
         marker.touch(exist_ok=False)
     except FileExistsError:
@@ -1656,7 +1656,7 @@ _EXPAND_SAFE = re.compile(r"[A-Za-z0-9._/-]+")
 
 # The one-time question to a pane's Vim: create {marker} (a `~/…` path under
 # the hook's cache directory) through Vim's own `~`. It lands in the hook's
-# CACHE_DIR only when that Vim's HOME is the hook's HOME. `silent!` on the one
+# CACHE_DIRECTORY only when that Vim's HOME is the hook's HOME. `silent!` on the one
 # command: a failure (another HOME without that directory, E482) shows
 # nothing and leaves no prompt.
 _HOME_CHECK = ":silent! call writefile([], expand({marker}, 1))"
@@ -1675,7 +1675,7 @@ def _vim_shares_home(pane_id: str, cache_relative: str) -> bool:
     Asked once per pane process (tmux's `pane_pid`) and remembered in
     `home-<pane>`, which holds that pid and the marker file the question
     asked Vim to create. The answer is "yes" exactly while that marker exists
-    in the hook's CACHE_DIR: a Vim with another HOME creates it somewhere
+    in the hook's CACHE_DIRECTORY: a Vim with another HOME creates it somewhere
     else (or nowhere, when that HOME has no cache directory). An answer that
     arrives after the wait is still picked up by the next call. Until then,
     and whenever tmux cannot say which process the pane runs, the absolute
@@ -1694,7 +1694,7 @@ def _vim_shares_home(pane_id: str, cache_relative: str) -> bool:
     pane_pid = pane.pane_pid()
     if pane_pid is None:
         return False
-    directory = cache.CACHE_DIR
+    directory = cache.CACHE_DIRECTORY
     record = directory / f"home-{pane_id.lstrip('%')}"
     try:
         recorded_pid, marker = record.read_text().split()
@@ -1725,7 +1725,7 @@ def _home_relative(pane_id: str, path: Path) -> str | None:
     often a long absolute directory of its own (in the demo, one under
     /tmp)."""
     try:
-        cache_relative = Path(os.path.realpath(cache.CACHE_DIR)).relative_to(
+        cache_relative = Path(os.path.realpath(cache.CACHE_DIRECTORY)).relative_to(
             os.path.realpath(Path.home())
         )
     except ValueError:
@@ -1761,7 +1761,7 @@ def _path_handle(pane_id: str, file_path: str) -> Path:
     - The path's other Unicode spellings the filesystem takes for the same
       file (_other_spellings) go next to it, one per `<handle>.1`/`.2`, for
       s:read to hand to the lookups (T24c item 7)."""
-    directory = cache.CACHE_DIR
+    directory = cache.CACHE_DIRECTORY
     directory.mkdir(parents=True, exist_ok=True)
     now = time.time()
     for old in directory.glob("p*-*"):
@@ -1824,7 +1824,7 @@ _HANDLE_NAME = re.compile(r"p[0-9]+-[0-9a-f]{6}(?:\.[12])?")
 
 def _goto_answer_path(pane_id: str) -> Path:
     """Where a call that must land on its target confirms it did (s:landed)."""
-    return cache.CACHE_DIR / f"landed-{pane_id.lstrip('%')}.txt"
+    return cache.CACHE_DIRECTORY / f"landed-{pane_id.lstrip('%')}.txt"
 
 
 def _confirm_landing(pane: TmuxPane, file_path: str, handle: Path) -> None:
@@ -1847,12 +1847,12 @@ def _distrust_home(pane_id: str) -> bool:
     hook's (an adopted pane's shell restarted Vim with another HOME), the
     `~/…` script name it is typed misses, and only a new question finds out.
     A recorded "no" is kept: asking again costs a full wait for nothing."""
-    record = cache.CACHE_DIR / f"home-{pane_id.lstrip('%')}"
+    record = cache.CACHE_DIRECTORY / f"home-{pane_id.lstrip('%')}"
     try:
         _pid, marker = record.read_text().split()
     except (OSError, ValueError):
         return False
-    if not (cache.CACHE_DIR / marker).exists():
+    if not (cache.CACHE_DIRECTORY / marker).exists():
         return False
     record.unlink(missing_ok=True)
     return True
@@ -2109,8 +2109,8 @@ def _recorded_mode(vim: _VimProcess) -> str | None:
     measured: 8% of reads under a 1 ms mode flip found no file), so a file
     caught missing is read from the temporary Vim is about to rename, and,
     when that has just been renamed away too, once more from the file."""
-    final = cache.CACHE_DIR / f"mode-{vim.pid}.txt"
-    temporary = cache.CACHE_DIR / f".mode-{vim.pid}.txt.tmp"
+    final = cache.CACHE_DIRECTORY / f"mode-{vim.pid}.txt"
+    temporary = cache.CACHE_DIRECTORY / f".mode-{vim.pid}.txt.tmp"
     for path in (final, temporary, final):
         try:
             written = path.read_text(encoding="utf-8", errors="replace")
@@ -2125,7 +2125,7 @@ def _recorded_mode(vim: _VimProcess) -> str | None:
 
 
 def _release_mark_path(pid: int) -> Path:
-    return cache.CACHE_DIR / f"release-{pid}.txt"
+    return cache.CACHE_DIRECTORY / f"release-{pid}.txt"
 
 
 def mark_release_pending(pane_id: str) -> bool:
@@ -2154,7 +2154,7 @@ def _take_release_mark(pane_id: str) -> bool:
     pending), consuming the mark. Costs one directory listing when no mark
     exists anywhere, so every define line can ask. A mark older than the
     Vim's start was a dead Vim's (a reused pid) and is deleted unused."""
-    if not any(cache.CACHE_DIR.glob("release-*.txt")):  # glob() raises no OSError
+    if not any(cache.CACHE_DIRECTORY.glob("release-*.txt")):  # glob() raises no OSError
         return False
     vim = _foreground_vim(pane_id)
     if vim is None:
@@ -3001,6 +3001,6 @@ class TmuxVimFollower:
         TmuxPane(pane_id=self.pane_id).kill()
 
     @classmethod
-    def start(cls, target_pane: str) -> TmuxVimFollower:
+    def start(follower_class, target_pane: str) -> TmuxVimFollower:
         pane = TmuxPane.split_from(target_pane, DEDICATED_COMMAND)
-        return cls(pane_id=pane.pane_id)
+        return follower_class(pane_id=pane.pane_id)

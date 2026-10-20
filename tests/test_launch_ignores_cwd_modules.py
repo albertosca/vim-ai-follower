@@ -166,5 +166,5 @@ def test_the_take_over_popup_ignores_modules_in_its_cwd_and_starts_in_the_cache_
     assert answer == "answered timeout", ran[0].stderr
     popup = run.call_args_list[1].args[0]
     directory_flag = popup.index("-d")
-    assert popup[directory_flag + 1] == str(cache.CACHE_DIR)
+    assert popup[directory_flag + 1] == str(cache.CACHE_DIRECTORY)
     assert shlex.split(popup[-1])[2:4] == [str(_base_python()), "-P"]

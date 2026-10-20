@@ -53,7 +53,7 @@ def test_an_adopted_nvim_animates_an_edit_of_a_bom_file(
 def test_a_dedicated_nvim_never_types_the_bom(
     headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     FollowerState.set(_WINDOW, "nvim", headless_nvim, origin="", shown_any=False)
     nvim = pynvim.attach("socket", path=headless_nvim)
     target = (tmp_path / "a.py").resolve()
@@ -79,7 +79,7 @@ def _dedicated_showing(
     headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str
 ) -> tuple[Any, Path]:
     """A dedicated follower that typed `content` (a Write) into a.py."""
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     FollowerState.set(_WINDOW, "nvim", headless_nvim, origin="", shown_any=False)
     nvim = pynvim.attach("socket", path=headless_nvim)
     target = (tmp_path / "a.py").resolve()

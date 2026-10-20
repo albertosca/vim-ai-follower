@@ -110,7 +110,7 @@ def _adopted_user_nvim(world: E2EFollower, socket_path: Path, tracked: Path) -> 
         adopted=True,
         shown_any=True,
         open_files=(str(tracked.resolve()),),
-        base_dir=world.cache_dir,
+        base_directory=world.cache_dir,
     )
     return user_pane
 

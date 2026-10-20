@@ -36,7 +36,14 @@ def test_animate_lines_types_each_line_char_by_char() -> None:
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", return_value=None):
         result = _animate_lines(
-            nvim, 7, ("a", "bb"), 0, lambda: 0.05, "@1", ns=3, base_dir=Path("/tmp/x")
+            nvim,
+            7,
+            ("a", "bb"),
+            0,
+            lambda: 0.05,
+            "@1",
+            namespace_id=3,
+            base_directory=Path("/tmp/x"),
         )
     assert result == AnimationResult("completed", 2)
     # each line is seeded blank at its row, then typed one character at a time
@@ -57,7 +64,7 @@ def test_animate_lines_moves_the_cursor_of_the_window_showing_the_buffer() -> No
     nvim = MagicMock()
     nvim.exec_lua.return_value = 1004
     with patch("vim_ai_follower.control.check_signal", return_value=None):
-        _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", ns=3, dedicated=True)
+        _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", namespace_id=3, dedicated=True)
     assert nvim.exec_lua.call_args_list == [call(_FOLLOWER_WINDOW_LUA, 7, 0, False)]
     assert nvim.api.win_set_cursor.call_args_list == [call(1004, [1, 1]), call(1004, [1, 2])]
 
@@ -66,7 +73,9 @@ def test_animate_lines_moves_no_cursor_when_the_buffer_shows_nowhere() -> None:
     nvim = MagicMock()
     nvim.exec_lua.return_value = 0
     with patch("vim_ai_follower.control.check_signal", return_value=None):
-        result = _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", ns=3, dedicated=True)
+        result = _animate_lines(
+            nvim, 7, ("ab",), 0, lambda: 0.05, "@1", namespace_id=3, dedicated=True
+        )
     assert result == AnimationResult("completed", 1)
     nvim.api.win_set_cursor.assert_not_called()
 
@@ -79,7 +88,7 @@ def test_animate_lines_finds_the_window_again_after_a_mid_line_pause() -> None:
         patch("vim_ai_follower.control.check_signal", side_effect=lambda *_: next(signals, None)),
         patch("vim_ai_follower.backends.nvim._wait_while_paused", return_value="resumed"),
     ):
-        _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", ns=3, dedicated=True)
+        _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", namespace_id=3, dedicated=True)
     assert nvim.exec_lua.call_args_list == [
         call(_FOLLOWER_WINDOW_LUA, 7, 0, False),
         call(_FOLLOWER_WINDOW_LUA, 7, 1004, False),
@@ -94,7 +103,7 @@ def test_an_adopted_animation_records_its_window_before_anything_can_pause() -> 
     nvim = MagicMock()
     nvim.exec_lua.return_value = 1004
     with patch("vim_ai_follower.control.check_signal", return_value=None):
-        _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", ns=3)
+        _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", namespace_id=3)
     assert nvim.exec_lua.call_args_list == [
         call(_FOLLOWER_WINDOW_LUA, 7, -1, True),
         call(_FOLLOWER_WINDOW_LUA, 7, 1004, True),
@@ -105,9 +114,9 @@ def test_an_adopted_animation_records_its_window_before_anything_can_pause() -> 
 def test_an_adopted_animation_with_no_lines_asks_for_no_window() -> None:
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", return_value=None):
-        assert _animate_lines(nvim, 7, (), 0, lambda: 0.05, "@1", ns=3) == AnimationResult(
-            "completed", 0
-        )
+        assert _animate_lines(
+            nvim, 7, (), 0, lambda: 0.05, "@1", namespace_id=3
+        ) == AnimationResult("completed", 0)
     nvim.exec_lua.assert_not_called()
 
 
@@ -119,7 +128,9 @@ def test_animate_lines_forces_the_static_default_colorscheme_before_the_typing_h
     # reverting the reorder makes this test fail (verified 2026-09-15).
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", return_value=None):
-        _animate_lines(nvim, 7, ("a",), 0, lambda: 0.05, "@1", ns=3, base_dir=Path("/tmp/x"))
+        _animate_lines(
+            nvim, 7, ("a",), 0, lambda: 0.05, "@1", namespace_id=3, base_directory=Path("/tmp/x")
+        )
     cmds = [recorded_call.args[0] for recorded_call in nvim.command.call_args_list]
     assert "set background=dark" in cmds
     background_index = cmds.index("set background=dark")
@@ -137,7 +148,7 @@ def test_animate_lines_pace_zero_types_the_whole_line_at_once() -> None:
     # whole-line insert per line, no per-char loop.
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", return_value=None):
-        _animate_lines(nvim, 7, ("x",), 4, lambda: 0.0, "@1", ns=1)
+        _animate_lines(nvim, 7, ("x",), 4, lambda: 0.0, "@1", namespace_id=1)
     nvim.api.buf_set_lines.assert_any_call(7, 4, 4, True, [""])
     nvim.api.buf_set_text.assert_called_once_with(7, 4, 0, 4, 0, ["x"])
 
@@ -145,7 +156,9 @@ def test_animate_lines_pace_zero_types_the_whole_line_at_once() -> None:
 def test_animate_lines_checks_signal_before_each_line() -> None:
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", return_value=None) as check:
-        _animate_lines(nvim, 7, ("a", "b"), 0, lambda: 0.0, "@9", ns=1, base_dir=Path("/d"))
+        _animate_lines(
+            nvim, 7, ("a", "b"), 0, lambda: 0.0, "@9", namespace_id=1, base_directory=Path("/d")
+        )
     # pace 0 -> only the per-line boundary checks (no per-char loop)
     assert check.call_args_list == [call("@9", Path("/d")), call("@9", Path("/d"))]
 
@@ -153,7 +166,7 @@ def test_animate_lines_checks_signal_before_each_line() -> None:
 def test_animate_lines_interrupts_before_typing_when_signal_fires_immediately() -> None:
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", return_value="interrupt"):
-        result = _animate_lines(nvim, 7, ("a", "b"), 0, lambda: 0.0, "@1", ns=1)
+        result = _animate_lines(nvim, 7, ("a", "b"), 0, lambda: 0.0, "@1", namespace_id=1)
     assert result == AnimationResult("interrupted", 0)
     nvim.api.buf_set_text.assert_not_called()
 
@@ -161,7 +174,7 @@ def test_animate_lines_interrupts_before_typing_when_signal_fires_immediately() 
 def test_animate_lines_stops_partway_when_interrupt_fires_between_lines() -> None:
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", side_effect=[None, "interrupt"]):
-        result = _animate_lines(nvim, 7, ("a", "b", "c"), 0, lambda: 0.0, "@1", ns=1)
+        result = _animate_lines(nvim, 7, ("a", "b", "c"), 0, lambda: 0.0, "@1", namespace_id=1)
     assert result == AnimationResult("interrupted", 1)
     assert nvim.api.buf_set_text.call_count == 1  # only line 0 was typed
 
@@ -175,7 +188,7 @@ def test_animate_lines_leaves_the_partial_line_untouched_on_a_mid_char_interrupt
     # line 0 "hi" typed fully, then on line 1 "abc" type 'a', interrupt before 'b'
     signals = [None, None, None, None, None, "interrupt"]
     with patch("vim_ai_follower.control.check_signal", side_effect=signals):
-        result = _animate_lines(nvim, 7, ("hi", "abc"), 0, lambda: 0.05, "@1", ns=1)
+        result = _animate_lines(nvim, 7, ("hi", "abc"), 0, lambda: 0.05, "@1", namespace_id=1)
     assert result == AnimationResult("interrupted", 1)
     # only "h", "i", "a" were typed — no snap of "bc"
     assert nvim.api.buf_set_text.call_args_list == [
@@ -194,9 +207,9 @@ def test_animate_lines_pause_inside_the_char_loop_then_resumes(tmp_path: Path) -
             "vim_ai_follower.control.check_signal",
             side_effect=[None, "pause", "pause", None, None],
         ),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
-        result = _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", ns=1)
+        result = _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", namespace_id=1)
     assert result == AnimationResult("completed", 1)
     assert nvim.api.buf_set_text.call_args_list == [
         call(7, 0, 0, 0, 0, ["a"]),
@@ -213,9 +226,9 @@ def test_animate_lines_interrupt_during_a_mid_line_pause_leaves_it_untouched(
     nvim = MagicMock()
     with (
         patch("vim_ai_follower.control.check_signal", side_effect=[None, "pause", "interrupt"]),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
-        result = _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", ns=1)
+        result = _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", namespace_id=1)
     assert result == AnimationResult("interrupted", 0)
     nvim.api.buf_set_text.assert_not_called()  # no snap; nothing was typed yet
 
@@ -225,7 +238,7 @@ def test_animate_lines_pace_zero_skips_empty_lines(tmp_path: Path) -> None:
     # whole-line insert for it.
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", return_value=None):
-        result = _animate_lines(nvim, 7, ("a", "", "b"), 0, lambda: 0.0, "@1", ns=1)
+        result = _animate_lines(nvim, 7, ("a", "", "b"), 0, lambda: 0.0, "@1", namespace_id=1)
     assert result == AnimationResult("completed", 3)
     assert nvim.api.buf_set_text.call_count == 2  # the empty line inserts nothing
 
@@ -236,9 +249,9 @@ def test_animate_lines_pauses_then_resumes_retyping_the_same_line(tmp_path: Path
     nvim = MagicMock()
     with (
         patch("vim_ai_follower.control.check_signal", side_effect=[None, "pause", "pause", None]),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
-        result = _animate_lines(nvim, 7, ("a", "b"), 0, lambda: 0.0, "@1", ns=1)
+        result = _animate_lines(nvim, 7, ("a", "b"), 0, lambda: 0.0, "@1", namespace_id=1)
     assert result == AnimationResult("completed", 2)
     assert nvim.api.buf_set_text.call_count == 2  # both lines typed, none skipped
 
@@ -247,9 +260,9 @@ def test_animate_lines_pause_then_interrupt_returns_interrupted(tmp_path: Path) 
     nvim = MagicMock()
     with (
         patch("vim_ai_follower.control.check_signal", side_effect=["pause", "interrupt"]),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
-        result = _animate_lines(nvim, 7, ("a", "b"), 0, lambda: 0.0, "@1", ns=1)
+        result = _animate_lines(nvim, 7, ("a", "b"), 0, lambda: 0.0, "@1", namespace_id=1)
     assert result == AnimationResult("interrupted", 0)
     nvim.api.buf_set_text.assert_not_called()
 
@@ -259,16 +272,18 @@ def test_animate_lines_saves_the_remainder_while_paused(tmp_path: Path) -> None:
     saved: list[int] = []
     with (
         patch("vim_ai_follower.control.check_signal", side_effect=["pause", "pause", None]),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
-        _animate_lines(nvim, 7, ("a",), 0, lambda: 0.0, "@1", ns=1, save_pending=saved.append)
+        _animate_lines(
+            nvim, 7, ("a",), 0, lambda: 0.0, "@1", namespace_id=1, save_pending=saved.append
+        )
     assert saved == [0]  # the crash-fallback remainder starts at the paused line
 
 
 def test_animate_lines_empty_completes_without_typing() -> None:
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", return_value=None):
-        result = _animate_lines(nvim, 7, (), 0, lambda: 0.0, "@1", ns=1)
+        result = _animate_lines(nvim, 7, (), 0, lambda: 0.0, "@1", namespace_id=1)
     assert result == AnimationResult("completed", 0)
     nvim.api.buf_set_text.assert_not_called()
 
@@ -313,7 +328,7 @@ def test_show_fresh_never_edits_the_real_file_and_types_the_content(tmp_path: Pa
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.show_fresh("/tmp/f.py", "hello\nworld\n")
     assert result == AnimationResult("completed", 2)
@@ -336,7 +351,7 @@ def test_show_fresh_opens_a_new_tab_when_requested(tmp_path: Path) -> None:
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         follower.show_fresh("/tmp/b.py", "x\n", in_new_tab=True)
     cmds = [recorded_call.args[0] for recorded_call in nvim.command.call_args_list]
@@ -374,7 +389,7 @@ def test_show_fresh_marks_animating_and_leaves_the_slot_to_its_owner(tmp_path: P
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=_check),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         follower.show_fresh("/tmp/f.py", "a\nb\n")
     from vim_ai_follower import control
@@ -385,7 +400,7 @@ def test_show_fresh_marks_animating_and_leaves_the_slot_to_its_owner(tmp_path: P
 
 def test_show_fresh_relocks_buffer_when_completed(tmp_path: Path) -> None:
     FollowerState.set(
-        "@1", "nvim", "/tmp/x.sock", adopted=False, base_dir=tmp_path
+        "@1", "nvim", "/tmp/x.sock", adopted=False, base_directory=tmp_path
     )  # proven dedicated
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1")
     nvim = MagicMock()
@@ -394,7 +409,7 @@ def test_show_fresh_relocks_buffer_when_completed(tmp_path: Path) -> None:
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         follower.show_fresh("/tmp/f.py", "a\n")
     # unlocked around the animation, then relocked (nomodifiable) after.
@@ -417,7 +432,7 @@ def test_show_fresh_leaves_buffer_modifiable_when_interrupted(tmp_path: Path) ->
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.show_fresh("/tmp/f.py", "a\nb\n")
     assert result == AnimationResult("interrupted", 0)
@@ -459,7 +474,7 @@ def test_show_fresh_pause_saves_show_fresh_remainder_then_resumes(tmp_path: Path
         # line 0 typed, pause at line 1's boundary, resume, then line 1 typed.
         patch("vim_ai_follower.control.check_signal", side_effect=[None, "pause", "pause", None]),
         patch("vim_ai_follower.control.save_pending_show_fresh", side_effect=spy_save),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.show_fresh("/tmp/f.py", "a\nb\n")
     assert result == AnimationResult("completed", 2)
@@ -498,7 +513,7 @@ def test_apply_edit_pause_at_op_boundary_saves_ops_and_resumes(tmp_path: Path) -
         # pause at op0's boundary, resume, then op0 runs (delete + line "a").
         patch("vim_ai_follower.control.check_signal", side_effect=["pause", "pause", None, None]),
         patch("vim_ai_follower.control.save_pending_apply_edit", side_effect=spy_save),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("completed", 1)
@@ -515,7 +530,7 @@ def test_apply_edit_pause_at_op_boundary_then_interrupt(tmp_path: Path) -> None:
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=["pause", "interrupt"]),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("interrupted", 0)
@@ -549,7 +564,7 @@ def test_apply_edit_pause_inside_an_ops_lines_saves_and_resumes(tmp_path: Path) 
             side_effect=[None, None, "pause", "pause", None],
         ),
         patch("vim_ai_follower.control.save_pending_apply_edit", side_effect=spy_save),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("completed", 1)
@@ -617,7 +632,7 @@ def test_drive_skips_relock_for_an_adopted_follower(tmp_path: Path) -> None:
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=True)
         follower.show_fresh("/tmp/f.py", "a\n")
@@ -644,7 +659,7 @@ def test_drive_relocks_a_dedicated_follower_recorded_not_adopted(tmp_path: Path)
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=False)
         follower.show_fresh("/tmp/f.py", "a\n")
@@ -658,7 +673,7 @@ def test_stop_quits_a_launched_nvim(tmp_path: Path) -> None:
     nvim = MagicMock()
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=False)
         follower.stop()
@@ -672,7 +687,7 @@ def test_stop_is_a_noop_for_an_adopted_nvim(tmp_path: Path) -> None:
     nvim = MagicMock()
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         state.FollowerState.set("@1", "nvim", "/tmp/x.sock", adopted=True)
         follower.stop()
@@ -688,7 +703,7 @@ def test_apply_edit_deletes_then_animates_each_op(tmp_path: Path) -> None:
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", ops)
     assert result == AnimationResult("completed", 1)
@@ -712,7 +727,7 @@ def test_apply_edit_navigates_to_the_tab_showing_file_path(tmp_path: Path) -> No
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch.object(NvimFollower, "goto_file") as goto_file,
     ):
         follower.apply_edit("/tmp/f.py", [operation])
@@ -734,7 +749,7 @@ def test_apply_edit_interrupted_reports_completed_op_index(tmp_path: Path) -> No
         # op0: boundary + line0 between + line0 char0 (types "a"); then op1's
         # boundary interrupts -> completed op index 1.
         patch("vim_ai_follower.control.check_signal", side_effect=[None, None, None, "interrupt"]),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", ops)
     assert result == AnimationResult("interrupted", 1)
@@ -753,7 +768,7 @@ def test_apply_edit_interrupted_inside_an_ops_line_animation(tmp_path: Path) -> 
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         # op boundary (None), line0 (None, typed), line1 boundary -> interrupt.
         patch("vim_ai_follower.control.check_signal", side_effect=[None, None, "interrupt"]),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("interrupted", 0)
@@ -769,7 +784,7 @@ def test_apply_edit_pure_delete_op_needs_no_animation(tmp_path: Path) -> None:
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("completed", 1)
@@ -787,7 +802,7 @@ def test_pace_provider_reads_live_speed_from_state(tmp_path: Path) -> None:
     from vim_ai_follower import state
 
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.99)
-    with patch("vim_ai_follower.cache.CACHE_DIR", tmp_path):
+    with patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path):
         state.FollowerState.set("@1", "nvim", "/tmp/x.sock", speed="lento")
         assert follower._pace_provider() == config_mod.pace_seconds_for("lento")
 
@@ -1037,7 +1052,7 @@ def test_animate_lines_sends_nothing_after_a_stop_in_a_mid_line_pause(tmp_path: 
         patch("vim_ai_follower.control.check_signal", side_effect=[None, "pause"]),
         patch("vim_ai_follower.backends.nvim._wait_while_paused", return_value="stopped"),
     ):
-        result = _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", ns=1)
+        result = _animate_lines(nvim, 7, ("ab",), 0, lambda: 0.05, "@1", namespace_id=1)
     assert result == AnimationResult("stopped", 0)
     nvim.api.buf_set_text.assert_not_called()
     nvim.api.buf_del_extmark.assert_not_called()
@@ -1049,6 +1064,6 @@ def test_animate_lines_ends_stopped_on_a_stop_in_a_line_boundary_pause(tmp_path:
         patch("vim_ai_follower.control.check_signal", side_effect=[None, "pause"]),
         patch("vim_ai_follower.backends.nvim._wait_while_paused", return_value="stopped"),
     ):
-        result = _animate_lines(nvim, 7, ("a", "b"), 0, lambda: 0.0, "@1", ns=1)
+        result = _animate_lines(nvim, 7, ("a", "b"), 0, lambda: 0.0, "@1", namespace_id=1)
     assert result == AnimationResult("stopped", 1)
     assert nvim.api.buf_set_text.call_count == 1

@@ -101,7 +101,7 @@ def test_other_live_followers_never_collects_dead_state() -> None:
         "vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run(pane_id="%23")
     ):
         assert session_mod.other_live_followers("term-me") == []
-    assert (cache.CACHE_DIR / "@19.pane").exists()
+    assert (cache.CACHE_DIRECTORY / "@19.pane").exists()
 
 
 def test_other_live_followers_is_empty_when_nothing_is_registered() -> None:

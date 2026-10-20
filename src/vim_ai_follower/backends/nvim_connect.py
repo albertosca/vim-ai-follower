@@ -177,8 +177,8 @@ class SplitNvimNeverAnswered(Exception):
         self.pane_id = pane_id
 
 
-def launch_socket_path(window_id: str, base_dir: Path | None = None) -> Path:
-    return state.nvim_socket_path(window_id, base_dir)
+def launch_socket_path(window_id: str, base_directory: Path | None = None) -> Path:
+    return state.nvim_socket_path(window_id, base_directory)
 
 
 def _socket_path_in_existing_dir(window_id: str) -> Path:
@@ -350,11 +350,11 @@ def bounded_attach(socket_path: str) -> Any:
     unbounded_request = session.request
     bounds = {"lifted": 0}
 
-    def bounded_request(method: Any, *args: Any, **kwargs: Any) -> Any:
+    def bounded_request(method: Any, *arguments: Any, **keyword_arguments: Any) -> Any:
         if bounds["lifted"]:
-            return unbounded_request(method, *args, **kwargs)
+            return unbounded_request(method, *arguments, **keyword_arguments)
         with rpc_deadline(RPC_TIMEOUT_SECONDS):
-            return unbounded_request(method, *args, **kwargs)
+            return unbounded_request(method, *arguments, **keyword_arguments)
 
     setattr(session, "request", bounded_request)  # noqa: B010 - an instance override of a method
     setattr(session, _BOUNDS_ATTRIBUTE, bounds)
@@ -725,7 +725,7 @@ def sweep_stale_sockets() -> list[str]:
     one younger than SOCKET_SWEEP_GRACE_SECONDS (a launch still booting), and
     any socket the probe does not find "absent": an nvim busy in `:!make` is
     silent, and its socket must not be unlinked from under it."""
-    directory = cache.CACHE_DIR
+    directory = cache.CACHE_DIRECTORY
     named: set[str] = set()
     for pane in directory.glob("*.pane"):
         named.add(os.path.realpath(state.nvim_socket_path(pane.stem, directory)))
@@ -770,12 +770,12 @@ def _remove_dead_socket(sock: str) -> None:
         )
     try:
         path.unlink(missing_ok=True)
-    except OSError as exc:  # a directory there, or a file we may not delete
-        raise SocketPathBlocked(sock, exc) from exc
+    except OSError as error:  # a directory there, or a file we may not delete
+        raise SocketPathBlocked(sock, error) from error
 
 
 def launch_backoff_path(window_id: str) -> Path:
-    return cache.CACHE_DIR / f"{window_id}.launch-failed"
+    return cache.CACHE_DIRECTORY / f"{window_id}.launch-failed"
 
 
 def record_launch_failure(window_id: str) -> None:
@@ -814,13 +814,13 @@ def launch_standalone_nvim(
         # stay on screen as an orphan error window.
         return sock
     _remove_dead_socket(sock)
-    cmd = standalone_launch_command(
+    command = standalone_launch_command(
         sock,
         has_nvim_qt=shutil.which("nvim-qt") is not None,
         has_vimr=shutil.which("VimR") is not None or _vimr_app_present(),
         is_iterm=os.environ.get("TERM_PROGRAM") == "iTerm.app",
     )
-    subprocess.run(cmd, check=True)
+    subprocess.run(command, check=True)
     deadline = time.monotonic() + wait_seconds
     with _one_scan_until(deadline):
         while not nvim_answers(sock) and time.monotonic() < deadline:
@@ -830,5 +830,5 @@ def launch_standalone_nvim(
         # The launcher exited 0 (nvim-qt that found no nvim, a terminal whose
         # nvim died on a config error): there is nothing to attach to, and a
         # follower persisted here would point at a socket no one listens on.
-        raise NvimNeverListened(sock, cmd[0], wait_seconds)
+        raise NvimNeverListened(sock, command[0], wait_seconds)
     return sock

@@ -106,7 +106,7 @@ def _adopted_state(
         # The hook names the file by its realpath (/tmp is /private/tmp).
         open_files=(os.path.realpath(target),),
         speed=speed,
-        base_dir=world.cache_dir,
+        base_directory=world.cache_dir,
     )
 
 
@@ -189,7 +189,7 @@ def test_a_prompt_already_up_when_the_hook_starts_is_swept_and_the_edit_goes_on(
     assert "is waiting on its user" not in log, log
     assert "left before the hook (sweep)" in log, log
     assert _buffer_lines(world, socket_path, target) == ["one", "TWO"]
-    state = FollowerState.read(window_id, base_dir=world.cache_dir)
+    state = FollowerState.read(window_id, base_directory=world.cache_dir)
     assert state is not None and state.stale_files == ()
 
 
@@ -225,7 +225,7 @@ def test_an_nvim_blocked_in_a_key_sequence_skips_the_edit_in_one_line(
         skipped = [line for line in log.splitlines() if "is waiting on its user" in line]
         assert len(skipped) == 1, log
         assert "(sweep)" not in log, log
-        state = FollowerState.read(window_id, base_dir=world.cache_dir)
+        state = FollowerState.read(window_id, base_directory=world.cache_dir)
         assert state is not None and state.stale_files == (os.path.realpath(target),)
     finally:
         world.tmux("send-keys", "-t", pane_id, "Escape")
@@ -375,7 +375,7 @@ def test_an_nvim_whose_user_is_in_the_command_line_window_is_skipped(
         skipped = [line for line in log.splitlines() if "is waiting on its user" in line]
         assert len(skipped) == 1, log
         assert "(in the command-line window)" in skipped[0], skipped
-        state = FollowerState.read(window_id, base_dir=world.cache_dir)
+        state = FollowerState.read(window_id, base_directory=world.cache_dir)
         assert state is not None
         if tool == "Edit":
             assert state.stale_files == (os.path.realpath(claudes_file),)
@@ -430,7 +430,7 @@ def test_an_nvim_whose_user_is_typing_is_skipped_and_the_edit_marked_stale(
         assert len(skipped) == 1, log
         named = "in insert mode" if mode_key == "A" else "in replace mode"
         assert f"({named})" in skipped[0], skipped
-        state = FollowerState.read(window_id, base_dir=world.cache_dir)
+        state = FollowerState.read(window_id, base_directory=world.cache_dir)
         assert state is not None
         assert state.stale_files == (os.path.realpath(claudes_file),)
     finally:
@@ -489,7 +489,7 @@ def test_an_nvim_whose_user_is_typing_is_asked_and_only_y_takes_it_over(
         log = _hook_log(world)
         assert "Traceback" not in log, log
         observer = world._nvim(str(socket_path))
-        state = FollowerState.read(window_id, base_dir=world.cache_dir)
+        state = FollowerState.read(window_id, base_directory=world.cache_dir)
         assert state is not None
         if answer == "y":
             assert "(in insert mode): taken over (answered y)" in log, log

@@ -40,7 +40,7 @@ def _interrupt_at(nth: int) -> Any:
 def _interrupted_write(
     headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[Any, Path]:
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     target = tmp_path / "new.py"
     target.write_text(CONTENT)  # Claude's Write lands before the post hook
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)

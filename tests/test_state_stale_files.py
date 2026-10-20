@@ -22,7 +22,7 @@ def test_a_pane_file_written_before_stale_tracking_still_reads(tmp_path: Path) -
     (tmp_path / "@1.pane").write_text(
         json.dumps({"backend": "tmux", "target": "%2", "open_files": ["/tmp/a.py"]})
     )
-    loaded = FollowerState.read("@1", base_dir=tmp_path)
+    loaded = FollowerState.read("@1", base_directory=tmp_path)
     assert loaded is not None
     assert loaded.open_files == ("/tmp/a.py",)
     assert loaded.stale_files == ()
@@ -34,12 +34,14 @@ def test_set_refuses_to_persist_a_stale_entry_for_an_unopened_file(tmp_path: Pat
     invalidate one: cmd_toggle's un-mute zeroes open_files to force a resync
     and would otherwise leave the marks behind, naming tabs nothing tracks.
     Reproduced here in that exact shape (update with open_files=())."""
-    FollowerState.set("@1", "tmux", "%2", open_files=("/tmp/a.py", "/tmp/b.py"), base_dir=tmp_path)
-    FollowerState.update("@1", base_dir=tmp_path, stale_files=("/tmp/a.py",))
+    FollowerState.set(
+        "@1", "tmux", "%2", open_files=("/tmp/a.py", "/tmp/b.py"), base_directory=tmp_path
+    )
+    FollowerState.update("@1", base_directory=tmp_path, stale_files=("/tmp/a.py",))
 
-    FollowerState.update("@1", base_dir=tmp_path, enabled=True, open_files=())
+    FollowerState.update("@1", base_directory=tmp_path, enabled=True, open_files=())
 
-    loaded = FollowerState.read("@1", base_dir=tmp_path)
+    loaded = FollowerState.read("@1", base_directory=tmp_path)
     assert loaded is not None
     assert loaded.open_files == ()
     assert loaded.stale_files == ()
@@ -48,9 +50,9 @@ def test_set_refuses_to_persist_a_stale_entry_for_an_unopened_file(tmp_path: Pat
 def test_mark_and_clear_stale_are_no_ops_without_state(tmp_path: Path) -> None:
     """The .animating marker and the .pane file have decoupled lifecycles, so
     a hook can reach either call after a stop deleted the state under it."""
-    FollowerState.mark_stale("@nosuch", "/tmp/a.py", base_dir=tmp_path)
-    FollowerState.clear_stale("@nosuch", "/tmp/a.py", base_dir=tmp_path)
-    assert FollowerState.read("@nosuch", base_dir=tmp_path) is None
+    FollowerState.mark_stale("@nosuch", "/tmp/a.py", base_directory=tmp_path)
+    FollowerState.clear_stale("@nosuch", "/tmp/a.py", base_directory=tmp_path)
+    assert FollowerState.read("@nosuch", base_directory=tmp_path) is None
 
 
 def test_clear_stale_leaves_the_other_marks_alone(tmp_path: Path) -> None:
@@ -60,9 +62,9 @@ def test_clear_stale_leaves_the_other_marks_alone(tmp_path: Path) -> None:
         "%2",
         open_files=("/tmp/a.py", "/tmp/b.py"),
         stale_files=("/tmp/a.py", "/tmp/b.py"),
-        base_dir=tmp_path,
+        base_directory=tmp_path,
     )
-    FollowerState.clear_stale("@1", "/tmp/a.py", base_dir=tmp_path)
-    loaded = FollowerState.read("@1", base_dir=tmp_path)
+    FollowerState.clear_stale("@1", "/tmp/a.py", base_directory=tmp_path)
+    loaded = FollowerState.read("@1", base_directory=tmp_path)
     assert loaded is not None
     assert loaded.stale_files == ("/tmp/b.py",)

@@ -46,7 +46,7 @@ def test_show_fresh_names_its_buffer_with_the_display_name(tmp_path: Path) -> No
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         NvimFollower(socket_path="/tmp/x.sock", window_id="@1").show_fresh("/p/sub/a.py", "a\n")
     assert nvim.api.buf_set_name.call_args_list == [call(buffer, "sub/a.py")]

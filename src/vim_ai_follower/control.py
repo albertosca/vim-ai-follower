@@ -21,22 +21,22 @@ from vim_ai_follower.diff import EditOp
 logger = logging.getLogger("vim_ai_follower")
 
 
-def _control_dir(base_dir: Path | None) -> Path:
-    # cache.CACHE_DIR is read at call time (not bound at import) so one
+def _control_dir(base_directory: Path | None) -> Path:
+    # cache.CACHE_DIRECTORY is read at call time (not bound at import) so one
     # monkeypatch of the cache module isolates every consumer in tests.
-    return base_dir if base_dir is not None else cache.CACHE_DIR
+    return base_directory if base_directory is not None else cache.CACHE_DIRECTORY
 
 
-def _pause_path(window_id: str, base_dir: Path | None) -> Path:
-    return _control_dir(base_dir) / f"{window_id}.pause"
+def _pause_path(window_id: str, base_directory: Path | None) -> Path:
+    return _control_dir(base_directory) / f"{window_id}.pause"
 
 
-def _interrupt_path(window_id: str, base_dir: Path | None) -> Path:
-    return _control_dir(base_dir) / f"{window_id}.interrupt"
+def _interrupt_path(window_id: str, base_directory: Path | None) -> Path:
+    return _control_dir(base_directory) / f"{window_id}.interrupt"
 
 
-def _pending_path(window_id: str, base_dir: Path | None) -> Path:
-    return _control_dir(base_dir) / f"{window_id}.pending_animation.json"
+def _pending_path(window_id: str, base_directory: Path | None) -> Path:
+    return _control_dir(base_directory) / f"{window_id}.pending_animation.json"
 
 
 def _consume(path: Path) -> bool:
@@ -67,27 +67,30 @@ def _consume(path: Path) -> bool:
 
 
 def check_signal(
-    window_id: str, base_dir: Path | None = None
+    window_id: str, base_directory: Path | None = None
 ) -> Literal["interrupt", "pause"] | None:
-    if _consume(_interrupt_path(window_id, base_dir)):
+    if _consume(_interrupt_path(window_id, base_directory)):
         return "interrupt"
-    if _consume(_pause_path(window_id, base_dir)):
+    if _consume(_pause_path(window_id, base_directory)):
         return "pause"
     return None
 
 
-def clear_signals(window_id: str, base_dir: Path | None = None) -> None:
-    _pause_path(window_id, base_dir).unlink(missing_ok=True)
-    _interrupt_path(window_id, base_dir).unlink(missing_ok=True)
-    sweep_signal_leftovers(window_id, base_dir)
+def clear_signals(window_id: str, base_directory: Path | None = None) -> None:
+    _pause_path(window_id, base_directory).unlink(missing_ok=True)
+    _interrupt_path(window_id, base_directory).unlink(missing_ok=True)
+    sweep_signal_leftovers(window_id, base_directory)
 
 
-def sweep_signal_leftovers(window_id: str, base_dir: Path | None = None) -> None:
+def sweep_signal_leftovers(window_id: str, base_directory: Path | None = None) -> None:
     """Remove the `<signal>.<pid>.claimed` and `<signal>.<pid>.tmp` files a
     process left when it was killed between its claim (_consume's rename) and
     the unlink, or between a request's temp write and its replace. Nothing
     ever reads them; a live process's are never touched."""
-    for signal_path in (_pause_path(window_id, base_dir), _interrupt_path(window_id, base_dir)):
+    for signal_path in (
+        _pause_path(window_id, base_directory),
+        _interrupt_path(window_id, base_directory),
+    ):
         prefix = f"{signal_path.name}."
         for suffix in (".claimed", ".tmp"):
             # Escaped: a window id is an identity string, never a pattern.
@@ -98,7 +101,7 @@ def sweep_signal_leftovers(window_id: str, base_dir: Path | None = None) -> None
                     leftover.unlink(missing_ok=True)
 
 
-def _request(path: Path, window_id: str, base_dir: Path | None) -> bool:
+def _request(path: Path, window_id: str, base_directory: Path | None) -> bool:
     """Address a signal to the animation live at this instant: the file holds
     its owner's PID, and only that process obeys it (_consume).
 
@@ -118,7 +121,7 @@ def _request(path: Path, window_id: str, base_dir: Path | None) -> bool:
     True when the signal was written to a live owner. The caller read the
     marker's state before calling, and the owner can die in between: then
     nothing is written and False tells the caller not to claim it worked."""
-    owner = _live_owner(window_id, base_dir)
+    owner = _live_owner(window_id, base_directory)
     if owner is None:
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -128,23 +131,23 @@ def _request(path: Path, window_id: str, base_dir: Path | None) -> bool:
     return True
 
 
-def request_pause(window_id: str, base_dir: Path | None = None) -> bool:
-    return _request(_pause_path(window_id, base_dir), window_id, base_dir)
+def request_pause(window_id: str, base_directory: Path | None = None) -> bool:
+    return _request(_pause_path(window_id, base_directory), window_id, base_directory)
 
 
-def request_interrupt(window_id: str, base_dir: Path | None = None) -> bool:
-    return _request(_interrupt_path(window_id, base_dir), window_id, base_dir)
+def request_interrupt(window_id: str, base_directory: Path | None = None) -> bool:
+    return _request(_interrupt_path(window_id, base_directory), window_id, base_directory)
 
 
-def has_pending_animation(window_id: str, base_dir: Path | None = None) -> bool:
+def has_pending_animation(window_id: str, base_directory: Path | None = None) -> bool:
     """Non-consuming peek at whether a resumable animation is on disk.
     Production consumes it via load_pending_animation instead; this predicate
     is the suite's observation point for the crash-fallback file."""
-    return _pending_path(window_id, base_dir).exists()
+    return _pending_path(window_id, base_directory).exists()
 
 
-def _animating_path(window_id: str, base_dir: Path | None) -> Path:
-    return _control_dir(base_dir) / f"{window_id}.animating"
+def _animating_path(window_id: str, base_directory: Path | None) -> Path:
+    return _control_dir(base_directory) / f"{window_id}.animating"
 
 
 def _write_marker_atomically(path: Path, payload: str) -> Path:
@@ -153,12 +156,14 @@ def _write_marker_atomically(path: Path, payload: str) -> Path:
     sees the marker at all sees its owner: an EMPTY marker is indistinguishable
     from a crashed hook's, and a live one read as stale gets taken."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(payload)
-    return tmp
+    temporary_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    temporary_path.write_text(payload)
+    return temporary_path
 
 
-def mark_animating(window_id: str, base_dir: Path | None = None, state: str = "running") -> bool:
+def mark_animating(
+    window_id: str, base_directory: Path | None = None, state: str = "running"
+) -> bool:
     """Record this process's animation state: in flight ("running"), waiting
     while paused ("paused"), or waiting for the user's save after an
     interrupt ("handoff") — tagged with this process's PID so a crashed hook
@@ -172,23 +177,23 @@ def mark_animating(window_id: str, base_dir: Path | None = None, state: str = "r
     never overwritten (False); a free or dead slot is claimed as an acquire
     would. Replaced, never rewritten in place: hooks racing for the slot read
     it the whole time (see _write_marker_atomically)."""
-    path = _animating_path(window_id, base_dir)
-    tmp = _write_marker_atomically(path, f"{os.getpid()} {state}")
+    path = _animating_path(window_id, base_directory)
+    temporary_path = _write_marker_atomically(path, f"{os.getpid()} {state}")
     try:
         seen = _marker_seen(path)
         if seen is not None and seen[1] == os.getpid():
             # Ours: nobody else replaces or removes a live owner's marker.
-            tmp.replace(path)
+            temporary_path.replace(path)
             return True
         if seen is not None and seen[1] is not None and _alive(seen[1]):
             return False  # another live process owns this window's slot
-        return _publish(tmp, path) or _reclaim(tmp, path)
+        return _publish(temporary_path, path) or _reclaim(temporary_path, path)
     finally:
-        tmp.unlink(missing_ok=True)
+        temporary_path.unlink(missing_ok=True)
 
 
 def try_acquire_animating(
-    window_id: str, base_dir: Path | None = None, state: str = "running"
+    window_id: str, base_directory: Path | None = None, state: str = "running"
 ) -> bool:
     """Atomically claim this window's animation slot for the current process.
     Returns True when this process now owns it, False when a LIVE process
@@ -207,18 +212,18 @@ def try_acquire_animating(
     reclaimed — two owners.) A crash before the link leaves only the private
     temp file, so no half-claim can wedge the slot; the next acquire sweeps
     such leftovers."""
-    path = _animating_path(window_id, base_dir)
+    path = _animating_path(window_id, base_directory)
     path.parent.mkdir(parents=True, exist_ok=True)
     _sweep_dead_temp_files(path)
-    tmp = _write_marker_atomically(path, f"{os.getpid()} {state}")
+    temporary_path = _write_marker_atomically(path, f"{os.getpid()} {state}")
     try:
-        if _publish(tmp, path):
+        if _publish(temporary_path, path):
             return True
-        if animating_state(window_id, base_dir) is not None:
+        if animating_state(window_id, base_directory) is not None:
             return False  # a live process is already animating this window
-        return _reclaim(tmp, path)
+        return _reclaim(temporary_path, path)
     finally:
-        tmp.unlink(missing_ok=True)
+        temporary_path.unlink(missing_ok=True)
 
 
 def _sweep_dead_temp_files(path: Path) -> None:
@@ -230,9 +235,9 @@ def _sweep_dead_temp_files(path: Path) -> None:
             leftover.unlink(missing_ok=True)
 
 
-def _publish(tmp: Path, path: Path) -> bool:
+def _publish(temporary_path: Path, path: Path) -> bool:
     try:
-        os.link(tmp, path)
+        os.link(temporary_path, path)
     except FileExistsError:
         return False
     return True
@@ -253,14 +258,14 @@ def _marker_seen(path: Path) -> tuple[tuple[int, int], int | None] | None:
     that very file — None for the PID when the content names no one — or
     None when there is no marker at all."""
     try:
-        fd = os.open(path, os.O_RDONLY)
+        file_descriptor = os.open(path, os.O_RDONLY)
     except FileNotFoundError:
         return None
     try:
-        stat = os.fstat(fd)
-        words = os.read(fd, 256).decode(errors="replace").split()
+        stat = os.fstat(file_descriptor)
+        words = os.read(file_descriptor, 256).decode(errors="replace").split()
     finally:
-        os.close(fd)
+        os.close(file_descriptor)
     pid = int(words[0]) if words and words[0].isdigit() else None
     return (stat.st_dev, stat.st_ino), pid
 
@@ -272,16 +277,16 @@ def _reclaim_lock(path: Path, *, wait: bool) -> Iterator[bool]:
     drops it with its holder, so a crash under it cannot wedge the slot."""
     # The .lock file is never deleted, by design: removing a flock file lets a
     # second process lock a new inode while the first still holds the old one.
-    fd = os.open(path.with_name(f"{path.name}.lock"), os.O_CREAT | os.O_WRONLY, 0o644)
+    file_descriptor = os.open(path.with_name(f"{path.name}.lock"), os.O_CREAT | os.O_WRONLY, 0o644)
     try:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(file_descriptor, fcntl.LOCK_EX if wait else fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             yield False
             return
         yield True
     finally:
-        os.close(fd)
+        os.close(file_descriptor)
 
 
 def _remove_dead_marker(path: Path) -> bool | None:
@@ -310,7 +315,7 @@ def _remove_dead_marker(path: Path) -> bool | None:
     return True
 
 
-def _reclaim(tmp: Path, path: Path) -> bool:
+def _reclaim(temporary_path: Path, path: Path) -> bool:
     """Take the slot from a crashed hook (dead PID), or lose. Reclaimers
     serialize on the lock; one already reclaiming means this hook lost the
     race, and it skips without waiting. A slot found free under the lock is
@@ -320,14 +325,14 @@ def _reclaim(tmp: Path, path: Path) -> bool:
             return False  # another hook is reclaiming this very marker
         if _remove_dead_marker(path) is False:
             return False  # a live owner's (reclaimed since the first read)
-        return _publish(tmp, path)
+        return _publish(temporary_path, path)
 
 
-def clear_animating(window_id: str, base_dir: Path | None = None) -> None:
+def clear_animating(window_id: str, base_directory: Path | None = None) -> None:
     """Release this process's slot. Another live process's marker is never
     removed — it releases its own; a crashed hook's is removed (under the
     reclaim lock, identity-checked)."""
-    path = _animating_path(window_id, base_dir)
+    path = _animating_path(window_id, base_directory)
     seen = _marker_seen(path)
     if seen is None:
         return
@@ -341,10 +346,10 @@ def clear_animating(window_id: str, base_dir: Path | None = None) -> None:
         _remove_dead_marker(path)
 
 
-def _read_marker(window_id: str, base_dir: Path | None) -> tuple[int, str] | None:
+def _read_marker(window_id: str, base_directory: Path | None) -> tuple[int, str] | None:
     """The live owner's PID and state, or None when no live process owns one."""
     try:
-        content = _animating_path(window_id, base_dir).read_text().split()
+        content = _animating_path(window_id, base_directory).read_text().split()
         pid = int(content[0])
     except (FileNotFoundError, ValueError, IndexError):
         return None
@@ -353,23 +358,23 @@ def _read_marker(window_id: str, base_dir: Path | None) -> tuple[int, str] | Non
     return pid, content[1] if len(content) > 1 else "running"
 
 
-def _live_owner(window_id: str, base_dir: Path | None) -> int | None:
-    marker = _read_marker(window_id, base_dir)
+def _live_owner(window_id: str, base_directory: Path | None) -> int | None:
+    marker = _read_marker(window_id, base_directory)
     return None if marker is None else marker[0]
 
 
-def animating_state(window_id: str, base_dir: Path | None = None) -> str | None:
+def animating_state(window_id: str, base_directory: Path | None = None) -> str | None:
     """The live animation's state, or None when no live process owns one."""
-    marker = _read_marker(window_id, base_dir)
+    marker = _read_marker(window_id, base_directory)
     return None if marker is None else marker[1]
 
 
-def is_animating(window_id: str, base_dir: Path | None = None) -> bool:
+def is_animating(window_id: str, base_directory: Path | None = None) -> bool:
     """Boolean predicate form of animating_state, for callers that only need
     "is a live process animating?" without the running/paused/handoff detail.
     Production reads animating_state directly; this is the suite's observation
     point (parallel to has_pending_animation)."""
-    return animating_state(window_id, base_dir) is not None
+    return animating_state(window_id, base_directory) is not None
 
 
 @dataclass(frozen=True)
@@ -407,19 +412,19 @@ class PendingShowFresh:
     partial: str | None = None
 
 
-def _write_pending(window_id: str, payload: dict[str, Any], base_dir: Path | None) -> None:
-    path = _pending_path(window_id, base_dir)
+def _write_pending(window_id: str, payload: dict[str, Any], base_directory: Path | None) -> None:
+    path = _pending_path(window_id, base_directory)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(payload))
-    tmp.replace(path)  # atomic: a concurrent reader sees old-or-new, never half
+    temporary_path = path.with_name(path.name + ".tmp")
+    temporary_path.write_text(json.dumps(payload))
+    temporary_path.replace(path)  # atomic: a concurrent reader sees old-or-new, never half
 
 
 def save_pending_apply_edit(
     window_id: str,
     ops: list[EditOp],
     pace_seconds: float,
-    base_dir: Path | None = None,
+    base_directory: Path | None = None,
     file_path: str = "",
     partial: str | None = None,
 ) -> None:
@@ -427,12 +432,12 @@ def save_pending_apply_edit(
         window_id,
         {
             "kind": "apply_edit",
-            "remaining_ops": [asdict(op) for op in ops],
+            "remaining_ops": [asdict(operation) for operation in ops],
             "pace_seconds": pace_seconds,
             "file_path": file_path,
             "partial": partial,
         },
-        base_dir,
+        base_directory,
     )
 
 
@@ -441,7 +446,7 @@ def save_pending_show_fresh(
     lines: tuple[str, ...],
     pace_seconds: float,
     continuation: bool = False,
-    base_dir: Path | None = None,
+    base_directory: Path | None = None,
     file_path: str = "",
     partial: str | None = None,
 ) -> None:
@@ -455,14 +460,14 @@ def save_pending_show_fresh(
             "file_path": file_path,
             "partial": partial,
         },
-        base_dir,
+        base_directory,
     )
 
 
 def load_pending_animation(
-    window_id: str, base_dir: Path | None = None
+    window_id: str, base_directory: Path | None = None
 ) -> PendingApplyEdit | PendingShowFresh | None:
-    path = _pending_path(window_id, base_dir)
+    path = _pending_path(window_id, base_directory)
     try:
         # A ValueError here is a file that is not UTF-8 or not JSON.
         data = json.loads(path.read_text())
@@ -491,12 +496,12 @@ def _parse_pending(data: Any) -> PendingApplyEdit | PendingShowFresh:
     if data["kind"] == "apply_edit":
         ops = [
             EditOp(
-                kind=op["kind"],
-                start_line=op["start_line"],
-                end_line=op["end_line"],
-                new_lines=tuple(op["new_lines"]),
+                kind=operation["kind"],
+                start_line=operation["start_line"],
+                end_line=operation["end_line"],
+                new_lines=tuple(operation["new_lines"]),
             )
-            for op in data["remaining_ops"]
+            for operation in data["remaining_ops"]
         ]
         return PendingApplyEdit(
             ops=ops,
@@ -513,5 +518,5 @@ def _parse_pending(data: Any) -> PendingApplyEdit | PendingShowFresh:
     )
 
 
-def discard_pending_animation(window_id: str, base_dir: Path | None = None) -> None:
-    _pending_path(window_id, base_dir).unlink(missing_ok=True)
+def discard_pending_animation(window_id: str, base_directory: Path | None = None) -> None:
+    _pending_path(window_id, base_directory).unlink(missing_ok=True)

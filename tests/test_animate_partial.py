@@ -62,7 +62,9 @@ def test_run_lines_pause_at_a_line_boundary_records_the_lines_already_typed(
     pane = cast(TmuxPane, MagicMock())
     seen: list[object] = []
     with patch("vim_ai_follower.control.check_signal", side_effect=_pause_at(9, tmp_path, seen)):
-        result = run_lines(pane, "@1", _LINES, pace_seconds=0.0, base_dir=tmp_path, base_content="")
+        result = run_lines(
+            pane, "@1", _LINES, pace_seconds=0.0, base_directory=tmp_path, base_content=""
+        )
     assert result == AnimationResult("completed", 3)
     assert seen == [
         control.PendingShowFresh(("gamma",), 0.0, continuation=True, partial="alpha\nbeta\n")
@@ -79,7 +81,9 @@ def test_run_lines_pause_mid_line_leaves_the_half_typed_line_out_of_the_partial(
     pane = cast(TmuxPane, MagicMock())
     seen: list[object] = []
     with patch("vim_ai_follower.control.check_signal", side_effect=_pause_at(11, tmp_path, seen)):
-        result = run_lines(pane, "@1", _LINES, pace_seconds=0.0, base_dir=tmp_path, base_content="")
+        result = run_lines(
+            pane, "@1", _LINES, pace_seconds=0.0, base_directory=tmp_path, base_content=""
+        )
     assert result == AnimationResult("completed", 3)
     # Proof the pause really landed mid-line and not on the boundary: "gamma"
     # was typed, undone, and retyped. Without this the test would pass just as
@@ -100,7 +104,9 @@ def test_run_lines_pause_before_the_first_line_records_an_empty_partial(
     pane = cast(TmuxPane, MagicMock())
     seen: list[object] = []
     with patch("vim_ai_follower.control.check_signal", side_effect=_pause_at(1, tmp_path, seen)):
-        result = run_lines(pane, "@1", _LINES, pace_seconds=0.0, base_dir=tmp_path, base_content="")
+        result = run_lines(
+            pane, "@1", _LINES, pace_seconds=0.0, base_directory=tmp_path, base_content=""
+        )
     assert result == AnimationResult("completed", 3)
     assert seen == [control.PendingShowFresh(_LINES, 0.0, continuation=False, partial="")]
 
@@ -120,7 +126,7 @@ def test_run_lines_continuation_run_prepends_the_prefix_already_on_screen(
             "@1",
             ("beta", "gamma"),
             pace_seconds=0.0,
-            base_dir=tmp_path,
+            base_directory=tmp_path,
             continuation=True,
             base_content="alpha\n",
         )
@@ -141,7 +147,7 @@ def test_run_lines_keeps_a_trailing_blank_line_in_the_prefix(tmp_path: Path) -> 
             "@1",
             ("beta", "gamma"),
             pace_seconds=0.0,
-            base_dir=tmp_path,
+            base_directory=tmp_path,
             continuation=True,
             base_content="alpha\n\n",
         )
@@ -157,7 +163,7 @@ def test_run_lines_without_a_base_records_no_partial(tmp_path: Path) -> None:
     pane = cast(TmuxPane, MagicMock())
     seen: list[object] = []
     with patch("vim_ai_follower.control.check_signal", side_effect=_pause_at(9, tmp_path, seen)):
-        run_lines(pane, "@1", _LINES, pace_seconds=0.0, base_dir=tmp_path)
+        run_lines(pane, "@1", _LINES, pace_seconds=0.0, base_directory=tmp_path)
     assert seen == [control.PendingShowFresh(("gamma",), 0.0, continuation=True, partial=None)]
 
 
@@ -167,7 +173,9 @@ def test_run_ops_pause_at_an_op_boundary_records_the_ops_already_applied(
     pane = cast(TmuxPane, MagicMock())
     seen: list[object] = []
     with patch("vim_ai_follower.control.check_signal", side_effect=_pause_at(11, tmp_path, seen)):
-        result = run_ops(pane, "@1", _OPS, pace_seconds=0.0, base_dir=tmp_path, base_content=_BASE)
+        result = run_ops(
+            pane, "@1", _OPS, pace_seconds=0.0, base_directory=tmp_path, base_content=_BASE
+        )
     assert result == AnimationResult("completed", 2)
     # op0 replaced "b" with "XX"/"YY"; op1 has not run yet.
     assert seen == [control.PendingApplyEdit(_OPS[1:], 0.0, partial="a\nXX\nYY\nc\n")]
@@ -183,7 +191,9 @@ def test_run_ops_pause_mid_op_leaves_the_rolled_back_op_out_of_the_partial(
     pane = cast(TmuxPane, MagicMock())
     seen: list[object] = []
     with patch("vim_ai_follower.control.check_signal", side_effect=_pause_at(13, tmp_path, seen)):
-        result = run_ops(pane, "@1", _OPS, pace_seconds=0.0, base_dir=tmp_path, base_content=_BASE)
+        result = run_ops(
+            pane, "@1", _OPS, pace_seconds=0.0, base_directory=tmp_path, base_content=_BASE
+        )
     assert result == AnimationResult("completed", 2)
     # Proof the pause landed INSIDE op1: its "gg"/"O" opener went out, was
     # rolled back with a "u", and the whole op was replayed afterwards.
@@ -198,7 +208,9 @@ def test_run_ops_pause_before_the_first_op_records_the_untouched_base(
     pane = cast(TmuxPane, MagicMock())
     seen: list[object] = []
     with patch("vim_ai_follower.control.check_signal", side_effect=_pause_at(1, tmp_path, seen)):
-        result = run_ops(pane, "@1", _OPS, pace_seconds=0.0, base_dir=tmp_path, base_content=_BASE)
+        result = run_ops(
+            pane, "@1", _OPS, pace_seconds=0.0, base_directory=tmp_path, base_content=_BASE
+        )
     assert result == AnimationResult("completed", 2)
     assert seen == [control.PendingApplyEdit(_OPS, 0.0, partial="a\nb\nc\n")]
 
@@ -207,5 +219,5 @@ def test_run_ops_without_a_base_records_no_partial(tmp_path: Path) -> None:
     pane = cast(TmuxPane, MagicMock())
     seen: list[object] = []
     with patch("vim_ai_follower.control.check_signal", side_effect=_pause_at(11, tmp_path, seen)):
-        run_ops(pane, "@1", _OPS, pace_seconds=0.0, base_dir=tmp_path)
+        run_ops(pane, "@1", _OPS, pace_seconds=0.0, base_directory=tmp_path)
     assert seen == [control.PendingApplyEdit(_OPS[1:], 0.0, partial=None)]

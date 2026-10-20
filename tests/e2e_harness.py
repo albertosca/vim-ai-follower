@@ -8,7 +8,7 @@ files into a real cache directory.
 
 The three pieces, in dependency order:
 
-1. **Isolation.** `cache.CACHE_DIR` and `config.CONFIG_PATH` are resolved
+1. **Isolation.** `cache.CACHE_DIRECTORY` and `config.CONFIG_PATH` are resolved
    from `Path.home()` INSIDE the subprocess, so conftest's `monkeypatch`
    cannot reach them. The only lever is the child's `HOME`, so every child
    — the CLI calls, the tmux server, the vim/nvim the follower launches in
@@ -67,7 +67,7 @@ REAL_CONFIG_PATH = _REAL_HOME / ".config" / "claude-vim-follower" / "config.json
 # snapshots/ are deliberately NOT on this list: Alberto's own live follower
 # appends to them while the suite runs, so asserting on them would fail for
 # reasons that have nothing to do with this test. Leakage still cannot hide
-# there — a child whose CACHE_DIR was the real one would drop a .pane file
+# there — a child whose CACHE_DIRECTORY was the real one would drop a .pane file
 # beside the log, and the isolated-home token scan below reads every file.
 _LEAK_GLOBS = ("*.pane", "*.animating", "*.pending_animation.json", "nvim-*.sock")
 
@@ -213,14 +213,14 @@ class E2EFollower:
     # ------------------------------------------------------------ isolation
 
     def assert_isolated(self) -> None:
-        """Ask a child what it resolves CACHE_DIR/CONFIG_PATH to, instead of
+        """Ask a child what it resolves CACHE_DIRECTORY/CONFIG_PATH to, instead of
         assuming the HOME lever worked. This is the positive half of the
         isolation claim; assert_real_home_untouched is the negative half, and
         neither alone is enough — "wrote nowhere" would pass the negative one
         while measuring nothing."""
         probe = (
             "from vim_ai_follower import cache, config;"
-            "print(cache.CACHE_DIR);print(config.CONFIG_PATH)"
+            "print(cache.CACHE_DIRECTORY);print(config.CONFIG_PATH)"
         )
         result = subprocess.run(
             [sys.executable, "-c", probe],
@@ -231,7 +231,7 @@ class E2EFollower:
         )
         resolved_cache, resolved_config = result.stdout.split()
         assert resolved_cache == str(self.cache_dir), (
-            f"a subprocess resolved CACHE_DIR to {resolved_cache}, not the isolated "
+            f"a subprocess resolved CACHE_DIRECTORY to {resolved_cache}, not the isolated "
             f"{self.cache_dir} — HOME isolation is not in effect"
         )
         assert resolved_config == str(self.home / ".config" / "claude-vim-follower/config.json"), (

@@ -14,7 +14,7 @@ DEFAULT_ON_FAILURE = "silent"
 DEFAULT_SPEED = "rapido"
 DEFAULT_OPEN_POLICY = "manual"
 DEFAULT_ADOPT_EXISTING = False
-DEFAULT_MAX_TABS = 5
+DEFAULT_MAXIMUM_TABS = 5
 DEFAULT_BACKEND = "tmux"
 DEFAULT_NVIM_WINDOW = "auto"
 # How long the take-over question waits for an answer (take_over.ask).
@@ -91,7 +91,7 @@ def load(config_path: Path | None = None) -> Config:
     speed = data.get("speed", DEFAULT_SPEED)
     open_policy = data.get("open_policy", DEFAULT_OPEN_POLICY)
     adopt_existing = data.get("adopt_existing", DEFAULT_ADOPT_EXISTING)
-    max_tabs = data.get("max_tabs", DEFAULT_MAX_TABS)
+    maximum_tabs = data.get("max_tabs", DEFAULT_MAXIMUM_TABS)
     backend = data.get("backend", DEFAULT_BACKEND)
     nvim_window = data.get("nvim_window", DEFAULT_NVIM_WINDOW)
     question_seconds = data.get("take_over_question_seconds", DEFAULT_TAKE_OVER_QUESTION_SECONDS)
@@ -103,8 +103,8 @@ def load(config_path: Path | None = None) -> Config:
         open_policy = DEFAULT_OPEN_POLICY
     if not isinstance(adopt_existing, bool):
         adopt_existing = DEFAULT_ADOPT_EXISTING
-    if not isinstance(max_tabs, int) or isinstance(max_tabs, bool) or max_tabs < 1:
-        max_tabs = DEFAULT_MAX_TABS
+    if not isinstance(maximum_tabs, int) or isinstance(maximum_tabs, bool) or maximum_tabs < 1:
+        maximum_tabs = DEFAULT_MAXIMUM_TABS
     if backend not in _VALID_BACKEND:
         backend = DEFAULT_BACKEND
     if nvim_window not in _VALID_NVIM_WINDOW:
@@ -120,7 +120,7 @@ def load(config_path: Path | None = None) -> Config:
         speed,
         open_policy,
         adopt_existing,
-        max_tabs,
+        maximum_tabs,
         backend,
         nvim_window,
         float(question_seconds),

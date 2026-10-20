@@ -46,7 +46,7 @@ USER_LINE = "USER_UNSAVED = 1"
 def _adopted_nvim(
     headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[Path, Any]:
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     FollowerState.set(_WINDOW, "nvim", headless_nvim, origin="", shown_any=False, adopted=True)
     log = tmp_path / "observer.log"
     nvim = pynvim.attach("socket", path=headless_nvim)
@@ -156,7 +156,7 @@ def test_a_dedicated_follower_still_retypes(
 ) -> None:
     """Not adopted: the follower's buffers are its own, so B2's full retype
     stands."""
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     FollowerState.set(_WINDOW, "nvim", headless_nvim, origin="", shown_any=False)
     nvim = pynvim.attach("socket", path=headless_nvim)
     target = (tmp_path / "a.py").resolve()

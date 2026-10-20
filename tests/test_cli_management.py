@@ -737,7 +737,7 @@ def test_stop_unregisters_keybindings_and_clears_signals() -> None:
         commands.cmd_start({"TMUX_PANE": "%1"})
         control.mark_animating("@1")  # a signal is only written for a live animation
         control.request_pause("@1")
-        assert (cache.CACHE_DIR / "@1.pause").exists()  # else the check below is vacuous
+        assert (cache.CACHE_DIRECTORY / "@1.pause").exists()  # else the check below is vacuous
         control.save_pending_apply_edit("@1", [], 0.0)
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
     unbinds = _unbind_calls(run)
@@ -997,7 +997,7 @@ def test_stop_collects_dead_and_legacy_state() -> None:
     _register_fake_follower("$0", "%2")  # legacy session key: collected even though %2 is alive
     control.mark_animating("@2")  # a signal is only written for a live animation
     control.request_pause("@2")
-    assert (cache.CACHE_DIR / "@2.pause").exists()  # else the check below is vacuous
+    assert (cache.CACHE_DIRECTORY / "@2.pause").exists()  # else the check below is vacuous
     # The animation is over (a live one keeps its window out of the sweep).
     control.clear_animating("@2")
     control.save_pending_apply_edit("@2", [], 0.0, file_path="/tmp/a.py")
@@ -1315,12 +1315,12 @@ def test_stop_clears_the_state_before_a_teardown_that_fails() -> None:
     _nvim_follower(adopted=False)
     control.mark_animating("@1")
     control.request_pause("@1")
-    assert (cache.CACHE_DIR / "@1.pause").exists()
+    assert (cache.CACHE_DIRECTORY / "@1.pause").exists()
     control.save_pending_apply_edit("@1", [], 0.0)
     seen_at_teardown: list[bool] = []
 
     def frozen_stop(*_args: object, **_kwargs: object) -> None:
-        seen_at_teardown.append((cache.CACHE_DIR / "@1.pane").exists())
+        seen_at_teardown.append((cache.CACHE_DIRECTORY / "@1.pane").exists())
         raise nvim_connect.RpcTimeout("nvim did not answer within 10 s")
 
     with (
@@ -1332,7 +1332,7 @@ def test_stop_clears_the_state_before_a_teardown_that_fails() -> None:
     ):
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
     assert seen_at_teardown == [False]
-    assert not (cache.CACHE_DIR / "@1.pane").exists()
+    assert not (cache.CACHE_DIRECTORY / "@1.pane").exists()
     assert control.check_signal("@1") is None
     assert control.has_pending_animation("@1") is False
     assert state.is_stopped("@1", 4242)
@@ -1352,7 +1352,7 @@ def test_a_hook_finishing_after_stop_does_not_resurrect_the_follower() -> None:
         with patch.object(state.FollowerState, "read", return_value=held):
             state.FollowerState.update("@1", current_file="/tmp/a.py")
             state.FollowerState.mark_stale("@1", "/tmp/a.py")
-    assert not (cache.CACHE_DIR / "@1.pane").exists()
+    assert not (cache.CACHE_DIRECTORY / "@1.pane").exists()
 
 
 def test_stop_clears_a_state_a_racing_hook_wrote_during_the_teardown() -> None:
@@ -1360,9 +1360,13 @@ def test_stop_clears_a_state_a_racing_hook_wrote_during_the_teardown() -> None:
 
     def racing_write(*_args: object, **_kwargs: object) -> None:
         # A set that passed its tombstone check before the stop wrote it.
-        (cache.CACHE_DIR / "@1.pane").write_text((cache.CACHE_DIR / "kept.json").read_text())
+        (cache.CACHE_DIRECTORY / "@1.pane").write_text(
+            (cache.CACHE_DIRECTORY / "kept.json").read_text()
+        )
 
-    (cache.CACHE_DIR / "kept.json").write_text((cache.CACHE_DIR / "@1.pane").read_text())
+    (cache.CACHE_DIRECTORY / "kept.json").write_text(
+        (cache.CACHE_DIRECTORY / "@1.pane").read_text()
+    )
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
         patch("vim_ai_follower.binding.tmux_server_pid", return_value=4242),
@@ -1372,7 +1376,7 @@ def test_stop_clears_a_state_a_racing_hook_wrote_during_the_teardown() -> None:
         patch("vim_ai_follower.commands.keybindings.unregister") as unregister,
     ):
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
-    assert not (cache.CACHE_DIR / "@1.pane").exists()
+    assert not (cache.CACHE_DIRECTORY / "@1.pane").exists()
     unregister.assert_called_once_with()
 
 
@@ -1807,11 +1811,11 @@ def test_stop_for_a_user_in_insert_mode_asks_close_tab_to_spare_their_tab() -> N
 
 
 def test_stop_survives_an_unreadable_state() -> None:
-    (cache.CACHE_DIR).mkdir(parents=True, exist_ok=True)
-    (cache.CACHE_DIR / "@1.pane").write_text("{not json")
+    (cache.CACHE_DIRECTORY).mkdir(parents=True, exist_ok=True)
+    (cache.CACHE_DIRECTORY / "@1.pane").write_text("{not json")
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
-    assert not (cache.CACHE_DIR / "@1.pane").exists()
+    assert not (cache.CACHE_DIRECTORY / "@1.pane").exists()
 
 
 def test_stop_logs_a_tmux_teardown_step_that_fails_and_carries_on() -> None:
@@ -2006,7 +2010,7 @@ def test_stop_keeps_a_record_of_what_it_tears_down_until_the_teardown_is_over() 
     # Minor 6: the state goes before the teardown, so a stop killed mid-way
     # needs something else to name the pane for the next stop.
     _register_fake_follower("@1", "%9")
-    pane_state = (cache.CACHE_DIR / "@1.pane").read_text()
+    pane_state = (cache.CACHE_DIRECTORY / "@1.pane").read_text()
     seen: list[str] = []
 
     def killing(*_args: object, **_kwargs: object) -> None:
@@ -2023,7 +2027,7 @@ def test_stop_keeps_a_record_of_what_it_tears_down_until_the_teardown_is_over() 
 
 def test_a_second_stop_finishes_the_teardown_of_a_stop_that_was_killed() -> None:
     _register_fake_follower("@1", "%9")
-    state.stopping_path("@1").write_text((cache.CACHE_DIR / "@1.pane").read_text())
+    state.stopping_path("@1").write_text((cache.CACHE_DIRECTORY / "@1.pane").read_text())
     state.FollowerState.clear("@1")
     state.mark_stopped("@1", MOCK_SERVER_PID, in_tmux=True)
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:

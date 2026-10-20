@@ -60,28 +60,28 @@ def test_set_writes_the_pane_atomically_via_rename(tmp_path: Path) -> None:
         patch.object(Path, "write_text", spy_write_text),
         patch.object(Path, "replace", spy_replace),
     ):
-        FollowerState.set("@1", "tmux", "%5", base_dir=tmp_path)
+        FollowerState.set("@1", "tmux", "%5", base_directory=tmp_path)
     assert observed["renamed_onto_target"] is True  # atomic rename used
     assert observed["target_written_directly"] is False  # target never truncated in place
-    assert FollowerState.read("@1", base_dir=tmp_path) is not None  # and it round-trips
+    assert FollowerState.read("@1", base_directory=tmp_path) is not None  # and it round-trips
 
 
 def test_set_does_not_leave_a_temp_file_behind(tmp_path: Path) -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", return_value=MagicMock(stdout="%5 vim\n")):
-        FollowerState.set("@1", "tmux", "%5", base_dir=tmp_path)
+        FollowerState.set("@1", "tmux", "%5", base_directory=tmp_path)
     # Only the final .pane remains; the temp file was renamed onto it. A
     # lingering temp must also never be caught by the *.pane orphan scan.
     assert [entry.name for entry in tmp_path.iterdir()] == ["@1.pane"]
 
 
 def test_get_returns_none_when_no_state_file(tmp_path: Path) -> None:
-    assert FollowerState.get("@1", base_dir=tmp_path) is None
+    assert FollowerState.get("@1", base_directory=tmp_path) is None
 
 
 def test_set_then_get_round_trips(tmp_path: Path) -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", return_value=MagicMock(stdout="%5 vim\n")):
-        FollowerState.set("@1", "tmux", "%5", current_file="/tmp/a.txt", base_dir=tmp_path)
-        result = FollowerState.get("@1", base_dir=tmp_path)
+        FollowerState.set("@1", "tmux", "%5", current_file="/tmp/a.txt", base_directory=tmp_path)
+        result = FollowerState.get("@1", base_directory=tmp_path)
     assert result is not None
     assert result.backend == "tmux"
     assert result.target == "%5"
@@ -90,8 +90,8 @@ def test_set_then_get_round_trips(tmp_path: Path) -> None:
 
 def test_set_defaults_origin_on_failure_and_speed(tmp_path: Path) -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", return_value=MagicMock(stdout="%5 vim\n")):
-        FollowerState.set("@1", "tmux", "%5", base_dir=tmp_path)
-        result = FollowerState.get("@1", base_dir=tmp_path)
+        FollowerState.set("@1", "tmux", "%5", base_directory=tmp_path)
+        result = FollowerState.get("@1", base_directory=tmp_path)
     assert result is not None
     assert result.origin == ""
     assert result.on_failure == "silent"
@@ -107,9 +107,9 @@ def test_set_stores_origin_on_failure_and_speed(tmp_path: Path) -> None:
             origin="%1",
             on_failure="reopen",
             speed="lento",
-            base_dir=tmp_path,
+            base_directory=tmp_path,
         )
-        result = FollowerState.get("@1", base_dir=tmp_path)
+        result = FollowerState.get("@1", base_directory=tmp_path)
     assert result is not None
     assert result.origin == "%1"
     assert result.on_failure == "reopen"
@@ -118,49 +118,49 @@ def test_set_stores_origin_on_failure_and_speed(tmp_path: Path) -> None:
 
 def test_read_returns_state_even_when_pane_is_dead(tmp_path: Path) -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", return_value=MagicMock(stdout="%5 vim\n")):
-        FollowerState.set("@1", "tmux", "%5", origin="%1", base_dir=tmp_path)
+        FollowerState.set("@1", "tmux", "%5", origin="%1", base_directory=tmp_path)
     with patch("vim_ai_follower.tmux.subprocess.run", return_value=MagicMock(stdout="")):
-        result = FollowerState.read("@1", base_dir=tmp_path)
+        result = FollowerState.read("@1", base_directory=tmp_path)
     assert result is not None
     assert result.target == "%5"
     assert result.origin == "%1"
 
 
 def test_read_returns_none_without_state_file(tmp_path: Path) -> None:
-    assert FollowerState.read("@1", base_dir=tmp_path) is None
+    assert FollowerState.read("@1", base_directory=tmp_path) is None
 
 
 def test_get_returns_none_when_pane_is_dead(tmp_path: Path) -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", return_value=MagicMock(stdout="%5 vim\n")):
-        FollowerState.set("@1", "tmux", "%5", base_dir=tmp_path)
+        FollowerState.set("@1", "tmux", "%5", base_directory=tmp_path)
     with patch("vim_ai_follower.tmux.subprocess.run", return_value=MagicMock(stdout="")):
-        assert FollowerState.get("@1", base_dir=tmp_path) is None
+        assert FollowerState.get("@1", base_directory=tmp_path) is None
 
 
 def test_update_current_file_preserves_target(tmp_path: Path) -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", return_value=MagicMock(stdout="%5 vim\n")):
-        FollowerState.set("@1", "tmux", "%5", base_dir=tmp_path)
-        FollowerState.update_current_file("@1", "/tmp/b.txt", base_dir=tmp_path)
-        result = FollowerState.get("@1", base_dir=tmp_path)
+        FollowerState.set("@1", "tmux", "%5", base_directory=tmp_path)
+        FollowerState.update_current_file("@1", "/tmp/b.txt", base_directory=tmp_path)
+        result = FollowerState.get("@1", base_directory=tmp_path)
     assert result is not None
     assert result.current_file == "/tmp/b.txt"
     assert result.target == "%5"
 
 
 def test_update_current_file_is_a_noop_without_existing_state(tmp_path: Path) -> None:
-    FollowerState.update_current_file("@1", "/tmp/b.txt", base_dir=tmp_path)
-    assert FollowerState.get("@1", base_dir=tmp_path) is None
+    FollowerState.update_current_file("@1", "/tmp/b.txt", base_directory=tmp_path)
+    assert FollowerState.get("@1", base_directory=tmp_path) is None
 
 
 def test_clear_removes_state(tmp_path: Path) -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", return_value=MagicMock(stdout="%5 vim\n")):
-        FollowerState.set("@1", "tmux", "%5", base_dir=tmp_path)
-        FollowerState.clear("@1", base_dir=tmp_path)
-        assert FollowerState.get("@1", base_dir=tmp_path) is None
+        FollowerState.set("@1", "tmux", "%5", base_directory=tmp_path)
+        FollowerState.clear("@1", base_directory=tmp_path)
+        assert FollowerState.get("@1", base_directory=tmp_path) is None
 
 
 def test_clear_without_existing_state_does_not_raise(tmp_path: Path) -> None:
-    FollowerState.clear("@1", base_dir=tmp_path)
+    FollowerState.clear("@1", base_directory=tmp_path)
 
 
 def test_state_round_trips_new_fields(tmp_path: Path) -> None:
@@ -168,13 +168,13 @@ def test_state_round_trips_new_fields(tmp_path: Path) -> None:
         "$9",
         "tmux",
         "%5",
-        base_dir=tmp_path,
+        base_directory=tmp_path,
         open_files=("/a.py", "/b.py"),
         enabled=False,
         adopted=True,
         shown_any=True,
     )
-    raw = FollowerState.read("$9", base_dir=tmp_path)
+    raw = FollowerState.read("$9", base_directory=tmp_path)
     assert raw is not None
     assert raw.open_files == ("/a.py", "/b.py")
     assert (raw.enabled, raw.adopted, raw.shown_any) == (False, True, True)
@@ -182,7 +182,7 @@ def test_state_round_trips_new_fields(tmp_path: Path) -> None:
 
 def test_read_defaults_new_fields_for_old_state_files(tmp_path: Path) -> None:
     (tmp_path / "$9.pane").write_text('{"backend": "tmux", "target": "%5"}')
-    raw = FollowerState.read("$9", base_dir=tmp_path)
+    raw = FollowerState.read("$9", base_directory=tmp_path)
     assert raw is not None
     assert (raw.open_files, raw.enabled, raw.shown_any) == ((), True, False)
 
@@ -191,22 +191,22 @@ def test_a_state_file_without_adopted_reads_as_adopted(tmp_path: Path) -> None:
     # Missing means unknown, and unknown must not lock a buffer or press keys:
     # every reader of `adopted` takes the user's-editor side when it is True.
     (tmp_path / "$9.pane").write_text('{"backend": "nvim", "target": "/tmp/x.sock"}')
-    raw = FollowerState.read("$9", base_dir=tmp_path)
+    raw = FollowerState.read("$9", base_directory=tmp_path)
     assert raw is not None
     assert raw.adopted is True
 
 
 def test_update_replaces_only_given_fields(tmp_path: Path) -> None:
-    FollowerState.set("$9", "tmux", "%5", speed="normal", base_dir=tmp_path)
-    FollowerState.update("$9", base_dir=tmp_path, speed="lento", enabled=False)
-    raw = FollowerState.read("$9", base_dir=tmp_path)
+    FollowerState.set("$9", "tmux", "%5", speed="normal", base_directory=tmp_path)
+    FollowerState.update("$9", base_directory=tmp_path, speed="lento", enabled=False)
+    raw = FollowerState.read("$9", base_directory=tmp_path)
     assert raw is not None
     assert (raw.speed, raw.enabled, raw.target) == ("lento", False, "%5")
 
 
 def test_update_without_state_is_a_no_op(tmp_path: Path) -> None:
-    FollowerState.update("$9", base_dir=tmp_path, speed="lento")
-    assert FollowerState.read("$9", base_dir=tmp_path) is None
+    FollowerState.update("$9", base_directory=tmp_path, speed="lento")
+    assert FollowerState.read("$9", base_directory=tmp_path) is None
 
 
 def test_writers_and_labels_round_trip(tmp_path: Path) -> None:
@@ -217,9 +217,9 @@ def test_writers_and_labels_round_trip(tmp_path: Path) -> None:
             "%5",
             writers=("$1", "a9"),
             writer_labels=("session:aaa111", "code-reviewer"),
-            base_dir=tmp_path,
+            base_directory=tmp_path,
         )
-        result = FollowerState.get("@1", base_dir=tmp_path)
+        result = FollowerState.get("@1", base_directory=tmp_path)
     assert result is not None
     assert result.writers == ("$1", "a9")
     assert result.writer_labels == ("session:aaa111", "code-reviewer")
@@ -227,11 +227,13 @@ def test_writers_and_labels_round_trip(tmp_path: Path) -> None:
 
 def test_writers_default_empty_and_update_preserves_them(tmp_path: Path) -> None:
     with patch("vim_ai_follower.tmux.subprocess.run", return_value=MagicMock(stdout="%5 vim\n")):
-        FollowerState.set("@1", "tmux", "%5", base_dir=tmp_path)
-        assert FollowerState.read("@1", base_dir=tmp_path).writers == ()  # type: ignore[union-attr]
-        FollowerState.update("@1", base_dir=tmp_path, writers=("$1",), writer_labels=("session:x",))
-        FollowerState.update("@1", base_dir=tmp_path, speed="lento")  # unrelated change
-        result = FollowerState.read("@1", base_dir=tmp_path)
+        FollowerState.set("@1", "tmux", "%5", base_directory=tmp_path)
+        assert FollowerState.read("@1", base_directory=tmp_path).writers == ()  # type: ignore[union-attr]
+        FollowerState.update(
+            "@1", base_directory=tmp_path, writers=("$1",), writer_labels=("session:x",)
+        )
+        FollowerState.update("@1", base_directory=tmp_path, speed="lento")  # unrelated change
+        result = FollowerState.read("@1", base_directory=tmp_path)
     assert result is not None
     assert result.writers == ("$1",)
     assert result.writer_labels == ("session:x",)
@@ -443,7 +445,7 @@ def test_a_stop_landing_between_sets_check_and_write_leaves_no_state() -> None:
         checks["count"] += 1
         answer = real(window_id, base_directory)
         if checks["count"] == 1:
-            state.mark_stopped(window_id, None, in_tmux=False, base_dir=base_directory)
+            state.mark_stopped(window_id, None, in_tmux=False, base_directory=base_directory)
             FollowerState.clear(window_id, base_directory)
         return answer
 
@@ -451,7 +453,7 @@ def test_a_stop_landing_between_sets_check_and_write_leaves_no_state() -> None:
         written = FollowerState.set("@4", "nvim", "/tmp/nvim-x.sock")
     assert written is False
     assert not state._state_path("@4", None).exists()
-    assert list(cache.CACHE_DIR.glob("@4.pane*")) == []
+    assert list(cache.CACHE_DIRECTORY.glob("@4.pane*")) == []
 
 
 def test_a_start_that_lifted_the_tombstone_after_the_write_keeps_its_state() -> None:
@@ -465,10 +467,12 @@ def test_a_start_that_lifted_the_tombstone_after_the_write_keeps_its_state() -> 
     def stop_then_start(window_id: str, base_directory: Path | None) -> bool:
         checks["count"] += 1
         if checks["count"] == 2:  # the recheck: a stop, then a start, landed
-            state.mark_stopped(window_id, None, in_tmux=False, base_dir=base_directory)
+            state.mark_stopped(window_id, None, in_tmux=False, base_directory=base_directory)
             answer = real(window_id, base_directory)
             state.clear_stopped(window_id, base_directory)
-            FollowerState.set(window_id, "tmux", "%9", base_dir=base_directory, server_pid=None)
+            FollowerState.set(
+                window_id, "tmux", "%9", base_directory=base_directory, server_pid=None
+            )
             return answer
         return real(window_id, base_directory)
 
@@ -521,7 +525,7 @@ def test_a_standalone_nvim_state_records_no_server() -> None:
 @pytest.mark.parametrize("stored", ["64091", "true", "null", "[1]"])
 def test_a_server_pid_that_is_not_a_number_reads_as_none(stored: str) -> None:
     _set_follower("@4")
-    path = cache.CACHE_DIR / "@4.pane"
+    path = cache.CACHE_DIRECTORY / "@4.pane"
     payload = json.loads(path.read_text())
     payload["server_pid"] = json.loads(stored)
     path.write_text(json.dumps(payload))
@@ -574,8 +578,8 @@ def test_get_keeps_a_state_when_either_server_pid_is_unknown() -> None:
 def test_update_says_whether_it_wrote(tmp_path: Path) -> None:
     from vim_ai_follower import state as state_module
 
-    assert FollowerState.update("@1", base_dir=tmp_path, speed="lento") is False  # no state
-    FollowerState.set("@1", "nvim", "/tmp/s.sock", base_dir=tmp_path)
-    assert FollowerState.update("@1", base_dir=tmp_path, speed="lento") is True
-    state_module.mark_stopped("@1", None, base_dir=tmp_path, in_tmux=False)
-    assert FollowerState.update("@1", base_dir=tmp_path, speed="rapido") is False
+    assert FollowerState.update("@1", base_directory=tmp_path, speed="lento") is False  # no state
+    FollowerState.set("@1", "nvim", "/tmp/s.sock", base_directory=tmp_path)
+    assert FollowerState.update("@1", base_directory=tmp_path, speed="lento") is True
+    state_module.mark_stopped("@1", None, base_directory=tmp_path, in_tmux=False)
+    assert FollowerState.update("@1", base_directory=tmp_path, speed="rapido") is False

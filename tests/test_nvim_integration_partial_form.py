@@ -56,7 +56,7 @@ def _interrupt_after_the_blank_line_hunk(
     1..11: 1-2 stop inside op0, 3-4 stop at the op1 boundary, 5+ complete)."""
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     first_file = str(tmp_path / "a.py")
     NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0).show_fresh(
         first_file, _BEFORE

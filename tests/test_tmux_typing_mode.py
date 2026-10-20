@@ -132,8 +132,8 @@ def test_a_ps_that_fails_is_no_answer(failure: Exception) -> None:
 
 
 def _mode_file(pid: int, text: str, modified: float | None = None) -> Path:
-    cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    path = cache.CACHE_DIR / f"mode-{pid}.txt"
+    cache.CACHE_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    path = cache.CACHE_DIRECTORY / f"mode-{pid}.txt"
     path.write_text(text)
     if modified is not None:
         os.utime(path, (modified, modified))
@@ -170,8 +170,8 @@ def test_a_mode_file_caught_mid_rename_is_read_from_its_temporary() -> None:
     # read during a mode change found no file (8% of reads under a 1 ms
     # mode flip) and fell back to the screen.
     started = time.time() - 60
-    cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    (cache.CACHE_DIR / ".mode-202.txt.tmp").write_text("202 i\n")
+    cache.CACHE_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    (cache.CACHE_DIRECTORY / ".mode-202.txt.tmp").write_text("202 i\n")
     assert tmux_vim._recorded_mode(_VimProcess(pid=202, started=started)) == "i"
 
 
@@ -179,7 +179,7 @@ def test_a_mode_file_renamed_between_the_reads_is_read_again() -> None:
     # Missing, then the temporary already renamed away: the second read of
     # the file itself finds the new mode.
     started = time.time() - 60
-    path = cache.CACHE_DIR / "mode-202.txt"
+    path = cache.CACHE_DIRECTORY / "mode-202.txt"
     original = Path.read_text
 
     def read_text(self: Path, *arguments: object, **keyword_arguments: object) -> str:
@@ -195,14 +195,14 @@ def test_a_mode_file_renamed_between_the_reads_is_read_again() -> None:
 
 def test_an_empty_temporary_is_not_a_mode() -> None:
     # A temporary caught while writefile() fills it.
-    cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    (cache.CACHE_DIR / ".mode-202.txt.tmp").write_text("")
+    cache.CACHE_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    (cache.CACHE_DIRECTORY / ".mode-202.txt.tmp").write_text("")
     assert tmux_vim._recorded_mode(_VimProcess(pid=202, started=time.time() - 60)) is None
 
 
 def _temporary(pid: int, text: str, modified: float | None = None) -> Path:
-    cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    path = cache.CACHE_DIR / f".mode-{pid}.txt.tmp"
+    cache.CACHE_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    path = cache.CACHE_DIRECTORY / f".mode-{pid}.txt.tmp"
     path.write_text(text)
     if modified is not None:
         os.utime(path, (modified, modified))
@@ -532,11 +532,11 @@ def test_a_first_contact_with_a_terminal_job_is_an_unknown_mode(
 def test_a_mode_file_or_a_screen_reason_decides_before_the_terminal_job() -> None:
     started = time.time() - 5
     _mode_file(202, "202 n\n")
-    os.utime(cache.CACHE_DIR / "mode-202.txt", (started, started))
+    os.utime(cache.CACHE_DIRECTORY / "mode-202.txt", (started, started))
     world = _world(processes=_FOREGROUND_VIM, every_process=_SHELL_ON_A_PTY)
     with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", world):
         assert tmux_vim.typing_mode("%5") is None
-    (cache.CACHE_DIR / "mode-202.txt").unlink()
+    (cache.CACHE_DIRECTORY / "mode-202.txt").unlink()
     world = _world(
         processes=_FOREGROUND_VIM, every_process=_SHELL_ON_A_PTY, bottom_row="-- INSERT --"
     )
@@ -567,14 +567,14 @@ def test_the_sweep_deletes_only_the_mode_files_of_gone_vims() -> None:
     dead = _mode_file(_dead_pid(), "x n\n", modified=time.time())
     alive = _mode_file(os.getpid(), "x i\n", modified=time.time() - 10 * 86400)
     zero = _mode_file(0, "0 n\n")
-    dead_temporary = cache.CACHE_DIR / f".mode-{_dead_pid()}.txt.tmp"
+    dead_temporary = cache.CACHE_DIRECTORY / f".mode-{_dead_pid()}.txt.tmp"
     dead_temporary.write_text("x i\n")
-    alive_temporary = cache.CACHE_DIR / f".mode-{os.getpid()}.txt.tmp"
+    alive_temporary = cache.CACHE_DIRECTORY / f".mode-{os.getpid()}.txt.tmp"
     alive_temporary.write_text("x i\n")
-    other = cache.CACHE_DIR / "mode-notes.txt"
+    other = cache.CACHE_DIRECTORY / "mode-notes.txt"
     other.write_text("")
     with patch("vim_ai_follower.backends.tmux_vim.os.kill", wraps=os.kill) as kill:
-        tmux_vim._sweep_scripts(cache.CACHE_DIR / "vaf-000000.vim")
+        tmux_vim._sweep_scripts(cache.CACHE_DIRECTORY / "vaf-000000.vim")
     assert not dead.exists() and not dead_temporary.exists()
     assert alive.exists() and zero.exists() and other.exists() and alive_temporary.exists()
     assert all(call.args[0] > 0 for call in kill.call_args_list)
@@ -583,7 +583,7 @@ def test_the_sweep_deletes_only_the_mode_files_of_gone_vims() -> None:
 def test_the_sweep_keeps_the_mode_file_of_another_users_vim() -> None:
     kept = _mode_file(4242, "4242 i\n")
     with patch("vim_ai_follower.backends.tmux_vim.os.kill", side_effect=PermissionError):
-        tmux_vim._sweep_scripts(cache.CACHE_DIR / "vaf-000000.vim")
+        tmux_vim._sweep_scripts(cache.CACHE_DIRECTORY / "vaf-000000.vim")
     assert kept.exists()
 
 
@@ -681,8 +681,8 @@ def test_a_vim_started_by_another_foreground_program_is_its_own() -> None:
 
 
 def _release_mark(pid: int, text: str, modified: float | None = None) -> Path:
-    cache.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    path = cache.CACHE_DIR / f"release-{pid}.txt"
+    cache.CACHE_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    path = cache.CACHE_DIRECTORY / f"release-{pid}.txt"
     path.write_text(text)
     if modified is not None:
         os.utime(path, (modified, modified))
@@ -692,19 +692,19 @@ def _release_mark(pid: int, text: str, modified: float | None = None) -> Path:
 def test_a_release_mark_names_the_panes_foreground_vim() -> None:
     with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes=_VIM_ALONE)):
         assert tmux_vim.mark_release_pending("%5")
-    assert (cache.CACHE_DIR / "release-202.txt").read_text() == "202\n"
-    assert not list(cache.CACHE_DIR.glob(".release-*"))
+    assert (cache.CACHE_DIRECTORY / "release-202.txt").read_text() == "202\n"
+    assert not list(cache.CACHE_DIRECTORY.glob(".release-*"))
 
 
 def test_no_foreground_vim_records_no_release() -> None:
     with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes="")):
         assert not tmux_vim.mark_release_pending("%5")
-    assert not list(cache.CACHE_DIR.glob("*release-*"))
+    assert not list(cache.CACHE_DIRECTORY.glob("*release-*"))
 
 
 def test_a_release_mark_that_cannot_be_written_is_no_release() -> None:
-    cache.CACHE_DIR.parent.mkdir(parents=True, exist_ok=True)
-    cache.CACHE_DIR.write_text("a file where the directory should be")
+    cache.CACHE_DIRECTORY.parent.mkdir(parents=True, exist_ok=True)
+    cache.CACHE_DIRECTORY.write_text("a file where the directory should be")
     with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes=_VIM_ALONE)):
         assert not tmux_vim.mark_release_pending("%5")
 
@@ -721,8 +721,8 @@ def test_no_release_mark_anywhere_costs_no_process_lookup() -> None:
     run = _world(processes=_VIM_ALONE)
     with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", run):
         assert not tmux_vim._take_release_mark("%5")
-        cache.CACHE_DIR.parent.mkdir(parents=True, exist_ok=True)
-        cache.CACHE_DIR.write_text("not a directory")
+        cache.CACHE_DIRECTORY.parent.mkdir(parents=True, exist_ok=True)
+        cache.CACHE_DIRECTORY.write_text("not a directory")
         assert not tmux_vim._take_release_mark("%5")
     run.assert_not_called()
 
@@ -756,9 +756,9 @@ def test_a_release_mark_older_than_its_vim_was_a_dead_vims() -> None:
 def test_the_sweep_deletes_only_the_release_marks_of_gone_vims() -> None:
     dead = _release_mark(_dead_pid(), "x\n")
     alive = _release_mark(os.getpid(), "x\n", modified=time.time() - 10 * 86400)
-    dead_temporary = cache.CACHE_DIR / f".release-{_dead_pid()}.txt.tmp"
+    dead_temporary = cache.CACHE_DIRECTORY / f".release-{_dead_pid()}.txt.tmp"
     dead_temporary.write_text("x\n")
-    tmux_vim._sweep_scripts(cache.CACHE_DIR / "vaf-000000.vim")
+    tmux_vim._sweep_scripts(cache.CACHE_DIRECTORY / "vaf-000000.vim")
     assert not dead.exists() and not dead_temporary.exists()
     assert alive.exists()
 

@@ -77,7 +77,7 @@ class _Adopted:
             shown_any=True,
             open_files=self.claudes_paths,
             speed="rapido",
-            base_dir=world.cache_dir,
+            base_directory=world.cache_dir,
         )
 
     def nvim(self) -> pynvim.Nvim:

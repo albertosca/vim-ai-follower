@@ -47,7 +47,7 @@ def test_show_fresh_interrupt_leaves_exactly_the_typed_chars_on_the_row(
     # its 4 chars), line2 "q" (never reached).
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.01)
     first_file = str(tmp_path / "a.py")
     content = "ab\nwxyz\nq\n"
@@ -85,7 +85,7 @@ def test_show_fresh_des_interrupt_after_mid_line_stop_lands_at_full_content_no_d
     # (the half-typed "wx" must not survive) and nothing missing.
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.01)
     FollowerState.set("@1", "nvim", headless_nvim, adopted=False)  # proven dedicated
     first_file = str(tmp_path / "a.py")
@@ -135,7 +135,7 @@ def test_apply_edit_des_interrupt_after_mid_op_mid_line_stop_lands_at_full_conte
     # no-op in content terms rather than a repair.
     from vim_ai_follower import cache
 
-    monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.01)
     first_file = str(tmp_path / "a.py")
     before = "a\nb\nc\n"

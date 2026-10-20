@@ -38,7 +38,7 @@ def _vim(writes: Callable[[Path], None] | None) -> Callable[..., None]:
 
     def _send_text(self: object, text: str) -> None:
         if "('probe'," in text and writes is not None:
-            writes(cache.CACHE_DIR / "probe-3.txt")
+            writes(cache.CACHE_DIRECTORY / "probe-3.txt")
 
     return _send_text
 
@@ -146,7 +146,7 @@ def test_no_answer_within_the_timeout_is_unknown(monkeypatch: pytest.MonkeyPatch
 def test_a_stale_probe_file_is_removed_before_asking() -> None:
     """A leftover dump from an older, timed-out probe must not survive into
     this one's wait."""
-    probe = cache.CACHE_DIR / "probe-3.txt"
+    probe = cache.CACHE_DIRECTORY / "probe-3.txt"
     probe.parent.mkdir(parents=True, exist_ok=True)
     probe.write_text(f"stale\n{NONCE}\n")
     seen: list[bool] = []
@@ -162,7 +162,7 @@ def test_a_stale_probe_file_is_removed_before_asking() -> None:
 
 def test_the_probe_file_is_removed_after_reading() -> None:
     _probe(_dump("a", NONCE), "a\n")
-    assert not (cache.CACHE_DIR / "probe-3.txt").exists()
+    assert not (cache.CACHE_DIRECTORY / "probe-3.txt").exists()
 
 
 @pytest.mark.parametrize(

@@ -31,7 +31,7 @@ def test_apply_edit_drops_the_implicit_blank_when_an_op_wipes_the_whole_buffer(
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", ops)
     assert result == AnimationResult("completed", 1)
@@ -54,7 +54,7 @@ def test_apply_edit_wipe_and_replace_of_a_multiline_buffer_drops_only_one_blank(
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", ops)
     assert result == AnimationResult("completed", len(ops))
@@ -76,7 +76,7 @@ def test_apply_edit_does_not_drop_a_line_when_other_content_survives(tmp_path: P
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", ops)
     assert result == AnimationResult("completed", len(ops))
@@ -105,7 +105,7 @@ def test_apply_edit_pure_delete_that_empties_the_buffer_leaves_the_implicit_blan
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", return_value=None),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("completed", 1)
@@ -130,7 +130,7 @@ def test_apply_edit_interrupted_mid_wipe_rolls_back_instead_of_dropping(tmp_path
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         # op boundary (None), line0 boundary (None), char 0 of "a" -> interrupt.
         patch("vim_ai_follower.control.check_signal", side_effect=[None, None, "interrupt"]),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("interrupted", 0)

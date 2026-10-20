@@ -597,7 +597,7 @@ def _interrupt_a_catch_up(
         lines,
         0.08,
         continuation=True,
-        base_dir=world.cache_dir,
+        base_directory=world.cache_dir,
         file_path=os.path.realpath(path),
         partial=CATCH_UP_BASE,
     )
@@ -780,7 +780,7 @@ def test_an_s_during_the_catch_up_rebuild_hands_over_the_whole_partial(
         ("tail = 1",),
         0.08,
         continuation=True,
-        base_dir=world.cache_dir,
+        base_directory=world.cache_dir,
         file_path=os.path.realpath(path),
         partial=REBUILD_BASE,
     )
@@ -847,7 +847,7 @@ def test_an_s_during_the_catch_up_replay_gives_the_users_options_back(
         lines,
         0.08,
         continuation=True,
-        base_dir=world.cache_dir,
+        base_directory=world.cache_dir,
         file_path=os.path.realpath(path),
         partial=CATCH_UP_BASE,
     )

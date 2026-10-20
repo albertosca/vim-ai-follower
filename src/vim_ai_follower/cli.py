@@ -39,36 +39,36 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
-    env = dict(os.environ)
+    arguments = _build_parser().parse_args(argv)
+    environment = dict(os.environ)
 
-    if args.command == "start":
+    if arguments.command == "start":
         return commands.cmd_start(
-            env,
-            backend=args.backend,
-            on_failure=args.on_failure,
-            speed=args.speed,
-            take_keys=args.take_keys,
+            environment,
+            backend=arguments.backend,
+            on_failure=arguments.on_failure,
+            speed=arguments.speed,
+            take_keys=arguments.take_keys,
         )
-    if args.command == "stop":
-        return commands.cmd_stop(env)
-    if args.command == "status":
-        return commands.cmd_status(env)
-    if args.command == "pause":
-        return commands.cmd_pause(env)
-    if args.command == "interrupt":
-        return commands.cmd_interrupt(env)
-    if args.command == "speed-up":
-        return commands.cmd_speed(env, "up")
-    if args.command == "speed-down":
-        return commands.cmd_speed(env, "down")
-    if args.command == "toggle":
-        return commands.cmd_toggle(env)
+    if arguments.command == "stop":
+        return commands.cmd_stop(environment)
+    if arguments.command == "status":
+        return commands.cmd_status(environment)
+    if arguments.command == "pause":
+        return commands.cmd_pause(environment)
+    if arguments.command == "interrupt":
+        return commands.cmd_interrupt(environment)
+    if arguments.command == "speed-up":
+        return commands.cmd_speed(environment, "up")
+    if arguments.command == "speed-down":
+        return commands.cmd_speed(environment, "down")
+    if arguments.command == "toggle":
+        return commands.cmd_toggle(environment)
 
     # sys.stdin is passed as-is, unread: run_hook reads it inside its own
     # try, so a raising .read() (non-UTF-8 bytes, a broken pipe) is caught
     # there too, not left to escape from this call site.
-    return hooks.run_hook(args.hook_command, env, sys.stdin)
+    return hooks.run_hook(arguments.hook_command, environment, sys.stdin)
 
 
 if __name__ == "__main__":  # pragma: no cover

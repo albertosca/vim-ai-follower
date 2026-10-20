@@ -109,7 +109,7 @@ def _adopted_state(world: E2EFollower, pane_id: str, speed: str, *open_files: Pa
         shown_any=True,
         open_files=tuple(os.path.realpath(path) for path in open_files),
         speed=speed,
-        base_dir=world.cache_dir,
+        base_directory=world.cache_dir,
     )
 
 
@@ -186,7 +186,7 @@ def test_a_stop_while_the_user_types_releases_at_the_next_contact(world: E2EFoll
     # another file: the first contact gives the old locks back.
     world.tmux("send-keys", "-t", pane_id, "Escape")
     _observation(world, observed, lambda report: report["mode"] == "n", "the user in Normal")
-    clear_stopped(world.window_id, base_dir=world.cache_dir)  # as `start` does
+    clear_stopped(world.window_id, base_directory=world.cache_dir)  # as `start` does
     _adopted_state(world, pane_id, "instant")
     _read(world, other_file)
     report = _observation(

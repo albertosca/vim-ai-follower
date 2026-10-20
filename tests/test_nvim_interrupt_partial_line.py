@@ -29,7 +29,7 @@ def test_interrupt_mid_char_leaves_only_the_typed_prefix_no_snap() -> None:
     signals = [None, None, None, None, None, None, "interrupt"]
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", side_effect=signals):
-        result = _animate_lines(nvim, 7, ("hi", "abcd"), 0, lambda: 0.05, "@1", ns=1)
+        result = _animate_lines(nvim, 7, ("hi", "abcd"), 0, lambda: 0.05, "@1", namespace_id=1)
     assert result == AnimationResult("interrupted", 1)  # line1 not counted as shown
     assert nvim.api.buf_set_text.call_args_list == [
         call(7, 0, 0, 0, 0, ["h"]),
@@ -48,7 +48,7 @@ def test_interrupt_at_the_very_first_char_of_a_line_leaves_it_untouched() -> Non
     signals = [None, "interrupt"]
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", side_effect=signals):
-        result = _animate_lines(nvim, 7, ("xyz",), 0, lambda: 0.05, "@1", ns=1)
+        result = _animate_lines(nvim, 7, ("xyz",), 0, lambda: 0.05, "@1", namespace_id=1)
     assert result == AnimationResult("interrupted", 0)
     nvim.api.buf_set_text.assert_not_called()  # no snap of "xyz"
 
@@ -68,7 +68,9 @@ def test_interrupt_after_several_full_lines_then_mid_next_line_counts_only_the_f
     ]
     nvim = MagicMock()
     with patch("vim_ai_follower.control.check_signal", side_effect=signals):
-        result = _animate_lines(nvim, 7, ("a", "b", "c", "defg"), 0, lambda: 0.05, "@1", ns=1)
+        result = _animate_lines(
+            nvim, 7, ("a", "b", "c", "defg"), 0, lambda: 0.05, "@1", namespace_id=1
+        )
     assert result == AnimationResult("interrupted", 3)  # only a, b, c counted
     assert call(7, 3, 0, 3, 0, ["d"]) in nvim.api.buf_set_text.call_args_list
     assert call(7, 3, 1, 3, 1, ["efg"]) not in nvim.api.buf_set_text.call_args_list  # no snap
@@ -87,7 +89,7 @@ def test_show_fresh_interrupted_mid_line_buffer_call_holds_only_the_typed_prefix
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=signals),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.show_fresh("/tmp/f.py", "ab\nwxyz\n")
     assert result == AnimationResult("interrupted", 1)
@@ -123,7 +125,7 @@ def test_apply_edit_interrupted_mid_op_line_reports_op_index_with_no_snap(
     with (
         patch("vim_ai_follower.backends.nvim.pynvim.attach", return_value=nvim),
         patch("vim_ai_follower.control.check_signal", side_effect=signals),
-        patch("vim_ai_follower.cache.CACHE_DIR", tmp_path),
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
     ):
         result = follower.apply_edit("/tmp/f.py", [operation])
     assert result == AnimationResult("interrupted", 0)  # op-level bookkeeping unaffected
