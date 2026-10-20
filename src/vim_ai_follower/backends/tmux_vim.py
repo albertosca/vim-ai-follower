@@ -1550,8 +1550,12 @@ def _script_file(name: str, text: str) -> Path:
 # directory, which hashes to another name) stays in the cache directory after
 # a hook last wrote or used it (_sweep_scripts). A hook that sweeps marks its
 # own script as used on every define line, so this only ever removes a
-# script no such hook used for a day.
-_SCRIPT_MAX_AGE_SECONDS = 86400.0
+# script no such hook used for seven days (Alberto's A7, sweep 5: a
+# pre-sweep plugin version keeps its script without touching it, and at one
+# day a sweep between its check and its Vim's `:source` failed that one
+# navigation). The long-define-line notes are cosmetic and go after a day.
+_SCRIPT_MAX_AGE_SECONDS = 7 * 86400.0
+_DEFINE_ROWS_MAX_AGE_SECONDS = 86400.0
 _SCRIPT_NAME = re.compile(r"vaf-[0-9a-f]{6}\.vim")
 _SCRIPT_TEMPORARY_NAME = re.compile(r"\.vaf-[0-9a-f]{6}\.vim\.[0-9a-f]{8}")
 # _log_long_define_line's "logged already" notes, one per pane id.
@@ -1566,7 +1570,8 @@ _UNANSWERED_NAME = re.compile(r"unanswered-(?:\d+-)?\d+")
 def _sweep_scripts(current: Path) -> None:
     """Delete, from `current`'s directory and nowhere else, the scripts
     (`vaf-<6 hex>.vim`) and the long-define-line notes (`define-rows-<pane>`,
-    _log_long_define_line) unused for _SCRIPT_MAX_AGE_SECONDS, and the
+    _log_long_define_line) unused for _SCRIPT_MAX_AGE_SECONDS (seven days)
+    and _DEFINE_ROWS_MAX_AGE_SECONDS (one), and the
     backoff marks (`unanswered-…`) and temporaries (`.vaf-<6 hex>.vim.<8 hex>`)
     older than
     _PATH_HANDLE_MAX_AGE_SECONDS that _script_file leaves when a write is cut
@@ -1580,7 +1585,8 @@ def _sweep_scripts(current: Path) -> None:
     not. A file is only read again by the define line of a Vim that lacks
     its dispatcher, right after that version's hook wrote or kept it; a hook
     of this version or later marks it used then (_script_file), so the age
-    protects it. An OLDER hook keeps its existing file without touching it:
+    protects it. An OLDER hook keeps its existing file without touching it
+    (so its age runs from its last write: seven days, Alberto's A7):
     should a sweep delete that file in the moment between the older hook's
     check and its Vim's `:source`, the source finds nothing, the calls do
     nothing, the navigation fails safe (NavigationFailed, the edit is
@@ -1593,8 +1599,10 @@ def _sweep_scripts(current: Path) -> None:
     for entry in entries:
         if entry.name == current.name:
             continue
-        if _SCRIPT_NAME.fullmatch(entry.name) or _DEFINE_ROWS_NAME.fullmatch(entry.name):
+        if _SCRIPT_NAME.fullmatch(entry.name):
             maximum_age = _SCRIPT_MAX_AGE_SECONDS
+        elif _DEFINE_ROWS_NAME.fullmatch(entry.name):
+            maximum_age = _DEFINE_ROWS_MAX_AGE_SECONDS
         elif _SCRIPT_TEMPORARY_NAME.fullmatch(entry.name) or _UNANSWERED_NAME.fullmatch(entry.name):
             maximum_age = _PATH_HANDLE_MAX_AGE_SECONDS
         else:

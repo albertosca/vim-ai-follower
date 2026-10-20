@@ -255,8 +255,10 @@ def test_old_scripts_and_stale_temporaries_are_swept_and_nothing_else() -> None:
     """One script per plugin version accumulates in the cache directory, and
     a write cut off before its rename leaves a temporary. The current script
     stays, and so does a script or temporary another hook may still be about
-    to use: a script written or used within a day, a temporary younger than
-    the handles' 600 s."""
+    to use: a script written or used within seven days (Alberto's A7: a
+    pre-sweep plugin version keeps its script without touching it, and a
+    day-old one could be swept between its check and its Vim's `:source`),
+    a temporary younger than the handles' 600 s."""
     cache.CACHE_DIRECTORY.mkdir(parents=True)
     now = time.time()
 
@@ -266,12 +268,13 @@ def test_old_scripts_and_stale_temporaries_are_swept_and_nothing_else() -> None:
         os.utime(path, (now - seconds, now - seconds))
         return path
 
-    old_script = aged("vaf-aaaaaa.vim", 2 * 86400)
+    old_script = aged("vaf-aaaaaa.vim", 8 * 86400)
+    days_old_script = aged("vaf-a0a0a0.vim", 6 * 86400)
     stale_temporary = aged(".vaf-bbbbbb.vim.1234abcd", 20 * 60)
     young_temporary = aged(".vaf-cccccc.vim.5678abcd", 60)
     recent_script = aged("vaf-dddddd.vim", 3600)
     unrelated = [
-        aged(name, 3 * 86400)
+        aged(name, 9 * 86400)
         for name in (
             "vaf-notahash.vim",
             "vaf-eeeeee.vim.bak",
@@ -283,7 +286,7 @@ def test_old_scripts_and_stale_temporaries_are_swept_and_nothing_else() -> None:
     name, text = tmux_vim._vim_functions()
     current = cache.CACHE_DIRECTORY / f"vaf-{name.removeprefix('VafFollower_')}.vim"
     current.write_text(text)
-    os.utime(current, (now - 3 * 86400, now - 3 * 86400))
+    os.utime(current, (now - 9 * 86400, now - 9 * 86400))
 
     assert tmux_vim._script_file(name, text) == current
 
@@ -291,6 +294,7 @@ def test_old_scripts_and_stale_temporaries_are_swept_and_nothing_else() -> None:
     assert not stale_temporary.exists()
     assert young_temporary.exists()
     assert recent_script.exists()
+    assert days_old_script.exists()
     assert all(path.exists() for path in unrelated)
     assert current.read_text() == text
     # Kept, and marked as used: another version's sweep measures from here.
