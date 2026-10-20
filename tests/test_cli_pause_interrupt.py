@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -7,7 +8,7 @@ from helpers import call_spelled, resolve_typed_paths
 from helpers import make_mock_tmux_run as _mock_tmux_run
 from helpers import register_fake_follower as _register_fake_follower
 
-from vim_ai_follower import cache, cli, commands, control, session, state, tmux
+from vim_ai_follower import cache, cli, commands, control, hooks, session, state, tmux
 from vim_ai_follower.backends import NavigationFailed
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.diff import EditOp
@@ -512,6 +513,39 @@ def test_main_dispatches_pause_and_interrupt(monkeypatch: pytest.MonkeyPatch) ->
         monkeypatch.setenv("TMUX_PANE", "%1")
         assert cli.main(["pause"]) == 0
         assert cli.main(["interrupt"]) == 0
+
+
+def test_a_corrupt_pending_file_read_by_the_cli_is_logged_to_hook_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Final m7: the CLI never set up the file logger, so the warning for a
+    pending file it dropped went to Python's last-resort stderr handler,
+    which the keybinding's run-shell discards: no trace anywhere."""
+    _register_fake_follower("@1", "%2")
+    pending = cache.CACHE_DIRECTORY / "@1.pending_animation.json"
+    pending.parent.mkdir(parents=True, exist_ok=True)
+    pending.write_text('{"kind": "apply_edit"}')
+    monkeypatch.setenv("TMUX_PANE", "%1")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", return_value=MagicMock()),
+    ):
+        assert cli.main(["pause"]) == 0
+    assert not pending.exists()
+    assert "dropped an unreadable pending animation" in hooks.LOG_PATH.read_text()
+
+
+def test_a_cli_command_runs_when_hook_log_cannot_be_opened(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("")
+    monkeypatch.setattr(hooks, "LOG_PATH", blocker / "hook.log")
+    monkeypatch.setenv("TMUX_PANE", "%1")
+    _register_fake_follower("@1", "%2")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
+        assert cli.main(["pause"]) == 0
+    assert "nothing to pause" in capsys.readouterr().out
 
 
 def test_pause_is_a_quiet_noop_when_nothing_is_running(

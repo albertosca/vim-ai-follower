@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import sys
 
@@ -41,6 +42,12 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     arguments = _build_parser().parse_args(argv)
     environment = dict(os.environ)
+    # Every subcommand logs to hook.log: a key binding runs these under
+    # run-shell, which discards stderr, so a warning left to Python's
+    # last-resort handler (a dropped pending file read by `pause`) was lost
+    # (final m7). A log that cannot be opened must not fail the command.
+    with contextlib.suppress(OSError):
+        hooks._configure_logging()
 
     if arguments.command == "start":
         return commands.cmd_start(
