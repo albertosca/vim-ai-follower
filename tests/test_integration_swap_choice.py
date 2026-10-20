@@ -121,7 +121,11 @@ def _start_follower(
     monkeypatch.setenv("TMUX_PANE", origin_pane)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    pane_id = next(
+        candidate_pane
+        for candidate_pane in _pane_ids(tmux_session)
+        if candidate_pane != origin_pane
+    )
     # Guard the guard: at >= 51 columns the ATTENTION block stops paging
     # and this whole file could pass with the fix reverted.
     width = _pane_width(pane_id)
@@ -184,7 +188,7 @@ def _assert_no_dialog(pane_id: str) -> None:
 
 def _row_with(pane_id: str, marker: str) -> tuple[int, str]:
     lines = _capture(pane_id).splitlines()
-    row = next(i for i, line in enumerate(lines) if marker in line)
+    row = next(index for index, line in enumerate(lines) if marker in line)
     return row, lines[row]
 
 
@@ -198,10 +202,14 @@ def _assert_plain_key_lands_as_a_command(
 
     Which character goes is deliberately not pinned — the cursor column
     depends on how the buffer was reached."""
-    deletions = {line_before[:i] + line_before[i + 1 :] for i in range(len(line_before))}
+    deletions = {
+        line_before[:index] + line_before[index + 1 :] for index in range(len(line_before))
+    }
     _send_text(pane_id, "x")
     assert wait_until(
-        lambda: (lambda ls: row < len(ls) and ls[row] in deletions)(_capture(pane_id).splitlines()),
+        lambda: (lambda screen_lines: row < len(screen_lines) and screen_lines[row] in deletions)(
+            _capture(pane_id).splitlines()
+        ),
         timeout=5.0,
     ), (
         "the plain 'x' keystroke never landed as a real command — row "
@@ -399,7 +407,9 @@ def test_the_edit_anyway_policy_does_not_leak_into_the_users_own_edit(
     _send_key(follower_pane_id, "Enter")
 
     assert wait_until(
-        lambda: any(m in _capture(follower_pane_id) for m in ("ATTENTION", "E325", "swap file")),
+        lambda: any(
+            message in _capture(follower_pane_id) for message in ("ATTENTION", "E325", "swap file")
+        ),
         timeout=10.0,
     ), (
         "the user's own :e of an unrelated swapped file did NOT get the "

@@ -55,9 +55,9 @@ def test_show_fresh_names_the_buffer_exactly_and_edit_reuses_it(
 
     tabs, current, buffers = _landing(follower_pane, dump, wait_until)
     assert os.path.realpath(current) == want, f"landed on {current!r}, buffers {buffers}"
-    assert [b for b in buffers if os.path.realpath(b) == want] == [current], (
-        f"show_fresh's buffer name does not match the real path; buffers seen: {buffers}"
-    )
+    assert [buffer_name for buffer_name in buffers if os.path.realpath(buffer_name) == want] == [
+        current
+    ], f"show_fresh's buffer name does not match the real path; buffers seen: {buffers}"
 
     _hook(monkeypatch, "pre", "Edit", target)
     target.write_text("one = 2\n")

@@ -84,7 +84,7 @@ def test_a_catch_up_leaves_the_new_edits_base_and_the_edit_is_typed_as_a_diff(
     base = KILLED.splitlines()
     assert wait_until(lambda: _last_state(log, target.name) == after, timeout=15.0)
     states = _states(log, target.name)
-    trace = "\n".join(repr(s) for s in states)
+    trace = "\n".join(repr(state_lines) for state_lines in states)
     # The finished file is only ever the LAST state: never a flash the
     # catch-up's relock loaded and the new edit then typed over (or wiped).
     assert after not in states[:-1], f"finished file shown before it was typed:\n{trace}"
@@ -94,12 +94,15 @@ def test_a_catch_up_leaves_the_new_edits_base_and_the_edit_is_typed_as_a_diff(
     assert base in states, f"the catch-up never reached the new edit's base:\n{trace}"
     new_edit = states[states.index(base) :]
     # A retype wipes the buffer first; a diff keeps the base's lines throughout.
-    assert all(s[:2] == base for s in new_edit), f"the buffer was wiped:\n{trace}"
+    assert all(state_lines[:2] == base for state_lines in new_edit), (
+        f"the buffer was wiped:\n{trace}"
+    )
     # The new edit was really typed on top of its base, not jumped to: some
     # sample shows the base with the new line partly (or not yet) typed.
-    assert any(len(s) == 3 and "z = 4".startswith(s[2]) and s[2] != "z = 4" for s in new_edit), (
-        f"the diff was never seen typing onto the base:\n{trace}"
-    )
+    assert any(
+        len(state_lines) == 3 and "z = 4".startswith(state_lines[2]) and state_lines[2] != "z = 4"
+        for state_lines in new_edit
+    ), f"the diff was never seen typing onto the base:\n{trace}"
 
     title = TmuxPane(pane_id=pane).title()
     assert title not in (BASE_DIFFERS_CUE, PROBE_UNKNOWN_CUE), title

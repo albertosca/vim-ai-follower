@@ -71,12 +71,16 @@ def _status_float_body(nvim: Any) -> list[str] | None:
 def _typing_line_marks(nvim: Any, path: Path) -> list[int]:
     """Rows of `path`'s buffer carrying a VafTypingLine line highlight."""
     wanted = path.resolve()
-    ns = nvim.api.create_namespace("vaf")
-    for buf in nvim.api.list_bufs():
-        name = nvim.api.buf_get_name(buf)
+    namespace_id = nvim.api.create_namespace("vaf")
+    for buffer in nvim.api.list_bufs():
+        name = nvim.api.buf_get_name(buffer)
         if name and Path(name).resolve() == wanted:
-            marks = nvim.api.buf_get_extmarks(buf, ns, 0, -1, {"details": True})
-            return [row for _id, row, _col, d in marks if d.get("line_hl_group") == "VafTypingLine"]
+            marks = nvim.api.buf_get_extmarks(buffer, namespace_id, 0, -1, {"details": True})
+            return [
+                row
+                for _id, row, _col, details in marks
+                if details.get("line_hl_group") == "VafTypingLine"
+            ]
     return []
 
 
@@ -100,8 +104,8 @@ def test_first_animation_shows_writing_and_keeps_the_typing_highlight(
     sock = world.follower_target()
     path = world.workdir / "writing_cue.py"
     world.cli("hook", "pre", stdin=payload("Write", path))
-    path.write_text("".join(f"line_{i} = {i}\n" for i in range(12)))
-    proc = world.cli_background("hook", "post", stdin=payload("Write", path))
+    path.write_text("".join(f"line_{index} = {index}\n" for index in range(12)))
+    process = world.cli_background("hook", "post", stdin=payload("Write", path))
     world.wait_for_animating("running")
     world.wait_until(
         lambda: "line_1" in "".join(world.nvim_buffer_lines(sock, path)),
@@ -122,7 +126,7 @@ def test_first_animation_shows_writing_and_keeps_the_typing_highlight(
     body = _status_float_body(nvim)
     assert body is not None and "Writing..." in body, f"float body mid-animation: {body!r}"
 
-    world.wait_for_hook_exit(proc)
+    world.wait_for_hook_exit(process)
     assert _status_float_body(nvim) is None, "the float outlived the animation"
 
     # "On EVERY animation": the second one must show the cue too. The float's
@@ -131,8 +135,8 @@ def test_first_animation_shows_writing_and_keeps_the_typing_highlight(
     # so the cue silently never came back (measured 2026-09-23).
     second = world.workdir / "writing_cue_2.py"
     world.cli("hook", "pre", stdin=payload("Write", second))
-    second.write_text("".join(f"again_{i} = {i}\n" for i in range(12)))
-    proc = world.cli_background("hook", "post", stdin=payload("Write", second))
+    second.write_text("".join(f"again_{index} = {index}\n" for index in range(12)))
+    process = world.cli_background("hook", "post", stdin=payload("Write", second))
     world.wait_for_animating("running")
     world.wait_until(
         lambda: "again_1" in "".join(world.nvim_buffer_lines(sock, second)),
@@ -141,7 +145,7 @@ def test_first_animation_shows_writing_and_keeps_the_typing_highlight(
     )
     body = _status_float_body(nvim)
     assert body is not None and "Writing..." in body, f"second animation's float: {body!r}"
-    world.wait_for_hook_exit(proc)
+    world.wait_for_hook_exit(process)
     assert _status_float_body(nvim) is None, "the second animation's float outlived it"
 
 
@@ -279,9 +283,12 @@ def _open_owner_nvim(world: E2EFollower, target: Path) -> str:
         "#{pane_id}",
         f"nvim -u NONE -i NONE {target}",
     ).stdout.strip()
-    swap_dir = world.home / ".local" / "state" / "nvim" / "swap"
+    swap_directory = world.home / ".local" / "state" / "nvim" / "swap"
     world.wait_until(
-        lambda: swap_dir.exists() and any(target.name in p.name for p in swap_dir.iterdir()),
+        lambda: (
+            swap_directory.exists()
+            and any(target.name in swap_file.name for swap_file in swap_directory.iterdir())
+        ),
         "the owner nvim's swap file",
         timeout=15.0,
     )
@@ -342,7 +349,9 @@ def test_a_swap_held_file_whose_follower_buffer_vanished_opens_on_edit(
     nvim = world._nvim(sock)
     wanted = target.resolve()
     [number] = [
-        b.number for b in nvim.api.list_bufs() if b.name and Path(b.name).resolve() == wanted
+        buffer.number
+        for buffer in nvim.api.list_bufs()
+        if buffer.name and Path(buffer.name).resolve() == wanted
     ]
     nvim.command(f"bwipeout! {number}")
     owner = _open_owner_nvim(world, target)
@@ -365,7 +374,7 @@ def test_read_navigation_shows_disk_and_clamps_the_offset(world: E2EFollower) ->
     of the hook. The adopted-nvim half stays manual (see the battery); this
     nvim is launched, so the buffer must end nomodifiable."""
     target = world.workdir / "read_nav.py"
-    lines = [f"row_{i} = {i}" for i in range(1, 47)]
+    lines = [f"row_{index} = {index}" for index in range(1, 47)]
     target.write_text("".join(line + "\n" for line in lines))
     world.start("nvim", "instant")
     sock = world.follower_target()

@@ -40,9 +40,9 @@ AFTER = "a = 1\nc = 3\nb = 2\n"
 USER_TEXT = "user line\nUSER UNSAVED WORK"
 
 
-def _tmux(*args: str) -> str:
+def _tmux(*arguments: str) -> str:
     return subprocess.run(
-        ["tmux", *args], capture_output=True, text=True, check=True
+        ["tmux", *arguments], capture_output=True, text=True, check=True
     ).stdout.strip()
 
 

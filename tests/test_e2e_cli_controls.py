@@ -97,9 +97,9 @@ def _animate_fresh(
     follower = world.follower_target()
     world.cli("hook", "pre", stdin=payload("Write", target_file))
     target_file.write_text(content)
-    proc = world.cli_background("hook", "post", stdin=payload("Write", target_file))
+    process = world.cli_background("hook", "post", stdin=payload("Write", target_file))
     world.wait_for_animating("running")
-    return follower, proc
+    return follower, process
 
 
 def _wait_visible(world: E2EFollower, backend: str, target: str, path: Path, needle: str) -> None:
@@ -123,7 +123,7 @@ def test_nvim_interrupt_leaves_the_half_typed_line_uncounted(world: E2EFollower)
     the full content.
     """
     path = world.workdir / "fresh.py"
-    sock, proc = _animate_fresh(world, "nvim", path, FRESH, "lento")
+    sock, process = _animate_fresh(world, "nvim", path, FRESH, "lento")
     lines = FRESH.splitlines()
     cut_at = 5  # "    return os.path.join(root, first)" — long enough to catch
     whole = lines[cut_at]
@@ -161,7 +161,7 @@ def test_nvim_interrupt_leaves_the_half_typed_line_uncounted(world: E2EFollower)
     assert remainder["partial"] == _text(*lines[:cut_at])
 
     world.cli("interrupt")  # the des-interrupt
-    world.wait_for_hook_exit(proc)
+    world.wait_for_hook_exit(process)
     assert world.nvim_buffer_bytes(sock, path) == FRESH.encode()
 
 
@@ -181,7 +181,7 @@ def test_nvim_interrupt_rolls_back_the_op_it_was_inside(world: E2EFollower) -> N
 
     world.cli("hook", "pre", stdin=payload("Edit", path))
     path.write_text(OP_AFTER)
-    proc = world.cli_background("hook", "post", stdin=payload("Edit", path))
+    process = world.cli_background("hook", "post", stdin=payload("Edit", path))
     world.wait_for_animating("running")
 
     typed_first = OP_AFTER.splitlines()[1]
@@ -205,7 +205,7 @@ def test_nvim_interrupt_rolls_back_the_op_it_was_inside(world: E2EFollower) -> N
     assert len(remainder["remaining_ops"]) == 1, "the partly-run op was counted as done"
 
     world.cli("interrupt")  # the des-interrupt
-    world.wait_for_hook_exit(proc)
+    world.wait_for_hook_exit(process)
     assert world.nvim_buffer_bytes(sock, path) == OP_AFTER.encode()
 
 
@@ -225,7 +225,7 @@ def test_handoff_cycles_past_the_press_that_used_to_do_nothing(
     running/handoff — and the last des-interrupt must run to the full content.
     """
     path = world.workdir / "cycles.py"
-    target, proc = _animate_fresh(world, backend, path, FRESH, "normal")
+    target, process = _animate_fresh(world, backend, path, FRESH, "normal")
 
     _wait_visible(world, backend, target, path, "ALPHA_MARK")
     world.cli("interrupt")  # 1st press
@@ -243,7 +243,7 @@ def test_handoff_cycles_past_the_press_that_used_to_do_nothing(
     world.cli("interrupt")  # 4th press: the one that used to do nothing
     world.wait_for_animating("running")
 
-    world.wait_for_hook_exit(proc)
+    world.wait_for_hook_exit(process)
     assert world.buffer_bytes(backend, target, path) == FRESH.encode()
 
 
@@ -267,7 +267,7 @@ def test_crash_fallback_catches_up_after_the_hook_is_killed(
     there would be no remainder for the catch-up to get wrong.
     """
     path = world.workdir / "catchup.py"
-    target, proc = _animate_fresh(world, backend, path, FRESH, "normal")
+    target, process = _animate_fresh(world, backend, path, FRESH, "normal")
     _wait_visible(world, backend, target, path, "ALPHA_MARK")
 
     world.cli("pause")
@@ -282,8 +282,8 @@ def test_crash_fallback_catches_up_after_the_hook_is_killed(
     # -9 on purpose: the wait loop's `finally` discards the pending file on any
     # orderly exit, so a catchable signal would clean up the very state a hook
     # timeout leaves behind.
-    proc.kill()
-    proc.wait(timeout=10)
+    process.kill()
+    process.wait(timeout=10)
     assert world.pending_path.exists(), "the remainder did not survive the kill"
     assert world.animating_state() is None, "the dead hook left a live-looking marker"
 
@@ -326,7 +326,7 @@ def test_navigating_to_a_dirty_buffer_raises_no_e37_prompt(world: E2EFollower) -
         needed it to would be testing the lock, not the prompt.
     """
     path = world.workdir / "dirty.py"
-    pane, proc = _animate_fresh(world, "tmux", path, FRESH, "normal")
+    pane, process = _animate_fresh(world, "tmux", path, FRESH, "normal")
     width = world.resize_pane(pane, 49)
     assert width < 51, (
         f"the follower pane is {width} columns; at 51 or more E37 does not wrap, "
@@ -338,8 +338,8 @@ def test_navigating_to_a_dirty_buffer_raises_no_e37_prompt(world: E2EFollower) -
     world.wait_for_handoff()
     # A real hook timeout: the buffer stays dirty and unlocked while the
     # window is freed for the next hook.
-    proc.kill()
-    proc.wait(timeout=10)
+    process.kill()
+    process.wait(timeout=10)
 
     world.cli("hook", "post", stdin=payload("Read", path))
 
@@ -415,7 +415,7 @@ def test_nvim_a_pause_on_a_write_that_never_animates_is_taken_back(
     path = world.workdir / "blob.bin"
     world.cli("hook", "pre", stdin=payload("Write", path))
     path.write_bytes(b"\x00\x01\x02 binary\n")
-    proc = world.cli_background("hook", "post", stdin=payload("Write", path))
+    process = world.cli_background("hook", "post", stdin=payload("Write", path))
     world.wait_for_animating("running")
 
     pressed = world.cli("pause")
@@ -424,7 +424,7 @@ def test_nvim_a_pause_on_a_write_that_never_animates_is_taken_back(
     # check below would pass with nothing to retract.
     assert _status_float_body(world, sock) == ["Paused"]
 
-    world.wait_for_hook_exit(proc)
+    world.wait_for_hook_exit(process)
     assert _status_float_body(world, sock) in (None, []), "a 'Paused' outlived the hook"
     leftovers = sorted(entry.name for entry in world.cache_dir.iterdir() if ".pause" in entry.name)
     assert leftovers == [], f"a signal was left behind: {leftovers}"
@@ -603,7 +603,7 @@ def _interrupt_a_catch_up(
     )
     world.cli("hook", "pre", stdin=payload("Edit", path))
     path.write_text(_catch_up_edit(backend))
-    proc = world.cli_background("hook", "post", stdin=payload("Edit", path))
+    process = world.cli_background("hook", "post", stdin=payload("Edit", path))
     world.wait_until(
         lambda: "catchup_line_0002" in world.visible_progress(backend, target, path),
         "the catch-up to be typing the remainder",
@@ -638,7 +638,7 @@ def _interrupt_a_catch_up(
     assert b"NEW_EDIT_MARK" not in held, "the new edit was animated over the user's hand-off"
     # Answer A: no remainder is saved, so the second S reloads Claude's file.
     assert not world.pending_path.exists(), "an interrupted catch-up saved a remainder"
-    return target, path, proc, held
+    return target, path, process, held
 
 
 @pytest.mark.parametrize("backend", ["tmux", "nvim"])
@@ -651,7 +651,7 @@ def test_an_s_during_a_catch_up_hands_over_and_w_releases_the_users_version(
     hand-off, the new edit animated anyway and the remainder was dropped. Now
     the hand-off cue is up for THIS edit, and a save releases Claude with the
     user's version on disk."""
-    target, path, proc, held = _interrupt_a_catch_up(world, backend)
+    target, path, process, held = _interrupt_a_catch_up(world, backend)
 
     if backend == "tmux":
         world.tmux("send-keys", "-t", target, "Escape", "Escape")
@@ -664,11 +664,11 @@ def test_an_s_during_a_catch_up_hands_over_and_w_releases_the_users_version(
         # Edit (measured 2026-10-17, not this task's): answer it as a user would.
         world.wait_until(
             lambda: (
-                "changed since reading" in world.capture_pane(target) or proc.poll() is not None
+                "changed since reading" in world.capture_pane(target) or process.poll() is not None
             ),
             "the save to ask or to release Claude",
         )
-        if proc.poll() is None:
+        if process.poll() is None:
             world.tmux("send-keys", "-t", target, "y")
     else:
         nvim = world._nvim(target)
@@ -676,9 +676,9 @@ def test_an_s_during_a_catch_up_hands_over_and_w_releases_the_users_version(
         # The same W11 question would block a bare `:w` sent over RPC.
         nvim.command("write!")
 
-    world.wait_for_hook_exit(proc, timeout=30.0)
+    world.wait_for_hook_exit(process, timeout=30.0)
     assert path.read_bytes() == held + (USER_LINE + "\n").encode()
-    assert "SAVED their own version" in world.background_log(proc)
+    assert "SAVED their own version" in world.background_log(process)
 
 
 @pytest.mark.parametrize("backend", ["tmux", "nvim"])
@@ -687,10 +687,10 @@ def test_a_second_s_after_an_interrupted_catch_up_shows_claudes_file(
 ) -> None:
     """Answer A's other half: S again discards the hand-off and shows the
     file Claude wrote (a reload, nothing replayed)."""
-    target, path, proc, _ = _interrupt_a_catch_up(world, backend)
+    target, path, process, _ = _interrupt_a_catch_up(world, backend)
 
     assert world.cli("interrupt").stdout.startswith("claude-follow: hand-off cancelled")
-    world.wait_for_hook_exit(proc, timeout=30.0)
+    world.wait_for_hook_exit(process, timeout=30.0)
     assert world.buffer_bytes(backend, target, path) == _catch_up_edit(backend).encode()
     assert path.read_text() == _catch_up_edit(backend)
 
@@ -741,16 +741,16 @@ def _wait_for_handoff_cue(world: E2EFollower, pane: str) -> None:
     )
 
 
-def _save_and_release(world: E2EFollower, pane: str, proc: subprocess.Popen[bytes]) -> None:
+def _save_and_release(world: E2EFollower, pane: str, process: subprocess.Popen[bytes]) -> None:
     """`:w!` the handed-over buffer, answering Vim's W11 as a user would."""
     _vim_typed(world, pane, ":w!")
     world.wait_until(
-        lambda: "changed since reading" in world.capture_pane(pane) or proc.poll() is not None,
+        lambda: "changed since reading" in world.capture_pane(pane) or process.poll() is not None,
         "the save to ask or to release Claude",
     )
-    if proc.poll() is None:
+    if process.poll() is None:
         world.tmux("send-keys", "-t", pane, "y")
-    world.wait_for_hook_exit(proc, timeout=30.0)
+    world.wait_for_hook_exit(process, timeout=30.0)
 
 
 REBUILD_BASE = _text(*(f"base_line_{index:05d} = {index}" for index in range(400)))
@@ -786,7 +786,7 @@ def test_an_s_during_the_catch_up_rebuild_hands_over_the_whole_partial(
     )
     world.cli("hook", "pre", stdin=payload("Edit", path))
     path.write_text(REBUILD_BASE + _text("tail = 1", "NEW_EDIT_MARK = True"))
-    proc = world.cli_background("hook", "post", stdin=payload("Edit", path))
+    process = world.cli_background("hook", "post", stdin=payload("Edit", path))
     world.wait_until(
         lambda: (
             "base_line_00399" not in (screen := world.capture_pane(pane))
@@ -804,9 +804,9 @@ def test_an_s_during_the_catch_up_rebuild_hands_over_the_whole_partial(
         f"handed over {len(held.splitlines())} of the partial's "
         f"{len(REBUILD_BASE.splitlines())} lines"
     )
-    _save_and_release(world, pane, proc)
+    _save_and_release(world, pane, process)
     assert path.read_bytes() == held
-    log = world.background_log(proc)
+    log = world.background_log(process)
     quoted = json.loads(log.strip().splitlines()[-1])["hookSpecificOutput"]["additionalContext"]
     assert REBUILD_BASE.removesuffix("\n") in quoted
     assert "tail = 1" not in quoted
@@ -853,7 +853,7 @@ def test_an_s_during_the_catch_up_replay_gives_the_users_options_back(
     )
     world.cli("hook", "pre", stdin=payload("Edit", path))
     path.write_text(_catch_up_edit("tmux"))
-    proc = world.cli_background("hook", "post", stdin=payload("Edit", path))
+    process = world.cli_background("hook", "post", stdin=payload("Edit", path))
     world.wait_until(
         lambda: "catchup_line_0002" in world.capture_pane(pane),
         "the catch-up to be typing the remainder",
@@ -866,7 +866,7 @@ def test_an_s_during_the_catch_up_replay_gives_the_users_options_back(
     if adopted:
         assert _vim_option(world, pane, "modifiable") == ("1" if modifiable else "0")
     world.cli("interrupt")  # S again: Claude's file, and the hook ends
-    world.wait_for_hook_exit(proc, timeout=30.0)
+    world.wait_for_hook_exit(process, timeout=30.0)
 
 
 @pytest.mark.parametrize("adopted", [True, False], ids=["adopted", "dedicated"])
@@ -886,7 +886,7 @@ def test_an_s_during_a_des_interrupt_replay_gives_the_users_paste_back(
     _set_users_options(world, pane, modifiable=True)
     world.cli("hook", "pre", stdin=payload("Edit", path))
     path.write_text(_catch_up_edit("tmux"))
-    proc = world.cli_background("hook", "post", stdin=payload("Edit", path))
+    process = world.cli_background("hook", "post", stdin=payload("Edit", path))
     world.wait_until(
         lambda: "catchup_line_0000" in world.capture_pane(pane), "the edit to be typing"
     )
@@ -904,18 +904,20 @@ def test_an_s_during_a_des_interrupt_replay_gives_the_users_paste_back(
     _wait_for_handoff_cue(world, pane)
 
     assert _vim_option(world, pane, "paste") == "1"
-    _save_and_release(world, pane, proc)
+    _save_and_release(world, pane, process)
 
 
 # ------------------------------------------- Task 24c, item 4 (T20 review m3)
 
 
-def _assert_the_stop_released_the_hook(world: E2EFollower, proc: subprocess.Popen[bytes]) -> None:
+def _assert_the_stop_released_the_hook(
+    world: E2EFollower, process: subprocess.Popen[bytes]
+) -> None:
     world.cli("stop")
     # The poll sleeps 0.2 s between checks; "a few seconds" is the bar, the
     # old behaviour held the hook for its whole 600 s timeout.
-    world.wait_for_hook_exit(proc, timeout=5.0)
-    assert "stopped the follower" in world.background_log(proc)
+    world.wait_for_hook_exit(process, timeout=5.0)
+    assert "stopped the follower" in world.background_log(process)
     assert not world.pending_path.exists(), "the stopped hand-off left a remainder"
     leftovers = sorted(
         path.name
@@ -933,12 +935,12 @@ def test_a_stop_during_the_hand_off_wait_releases_claude_at_once(
     save used to leave the poll waiting for a save nobody would make — Claude
     held up to the hook's 600 s timeout. The poll now sees the stop."""
     path = world.workdir / "stopped_handoff.py"
-    target, proc = _animate_fresh(world, backend, path, FRESH, "lento")
+    target, process = _animate_fresh(world, backend, path, FRESH, "lento")
     _wait_visible(world, backend, target, path, "ALPHA_MARK")
     world.cli("interrupt")
     world.wait_for_handoff()
 
-    _assert_the_stop_released_the_hook(world, proc)
+    _assert_the_stop_released_the_hook(world, process)
     assert path.read_text() == FRESH, "the stop changed Claude's file"
 
 
@@ -947,9 +949,9 @@ def test_a_stop_during_a_catch_up_hand_off_releases_claude_at_once(
     world: E2EFollower, backend: str
 ) -> None:
     """The same through `_hand_over_interrupted_catch_up`."""
-    _, path, proc, _ = _interrupt_a_catch_up(world, backend)
+    _, path, process, _ = _interrupt_a_catch_up(world, backend)
 
-    _assert_the_stop_released_the_hook(world, proc)
+    _assert_the_stop_released_the_hook(world, process)
     assert path.read_text() == _catch_up_edit(backend), "the stop changed Claude's file"
 
 
@@ -966,10 +968,10 @@ def test_a_stop_while_the_animation_is_paused_releases_claude_at_once(
     P/S keys, so nothing could resume it either). The pause wait now sees the
     stop as the hand-off wait does."""
     path = world.workdir / "stopped_pause.py"
-    target, proc = _animate_fresh(world, backend, path, FRESH, "lento")
+    target, process = _animate_fresh(world, backend, path, FRESH, "lento")
     _wait_visible(world, backend, target, path, "ALPHA_MARK")
     world.cli("pause")
     world.wait_for_animating("paused")
 
-    _assert_the_stop_released_the_hook(world, proc)
+    _assert_the_stop_released_the_hook(world, process)
     assert path.read_text() == FRESH, "the stop changed Claude's file"

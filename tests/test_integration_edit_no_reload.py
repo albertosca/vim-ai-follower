@@ -140,7 +140,7 @@ def _observed_follower(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     wait_until: Callable[..., bool],
-    *start_args: str,
+    *start_arguments: str,
 ) -> tuple[Path, str, str]:
     """Start a follower whose Vim carries the observer. Returns the log path,
     the follower pane id and the window id."""
@@ -162,9 +162,13 @@ def _observed_follower(
     )
     origin_pane = _pane_ids(tmux_session)[0]
     monkeypatch.setenv("TMUX_PANE", origin_pane)
-    assert cli.main(["start", *start_args]) == 0
+    assert cli.main(["start", *start_arguments]) == 0
     assert wait_until(lambda: log.exists(), timeout=10.0), "observer never started"
-    follower_pane = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    follower_pane = next(
+        candidate_pane
+        for candidate_pane in _pane_ids(tmux_session)
+        if candidate_pane != origin_pane
+    )
     return log, follower_pane, _window_id(origin_pane)
 
 
@@ -198,7 +202,9 @@ def _edit_and_assert_typed_from_the_pre_edit_buffer(
     assert wait_until(lambda: _last_state(log, target.name) == after, timeout=15.0)
 
     states = _states(log, target.name)
-    trace = "\n".join(f"defs={_defs(s)} lines={len(s)}" for s in states)
+    trace = "\n".join(
+        f"defs={_defs(state_lines)} lines={len(state_lines)}" for state_lines in states
+    )
     # The instrument saw the animation itself, not just its end: a run where
     # the observer caught nothing but the final frame would pass vacuously.
     assert len(states) >= 2, f"observer caught no intermediate state:\n{trace}"
@@ -208,7 +214,9 @@ def _edit_and_assert_typed_from_the_pre_edit_buffer(
     assert after not in states[:-1], f"finished file shown before the animation ended:\n{trace}"
     # Typing the diff onto the pre-edit buffer can never exceed the finished
     # file's def count; typing it onto the reloaded finished file does.
-    assert max(_defs(s) for s in states) <= _defs(after), f"duplicated defs:\n{trace}"
+    assert max(_defs(state_lines) for state_lines in states) <= _defs(after), (
+        f"duplicated defs:\n{trace}"
+    )
 
 
 def test_edit_of_an_open_file_never_shows_the_finished_file_before_typing_it(
@@ -324,7 +332,9 @@ def test_interrupted_edit_hands_over_the_persisted_partial_not_the_finished_file
         # buffer to reach the partial, and fail if it never does.
         settled = wait_until(lambda: _last_state(log, target.name) == partial, timeout=5.0)
         states = _states(log, target.name)
-        trace = "\n".join(f"defs={_defs(s)} lines={len(s)}" for s in states)
+        trace = "\n".join(
+            f"defs={_defs(state_lines)} lines={len(state_lines)}" for state_lines in states
+        )
         assert settled, f"hand-off buffer never matched the persisted partial:\n{trace}"
         assert after not in states, f"the finished file was on screen before hand-off:\n{trace}"
     finally:
@@ -404,7 +414,9 @@ def test_pause_then_resume_never_shows_the_finished_file_before_typing_it(
     assert not thread.is_alive()
 
     states = _states(log, target.name)
-    trace = "\n".join(f"defs={_defs(s)} lines={len(s)}" for s in states)
+    trace = "\n".join(
+        f"defs={_defs(state_lines)} lines={len(state_lines)}" for state_lines in states
+    )
     assert after not in states_at_pause, f"finished file shown before pausing:\n{trace}"
     # Resume must have actually continued typing, not just fast-forwarded to
     # the end while nobody was looking — otherwise the invariants below would
@@ -412,7 +424,9 @@ def test_pause_then_resume_never_shows_the_finished_file_before_typing_it(
     assert len(states) > len(states_at_pause), f"resume typed nothing new:\n{trace}"
     assert states[-1] == after
     assert after not in states[:-1], f"finished file shown before the animation ended:\n{trace}"
-    assert max(_defs(s) for s in states) <= _defs(after), f"duplicated defs:\n{trace}"
+    assert max(_defs(state_lines) for state_lines in states) <= _defs(after), (
+        f"duplicated defs:\n{trace}"
+    )
 
 
 def test_read_of_an_open_clean_file_changed_outside_claude_shows_the_new_content(
@@ -479,9 +493,13 @@ def test_a_read_landing_between_an_edits_pre_and_post_hooks_never_flashes_the_fi
     assert wait_until(lambda: _last_state(log, target.name) == after, timeout=15.0)
 
     states = _states(log, target.name)
-    trace = "\n".join(f"defs={_defs(s)} lines={len(s)}" for s in states)
+    trace = "\n".join(
+        f"defs={_defs(state_lines)} lines={len(state_lines)}" for state_lines in states
+    )
     assert len(states) >= 2, f"observer caught no intermediate state:\n{trace}"
     assert after not in states[:-1], f"finished file shown before the animation ended:\n{trace}"
     # Typed as a diff from the pre-edit buffer, not wiped and retyped: a
     # retype passes through a state shorter than the pre-edit file.
-    assert min(len(s) for s in states) >= len(ONE_DEF.splitlines()), f"retyped:\n{trace}"
+    assert min(len(state_lines) for state_lines in states) >= len(ONE_DEF.splitlines()), (
+        f"retyped:\n{trace}"
+    )

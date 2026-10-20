@@ -139,11 +139,13 @@ def test_a_caught_up_buffer_an_outside_change_left_behind_is_grounded_on_disk(
     assert _dump(pane, target, tmp_path, wait_until) == ("0", after)
 
     states = _states(log, target.name)
-    trace = "\n".join(repr(s) for s in states)
+    trace = "\n".join(repr(state_lines) for state_lines in states)
     caught_up = KILLED.splitlines()
     assert caught_up in states, f"the catch-up never completed:\n{trace}"
     # Grounded, not retyped: from the catch-up's end on, nothing is wiped.
-    assert all(s[:2] == caught_up for s in states[states.index(caught_up) :]), trace
+    assert all(state_lines[:2] == caught_up for state_lines in states[states.index(caught_up) :]), (
+        trace
+    )
 
     title = TmuxPane(pane_id=pane).title()
     assert title not in (BASE_DIFFERS_CUE, PROBE_UNKNOWN_CUE), title

@@ -76,12 +76,12 @@ def _adopted(
     return pane, window_id, TmuxVimFollower(pane_id=pane, pace_seconds=0.0, window_id=window_id)
 
 
-def _read(window_id: str, follower: TmuxVimFollower, path: Path, max_tabs: int) -> None:
+def _read(window_id: str, follower: TmuxVimFollower, path: Path, maximum_tabs: int) -> None:
     """The calls _handle_hook_post_read makes for a Read."""
     hooks._ensure_buffer(window_id, follower, str(path))
     current = FollowerState.read(window_id)
     assert current is not None
-    hooks._touch_and_evict(window_id, follower, current, str(path), max_tabs)
+    hooks._touch_and_evict(window_id, follower, current, str(path), maximum_tabs)
 
 
 def _type_unsaved(pane: str) -> None:

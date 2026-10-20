@@ -101,13 +101,13 @@ def _adopted_with_user_view(
     tmp_path: Path,
     wait_until: Callable[..., bool],
     name: str,
-    *start_args: str,
+    *start_arguments: str,
 ) -> tuple[Path, str, str, Path]:
     """An adopted follower whose Vim has `name` open with `:tab view`: the
     user's own readonly, on a file the follower never showed."""
     _prove_private()
     log, pane, window_id = _observed_follower(
-        tmux_session, monkeypatch, tmp_path, wait_until, *start_args
+        tmux_session, monkeypatch, tmp_path, wait_until, *start_arguments
     )
     _write(monkeypatch, log, wait_until, tmp_path / "seed.py", "seed = 1\n")
     FollowerState.update(window_id, adopted=True)

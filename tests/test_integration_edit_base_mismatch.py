@@ -111,15 +111,24 @@ def test_edit_after_an_outside_rewrite_never_types_the_diff_onto_the_stale_buffe
     assert wait_until(lambda: _last_state(log, target.name) == after, timeout=15.0)
 
     states = _states(log, target.name)
-    trace = "\n".join(f"defs={_defs(s)} lines={len(s)} stale={STALE_LINE in s}" for s in states)
+    trace = "\n".join(
+        f"defs={_defs(state_lines)} lines={len(state_lines)} stale={STALE_LINE in state_lines}"
+        for state_lines in states
+    )
     assert len(states) >= 2, f"observer caught no intermediate state:\n{trace}"
     # Wrong base, concretely: the stale buffer's single-quoted line together
     # with a def the diff added. The retype wipes the stale text first, so
     # the two can never be on screen together.
-    mixed = [s for s in states if STALE_LINE in s and any("def bravo" in line for line in s)]
+    mixed = [
+        state_lines
+        for state_lines in states
+        if STALE_LINE in state_lines and any("def bravo" in line for line in state_lines)
+    ]
     assert not mixed, f"the diff was typed onto the stale buffer:\n{trace}"
     assert after not in states[:-1], f"finished file shown before the animation ended:\n{trace}"
-    assert max(_defs(s) for s in states) <= _defs(after), f"duplicated defs:\n{trace}"
+    assert max(_defs(state_lines) for state_lines in states) <= _defs(after), (
+        f"duplicated defs:\n{trace}"
+    )
 
 
 def test_probe_buffer_answers_from_the_real_vim_buffer(

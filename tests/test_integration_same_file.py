@@ -36,9 +36,9 @@ AFTER = "a = 1\nc = 3\nb = 2\n"
 QUICK_SECONDS = 5.0
 
 
-def _tmux(*args: str) -> str:
+def _tmux(*arguments: str) -> str:
     return subprocess.run(
-        ["tmux", *args], capture_output=True, text=True, check=True
+        ["tmux", *arguments], capture_output=True, text=True, check=True
     ).stdout.strip()
 
 
@@ -176,12 +176,12 @@ def test_a_file_opened_through_a_symlinked_directory_is_the_hooks_realpath(
     spelling: str,
 ) -> None:
     root = Path(os.path.realpath(tmp_path))
-    real_dir = root / "real"
-    real_dir.mkdir()
-    real = real_dir / "a.py"
+    real_directory = root / "real"
+    real_directory.mkdir()
+    real = real_directory / "a.py"
     real.write_text(BEFORE)
     if spelling == "dir-symlink":
-        (root / "link").symlink_to(real_dir)
+        (root / "link").symlink_to(real_directory)
         opened_as = "link/a.py"
     else:
         # macOS's own symlinked directory: /var -> /private/var, the spelling

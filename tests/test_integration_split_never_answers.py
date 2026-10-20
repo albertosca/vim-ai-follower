@@ -36,7 +36,7 @@ _ERROR_AT_STARTUP = 'set noloadplugins shada= | echoerr "boom from the init"'
 
 
 @pytest.fixture
-def short_cache_dir(monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+def short_cache_directory(monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     """The socket lives in the cache dir, and an AF_UNIX path must fit in
     ~104 bytes on macOS: pytest's tmp_path does not."""
     directory = Path(tempfile.mkdtemp(prefix="vaf19i", dir="/tmp"))
@@ -106,7 +106,7 @@ def _window_whose_splits_run(
 
 def test_a_split_nvim_that_never_answers_is_reported_left_open_and_backed_off(
     tmux_session: str,
-    short_cache_dir: Path,
+    short_cache_directory: Path,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -160,7 +160,7 @@ def test_a_split_nvim_that_never_answers_is_reported_left_open_and_backed_off(
 
 def test_an_init_error_stays_on_screen_and_the_split_is_attached_once_nvim_starts(
     tmux_session: str,
-    short_cache_dir: Path,
+    short_cache_directory: Path,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -209,9 +209,9 @@ def _fill_the_listen_queue(sock: Path) -> None:
 
 
 def test_a_spinning_nvims_full_listen_queue_never_reads_as_a_dead_socket(
-    short_cache_dir: Path, monkeypatch: pytest.MonkeyPatch
+    short_cache_directory: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    sock = short_cache_dir / "nvim-@91.sock"
+    sock = short_cache_directory / "nvim-@91.sock"
     spinner = subprocess.Popen(
         ["nvim", "--headless", "-u", "NONE", "-i", "NONE", "-n", "--listen", str(sock),
          "--cmd", _SPIN_FOREVER],
@@ -241,7 +241,7 @@ def test_a_spinning_nvims_full_listen_queue_never_reads_as_a_dead_socket(
 
 def test_a_failed_split_whose_queue_filled_is_never_split_beside(
     tmux_session: str,
-    short_cache_dir: Path,
+    short_cache_directory: Path,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],

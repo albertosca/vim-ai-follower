@@ -142,9 +142,9 @@ def _adopted_state(world: E2EFollower, pane_id: str, claudes_file: Path) -> None
 
 
 def _question_seconds(world: E2EFollower, seconds: float) -> None:
-    config_dir = world.home / ".config" / "claude-vim-follower"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    (config_dir / "config.json").write_text(f'{{"take_over_question_seconds": {seconds}}}')
+    config_directory = world.home / ".config" / "claude-vim-follower"
+    config_directory.mkdir(parents=True, exist_ok=True)
+    (config_directory / "config.json").write_text(f'{{"take_over_question_seconds": {seconds}}}')
 
 
 def _hook_log(world: E2EFollower) -> str:

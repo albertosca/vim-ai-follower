@@ -69,13 +69,15 @@ def _follower_pane(
     monkeypatch.setenv("TMUX_PANE", origin)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    pane_id = next(p for p in _pane_ids(tmux_session) if p != origin)
+    pane_id = next(
+        candidate_pane for candidate_pane in _pane_ids(tmux_session) if candidate_pane != origin
+    )
     follower = TmuxVimFollower(pane_id=pane_id, window_id=_window_id(origin), pace_seconds=0.0)
     return follower, pane_id
 
 
 def _assert_buffer(
-    pane_id: str, dest: Path, expected: str, wait_until: Callable[..., bool]
+    pane_id: str, destination: Path, expected: str, wait_until: Callable[..., bool]
 ) -> None:
     """Dump the live Vim buffer to `dest` with `:w!` and wait for it to hold
     exactly `expected`. `:w!` writes the buffer verbatim — one "\\n" per line,
@@ -83,10 +85,12 @@ def _assert_buffer(
     pane = TmuxPane(pane_id=pane_id)
     pane.send_key("Escape")
     pane.send_key("Escape")
-    pane.send_text(f":w! {dest}")
+    pane.send_text(f":w! {destination}")
     pane.send_key("Enter")
-    matched = wait_until(lambda: dest.exists() and dest.read_text() == expected, timeout=10.0)
-    actual = dest.read_text() if dest.exists() else "<no dump written>"
+    matched = wait_until(
+        lambda: destination.exists() and destination.read_text() == expected, timeout=10.0
+    )
+    actual = destination.read_text() if destination.exists() else "<no dump written>"
     assert matched, f"buffer dump was {actual!r}, expected {expected!r}"
 
 
@@ -138,7 +142,7 @@ def test_the_des_interrupt_replay_edits_the_rebuilt_prefix_at_the_right_lines(
     # the dump below is the animation's own result, not a reload from disk.
     calls = {"n": 0}
 
-    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _check(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         return "interrupt" if calls["n"] == 9 else None
 

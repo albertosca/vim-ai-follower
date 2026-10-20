@@ -38,8 +38,8 @@ from vim_ai_follower.state import FollowerState
 pytestmark = pytest.mark.integration
 
 
-def _tmux(*args: str) -> str:
-    return subprocess.run(["tmux", *args], capture_output=True, text=True, check=True).stdout
+def _tmux(*arguments: str) -> str:
+    return subprocess.run(["tmux", *arguments], capture_output=True, text=True, check=True).stdout
 
 
 def _keys(pane: str, command: str) -> None:
@@ -153,10 +153,10 @@ def test_the_adopted_swap_back_on_line_never_leaves_a_prompt(
     need_wait_return: "Press ENTER" swallowed show_fresh's next keys. The
     writable case proves the line still makes the swap."""
     _assert_private_server()
-    swap_dir = tmp_path / ("swap" if writable else "locked")
-    swap_dir.mkdir()
+    swap_directory = tmp_path / ("swap" if writable else "locked")
+    swap_directory.mkdir()
     if not writable:
-        swap_dir.chmod(0o500)
+        swap_directory.chmod(0o500)
     target = tmp_path / "retyped.py"
     target.write_text("x = 1\n")
     origin = _tmux("list-panes", "-t", tmux_session, "-F", "#{pane_id}").split()[0]
@@ -177,7 +177,7 @@ def test_the_adopted_swap_back_on_line_never_leaves_a_prompt(
         ready = tmp_path / "ready.txt"
         _keys(
             pane,
-            f":set directory={swap_dir}// | enew | setlocal noswapfile"
+            f":set directory={swap_directory}// | enew | setlocal noswapfile"
             f" | exe 'silent file ' . fnameescape('{target}') | call writefile(['R'], '{ready}')",
         )
         assert wait_until(ready.exists, timeout=5.0)
@@ -198,4 +198,4 @@ def test_the_adopted_swap_back_on_line_never_leaves_a_prompt(
         assert "A" not in shortmess
         assert (swapname != "") is writable
     finally:
-        swap_dir.chmod(0o700)
+        swap_directory.chmod(0o700)

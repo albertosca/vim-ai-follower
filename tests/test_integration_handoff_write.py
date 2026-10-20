@@ -39,7 +39,7 @@ def _screen(pane: str) -> str:
     ).stdout
 
 
-CONTENT = "".join(f"line_{n} = {n}\n" for n in range(1, 13))
+CONTENT = "".join(f"line_{number} = {number}\n" for number in range(1, 13))
 
 
 def _prove_private() -> None:
@@ -92,7 +92,9 @@ def _interrupted_write(
         assert wait_until(lambda: control.animating_state(window_id) == "running", timeout=10.0)
         # Some lines typed, not all: the interrupt must land mid-retype.
         assert wait_until(
-            lambda: any(2 <= len(s) < len(full) for s in _states(log, target.name)),
+            lambda: any(
+                2 <= len(state_lines) < len(full) for state_lines in _states(log, target.name)
+            ),
             timeout=15.0,
         )
         control.request_interrupt(window_id)

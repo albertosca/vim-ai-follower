@@ -49,9 +49,9 @@ _LOGGER = (
 )
 
 
-def _tmux(*args: str) -> str:
+def _tmux(*arguments: str) -> str:
     return subprocess.run(
-        ["tmux", *args], capture_output=True, text=True, check=True
+        ["tmux", *arguments], capture_output=True, text=True, check=True
     ).stdout.strip()
 
 
@@ -180,11 +180,11 @@ def test_no_absolute_path_ever_reaches_the_command_line(
     assert os.path.realpath(home) != str(home)  # really a symlinked spelling
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(cache, "CACHE_DIR", home / ".cache" / "claude-vim-follower")
-    vim_home_dir = home
+    vim_home_directory = home
     if vim_home == "other-home":
-        vim_home_dir = root / "other-home"
-        vim_home_dir.mkdir()
-    pane = _logged_vim(tmux_session, monkeypatch, tmp_path, vim_home_dir)
+        vim_home_directory = root / "other-home"
+        vim_home_directory.mkdir()
+    pane = _logged_vim(tmux_session, monkeypatch, tmp_path, vim_home_directory)
     window_id = _tmux("display-message", "-p", "-t", pane, "#{window_id}")
     FollowerState.set(window_id, backend="tmux", target=pane, adopted=adopted, speed="instant")
     follower = TmuxVimFollower(pane_id=pane, pace_seconds=0.0, window_id=window_id)

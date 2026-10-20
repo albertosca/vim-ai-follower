@@ -74,8 +74,8 @@ def _spy(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], list[list[EditOp]]
     real_probe = hooks._probe_base
     real_script = diff.compute_edit_script
 
-    def probe(*args: Any) -> Any:
-        answer = real_probe(*args)
+    def probe(*arguments: Any) -> Any:
+        answer = real_probe(*arguments)
         probes.append(answer)
         return answer
 

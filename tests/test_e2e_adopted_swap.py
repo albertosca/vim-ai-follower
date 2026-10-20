@@ -75,9 +75,12 @@ def _nvim_swap_dir(world: E2EFollower) -> Path:
 
 def _open_owner_nvim(world: E2EFollower, target: Path) -> None:
     world.tmux("new-window", "-d", "-t", world.session, f"nvim -u NONE -i NONE {target}")
-    swap_dir = _nvim_swap_dir(world)
+    swap_directory = _nvim_swap_dir(world)
     world.wait_until(
-        lambda: swap_dir.exists() and any(target.name in p.name for p in swap_dir.iterdir()),
+        lambda: (
+            swap_directory.exists()
+            and any(target.name in swap_file.name for swap_file in swap_directory.iterdir())
+        ),
         "the owner nvim's swap file",
         timeout=15.0,
     )
@@ -85,7 +88,7 @@ def _open_owner_nvim(world: E2EFollower, target: Path) -> None:
 
 def _nvim_follower_pane(world: E2EFollower) -> str:
     panes = world.tmux("list-panes", "-t", world.origin_pane, "-F", "#{pane_id}").stdout.split()
-    [pane] = [p for p in panes if p != world.origin_pane]
+    [pane] = [candidate_pane for candidate_pane in panes if candidate_pane != world.origin_pane]
     return pane
 
 
@@ -93,7 +96,9 @@ def _nvim_buffer(world: E2EFollower, sock: str, target: Path) -> int:
     nvim = world._nvim(sock)
     wanted = target.resolve()
     [number] = [
-        b.number for b in nvim.api.list_bufs() if b.name and Path(b.name).resolve() == wanted
+        buffer.number
+        for buffer in nvim.api.list_bufs()
+        if buffer.name and Path(buffer.name).resolve() == wanted
     ]
     return int(number)
 
@@ -150,9 +155,9 @@ def test_an_adopted_nvim_keeps_swap_on_the_buffers_the_follower_makes(
 
     nvim = world._nvim(sock)
     assert nvim.api.get_mode()["blocking"] is False
-    buf = _nvim_buffer(world, sock, target)
-    assert nvim.api.buf_get_lines(buf, 0, -1, True) == target.read_text().splitlines()
-    assert nvim.funcs.swapname(buf) != ""
+    buffer = _nvim_buffer(world, sock, target)
+    assert nvim.api.buf_get_lines(buffer, 0, -1, True) == target.read_text().splitlines()
+    assert nvim.funcs.swapname(buffer) != ""
     _screen_is_clean(world, pane)
     _clean_log(world)
     if not held:
@@ -182,9 +187,9 @@ def test_an_adopted_nvim_re_reads_a_clean_swapped_buffer_with_no_prompt(
     assert world.cli("hook", "post", stdin=payload("Read", target)).stderr == ""
 
     assert nvim.api.get_mode()["blocking"] is False
-    buf = _nvim_buffer(world, sock, target)
-    assert nvim.api.buf_get_lines(buf, 0, -1, True) == ["x = 2"]
-    assert nvim.funcs.swapname(buf) != ""
+    buffer = _nvim_buffer(world, sock, target)
+    assert nvim.api.buf_get_lines(buffer, 0, -1, True) == ["x = 2"]
+    assert nvim.funcs.swapname(buffer) != ""
     _screen_is_clean(world, pane)
     _clean_log(world)
 
@@ -208,13 +213,16 @@ def _narrow_follower(world: E2EFollower) -> str:
     return pane
 
 
-def _vim_eval(world: E2EFollower, pane: str, expr: str) -> str:
+def _vim_eval(world: E2EFollower, pane: str, expression: str) -> str:
     out = world.workdir / f"vimeval-{time.monotonic_ns()}.txt"
     world.tmux("send-keys", "-t", pane, "Escape", "Escape")
-    world.tmux("send-keys", "-t", pane, "-l", "--", f":call writefile(['E', {expr}], '{out}')")
+    world.tmux(
+        "send-keys", "-t", pane, "-l", "--", f":call writefile(['E', {expression}], '{out}')"
+    )
     world.tmux("send-keys", "-t", pane, "Enter")
     world.wait_until(
-        lambda: out.exists() and len(out.read_text().splitlines()) == 2, f"vim to evaluate {expr}"
+        lambda: out.exists() and len(out.read_text().splitlines()) == 2,
+        f"vim to evaluate {expression}",
     )
     return out.read_text().splitlines()[1]
 

@@ -76,15 +76,15 @@ def test_a_busy_slot_collision_never_strands_a_tab_outside_eviction(
     no later eviction could ever name it."""
     follower_pane = _start_follower(tmux_session, monkeypatch, wait_until)
     window_id = _window_id(tmux_session)
-    max_tabs = config.load().max_tabs
+    maximum_tabs = config.load().max_tabs
     dump = tmp_path / "dump.txt"
 
     root = tmp_path / "src"
-    paths = [root / f"mod{i}.py" for i in range(max_tabs + 4)]
+    paths = [root / f"mod{index}.py" for index in range(maximum_tabs + 4)]
     collided = paths[0]
 
-    for i, path in enumerate(paths[:3]):
-        _write_through_the_hook(path, f"value = {i}\n", monkeypatch)
+    for index, path in enumerate(paths[:3]):
+        _write_through_the_hook(path, f"value = {index}\n", monkeypatch)
     before = FollowerState.read(window_id)
     assert before is not None
     assert len(before.open_files) == 3, (
@@ -93,12 +93,12 @@ def test_a_busy_slot_collision_never_strands_a_tab_outside_eviction(
 
     _write_through_a_busy_slot(collided, "value = 99\n", window_id, monkeypatch)
 
-    for i, path in enumerate(paths[3:], start=3):
-        _write_through_the_hook(path, f"value = {i}\n", monkeypatch)
+    for index, path in enumerate(paths[3:], start=3):
+        _write_through_the_hook(path, f"value = {index}\n", monkeypatch)
 
     tab_count, buffers = _vim_state(follower_pane, dump, wait_until)
-    assert tab_count == max_tabs, (
-        f"max_tabs is {max_tabs} but Vim holds {tab_count} tabs after {len(paths)} files "
+    assert tab_count == maximum_tabs, (
+        f"max_tabs is {maximum_tabs} but Vim holds {tab_count} tabs after {len(paths)} files "
         f"with one busy-slot collision — a skipped edit stranded a tab outside eviction. "
         f"Buffers: {buffers}"
     )
@@ -109,4 +109,6 @@ def test_a_busy_slot_collision_never_strands_a_tab_outside_eviction(
     state = FollowerState.read(window_id)
     assert state is not None
     assert sorted(state.open_files) == sorted(buffers)
-    assert sorted(state.open_files) == sorted(str(p) for p in paths[-max_tabs:])
+    assert sorted(state.open_files) == sorted(
+        str(candidate_path) for candidate_path in paths[-maximum_tabs:]
+    )

@@ -90,7 +90,11 @@ def _start_follower(
     monkeypatch.setenv("TMUX_PANE", origin_pane)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    pane_id = next(
+        candidate_pane
+        for candidate_pane in _pane_ids(tmux_session)
+        if candidate_pane != origin_pane
+    )
     # Guard the guard: if the follower pane were ever wide enough to fit
     # E37's 51 characters on one line, none of the assertions below could
     # fail even with the fix reverted, and this file would be measuring
@@ -121,7 +125,7 @@ def _settle_to_normal_mode(pane_id: str, wait_until: Callable[..., bool]) -> Non
 
 def _dirty_row(pane_id: str, marker: str) -> tuple[int, str]:
     lines = _capture(pane_id).splitlines()
-    row = next(i for i, line in enumerate(lines) if marker in line)
+    row = next(index for index, line in enumerate(lines) if marker in line)
     return row, lines[row]
 
 
@@ -153,10 +157,14 @@ def _assert_plain_key_lands_as_a_command(
     when `:tab drop` freshly displayed the buffer. Asserting a specific
     column made the windowless-buffer case fail for a reason that had
     nothing to do with prompts."""
-    deletions = {line_before[:i] + line_before[i + 1 :] for i in range(len(line_before))}
+    deletions = {
+        line_before[:index] + line_before[index + 1 :] for index in range(len(line_before))
+    }
     _send_text(pane_id, "x")
     assert wait_until(
-        lambda: (lambda ls: row < len(ls) and ls[row] in deletions)(_capture(pane_id).splitlines()),
+        lambda: (lambda screen_lines: row < len(screen_lines) and screen_lines[row] in deletions)(
+            _capture(pane_id).splitlines()
+        ),
         timeout=3.0,
     ), (
         "the plain 'x' keystroke never landed as a real command — row "

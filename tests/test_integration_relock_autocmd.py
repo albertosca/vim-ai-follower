@@ -48,8 +48,8 @@ BEFORE = "a = 1\nb = 2\n"
 AFTER = "a = 1\nb = 2\nc = 3\n"
 
 
-def _tmux(*args: str) -> str:
-    return subprocess.run(["tmux", *args], capture_output=True, text=True, check=True).stdout
+def _tmux(*arguments: str) -> str:
+    return subprocess.run(["tmux", *arguments], capture_output=True, text=True, check=True).stdout
 
 
 def _keys(pane: str, command: str) -> None:

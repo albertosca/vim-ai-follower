@@ -128,7 +128,7 @@ def test_the_users_line_survives_and_after_e_bang_the_next_edit_animates(
     states = _states(log, target.name)
     # A diff keeps the first two lines on screen throughout; a retype would
     # have wiped them first.
-    assert all(s[:2] == ["x = 1", "y = 3"] for s in states), states
+    assert all(state_lines[:2] == ["x = 1", "y = 3"] for state_lines in states), states
     state = FollowerState.read(window_id)
     assert state is not None
     assert str(target) not in state.stale_files

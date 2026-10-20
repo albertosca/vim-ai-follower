@@ -65,7 +65,11 @@ def _start_follower(
     monkeypatch.setenv("TMUX_PANE", origin_pane)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    return next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    return next(
+        candidate_pane
+        for candidate_pane in _pane_ids(tmux_session)
+        if candidate_pane != origin_pane
+    )
 
 
 def _window_id(tmux_session: str) -> str:
@@ -156,17 +160,17 @@ def test_eviction_caps_vim_at_max_tabs_for_pattern_metacharacter_paths(
     was wiped, rather than a count that happens to line up."""
     follower_pane = _start_follower(tmux_session, monkeypatch, wait_until)
     window_id = _window_id(tmux_session)
-    max_tabs = config.load().max_tabs
+    maximum_tabs = config.load().max_tabs
     dump = tmp_path / "dump.txt"
 
     root = tmp_path / "app"
-    paths = [root / "[slug]" / f"page{i}.tsx" for i in range(max_tabs + 4)]
-    for i, path in enumerate(paths):
-        _write_through_the_hook(path, f"export const n = {i};\n", monkeypatch)
+    paths = [root / "[slug]" / f"page{index}.tsx" for index in range(maximum_tabs + 4)]
+    for index, path in enumerate(paths):
+        _write_through_the_hook(path, f"export const n = {index};\n", monkeypatch)
 
     tab_count, buffers = _vim_state(follower_pane, dump, wait_until)
-    assert tab_count == max_tabs, (
-        f"max_tabs is {max_tabs} but Vim holds {tab_count} tabs after "
+    assert tab_count == maximum_tabs, (
+        f"max_tabs is {maximum_tabs} but Vim holds {tab_count} tabs after "
         f"{len(paths)} files — eviction is not closing anything. Buffers: {buffers}"
     )
 
@@ -174,7 +178,7 @@ def test_eviction_caps_vim_at_max_tabs_for_pattern_metacharacter_paths(
     # agrees anyway, so a future failure says which side drifted.
     state = FollowerState.read(window_id)
     assert state is not None
-    assert len(state.open_files) == max_tabs
+    assert len(state.open_files) == maximum_tabs
     assert sorted(state.open_files) == sorted(buffers)
 
     # The four oldest are gone from Vim, not merely dropped from the state.
@@ -195,16 +199,18 @@ def test_eviction_caps_vim_at_max_tabs_for_plain_paths(
     wipe worked. It is a parity guard, not a canary; the test above is the
     one that goes red when the fix is reverted."""
     follower_pane = _start_follower(tmux_session, monkeypatch, wait_until)
-    max_tabs = config.load().max_tabs
+    maximum_tabs = config.load().max_tabs
     dump = tmp_path / "dump.txt"
 
-    paths = [tmp_path / "src" / f"mod{i}.py" for i in range(max_tabs + 3)]
-    for i, path in enumerate(paths):
-        _write_through_the_hook(path, f"value = {i}\n", monkeypatch)
+    paths = [tmp_path / "src" / f"mod{index}.py" for index in range(maximum_tabs + 3)]
+    for index, path in enumerate(paths):
+        _write_through_the_hook(path, f"value = {index}\n", monkeypatch)
 
     tab_count, buffers = _vim_state(follower_pane, dump, wait_until)
-    assert tab_count == max_tabs
-    assert sorted(buffers) == sorted(str(p) for p in paths[-max_tabs:])
+    assert tab_count == maximum_tabs
+    assert sorted(buffers) == sorted(
+        str(candidate_path) for candidate_path in paths[-maximum_tabs:]
+    )
 
 
 def test_close_tab_wipes_a_bracketed_path_instead_of_silently_missing_it(
@@ -227,7 +233,7 @@ def test_close_tab_wipes_a_bracketed_path_instead_of_silently_missing_it(
     follower = TmuxVimFollower(pane_id=follower_pane, window_id="@evict")
 
     victim = tmp_path / "routes" / "[id]" / "handler.ts"
-    keepers = [tmp_path / "routes" / f"keep{i}.ts" for i in range(2)]
+    keepers = [tmp_path / "routes" / f"keep{index}.ts" for index in range(2)]
     for path in [victim, *keepers]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("export {};\n")
@@ -245,7 +251,7 @@ def test_close_tab_wipes_a_bracketed_path_instead_of_silently_missing_it(
     ), f"close_tab left {victim}'s buffer alive"
     after_count, after_buffers = _vim_state(follower_pane, dump, wait_until)
     assert after_count == before_count - 1
-    assert sorted(after_buffers) == sorted(str(p) for p in keepers)
+    assert sorted(after_buffers) == sorted(str(candidate_path) for candidate_path in keepers)
 
 
 def test_close_tab_on_an_unopened_path_opens_nothing(
@@ -268,8 +274,8 @@ def test_close_tab_on_an_unopened_path_opens_nothing(
     dump = tmp_path / "dump.txt"
     follower = TmuxVimFollower(pane_id=follower_pane)
 
-    for i in range(2):
-        path = tmp_path / f"open{i}.py"
+    for index in range(2):
+        path = tmp_path / f"open{index}.py"
         path.write_text("x = 1\n")
         follower.ensure_showing(str(path))
     before_count, before_buffers = _vim_state(follower_pane, dump, wait_until)

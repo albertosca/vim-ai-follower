@@ -124,7 +124,7 @@ def _shows(pane_id: str, expected: list[str]) -> bool:
     return any(rows[start : start + len(expected)] == expected for start in range(len(rows)))
 
 
-def _pause_then_abandon(at: int, seen: list[Any]) -> Callable[..., str | None]:
+def _pause_then_abandon(abandon_at_call: int, seen: list[Any]) -> Callable[..., str | None]:
     """check_signal double: pause at the `at`-th call — landing inside the
     line/op the driver is currently sending — snapshot whatever the wait
     loop persisted on the very next call (its first poll), then interrupt to
@@ -135,12 +135,12 @@ def _pause_then_abandon(at: int, seen: list[Any]) -> Callable[..., str | None]:
     hand to stand in for that."""
     calls = {"n": 0}
 
-    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _check(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
-        if calls["n"] == at:
+        if calls["n"] == abandon_at_call:
             return "pause"
-        if calls["n"] == at + 1:
-            seen.append(control.load_pending_animation(window_id, base_dir))
+        if calls["n"] == abandon_at_call + 1:
+            seen.append(control.load_pending_animation(window_id, base_directory))
             return "interrupt"
         return None
 
@@ -156,13 +156,13 @@ def _patch_pre_relock_snapshots(
     _with_unlocked sends right after (see the module docstring for why the
     relock's own `:silent! e!` would otherwise mask a wrong retype)."""
 
-    def _wrapped_run_lines(*args: Any, **kwargs: Any) -> AnimationResult:
-        result = _real_run_lines(*args, **kwargs)
+    def _wrapped_run_lines(*arguments: Any, **keyword_arguments: Any) -> AnimationResult:
+        result = _real_run_lines(*arguments, **keyword_arguments)
         snapshots.append(_rows(pane_id))
         return result
 
-    def _wrapped_run_ops(*args: Any, **kwargs: Any) -> AnimationResult:
-        result = _real_run_ops(*args, **kwargs)
+    def _wrapped_run_ops(*arguments: Any, **keyword_arguments: Any) -> AnimationResult:
+        result = _real_run_ops(*arguments, **keyword_arguments)
         snapshots.append(_rows(pane_id))
         return result
 
@@ -180,10 +180,14 @@ def test_show_fresh_catchup_after_a_paused_and_abandoned_run_reaches_full_conten
     monkeypatch.setenv("TMUX_PANE", origin_pane)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    follower_pane_id = next(
+        candidate_pane
+        for candidate_pane in _pane_ids(tmux_session)
+        if candidate_pane != origin_pane
+    )
     window_id = _window_id(origin_pane)
 
-    file_a_path = tmp_path / "a.py"
+    first_file_path = tmp_path / "a.py"
     content = "alpha\nbeta\ngamma\ndelta\n"
     # A real crashed animation always finds this already on disk — Claude
     # writes the file in full before the hook's animation even starts (see
@@ -191,8 +195,8 @@ def test_show_fresh_catchup_after_a_paused_and_abandoned_run_reaches_full_conten
     # would make the eventual relock's `:silent! e!` reload a NONEXISTENT
     # file, which empties the buffer instead of syncing it — a test-fidelity
     # bug, not the thing under test.
-    file_a_path.write_text(content)
-    file_a = str(file_a_path)
+    first_file_path.write_text(content)
+    first_file = str(first_file_path)
 
     follower = TmuxVimFollower(pane_id=follower_pane_id, window_id=window_id)
     seen: list[Any] = []
@@ -200,7 +204,7 @@ def test_show_fresh_catchup_after_a_paused_and_abandoned_run_reaches_full_conten
     # call lands right at line index 2's opener, before any of its keystrokes
     # are sent — lines 0 and 1 ("alpha", "beta") are already fully typed.
     monkeypatch.setattr(control, "check_signal", _pause_then_abandon(9, seen))
-    result = follower.show_fresh(file_a, content)
+    result = follower.show_fresh(first_file, content)
     assert result == AnimationResult("interrupted", 2)
     # The interrupt-unblock's own housekeeping already discarded it — proof
     # this abandoned-hook simulation genuinely needs the by-hand re-save
@@ -211,7 +215,7 @@ def test_show_fresh_catchup_after_a_paused_and_abandoned_run_reaches_full_conten
     assert isinstance(pending, control.PendingShowFresh)
     assert pending.lines == ("gamma", "delta")
     assert pending.continuation is True
-    assert pending.file_path == file_a
+    assert pending.file_path == first_file
     assert pending.partial == "alpha\nbeta\n"
 
     control.save_pending_show_fresh(
@@ -223,13 +227,13 @@ def test_show_fresh_catchup_after_a_paused_and_abandoned_run_reaches_full_conten
         partial=pending.partial,
     )
 
-    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
+    monkeypatch.setattr(control, "check_signal", lambda *arguments, **keyword_arguments: None)
     reloaded = control.load_pending_animation(window_id)
     assert reloaded is not None
     snapshots: list[list[str]] = []
     _patch_pre_relock_snapshots(monkeypatch, follower_pane_id, snapshots)
     catchup_follower = TmuxVimFollower(pane_id=follower_pane_id, window_id=window_id)
-    hooks._consume_pending_catchup(catchup_follower, file_a, reloaded)
+    hooks._consume_pending_catchup(catchup_follower, first_file, reloaded)
 
     # snapshots[0]: rewrite_buffer's retype of the partial alone, pre-relock
     # (rewrite_buffer never relocks itself). snapshots[1]: resume's
@@ -264,20 +268,24 @@ def test_apply_edit_catchup_after_a_paused_and_abandoned_mid_op_run_reaches_full
     monkeypatch.setenv("TMUX_PANE", origin_pane)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    follower_pane_id = next(
+        candidate_pane
+        for candidate_pane in _pane_ids(tmux_session)
+        if candidate_pane != origin_pane
+    )
     window_id = _window_id(origin_pane)
 
-    file_a_path = tmp_path / "a.py"
+    first_file_path = tmp_path / "a.py"
     before = "a\nb\nc\n"
     after = "a\nWW\nXX\nYY\nc\n"
     # Same fidelity requirement as the show_fresh twin above: the file is
     # already on disk with its FINAL content by the time an edit's animation
     # starts (Claude writes it first), so it must hold `after`, not `before`,
     # once the apply_edit under test begins.
-    file_a_path.write_text(before)
-    file_a = str(file_a_path)
-    TmuxVimFollower(pane_id=follower_pane_id, window_id=window_id).show_fresh(file_a, before)
-    file_a_path.write_text(after)
+    first_file_path.write_text(before)
+    first_file = str(first_file_path)
+    TmuxVimFollower(pane_id=follower_pane_id, window_id=window_id).show_fresh(first_file, before)
+    first_file_path.write_text(after)
 
     ops = compute_edit_script(before, after)
     assert len(ops) == 1  # a single multi-line replace, like the nvim twin
@@ -289,14 +297,14 @@ def test_apply_edit_catchup_after_a_paused_and_abandoned_mid_op_run_reaches_full
     # the 8th overall call lands right before "XX" is sent, i.e. after "WW"
     # (and the Enter that opened its line) already landed.
     monkeypatch.setattr(control, "check_signal", _pause_then_abandon(8, seen))
-    result = follower.apply_edit(file_a, ops, before=before)
+    result = follower.apply_edit(first_file, ops, before=before)
     assert result == AnimationResult("interrupted", 0)
     assert not control.has_pending_animation(window_id)
 
     pending = seen[0]
     assert isinstance(pending, control.PendingApplyEdit)
     assert pending.ops == ops
-    assert pending.file_path == file_a
+    assert pending.file_path == first_file
     # apply_ops(before, []) == before with no ops applied, in the canonical
     # terminated form every persisted partial uses — the whole op was still
     # in flight, so nothing of it is in the persisted base yet.
@@ -306,13 +314,13 @@ def test_apply_edit_catchup_after_a_paused_and_abandoned_mid_op_run_reaches_full
         window_id, pending.ops, 0.0, file_path=pending.file_path, partial=pending.partial
     )
 
-    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
+    monkeypatch.setattr(control, "check_signal", lambda *arguments, **keyword_arguments: None)
     reloaded = control.load_pending_animation(window_id)
     assert reloaded is not None
     snapshots: list[list[str]] = []
     _patch_pre_relock_snapshots(monkeypatch, follower_pane_id, snapshots)
     catchup_follower = TmuxVimFollower(pane_id=follower_pane_id, window_id=window_id)
-    hooks._consume_pending_catchup(catchup_follower, file_a, reloaded)
+    hooks._consume_pending_catchup(catchup_follower, first_file, reloaded)
 
     # snapshots[0]: rewrite_buffer's retype of "a\nb\nc" (the persisted
     # partial), pre-relock. snapshots[1]: resume's re-run of the whole op,
@@ -341,13 +349,17 @@ def test_catchup_from_a_legacy_pending_without_a_partial_converges_at_a_clean_bo
     monkeypatch.setenv("TMUX_PANE", origin_pane)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    follower_pane_id = next(
+        candidate_pane
+        for candidate_pane in _pane_ids(tmux_session)
+        if candidate_pane != origin_pane
+    )
     window_id = _window_id(origin_pane)
 
-    file_c_path = tmp_path / "c.py"
+    legacy_file_path = tmp_path / "c.py"
     content = "one\ntwo\nthree\n"
-    file_c_path.write_text(content)  # see the show_fresh twin above for why
-    file_c = str(file_c_path)
+    legacy_file_path.write_text(content)  # see the show_fresh twin above for why
+    legacy_file = str(legacy_file_path)
 
     follower = TmuxVimFollower(pane_id=follower_pane_id, window_id=window_id)
     seen: list[Any] = []
@@ -355,24 +367,24 @@ def test_catchup_from_a_legacy_pending_without_a_partial_converges_at_a_clean_bo
     # any of its keystrokes are sent: line 0 ("one") is already a clean,
     # fully-typed boundary with nothing left for the rollback to undo.
     monkeypatch.setattr(control, "check_signal", _pause_then_abandon(5, seen))
-    result = follower.show_fresh(file_c, content)
+    result = follower.show_fresh(legacy_file, content)
     assert result == AnimationResult("interrupted", 1)
     assert not control.has_pending_animation(window_id)
 
     # Simulate a pending file written before `partial` existed: the same
     # remainder, with no partial recorded at all.
     control.save_pending_show_fresh(
-        window_id, ("two", "three"), 0.0, continuation=True, file_path=file_c
+        window_id, ("two", "three"), 0.0, continuation=True, file_path=legacy_file
     )
     reloaded = control.load_pending_animation(window_id)
     assert reloaded is not None
     assert reloaded.partial is None
 
-    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
+    monkeypatch.setattr(control, "check_signal", lambda *arguments, **keyword_arguments: None)
     snapshots: list[list[str]] = []
     _patch_pre_relock_snapshots(monkeypatch, follower_pane_id, snapshots)
     catchup_follower = TmuxVimFollower(pane_id=follower_pane_id, window_id=window_id)
-    hooks._consume_pending_catchup(catchup_follower, file_c, reloaded)
+    hooks._consume_pending_catchup(catchup_follower, legacy_file, reloaded)
 
     # partial=None skips rewrite_buffer entirely (see _consume_pending_catchup),
     # so only resume's own run_lines call fires — one snapshot, pre-relock.

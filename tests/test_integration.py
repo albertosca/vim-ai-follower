@@ -102,7 +102,11 @@ def test_hook_pre_and_post_animate_an_edit(
     monkeypatch.setenv("TMUX_PANE", origin_pane)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    follower_pane_id = next(
+        candidate_pane
+        for candidate_pane in _pane_ids(tmux_session)
+        if candidate_pane != origin_pane
+    )
 
     target_file = tmp_path / "greeting.txt"
     target_file.write_text("hello\nworld\n")
@@ -133,7 +137,11 @@ def test_show_fresh_renders_each_line_separately(
     monkeypatch.setenv("TMUX_PANE", origin_pane)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    follower_pane_id = next(
+        candidate_pane
+        for candidate_pane in _pane_ids(tmux_session)
+        if candidate_pane != origin_pane
+    )
 
     target_file = tmp_path / "fresh.txt"
     target_file.write_text("alpha\nbeta\ngamma\n")
@@ -160,35 +168,39 @@ def test_two_files_get_two_tabs_and_edits_return_to_the_right_tab(
     monkeypatch.setenv("TMUX_PANE", origin_pane)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    follower_pane_id = next(
+        candidate_pane
+        for candidate_pane in _pane_ids(tmux_session)
+        if candidate_pane != origin_pane
+    )
 
-    a_file = tmp_path / "a.py"
-    b_file = tmp_path / "b.py"
+    first_file = tmp_path / "a.py"
+    second_file = tmp_path / "b.py"
 
     # First file: fresh, renames the start screen in place (no new tab yet).
-    a_file.write_text("print('a')\n")
-    write_a = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(a_file)}})
-    monkeypatch.setattr("sys.stdin", io.StringIO(write_a))
+    first_file.write_text("print('a')\n")
+    write_first = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(first_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(write_first))
     assert cli.main(["hook", "post"]) == 0
     assert wait_until(lambda: "print('a')" in _capture(follower_pane_id), timeout=10.0)
 
     # Second file: also fresh, but now shown_any is True — gets its own tab.
-    b_file.write_text("print('b')\n")
-    write_b = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(b_file)}})
-    monkeypatch.setattr("sys.stdin", io.StringIO(write_b))
+    second_file.write_text("print('b')\n")
+    write_second = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(second_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(write_second))
     assert cli.main(["hook", "post"]) == 0
     assert wait_until(lambda: "print('b')" in _capture(follower_pane_id), timeout=10.0)
 
     # Edit a.py again — already tracked, so it's not fresh: apply_edit
     # navigates back to a's own tab (the backend's goto_file preamble) and
     # animates the diff there, not into b's currently-active tab.
-    pre_a = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(a_file)}})
-    monkeypatch.setattr("sys.stdin", io.StringIO(pre_a))
+    pre_first = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(first_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(pre_first))
     assert cli.main(["hook", "pre"]) == 0
 
-    a_file.write_text("print('a updated')\n")
-    post_a = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(a_file)}})
-    monkeypatch.setattr("sys.stdin", io.StringIO(post_a))
+    first_file.write_text("print('a updated')\n")
+    post_first = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(first_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(post_first))
     assert cli.main(["hook", "post"]) == 0
 
     assert wait_until(lambda: "print('a updated')" in _capture(follower_pane_id), timeout=10.0)
@@ -209,7 +221,11 @@ def test_apply_edit_produces_exact_final_content(
     monkeypatch.setenv("TMUX_PANE", origin_pane)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    follower_pane_id = next(
+        candidate_pane
+        for candidate_pane in _pane_ids(tmux_session)
+        if candidate_pane != origin_pane
+    )
 
     target_file = tmp_path / "edit.txt"
     before_lines = ["line 1", "line 2", "line 3", "line 4"]
@@ -256,7 +272,11 @@ def test_completed_edit_animation_writes_cleanly_with_a_bare_w(
     monkeypatch.setenv("TMUX_PANE", origin_pane)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    follower_pane_id = next(
+        candidate_pane
+        for candidate_pane in _pane_ids(tmux_session)
+        if candidate_pane != origin_pane
+    )
 
     target_file = tmp_path / "synced.txt"
     target_file.write_text("alpha\n")
@@ -333,7 +353,11 @@ def test_hook_post_read_navigates_the_follower_pane(
     monkeypatch.setenv("TMUX_PANE", origin_pane)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    follower_pane_id = next(
+        candidate_pane
+        for candidate_pane in _pane_ids(tmux_session)
+        if candidate_pane != origin_pane
+    )
 
     target_file = tmp_path / "readme.txt"
     target_file.write_text("first line\nsecond line\n")
@@ -356,11 +380,15 @@ def test_interrupt_mid_animation_leaves_buffer_unlocked_with_partial_content(
     monkeypatch.setenv("TMUX_PANE", origin_pane)
     assert cli.main(["start", "--speed", "lento"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    follower_pane_id = next(
+        candidate_pane
+        for candidate_pane in _pane_ids(tmux_session)
+        if candidate_pane != origin_pane
+    )
     window_id = _window_id(origin_pane)
 
     target_file = tmp_path / "big.txt"
-    target_file.write_text("\n".join(f"line {i}" for i in range(30)) + "\n")
+    target_file.write_text("\n".join(f"line {index}" for index in range(30)) + "\n")
     post_payload = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(target_file)}})
     monkeypatch.setattr("sys.stdin", io.StringIO(post_payload))
 
@@ -405,21 +433,25 @@ def test_resuming_a_crashed_animation_lands_back_on_its_own_tab_first(
     monkeypatch.setenv("TMUX_PANE", origin_pane)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    follower_pane_id = next(
+        candidate_pane
+        for candidate_pane in _pane_ids(tmux_session)
+        if candidate_pane != origin_pane
+    )
     window_id = _window_id(origin_pane)
 
-    a_file = tmp_path / "a.py"
-    b_file = tmp_path / "b.py"
-    a_file.write_text("print('a')\n")
-    b_file.write_text("print('b')\n")
+    first_file = tmp_path / "a.py"
+    second_file = tmp_path / "b.py"
+    first_file.write_text("print('a')\n")
+    second_file.write_text("print('b')\n")
 
-    write_a = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(a_file)}})
-    monkeypatch.setattr("sys.stdin", io.StringIO(write_a))
+    write_first = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(first_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(write_first))
     assert cli.main(["hook", "post"]) == 0
     assert wait_until(lambda: "print('a')" in _capture(follower_pane_id), timeout=10.0)
 
-    write_b = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(b_file)}})
-    monkeypatch.setattr("sys.stdin", io.StringIO(write_b))
+    write_second = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(second_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(write_second))
     assert cli.main(["hook", "post"]) == 0
     assert wait_until(lambda: "print('b')" in _capture(follower_pane_id), timeout=10.0)
     # b.py's tab is active now — exactly where a real crash mid-edit of it
@@ -430,8 +462,8 @@ def test_resuming_a_crashed_animation_lands_back_on_its_own_tab_first(
     # writes the file in full before the hook's animation even starts. The
     # resume's relock now does a `:silent! e!` disk sync, so leaving the
     # disk at the pre-edit content here would revert the buffer's typing.
-    b_file.write_text("print('b')\nresumed line\n")
-    control.save_pending_apply_edit(window_id, ops, 0.0, file_path=str(b_file))
+    second_file.write_text("print('b')\nresumed line\n")
+    control.save_pending_apply_edit(window_id, ops, 0.0, file_path=str(second_file))
     assert control.animating_state(window_id) is None  # no live owner: a true crash
 
     # The user, unaware anything is pending, flips over to a.py's tab.
@@ -449,7 +481,7 @@ def test_resuming_a_crashed_animation_lands_back_on_its_own_tab_first(
     assert control.has_pending_animation(window_id) is False
 
     # a.py's on-disk content, never touched by the resumed edit, is intact.
-    assert a_file.read_text() == "print('a')\n"
+    assert first_file.read_text() == "print('a')\n"
 
 
 # The edit under test produces two replace ops (lines 3 and 16); each op's
@@ -473,11 +505,15 @@ def test_pause_persists_state_and_resume_finishes_the_edit(
     monkeypatch.setenv("TMUX_PANE", origin_pane)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    follower_pane_id = next(
+        candidate_pane
+        for candidate_pane in _pane_ids(tmux_session)
+        if candidate_pane != origin_pane
+    )
     window_id = _window_id(origin_pane)
 
     target_file = tmp_path / "edit.txt"
-    before_lines = [f"line {i}" for i in range(20)]
+    before_lines = [f"line {index}" for index in range(20)]
     target_file.write_text("\n".join(before_lines) + "\n")
 
     # First view: treated as fresh regardless of hook_pre, since the
@@ -510,7 +546,9 @@ def test_pause_persists_state_and_resume_finishes_the_edit(
     # poll) delivers the resume; the hook only returns once fully done.
     calls = {"count": 0}
 
-    def _pause_then_resume(window_id_arg: str, base_dir: Path | None = None) -> str | None:
+    def _pause_then_resume(
+        window_id_argument: str, base_directory: Path | None = None
+    ) -> str | None:
         calls["count"] += 1
         if calls["count"] in (pause_at_check, pause_at_check + 1):
             return "pause"
@@ -553,21 +591,25 @@ def test_live_pause_resume_renavigates_to_the_animating_files_tab(
     monkeypatch.setenv("TMUX_PANE", origin_pane)
     assert cli.main(["start", "--speed", "lento"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    follower_pane_id = next(
+        candidate_pane
+        for candidate_pane in _pane_ids(tmux_session)
+        if candidate_pane != origin_pane
+    )
     window_id = _window_id(origin_pane)
 
-    a_file = tmp_path / "a.py"
-    b_file = tmp_path / "b.py"
-    a_file.write_text("print('a')\n")
-    b_file.write_text("\n".join(f"line {i}" for i in range(15)) + "\n")
+    first_file = tmp_path / "a.py"
+    second_file = tmp_path / "b.py"
+    first_file.write_text("print('a')\n")
+    second_file.write_text("\n".join(f"line {index}" for index in range(15)) + "\n")
 
-    write_a = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(a_file)}})
-    monkeypatch.setattr("sys.stdin", io.StringIO(write_a))
+    write_first = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(first_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(write_first))
     assert cli.main(["hook", "post"]) == 0
     assert wait_until(lambda: "print('a')" in _capture(follower_pane_id), timeout=10.0)
 
-    write_b = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(b_file)}})
-    monkeypatch.setattr("sys.stdin", io.StringIO(write_b))
+    write_second = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(second_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(write_second))
 
     # The first pause is forced deterministically, right at the boundary
     # between line 0 and line 1 (4 signal checks: line 0's opener, text,
@@ -581,11 +623,11 @@ def test_live_pause_resume_renavigates_to_the_animating_files_tab(
     real_check_signal = control.check_signal
     calls = {"n": 0}
 
-    def _check(window_id_arg: str, base_dir: object = None) -> str | None:
+    def _check(window_id_argument: str, base_directory: object = None) -> str | None:
         calls["n"] += 1
         if calls["n"] == 4:
             return "pause"
-        return real_check_signal(window_id_arg, base_dir)  # type: ignore[arg-type]
+        return real_check_signal(window_id_argument, base_directory)  # type: ignore[arg-type]
 
     monkeypatch.setattr(control, "check_signal", _check)
 
@@ -606,7 +648,7 @@ def test_live_pause_resume_renavigates_to_the_animating_files_tab(
 
     assert wait_until(lambda: "line 14" in _capture(follower_pane_id), timeout=15.0)
     rows = [line.rstrip() for line in _capture(follower_pane_id).splitlines()]
-    expected = [f"line {i}" for i in range(15)]
+    expected = [f"line {index}" for index in range(15)]
     anchor = rows.index("line 0")
     assert rows[anchor : anchor + len(expected)] == expected
     assert control.has_pending_animation(window_id) is False
@@ -617,7 +659,7 @@ def test_live_pause_resume_renavigates_to_the_animating_files_tab(
     follower_pane.send_text(f":call writefile([expand('%')], '{marker_file}')")
     follower_pane.send_key("Enter")
     assert wait_until(lambda: marker_file.exists() and marker_file.read_text().strip(), timeout=5.0)
-    assert marker_file.read_text().strip() == str(b_file)
+    assert marker_file.read_text().strip() == str(second_file)
 
 
 def test_registered_keybinding_command_pauses_via_run_shell(
@@ -718,14 +760,18 @@ def test_apply_edit_validates_a_file_with_pre_session_content(
     # what matters here is that the pane ends up with the exact post-edit
     # content, not which internal path got it there.
     target_file = tmp_path / "pre_session.txt"
-    before_lines = [f"line {i}" for i in range(1, 9)]
+    before_lines = [f"line {index}" for index in range(1, 9)]
     target_file.write_text("\n".join(before_lines) + "\n")
 
     origin_pane = _pane_ids(tmux_session)[0]
     monkeypatch.setenv("TMUX_PANE", origin_pane)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    follower_pane_id = next(
+        candidate_pane
+        for candidate_pane in _pane_ids(tmux_session)
+        if candidate_pane != origin_pane
+    )
 
     pre_payload = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(target_file)}})
     monkeypatch.setattr("sys.stdin", io.StringIO(pre_payload))
@@ -754,7 +800,11 @@ def test_three_consecutive_edit_rounds_produce_exact_content_each_time(
     monkeypatch.setenv("TMUX_PANE", origin_pane)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    follower_pane_id = next(
+        candidate_pane
+        for candidate_pane in _pane_ids(tmux_session)
+        if candidate_pane != origin_pane
+    )
 
     target_file = tmp_path / "rounds.txt"
     target_file.write_text("alpha\nbeta\ngamma\ndelta\nepsilon\n")
@@ -803,23 +853,27 @@ def test_edit_after_read_navigation_reuses_the_tab(
     monkeypatch.setenv("TMUX_PANE", origin_pane)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    follower_pane_id = next(
+        candidate_pane
+        for candidate_pane in _pane_ids(tmux_session)
+        if candidate_pane != origin_pane
+    )
     follower_pane = TmuxPane(pane_id=follower_pane_id)
 
     # A first file occupies the initial (renamed-in-place) tab, so the Read
     # below is guaranteed to open A in a genuinely new tab rather than
     # reusing the follower's still-empty start screen.
-    b_file = tmp_path / "b.py"
-    b_file.write_text("print('b')\n")
-    write_b = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(b_file)}})
-    monkeypatch.setattr("sys.stdin", io.StringIO(write_b))
+    second_file = tmp_path / "b.py"
+    second_file.write_text("print('b')\n")
+    write_second = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(second_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(write_second))
     assert cli.main(["hook", "post"]) == 0
     assert wait_until(lambda: "print('b')" in _capture(follower_pane_id), timeout=10.0)
 
-    a_file = tmp_path / "a.txt"
+    first_file = tmp_path / "a.txt"
     before_lines = ["first line", "second line", "third line"]
-    a_file.write_text("\n".join(before_lines) + "\n")
-    read_payload = json.dumps({"tool_name": "Read", "tool_input": {"file_path": str(a_file)}})
+    first_file.write_text("\n".join(before_lines) + "\n")
+    read_payload = json.dumps({"tool_name": "Read", "tool_input": {"file_path": str(first_file)}})
     monkeypatch.setattr("sys.stdin", io.StringIO(read_payload))
     assert cli.main(["hook", "post"]) == 0
     assert wait_until(lambda: "first line" in _capture(follower_pane_id), timeout=5.0)
@@ -836,13 +890,13 @@ def test_edit_after_read_navigation_reuses_the_tab(
     # tab plus A's = 2. (The edit below must then NOT grow this further.)
     assert tab_count_after_read == "2"
 
-    pre_payload = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(a_file)}})
+    pre_payload = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(first_file)}})
     monkeypatch.setattr("sys.stdin", io.StringIO(pre_payload))
     assert cli.main(["hook", "pre"]) == 0
 
     after_lines = ["first line", "EDITED second line", "third line"]
-    a_file.write_text("\n".join(after_lines) + "\n")
-    post_payload = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(a_file)}})
+    first_file.write_text("\n".join(after_lines) + "\n")
+    post_payload = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(first_file)}})
     monkeypatch.setattr("sys.stdin", io.StringIO(post_payload))
     assert cli.main(["hook", "post"]) == 0
 
@@ -875,40 +929,44 @@ def test_edit_of_pre_existing_file_in_a_non_active_tab(
     monkeypatch.setenv("TMUX_PANE", origin_pane)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    follower_pane_id = next(
+        candidate_pane
+        for candidate_pane in _pane_ids(tmux_session)
+        if candidate_pane != origin_pane
+    )
     follower_pane = TmuxPane(pane_id=follower_pane_id)
 
-    a_file = tmp_path / "a.txt"
-    b_file = tmp_path / "b.txt"
-    a_before_lines = ["a line 1", "a line 2", "a line 3", "a line 4"]
-    a_file.write_text("\n".join(a_before_lines) + "\n")
-    b_file.write_text("b line 1\nb line 2\nb line 3\n")
+    first_file = tmp_path / "a.txt"
+    second_file = tmp_path / "b.txt"
+    first_before_lines = ["a line 1", "a line 2", "a line 3", "a line 4"]
+    first_file.write_text("\n".join(first_before_lines) + "\n")
+    second_file.write_text("b line 1\nb line 2\nb line 3\n")
 
-    write_a = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(a_file)}})
-    monkeypatch.setattr("sys.stdin", io.StringIO(write_a))
+    write_first = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(first_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(write_first))
     assert cli.main(["hook", "post"]) == 0
     assert wait_until(lambda: "a line 4" in _capture(follower_pane_id), timeout=10.0)
 
-    write_b = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(b_file)}})
-    monkeypatch.setattr("sys.stdin", io.StringIO(write_b))
+    write_second = json.dumps({"tool_name": "Write", "tool_input": {"file_path": str(second_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(write_second))
     assert cli.main(["hook", "post"]) == 0
     assert wait_until(lambda: "b line 3" in _capture(follower_pane_id), timeout=10.0)
     # b.txt's tab is active now — the "non-active tab" setup for editing a.
 
-    pre_a = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(a_file)}})
-    monkeypatch.setattr("sys.stdin", io.StringIO(pre_a))
+    pre_first = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(first_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(pre_first))
     assert cli.main(["hook", "pre"]) == 0
 
-    a_after_lines = ["a line 1", "REPLACED two", "REPLACED three", "a line 4"]
-    a_file.write_text("\n".join(a_after_lines) + "\n")
-    post_a = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(a_file)}})
-    monkeypatch.setattr("sys.stdin", io.StringIO(post_a))
+    first_after_lines = ["a line 1", "REPLACED two", "REPLACED three", "a line 4"]
+    first_file.write_text("\n".join(first_after_lines) + "\n")
+    post_first = json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(first_file)}})
+    monkeypatch.setattr("sys.stdin", io.StringIO(post_first))
     assert cli.main(["hook", "post"]) == 0
 
     assert wait_until(lambda: "REPLACED three" in _capture(follower_pane_id), timeout=10.0)
     rows = [line.rstrip() for line in _capture(follower_pane_id).splitlines()]
     anchor = rows.index("a line 1")
-    assert rows[anchor : anchor + len(a_after_lines)] == a_after_lines
+    assert rows[anchor : anchor + len(first_after_lines)] == first_after_lines
 
     active_buffer_marker = tmp_path / "active_buffer.txt"
     follower_pane.send_text(f":call writefile([expand('%')], '{active_buffer_marker}')")
@@ -917,7 +975,7 @@ def test_edit_of_pre_existing_file_in_a_non_active_tab(
         lambda: active_buffer_marker.exists() and active_buffer_marker.read_text().strip(),
         timeout=5.0,
     )
-    assert active_buffer_marker.read_text().strip() == str(a_file)
+    assert active_buffer_marker.read_text().strip() == str(first_file)
 
 
 def test_auto_open_adopts_a_pre_existing_vim_pane(
@@ -932,7 +990,11 @@ def test_auto_open_adopts_a_pre_existing_vim_pane(
     origin_pane = _pane_ids(tmux_session)[0]
     subprocess.run(["tmux", "split-window", "-h", "-t", origin_pane, "vim"], check=True)
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    vim_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    vim_pane_id = next(
+        candidate_pane
+        for candidate_pane in _pane_ids(tmux_session)
+        if candidate_pane != origin_pane
+    )
     assert wait_until(lambda: _pane_command(vim_pane_id) == "vim", timeout=5.0)
 
     config_path = tmp_path / "config.json"
@@ -984,7 +1046,11 @@ def test_preamble_survives_a_pending_hit_enter_prompt_with_hostile_ctrl_n(
     monkeypatch.setenv("TMUX_PANE", origin_pane)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    follower_pane_id = next(p for p in _pane_ids(tmux_session) if p != origin_pane)
+    follower_pane_id = next(
+        candidate_pane
+        for candidate_pane in _pane_ids(tmux_session)
+        if candidate_pane != origin_pane
+    )
 
     target = tmp_path / "victim.py"
     target.write_text("print('one')\nprint('two')\n")
@@ -1011,7 +1077,7 @@ def test_preamble_survives_a_pending_hit_enter_prompt_with_hostile_ctrl_n(
 
     def _settled() -> bool:
         rows = _capture(follower_pane_id).splitlines()
-        return "print('three')" in rows or any("print('three')" in r for r in rows)
+        return "print('three')" in rows or any("print('three')" in row for row in rows)
 
     assert wait_until(_settled, timeout=5.0)
     rows = _capture(follower_pane_id).splitlines()
@@ -1110,7 +1176,9 @@ def test_second_writer_tints_the_follower_border(
     monkeypatch.setenv("TMUX_PANE", origin)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    follower = next(p for p in _pane_ids(tmux_session) if p != origin)
+    follower = next(
+        candidate_pane for candidate_pane in _pane_ids(tmux_session) if candidate_pane != origin
+    )
 
     target = tmp_path / "f.txt"
     target.write_text("hello\n")
@@ -1155,7 +1223,9 @@ def test_stop_clears_the_window_border_status_left_by_the_cue(
     monkeypatch.setenv("TMUX_PANE", origin)
     assert cli.main(["start"]) == 0
     assert wait_until(lambda: len(_pane_ids(tmux_session)) == 2)
-    follower = next(p for p in _pane_ids(tmux_session) if p != origin)
+    follower = next(
+        candidate_pane for candidate_pane in _pane_ids(tmux_session) if candidate_pane != origin
+    )
 
     target = tmp_path / "f.txt"
     target.write_text("hello\n")

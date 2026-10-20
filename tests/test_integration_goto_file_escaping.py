@@ -105,7 +105,9 @@ def test_goto_file_lands_on_the_exact_path_and_reuses_its_tab(
     follower.ensure_showing(str(target))
     tabs, current, buffers = _landing(follower_pane, dump, wait_until)
     assert os.path.realpath(current) == want, f"landed on {current!r}, buffers {buffers}"
-    assert [b for b in buffers if os.path.realpath(b) == want] == [current]
+    assert [buffer_name for buffer_name in buffers if os.path.realpath(buffer_name) == want] == [
+        current
+    ]
 
     follower.ensure_showing(str(other))
     follower.ensure_showing(str(target))
