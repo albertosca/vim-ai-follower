@@ -2361,6 +2361,54 @@ def test_a_typing_stop_that_records_no_release_says_so(
     assert "locks stay on no file it read (no release could be recorded" in lines[0], lines
 
 
+@pytest.mark.parametrize(
+    ("marked", "failure", "logged"),
+    [
+        (True, None, "when it finishes, and its tabs stay open"),
+        (False, None, "(no release could be recorded for a hook that dies first)"),
+        (None, OSError("ps vanished"), "(no release could be recorded for a hook that dies first)"),
+    ],
+    ids=["marked", "no-vim", "raised"],
+)
+def test_stop_during_a_running_adopted_animation_leaves_the_release_to_the_hook(
+    marked: bool | None, failure: Exception | None, logged: str
+) -> None:
+    # Sweep-4: the hook's own insert mode read as the user typing, and the
+    # release's keys landed between its paced keys. Nothing is sent and the
+    # mode is not even read: the hook's last line gives the claims back.
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        return_value=MagicMock(returncode=0, stdout="%7 vim\n"),
+    ):
+        state.FollowerState.set(
+            "@1", "tmux", "%7", origin="%1", adopted=True, server_pid=MOCK_SERVER_PID
+        )
+    with (
+        patch(
+            "vim_ai_follower.tmux.subprocess.run",
+            side_effect=make_mock_tmux_run(pane_id="%7", other_panes=("%1",)),
+        ) as run,
+        patch("vim_ai_follower.control.animating_state", return_value="running"),
+        patch("vim_ai_follower.backends.tmux_vim.typing_mode") as read,
+        patch(
+            "vim_ai_follower.backends.tmux_vim.mark_release_pending",
+            return_value=marked,
+            side_effect=failure,
+        ) as mark,
+    ):
+        assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
+    read.assert_not_called()
+    mark.assert_called_once_with("%7")
+    sends = [
+        recorded_call.args[0]
+        for recorded_call in run.call_args_list
+        if recorded_call.args[0][:2] == ["tmux", "send-keys"]
+    ]
+    assert sends == []
+    lines = [line for line in _hook_log().splitlines() if "being animated by a hook" in line]
+    assert len(lines) == 1 and logged in lines[0], _hook_log()
+
+
 def test_stop_of_an_adopted_vim_gives_every_claim_back_before_its_evictions() -> None:
     with patch(
         "vim_ai_follower.tmux.subprocess.run",

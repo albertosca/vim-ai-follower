@@ -472,6 +472,9 @@ def _tear_down_tmux(existing: FollowerState, window_id: str) -> None:
         # a "release pending" mark for that Vim makes the next contact with it
         # while it is not typing (a later hook, or another stop) give them
         # back first (TmuxVimFollower._define).
+        if control.animating_state(window_id) == "running":
+            _defer_to_the_running_hook(existing)
+            return
         try:
             typing = tmux_vim.typing_mode(existing.target)
         except Exception as error:  # never raised by stop; unknown sends nothing
@@ -506,6 +509,26 @@ def _tear_down_tmux(existing: FollowerState, window_id: str) -> None:
             )
         return
     _teardown_step("closing the follower pane", functools.partial(follower.stop, dedicated=True))
+
+
+def _defer_to_the_running_hook(existing: FollowerState) -> None:
+    """A hook is animating an edit into this adopted Vim (sweep-4): its own
+    insert mode read as the user typing, and the release's keys landed
+    between its paced keys. So nothing is sent: a "release pending" mark is
+    left, and the hook's last line to the Vim, once it finds its state gone,
+    gives the claims back and takes the mark (TmuxVimFollower._release_if_
+    stopped); a hook that dies first leaves it for the next contact. The
+    follower's tabs stay open."""
+    try:
+        pending = tmux_vim.mark_release_pending(existing.target)
+    except Exception:  # never raised by stop
+        pending = False
+    hooks.logger.warning(
+        "stop: Vim in %s is being animated by a hook; nothing was sent to it, so the hook "
+        "gives the follower's locks back when it finishes%s, and its tabs stay open",
+        existing.target,
+        "" if pending else " (no release could be recorded for a hook that dies first)",
+    )
 
 
 def _tear_down_nvim(existing: FollowerState, session: Session) -> None:

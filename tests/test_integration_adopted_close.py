@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 from test_integration_same_file import _keys, _tmux, _user_vim
 
-from vim_ai_follower import commands, hooks
+from vim_ai_follower import commands, control, hooks
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.diff import compute_edit_script
 from vim_ai_follower.state import FollowerState
@@ -401,6 +401,9 @@ def test_letting_go_after_an_edit_gives_the_user_their_own_buffer_back(
         if step == "edit":
             mine.write_text(AFTER)
             follower.apply_edit(str(mine), compute_edit_script(BEFORE, AFTER), BEFORE)
+            # The driver marks the window animating and only the hook clears
+            # it; a live "running" marker makes `stop` leave the Vim to it.
+            control.clear_animating(window_id)
             FollowerState.update(window_id, open_files=(str(mine),))
         elif step == "read":
             follower.ensure_showing(str(mine))

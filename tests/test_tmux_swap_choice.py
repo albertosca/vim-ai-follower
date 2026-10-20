@@ -58,6 +58,7 @@ from unittest.mock import MagicMock, patch
 
 from helpers import call_spelled, case_folds, resolve_typed_paths, typed_path, vim_function
 
+from vim_ai_follower import state
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower, _vim_functions
 
 _GROUP = "vim_ai_follower_swap"
@@ -192,7 +193,8 @@ def test_ensure_showings_reload_carries_the_same_scoped_answer() -> None:
     reload is guarded exactly like the drop: hook registered before the
     `edit`, torn down in `finally`, never `silent!` (which would hide a
     dialog behind a blank screen), and a dirty buffer is skipped."""
-    follower = TmuxVimFollower(pane_id="%2")
+    state.FollowerState.set("@1", "tmux", "%2", adopted=False, server_pid=None)
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.ensure_showing("/tmp/f.py")
     reloads = [text for text in _sent_text(run) if "'reload'" in text]

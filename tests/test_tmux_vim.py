@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -10,6 +11,7 @@ from helpers import (
     define_line,
     goto_spelled,
     landed_line,
+    make_mock_tmux_run,
     rename_spelled,
     resolve_typed_paths,
     typed_path,
@@ -18,6 +20,7 @@ from helpers import (
 from helpers import register_fake_follower as _register_fake_follower
 
 from vim_ai_follower import cache, config, control, state
+from vim_ai_follower import commands as commands_module
 from vim_ai_follower.animate import AnimationResult
 from vim_ai_follower.backends import NavigationFailed, get_follower, tmux_vim
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower, _case_folds
@@ -80,6 +83,14 @@ def _restore() -> str:
     return call_spelled("restore_readonly", 2, _READONLY_TOKEN)
 
 
+def _prove_dedicated() -> None:
+    """The state a dedicated `start` writes for the follower these tests
+    build (window @1, pane %2): without one the backend fails CLOSED and
+    keeps the adopted bookkeeping, since nothing proves the Vim is not the
+    user's own (see TmuxVimFollower._is_adopted)."""
+    state.FollowerState.set("@1", "tmux", "%2", adopted=False, server_pid=None)
+
+
 def test_is_alive_true_when_vim_is_running_in_pane() -> None:
     follower = TmuxVimFollower(pane_id="%2")
     fake_result = MagicMock(stdout="%1 zsh\n%2 vim\n")
@@ -122,6 +133,7 @@ def test_apply_edit_unlocks_the_buffer_only_for_the_animation(tmp_path: Path) ->
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
+        _prove_dedicated()
         result = follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
     commands = _sent_commands(run)
     # goto_file's defensive preamble runs first: normal mode, the functions
@@ -165,6 +177,7 @@ def test_apply_edit_skips_relock_when_interrupted(tmp_path: Path) -> None:
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
     ):
+        _prove_dedicated()
         result = follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
     commands = _sent_commands(run)
     assert result.outcome == "interrupted"
@@ -200,6 +213,7 @@ def test_apply_edit_relocks_after_pause_and_resume(tmp_path: Path) -> None:
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", side_effect=_pause_then_resume),
     ):
+        _prove_dedicated()
         result = follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
     commands = _sent_commands(run)
     assert result.outcome == "completed"
@@ -247,6 +261,7 @@ def test_apply_edit_relocks_with_a_silent_disk_sync(tmp_path: Path) -> None:
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
+        _prove_dedicated()
         follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
     commands = _sent_commands(run)
     assert commands[-2:] == [(_RELOCK_SYNCED, True), ("Enter", False)]
@@ -259,6 +274,7 @@ def test_show_fresh_relocks_with_a_silent_disk_sync(tmp_path: Path) -> None:
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
+        _prove_dedicated()
         follower.show_fresh("/tmp/f.txt", "a\nb\n")
     commands = _sent_commands(run)
     assert commands[-2:] == [(_RELOCK_READONLY_SYNCED, True), ("Enter", False)]
@@ -271,6 +287,7 @@ def test_interrupted_animation_never_sends_a_disk_sync_reload(tmp_path: Path) ->
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
     ):
+        _prove_dedicated()
         result = follower.show_fresh("/tmp/f.txt", "a\nb\n")
     commands = _sent_commands(run)
     assert result.outcome == "interrupted"
@@ -316,6 +333,7 @@ def test_show_fresh_renames_in_place_and_reads_the_file_only_on_the_rename_line(
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
+        _prove_dedicated()
         result = follower.show_fresh("/tmp/f.txt", "a\nb\n")
     commands = _sent_commands(run)
     # _normal_mode sends two prompt-proof Escapes first
@@ -364,6 +382,7 @@ def test_show_fresh_with_empty_content_still_wipes_and_relocks(tmp_path: Path) -
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
+        _prove_dedicated()
         result = follower.show_fresh("/tmp/f.txt", "")
     commands = _sent_commands(run)
     assert commands == [
@@ -467,6 +486,7 @@ def test_resume_apply_edit_replays_remaining_ops_and_relocks(tmp_path: Path) -> 
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
+        _prove_dedicated()
         result = follower.resume(pending)
     commands = _sent_commands(run)
     # No file to navigate to, so the functions the relock calls are made
@@ -490,6 +510,7 @@ def test_resume_show_fresh_replays_remaining_lines_and_relocks_with_readonly(
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
+        _prove_dedicated()
         result = follower.resume(pending)
     commands = _sent_commands(run)
     assert commands[0] == (_DEFINE, True)
@@ -527,6 +548,7 @@ def test_resume_without_reload_relocks_without_reading_disk(
         patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
+        _prove_dedicated()
         result = follower.resume(pending, reload=False)
     commands = _sent_commands(run)
     assert commands[-2:] == [(relock, True), ("Enter", False)]
@@ -618,6 +640,7 @@ def test_rewrite_buffer_types_the_whole_partial_and_leaves_an_s_for_the_replay(
 
 
 def test_hand_over_unlocks_the_buffer() -> None:
+    _prove_dedicated()
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.hand_over()
@@ -650,7 +673,8 @@ def test_goto_file_sends_normal_mode_then_tab_drop() -> None:
 
 
 def test_ensure_showing_navigates_by_tab_drop_and_locks() -> None:
-    follower = TmuxVimFollower(pane_id="%2")
+    _prove_dedicated()
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.ensure_showing("/tmp/a.py")
     commands = _sent_commands(run)
@@ -673,8 +697,44 @@ def test_ensure_showing_navigates_by_tab_drop_and_locks() -> None:
     assert (":e /tmp/a.py", True) not in commands
 
 
+def test_a_read_whose_state_a_stop_cleared_gives_its_lock_back() -> None:
+    # A `stop` cleared the state while the Read was sending: its lock is
+    # sent with the adopted claim, and the release right after gives it back
+    # (the stop's own release ran before the lock was sent).
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        follower.ensure_showing("/tmp/a.py")
+    texts = [text for text, literal in _sent_commands(run) if literal]
+    assert texts[-2:] == [
+        ":setlocal readonly nomodifiable | let b:vaf_ro_ours = 1" + _CLEARED,
+        call_spelled("release_all"),
+    ]
+
+
+def test_an_animation_whose_state_a_stop_cleared_gives_its_relock_back(tmp_path: Path) -> None:
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch("vim_ai_follower.cache.CACHE_DIRECTORY", tmp_path),
+        patch("vim_ai_follower.control.check_signal", return_value=None),
+    ):
+        follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"))
+    texts = [text for text, literal in _sent_commands(run) if literal]
+    assert texts[-1] == call_spelled("release_all")
+    assert any("restore_readonly" in text for text in texts[-3:-1])
+
+
+def test_a_hook_that_still_finds_its_state_sends_no_release() -> None:
+    _prove_dedicated()
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        follower.ensure_showing("/tmp/a.py")
+    assert call_spelled("release_all") not in [text for text, _ in _sent_commands(run)]
+
+
 def test_reload_and_relock_navigates_then_reloads_and_relocks() -> None:
-    follower = TmuxVimFollower(pane_id="%2")
+    _prove_dedicated()
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.reload_and_relock("/tmp/a.py")
     commands = _sent_commands(run)
@@ -701,7 +761,8 @@ def test_reload_from_disk_discards_under_the_swap_answer_and_locks() -> None:
     # only follower text, so `edit!` discards it; the same scoped (E)dit-anyway
     # answer as every disk-reading line, and `silent` against a 49-column
     # hit-enter prompt.
-    follower = TmuxVimFollower(pane_id="%2")
+    _prove_dedicated()
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.reload_from_disk("/tmp/a.py")
     assert _sent_commands(run) == [
@@ -806,6 +867,7 @@ def test_close_tab_hands_an_apostrophe_in_the_path_over_intact() -> None:
 def test_show_fresh_in_new_tab_opens_tab_before_renaming(
     sent: list[str], follower: TmuxVimFollower
 ) -> None:
+    _prove_dedicated()
     follower.show_fresh("/tmp/new.py", "line1\n", in_new_tab=True)
     wipe = sent.index("text::" + _wipe("/tmp/new.py"))
     # The tab opens on the rename's guarded line, only once the path read
@@ -816,6 +878,7 @@ def test_show_fresh_in_new_tab_opens_tab_before_renaming(
 
 
 def test_show_fresh_default_renames_in_place(sent: list[str], follower: TmuxVimFollower) -> None:
+    _prove_dedicated()
     follower.show_fresh("/tmp/new.py", "line1\n")
     assert "text::" + _rename("/tmp/new.py") in sent
     assert not any("tabnew" in entry for entry in sent)
@@ -824,20 +887,20 @@ def test_show_fresh_default_renames_in_place(sent: list[str], follower: TmuxVimF
 _SWAP_BACK_ON = call_spelled("swap_back_on")
 
 
-def test_show_fresh_without_a_window_never_turns_swap_back_on() -> None:
+def test_show_fresh_without_a_window_turns_swap_back_on() -> None:
     # No window id means no FollowerState to read, so the follower cannot
-    # prove it is driving the user's own editor: it keeps the dedicated
-    # behaviour (swap stays off), even when some state for the pane says
-    # adopted.
+    # prove it is a dedicated one: it fails closed and gives the buffer swap
+    # back as in the user's own editor, even when some state for the pane
+    # says dedicated.
     _register_fake_follower("@1", "%2")
-    state.FollowerState.update("@1", adopted=True)
+    state.FollowerState.update("@1", adopted=False)
     follower = TmuxVimFollower(pane_id="%2")
     with (
         patch("vim_ai_follower.tmux.subprocess.run") as run,
         patch("vim_ai_follower.control.check_signal", return_value=None),
     ):
         follower.show_fresh("/tmp/f.txt", "a\n")
-    assert (_SWAP_BACK_ON, True) not in _sent_commands(run)
+    assert (_SWAP_BACK_ON, True) in _sent_commands(run)
 
 
 @pytest.mark.parametrize("adopted", [True, False], ids=["adopted", "dedicated"])
@@ -998,6 +1061,52 @@ def test_a_stop_during_the_post_pause_goto_leaves_no_remainder_behind() -> None:
         pytest.raises(NavigationFailed),
     ):
         follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"), "a\n")
+    assert control.has_pending_animation("@1") is False
+
+
+def test_a_stop_after_the_post_pause_gotos_state_check_keeps_no_remainder() -> None:
+    """Final review of sweep 3, (a): the stop lands AFTER the failed goto's
+    handler found the state still there. cmd_stop clears the state before it
+    discards the pending, and the remainder was saved before the check, so
+    the stop's own discard takes it."""
+    _register_fake_follower("@1", "%2")
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
+    checks = {"count": 0}
+
+    def pause_then_resume(window_id: str, base_directory: Path | None = None) -> str | None:
+        checks["count"] += 1
+        return "pause" if checks["count"] in (1, 2) else None
+
+    landings = {"count": 0}
+
+    def failed_after_the_first(*_args: object) -> None:
+        landings["count"] += 1
+        if landings["count"] > 1:
+            raise NavigationFailed("did not land")
+
+    real_owned_state = state.owned_state
+    seen: list[bool] = []
+
+    def stop_after_the_check(*arguments: Any, **keywords: Any) -> state.FollowerState | None:
+        found = real_owned_state(*arguments, **keywords)
+        if landings["count"] > 1 and not seen:
+            seen.append(found is not None and control.has_pending_animation("@1"))
+            assert commands_module.cmd_stop({"TMUX_PANE": "%1"}) == 0
+        return found
+
+    with (
+        patch(
+            "vim_ai_follower.tmux.subprocess.run",
+            side_effect=make_mock_tmux_run(pane_id="%2", other_panes=("%1",)),
+        ),
+        patch("vim_ai_follower.control.check_signal", side_effect=pause_then_resume),
+        patch.object(tmux_vim, "_await_landing", side_effect=failed_after_the_first),
+        patch.object(tmux_vim, "owned_state", side_effect=stop_after_the_check),
+        patch("vim_ai_follower.commands._tear_down_tmux"),
+        pytest.raises(NavigationFailed),
+    ):
+        follower.apply_edit("/tmp/f.txt", compute_edit_script("a\n", "b\n"), "a\n")
+    assert seen == [True]  # the check saw the state, with the remainder saved
     assert control.has_pending_animation("@1") is False
 
 

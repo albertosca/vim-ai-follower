@@ -2420,13 +2420,14 @@ class TmuxVimFollower:
         return config.pace_seconds_for(state.speed)
 
     def _is_adopted(self) -> bool:
-        """The Vim is the user's own editor (FollowerState, as on nvim). Only
-        swap handling asks: this backend locks an adopted Vim like a
-        dedicated one (see CLAUDE.md)."""
-        if not self.window_id:
-            return False
-        state = FollowerState.read(self.window_id)
-        return state is not None and state.adopted
+        """Whether to keep the adopted bookkeeping: the claim marks a stop's
+        s:release_all gives back, the user's readonly restore, and swap back
+        on in show_fresh. This backend locks an adopted Vim like a dedicated
+        one (see CLAUDE.md); what differs is that bookkeeping. Fails CLOSED,
+        as _is_dedicated: with the state gone mid-hook (a racing `stop`) a
+        lock sent as the dedicated one claimed nothing, and the user's buffer
+        stayed readonly with nothing to release it (final review of sweep 3)."""
+        return not self._is_dedicated()
 
     def _is_dedicated(self) -> bool:
         """Positively a dedicated follower: a readable FollowerState that names
@@ -2489,6 +2490,22 @@ class TmuxVimFollower:
         self._normal_mode(pane)
         if not self._define(pane):
             pane.send_line(_call_line("release_all"))
+
+    def _release_if_stopped(self, pane: TmuxPane) -> None:
+        """Give back what this hook just claimed when a `claude-follow stop`
+        cleared the state while it was sending: the stop releases the claims
+        it finds, then a Read's lock or an animation's relock sent after that
+        locked the user's buffer with nothing left to release it (final
+        review of sweep 3). The stop clears the state before it releases, so
+        a hook that still finds its state here was locked before any release
+        the stop sends. Also consumes a release the stop left pending for
+        this Vim (it does not type into a running animation), since this is
+        the hook's last line to it."""
+        if not self.window_id or owned_state(self.window_id, "tmux", self.pane_id) is not None:
+            return
+        _take_release_mark(self.pane_id)
+        pane.send_line(_call_line("release_all"))
+        logger.info("gave back the locks sent to Vim %s after a stop", self.pane_id)
 
     def _send_reload_and_lock(self, pane: TmuxPane, *, discard: bool) -> None:
         """A disk re-read (s:reload, which resets 'readonly'), then the
@@ -2653,6 +2670,7 @@ class TmuxVimFollower:
         # the buffer: our own animation is indistinguishable from real
         # typing at the tty level, so it must explicitly unlock around itself.
         self._send_reload_and_lock(pane, discard=False)
+        self._release_if_stopped(pane)
 
     def probe_buffer(self, file_path: str, content: str) -> BufferProbe:
         """What Vim's buffer for file_path holds relative to `content`, the
@@ -2810,6 +2828,7 @@ class TmuxVimFollower:
             # After the relock, whose `:e!` resets 'readonly' (and on an
             # interrupt, which hands over the buffer without one).
             self._send_restore_readonly(pane)
+        self._release_if_stopped(pane)
         return result
 
     def apply_edit(
