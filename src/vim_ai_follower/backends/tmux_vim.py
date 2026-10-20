@@ -1284,7 +1284,11 @@ endif
 # the same name shape, set from anywhere else, stays — even from a file named
 # `vaf-<that hash>.vim` in another directory (review of 1e558d0:
 # `VafFollower_123abc()` was deleted; SHRINK review). So does a dispatcher of
-# another cache directory, which only a hook on that directory calls. A
+# another cache directory, which only a hook on that directory calls, while
+# its script is still there; once that script is gone (swept: no hook on that
+# directory used it for _SCRIPT_MAX_AGE_SECONDS), a dispatcher set from a
+# `claude-vim-follower/vaf-<its hash>.vim` that no longer exists is deleted
+# too (sweep 5; a hook on that directory would write the script again). A
 # dispatcher with no "Last set from" file (pasted by hand) is never deleted:
 # by then it is the user's code. No variable records the names, so nothing
 # new is left in the user's namespace.
@@ -1342,11 +1346,14 @@ for s:name in getcompletion('VafFollower_', 'function')
   endif
   let s:origin = get(split(execute('verbose function ' . s:name), "\n"), 1, '')
   let s:ours = fnamemodify(resolve(s:dir . 'vaf-' . s:name[12:] . '.vim'), ':~')
+  let s:other = matchstr(s:origin, '\s\zs[~/].\{-}/claude-vim-follower/vaf-'
+        \ . s:name[12:] . '\.vim\ze\( \|$\)')
   if s:origin =~# '\V\s' . escape(s:ours, '\') . '\( \|\$\)'
+        \ || (s:other !=# '' && !filereadable(fnamemodify(s:other, ':p')))
     exe 'delfunction ' . s:name
   endif
 endfor
-unlet! s:name s:origin s:ours
+unlet! s:name s:origin s:ours s:other
 let &cpo = s:cpo_save
 unlet s:cpo_save
 endif

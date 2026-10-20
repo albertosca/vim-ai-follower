@@ -894,6 +894,55 @@ def test_a_real_vim_drops_the_dispatchers_of_other_versions_and_nothing_else(
 
 @pytest.mark.integration
 @pytest.mark.parametrize("vim_home", ["hooks", "another"])
+@pytest.mark.parametrize("script_left", [False, True], ids=["script-gone", "script-there"])
+def test_a_dispatcher_from_another_cache_dirs_missing_script_is_deleted(
+    home_cache: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    vim_home: str,
+    script_left: bool,
+) -> None:
+    """SHRINK review: a dispatcher set from ANOTHER cache directory (another
+    HOME spelling) was never deleted by this one's cleanup, only by a hook on
+    that directory, which may never run again. It now goes when its script
+    is gone (swept): only a follower cache directory's `vaf-<its hash>.vim`
+    that no longer exists. One whose script is still there may still be
+    called by a hook on that directory, and stays."""
+    other_cache = tmp_path / "a-home" / ".cache" / cache.CACHE_DIRECTORY.name
+    other_cache.mkdir(parents=True)
+    with monkeypatch.context() as patched:
+        patched.setattr(cache, "CACHE_DIRECTORY", other_cache)
+        other_name, other_text = tmux_vim._vim_functions()
+        other_script = tmux_vim._script_file(other_name, other_text)
+    cache.CACHE_DIRECTORY.mkdir(parents=True)
+    name, text = tmux_vim._vim_functions()
+    assert other_name != name
+    script = tmux_vim._script_file(name, text)
+    out = tmp_path / "out.txt"
+    other_home = tmp_path / "other-home"
+    other_home.mkdir()
+    gone = "" if script_left else f"call delete('{other_script}')"
+    subprocess.run(
+        [
+            "vim", "-Nu", "NONE", "-i", "NONE", "-es",
+            "-c", f"source {other_script}",
+            "-c", f"let g:before = exists('*{other_name}') . ''",
+            "-c", gone,
+            "-c", f"source {script}",
+            "-c", f"call writefile([g:before, exists('*{other_name}') . '',"
+            f" exists('*{name}') . ''], '{out}')",
+            "-c", "qa!",
+        ],
+        check=True,
+        timeout=30,
+        stdin=subprocess.DEVNULL,
+        env={**os.environ, "HOME": str(home_cache if vim_home == "hooks" else other_home)},
+    )  # fmt: skip
+    assert out.read_text().splitlines() == ["1", "1" if script_left else "0", "1"]
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("vim_home", ["hooks", "another"])
 def test_a_real_vim_keeps_a_function_whose_path_only_contains_the_scripts(
     home_cache: Path, tmp_path: Path, vim_home: str
 ) -> None:
