@@ -615,3 +615,69 @@ def test_a_corrupt_pending_file_is_dropped_once_with_a_log(
     warnings = [record for record in caplog.records if record.levelname == "WARNING"]
     assert len(warnings) == 1
     assert "unreadable pending animation" in warnings[0].getMessage()
+
+
+# --- withdrawable correction popups (sweep-5 T22, final m2) -----------------
+
+
+def test_each_correction_token_is_new_and_exists(tmp_path: Path) -> None:
+    first = control.new_correction_token("@1", tmp_path)
+    second = control.new_correction_token("@1", tmp_path)
+    assert first != second
+    assert first.exists() and second.exists()
+    assert first.name.startswith("@1.correction-")
+
+
+def test_withdrawing_cancels_every_scheduled_correction_of_that_window(tmp_path: Path) -> None:
+    mine = [control.new_correction_token("@1", tmp_path) for _ in range(2)]
+    other = control.new_correction_token("@2", tmp_path)
+    control.withdraw_corrections("@1", tmp_path)
+    assert [token.exists() for token in mine] == [False, False]
+    assert other.exists()
+
+
+def test_withdrawing_a_showing_correction_waits_until_it_closed(tmp_path: Path) -> None:
+    import threading
+    import time
+
+    token = control.new_correction_token("@1", tmp_path)
+    showing = token.with_name(token.name + ".showing")
+    closed = token.with_name(token.name + ".closed")
+    token.rename(showing)  # the scheduled shell claimed it and opened the popup
+
+    def popup() -> None:
+        while showing.exists():
+            time.sleep(0.01)
+        time.sleep(0.1)
+        closed.touch()
+
+    thread = threading.Thread(target=popup)
+    thread.start()
+    started = time.monotonic()
+    control.withdraw_corrections("@1", tmp_path)
+    elapsed = time.monotonic() - started
+    thread.join()
+    assert elapsed >= 0.1
+    assert not showing.exists() and not closed.exists()
+
+
+def test_withdrawing_gives_up_on_a_correction_that_never_closes(tmp_path: Path) -> None:
+    import time
+
+    token = control.new_correction_token("@1", tmp_path)
+    token.rename(token.with_name(token.name + ".showing"))
+    started = time.monotonic()
+    control.withdraw_corrections("@1", tmp_path, wait_seconds=0.2)
+    assert 0.2 <= time.monotonic() - started < 1.0
+
+
+def test_a_new_token_sweeps_correction_leftovers_older_than_a_minute(tmp_path: Path) -> None:
+    old = [tmp_path / f"@1.correction-9-aaaaaa{suffix}" for suffix in ("", ".showing", ".closed")]
+    for path in old:
+        path.touch()
+        os.utime(path, (1, 1))
+    fresh = tmp_path / "@1.correction-9-bbbbbb.closed"
+    fresh.touch()
+    control.new_correction_token("@1", tmp_path)
+    assert [path.exists() for path in old] == [False, False, False]
+    assert fresh.exists()

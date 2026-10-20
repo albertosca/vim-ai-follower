@@ -168,9 +168,61 @@ def test_on_tmux_a_drained_press_is_answered_once_its_own_popup_closed(
         speed="normal",
     )
     hooks._drain_unconsumed_signals("@1", current, True)
-    assert popups == [(("%2", message), {"after_seconds": tmux.POPUP_SECONDS + 0.1})]
+    [(arguments, keyword_arguments)] = popups
+    assert isinstance(keyword_arguments, dict)
+    assert arguments == ("%2", message)
+    assert keyword_arguments["after_seconds"] == tmux.POPUP_SECONDS + 0.1
+    token = keyword_arguments["withdraw_token"]
+    assert isinstance(token, Path) and token.exists()  # a newer press can withdraw it
     hooks._drain_unconsumed_signals("@1", current, False)  # nothing left: no second answer
     assert len(popups) == 1
+
+
+def test_a_p_and_an_s_drained_together_show_one_correction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Sweep-5 T22: two corrections opened at the same moment, and tmux showed
+    only the first, so "Nothing to interrupt" was lost behind "Nothing to
+    pause". One popup says both."""
+    control.mark_animating("@1")
+    control.request_pause("@1")
+    control.request_interrupt("@1")
+    popups: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        hooks,
+        "show_popup",
+        lambda *arguments, **keyword_arguments: popups.append(arguments),
+    )
+    current = state.FollowerState(
+        backend="tmux",
+        target="%2",
+        current_file=None,
+        origin="%1",
+        on_failure="log",
+        speed="normal",
+    )
+    hooks._drain_unconsumed_signals("@1", current, True)
+    assert popups == [("%2", "Nothing to pause or interrupt")]
+
+
+def test_on_nvim_a_p_and_an_s_drained_together_take_both_cues_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    control.mark_animating("@1")
+    control.request_pause("@1")
+    control.request_interrupt("@1")
+    surface = MagicMock()
+    monkeypatch.setattr(hooks, "status_surface_for", lambda _current: surface)
+    current = state.FollowerState(
+        backend="nvim",
+        target="/tmp/n.sock",
+        current_file=None,
+        origin="%1",
+        on_failure="log",
+        speed="normal",
+    )
+    hooks._drain_unconsumed_signals("@1", current, True)
+    assert surface.method_calls == [call.retire_state("Interrupted"), call.retire_state("Paused")]
 
 
 def test_a_drained_press_outside_tmux_or_without_a_follower_shows_nothing(

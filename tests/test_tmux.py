@@ -6,6 +6,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -391,3 +392,58 @@ def test_a_delayed_popup_does_not_hold_the_callers_pipe(tmp_path: Path) -> None:
     elapsed = time.monotonic() - started
     assert child.returncode == 0, child.stderr
     assert elapsed < 2.0, f"end-of-output came {elapsed:.2f} s after the start"
+
+
+def _fake_tmux(directory: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A `tmux` on PATH that logs each call and runs the popup's command the
+    way a popup would, so a delayed popup's whole shell runs for real."""
+    log = directory / "tmux.log"
+    script = directory / "tmux"
+    script.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$FAKE_TMUX_LOG"\nfor last; do :; done\nsh -c "$last"\n'
+    )
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{directory}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_TMUX_LOG", str(log))
+    return log
+
+
+def _wait_for(condition: Any, seconds: float = 5.0) -> bool:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(0.02)
+    return False
+
+
+def test_a_withdrawn_delayed_popup_never_opens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Sweep-5 T22 (final m2): a correction scheduled for later must not open
+    once a newer press withdrew it, or it covers that press's own popup."""
+    log = _fake_tmux(tmp_path, monkeypatch)
+    token = tmp_path / "@1.correction-1-abc"
+    token.touch()
+    tmux.show_popup("%2", "Nothing to pause", after_seconds=0.3, withdraw_token=token)
+    token.unlink()
+    assert not _wait_for(log.exists, seconds=1.0)
+
+
+def test_a_delayed_popup_whose_token_stands_opens_and_closes_when_withdrawn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log = _fake_tmux(tmp_path, monkeypatch)
+    token = tmp_path / "@1.correction-1-abc"
+    token.touch()
+    tmux.show_popup("%2", "Nothing to pause", after_seconds=0.1, withdraw_token=token)
+    showing = token.with_name(token.name + ".showing")
+    closed = token.with_name(token.name + ".closed")
+    assert _wait_for(showing.exists)
+    assert _wait_for(log.exists)
+    assert "Nothing to pause" in log.read_text()
+    assert not closed.exists()  # its 1.5 s are not over
+    showing.unlink()
+    started = time.monotonic()
+    assert _wait_for(closed.exists, seconds=1.0)
+    assert time.monotonic() - started < tmux.POPUP_SECONDS / 2

@@ -766,9 +766,7 @@ def test_on_tmux_a_pause_whose_hook_finished_meanwhile_is_answered_after_its_pop
     assert len(commands_run) == 2
     assert "Paused" in commands_run[0][-1]
     assert commands_run[1][:2] == ["sh", "-c"]
-    assert commands_run[1][2].startswith(
-        f"sleep {tmux.POPUP_SECONDS + 0.1}; exec tmux display-popup"
-    )
+    assert commands_run[1][2].startswith(f"sleep {tmux.POPUP_SECONDS + 0.1}; mv -- ")
     assert "Nothing to pause" in commands_run[1][2]
 
 
@@ -885,3 +883,28 @@ def test_a_busy_refusal_with_no_live_follower_shows_nothing(
     surface_for.assert_not_called()
     assert "another animation owns this window" in capsys.readouterr().err
     assert control.has_pending_animation("@1") is True
+
+
+@pytest.mark.parametrize("command", ["pause", "interrupt"])
+def test_a_late_correction_never_masks_a_real_paused(command: str) -> None:
+    """Sweep-5 T22 (final m2): a drain's "Nothing to pause" correction opens
+    1.6 s after the drain, for 1.5 s, and tmux drops a popup opened while
+    another is up, so the next hook's real "Paused" was lost behind it. The
+    press withdraws every correction scheduled for its window first."""
+    _register_fake_follower("@1", "%2")
+    scheduled = control.new_correction_token("@1")
+    control.mark_animating("@1")
+    withdrawn_before_the_popup: list[bool] = []
+
+    def popen(spawned: list[str], **_kwargs: object) -> MagicMock:
+        if spawned[:2] == ["tmux", "display-popup"]:
+            withdrawn_before_the_popup.append(not scheduled.exists())
+        return MagicMock()
+
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
+        patch("vim_ai_follower.tmux.subprocess.Popen", side_effect=popen),
+    ):
+        entry = commands.cmd_pause if command == "pause" else commands.cmd_interrupt
+        assert entry({"TMUX_PANE": "%1"}) == 0
+    assert withdrawn_before_the_popup == [True]

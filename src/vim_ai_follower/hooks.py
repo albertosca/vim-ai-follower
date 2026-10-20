@@ -1928,21 +1928,37 @@ _NOTHING_TO = {
 
 
 def retract_signal_feedback(
-    current: FollowerState | None, in_tmux: bool, signal: Literal["pause", "interrupt"]
+    current: FollowerState | None,
+    in_tmux: bool,
+    signals: Sequence[Literal["pause", "interrupt"]],
+    window_id: str,
 ) -> None:
-    """Undo the feedback a P or S press gave for a hook that then exited
-    without obeying it (final M6, PF round 2). nvim: take its cue off the
-    status float — "Paused" otherwise stays until something overwrites it.
-    tmux: say so in a popup, once the press's own popup has closed (tmux
-    drops a popup opened while another is up). Best-effort, like any cue."""
-    if current is None:
+    """Undo the feedback the P and S presses in `signals` gave for a hook that
+    then exited without obeying them (final M6, PF round 2). nvim: take their
+    cues off the status float — "Paused" otherwise stays until something
+    overwrites it. tmux: say so in ONE popup (two opened at once, and tmux
+    showed only the first: sweep-5 T22), once the presses' own popup has
+    closed (tmux drops a popup opened while another is up), withdrawable by
+    the next press (control.withdraw_corrections), which it would otherwise
+    cover. Best-effort, like any cue."""
+    if current is None or not signals:
         return
-    message, cue = _NOTHING_TO[signal]
     if current.backend == "nvim":
-        status_surface_for(current).retire_state(cue)
+        surface = status_surface_for(current)
+        for signal in signals:
+            surface.retire_state(_NOTHING_TO[signal][1])
         return
     if in_tmux:
-        show_popup(current.target, message, after_seconds=POPUP_SECONDS + 0.1)
+        if len(set(signals)) > 1:
+            message = "Nothing to pause or interrupt"
+        else:
+            message = _NOTHING_TO[signals[0]][0]
+        show_popup(
+            current.target,
+            message,
+            after_seconds=POPUP_SECONDS + 0.1,
+            withdraw_token=control.new_correction_token(window_id),
+        )
 
 
 _MAXIMUM_DRAINED_SIGNALS = 8
@@ -1972,12 +1988,13 @@ def _drain_unconsumed_signals(window_id: str, current: FollowerState | None, in_
             if signal is None:
                 break
             drained.append(signal)
-        # Retracted after every file is gone, once per kind.
-        for signal in dict.fromkeys(drained):
+        # Retracted after every file is gone, once per kind, in one answer.
+        kinds = list(dict.fromkeys(drained))
+        for signal in kinds:
             logger.info(
                 "a %s press reached this hook after its last animation: none obeyed", signal
             )
-            retract_signal_feedback(current, in_tmux, signal)
+        retract_signal_feedback(current, in_tmux, kinds, window_id)
     except Exception:
         logger.exception("could not drain the signals left for this hook")
 

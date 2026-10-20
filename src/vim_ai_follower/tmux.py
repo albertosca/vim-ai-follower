@@ -7,6 +7,7 @@ import re
 import shlex
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 
 def literal_argument(text: str) -> str:
@@ -239,9 +240,16 @@ class TmuxWindow:
 
 # How long a popup stays up.
 POPUP_SECONDS = 1.5
+_WITHDRAW_POLL_SECONDS = 0.05
 
 
-def show_popup(pane_id: str, message: str, after_seconds: float = 0.0) -> None:
+def show_popup(
+    pane_id: str,
+    message: str,
+    after_seconds: float = 0.0,
+    *,
+    withdraw_token: Path | None = None,
+) -> None:
     """Brief, self-dismissing popup over a pane. Fire-and-forget via Popen:
     display-popup -E only exits when the popup closes, and callers must not
     stall (nor delay a resume replay) waiting for it.
@@ -249,7 +257,30 @@ def show_popup(pane_id: str, message: str, after_seconds: float = 0.0) -> None:
     after_seconds > 0 opens it that much later, from a detached shell. tmux
     shows one popup per client and drops a second one silently, with exit 0
     (measured on tmux 3.7c): a popup that must follow another one still up —
-    a correction of a "Paused" just shown — has to wait for it to close."""
+    a correction of a "Paused" just shown — has to wait for it to close.
+
+    `withdraw_token` (with a delay) makes the popup withdrawable, so a late
+    correction never covers a newer press's own popup (sweep-5 T22): the
+    shell opens it only if the token still exists, claiming it by renaming it
+    to `<token>.showing`, the popup closes early once that file is removed,
+    and `<token>.closed` says it is gone (control.withdraw_corrections)."""
+    if withdraw_token is not None and after_seconds > 0:
+        showing = shlex.quote(f"{withdraw_token}.showing")
+        closed = shlex.quote(f"{withdraw_token}.closed")
+        ticks = round(POPUP_SECONDS / _WITHDRAW_POLL_SECONDS)
+        body = (
+            f"echo {shlex.quote(message)}; tick=0; "
+            f"while [ $tick -lt {ticks} ] && [ -e {showing} ]; "
+            f"do sleep {_WITHDRAW_POLL_SECONDS}; tick=$((tick+1)); done"
+        )
+        popup = ["tmux", "display-popup", "-t", pane_id, "-E", "-w", "30", "-h", "3", body]
+        script = (
+            f"sleep {after_seconds}; "
+            f"mv -- {shlex.quote(str(withdraw_token))} {showing} 2>/dev/null || exit 0; "
+            f"{shlex.join(popup)}; rm -f -- {showing}; : > {closed}"
+        )
+        _spawn_detached(["sh", "-c", script])
+        return
     command = [
         "tmux",
         "display-popup",
@@ -264,6 +295,10 @@ def show_popup(pane_id: str, message: str, after_seconds: float = 0.0) -> None:
     ]
     if after_seconds > 0:
         command = ["sh", "-c", f"sleep {after_seconds}; exec {shlex.join(command)}"]
+    _spawn_detached(command)
+
+
+def _spawn_detached(command: list[str]) -> None:
     # Detached: the child lives as long as the popup (plus any delay), and a
     # hook's caller waiting for end-of-output must not wait for it too.
     subprocess.Popen(

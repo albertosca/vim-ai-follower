@@ -906,6 +906,9 @@ def cmd_pause(environment: dict[str, str]) -> int:
         print(_unresolvable_pane(environment), file=sys.stderr)
         return 1
     current = FollowerState.get(session.window_id)
+    # A drain's late "Nothing to …" correction must not cover this
+    # press's own popup: tmux drops a popup opened over another (T22).
+    control.withdraw_corrections(session.window_id)
 
     state = control.animating_state(session.window_id)
     if state in ("running", "paused") and not control.request_pause(session.window_id):
@@ -919,7 +922,7 @@ def cmd_pause(environment: dict[str, str]) -> int:
             # The hook's last animation returned meanwhile: its exit drain
             # consumes this P and takes "Paused" back — possibly before this
             # press put it up, leaving it for nobody to take down.
-            hooks.retract_signal_feedback(current, session.in_tmux, "pause")
+            hooks.retract_signal_feedback(current, session.in_tmux, ["pause"], session.window_id)
         return 0
     if state == "paused":
         # The toggle: the waiting hook consumes the same signal as a resume.
@@ -1016,6 +1019,9 @@ def cmd_interrupt(environment: dict[str, str]) -> int:
         print(_unresolvable_pane(environment), file=sys.stderr)
         return 1
     current = FollowerState.get(session.window_id)
+    # A drain's late "Nothing to …" correction must not cover this
+    # press's own popup: tmux drops a popup opened over another (T22).
+    control.withdraw_corrections(session.window_id)
 
     state = control.animating_state(session.window_id)
     if state in ("running", "paused", "handoff") and not control.request_interrupt(

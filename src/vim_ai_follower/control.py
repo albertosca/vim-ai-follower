@@ -9,8 +9,10 @@ import glob
 import json
 import logging
 import os
+import secrets
+import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -137,6 +139,55 @@ def request_pause(window_id: str, base_directory: Path | None = None) -> bool:
 
 def request_interrupt(window_id: str, base_directory: Path | None = None) -> bool:
     return _request(_interrupt_path(window_id, base_directory), window_id, base_directory)
+
+
+_CORRECTION_LEFTOVER_SECONDS = 60.0
+_CORRECTION_CLOSE_POLL_SECONDS = 0.02
+
+
+def _correction_files(window_id: str, base_directory: Path | None) -> list[Path]:
+    # Escaped: a window id is an identity string, never a pattern.
+    return list(_control_dir(base_directory).glob(f"{glob.escape(window_id)}.correction-*"))
+
+
+def new_correction_token(window_id: str, base_directory: Path | None = None) -> Path:
+    """A new token for a correction popup scheduled for later (tmux.show_popup
+    `withdraw_token`): the popup opens only while the token exists. Files a
+    killed popup shell left, older than a minute, go first: a popup lasts
+    1.5 s."""
+    directory = _control_dir(base_directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    cut_off = time.time() - _CORRECTION_LEFTOVER_SECONDS
+    for leftover in _correction_files(window_id, base_directory):
+        with suppress(FileNotFoundError):
+            if leftover.stat().st_mtime < cut_off:
+                leftover.unlink()
+    token = directory / f"{window_id}.correction-{os.getpid()}-{secrets.token_hex(3)}"
+    token.touch()
+    return token
+
+
+def withdraw_corrections(
+    window_id: str, base_directory: Path | None = None, wait_seconds: float = 1.0
+) -> None:
+    """Before a P or S press shows its own popup: a correction a drain
+    scheduled for this window must not cover it (tmux drops a popup opened
+    while another is up). One not open yet is cancelled (its token removed);
+    one open is told to close (its `.showing` removed) and waited for, at
+    most `wait_seconds`, until its shell says it closed."""
+    waiting: list[Path] = []
+    for path in _correction_files(window_id, base_directory):
+        if path.name.endswith(".closed"):
+            continue
+        with suppress(FileNotFoundError):
+            path.unlink()
+            if path.name.endswith(".showing"):
+                waiting.append(path.with_name(path.name.removesuffix(".showing") + ".closed"))
+    deadline = time.monotonic() + wait_seconds
+    for closed in waiting:
+        while not closed.exists() and time.monotonic() < deadline:
+            time.sleep(_CORRECTION_CLOSE_POLL_SECONDS)
+        closed.unlink(missing_ok=True)
 
 
 def has_pending_animation(window_id: str, base_directory: Path | None = None) -> bool:
