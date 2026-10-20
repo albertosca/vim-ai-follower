@@ -49,7 +49,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, Any
+from typing import IO, Any, Literal
 
 import pynvim
 
@@ -139,6 +139,74 @@ def _fingerprint_real_home() -> _RealHomeFingerprint:
         else frozenset(),
         tmux_sessions=_default_socket_sessions(),
     )
+
+
+def _parent_pids() -> dict[int, int] | None:
+    """Every process's parent, from one bounded `ps`; None when it fails."""
+    try:
+        result = subprocess.run(
+            ["ps", "-A", "-o", "pid=,ppid="],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    parents: dict[int, int] = {}
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[0].isdigit() and fields[1].isdigit():
+            parents[int(fields[0])] = int(fields[1])
+    return parents
+
+
+def _recorded_pid(path: Path) -> int | None:
+    """The pid a follower file records: an `.animating` marker holds
+    `<pid> <state>`, a `.pane` state the tmux `server_pid` it was written
+    under. Anything else, or an unreadable file, records none."""
+    try:
+        text = path.read_text()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if path.suffix == ".animating":
+        first = text.split(maxsplit=1)[0] if text.split() else ""
+        return int(first) if first.isdigit() else None
+    if path.suffix == ".pane":
+        try:
+            recorded = json.loads(text).get("server_pid")
+        except (ValueError, AttributeError):
+            return None
+        return recorded if isinstance(recorded, int) and recorded > 0 else None
+    return None
+
+
+def _entry_window(name: str) -> str:
+    """`@35.animating` -> `@35`; `nvim-@35.sock` -> `@35`."""
+    stem = name.removeprefix("nvim-")
+    return stem.split(".", 1)[0]
+
+
+def _entry_owner(
+    path: Path,
+    test_roots: frozenset[int],
+    parents: dict[int, int] | None,
+) -> Literal["test", "outside", "unknown"]:
+    """Who wrote one new entry of the real cache dir. "outside" only for a
+    pid that is alive and whose parent chain reaches none of `test_roots`
+    (pytest itself, the test's private tmux server); a dead or missing pid,
+    or a failed `ps`, is "unknown" and is blamed like "test"."""
+    pid = _recorded_pid(path)
+    if pid is None or parents is None or pid not in parents:
+        return "unknown"
+    seen: set[int] = set()
+    current: int | None = pid
+    while current is not None and current > 1 and current not in seen:
+        if current in test_roots:
+            return "test"
+        seen.add(current)
+        current = parents.get(current)
+    return "outside"
 
 
 def _default_socket_sessions() -> frozenset[str]:
@@ -243,8 +311,9 @@ class E2EFollower:
         leaked = _files_mentioning(REAL_CACHE_DIRECTORY, self.token)
         assert not leaked, f"the isolated HOME's token leaked into the real cache: {leaked}"
         new_entries = after.cache_entries - self._before.cache_entries
-        assert not new_entries, (
-            f"new follower state appeared in {REAL_CACHE_DIRECTORY}: {sorted(new_entries)}"
+        blamed = self._blamed_entries(new_entries)
+        assert not blamed, (
+            f"new follower state appeared in {REAL_CACHE_DIRECTORY}: {sorted(blamed)}"
         )
         assert after.config_exists == self._before.config_exists, (
             f"{REAL_CONFIG_PATH} existence changed during the test"
@@ -265,6 +334,55 @@ class E2EFollower:
             "the developer's own tmux server had sessions before this test and has "
             f"none now — it was killed. Had: {sorted(self._before.tmux_sessions)}"
         )
+
+    def window_ids(self) -> set[str]:
+        """The window ids this world's private tmux server holds, plus its
+        own window; just its own window when the server does not answer."""
+        window_ids = {self.window_id}
+        if "TMUX_TMPDIR" not in self.env or "TMUX" in self.env:
+            return window_ids  # never ask a server that may be the developer's
+        with suppress(OSError, subprocess.SubprocessError):
+            result = subprocess.run(
+                ["tmux", "-f", "/dev/null", "list-windows", "-a", "-F", "#{window_id}"],
+                env=self.env,
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=True,
+            )
+            window_ids.update(result.stdout.split())
+        return window_ids
+
+    def _blamed_entries(self, new_entries: frozenset[str]) -> set[str]:
+        """The new real-cache entries this test may have written. An entry
+        in one of the test's own windows is always blamed; otherwise a
+        window is the developer's when any of its `.animating`/`.pane` files
+        records a live pid outside the suite (N-A: their live follower
+        wrote `@35.animating` mid-suite), and all its entries go with it."""
+        if not new_entries:
+            return set()
+        test_windows = self.window_ids()
+        roots = {os.getpid()}
+        if self.server_pid is not None:
+            roots.add(self.server_pid)
+        test_roots = frozenset(roots)
+        parents = _parent_pids()
+        outside_windows = {
+            _entry_window(path.name)
+            for path in REAL_CACHE_DIRECTORY.iterdir()
+            if path.suffix in (".animating", ".pane")
+            and _entry_owner(path, test_roots, parents) == "outside"
+        }
+        blamed: set[str] = set()
+        for name in new_entries:
+            window = _entry_window(name)
+            if window in test_windows or window not in outside_windows:
+                blamed.add(name)
+            else:
+                print(
+                    f"note: {REAL_CACHE_DIRECTORY / name} belongs to a follower outside the suite"
+                )
+        return blamed
 
     # ------------------------------------------------------------------ CLI
 
