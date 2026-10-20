@@ -7,8 +7,8 @@ timeout (~10 s) and every hook after it waited again. After one unanswered
 landing the pane is in a backoff (`unanswered-<pane>` in the cache
 directory): for _UNANSWERED_BACKOFF_SECONDS a navigation raises
 NavigationFailed at once and a probe is "unknown" at once, with no key sent
-into the pane. A tab close is still sent, without waiting: it gives back
-what the follower holds. A landing after it removes the mark.
+into the pane. A tab close sends nothing either: it is recorded and runs
+at the next contact after the backoff. A landing removes the mark.
 
 Isolation: tmux_session unsets TMUX and points TMUX_TMPDIR at a private
 directory; the socket is asserted before any in-process backend call. The
@@ -121,8 +121,8 @@ def test_one_unanswered_landing_backs_the_pane_off_until_a_landing(
             follower.show_fresh(str(target), "a = 1\n")
         assert time.monotonic() - started < 0.5
     assert counter.count == 0
-    # A close is the exception: it gives back what the follower holds, so
-    # it is sent, but never waited for (the tests below).
+    # A close sends nothing either: it is recorded for the next contact
+    # (the tests below).
     assert marker.exists()
 
     # Vim is free again (and has run the keys the first call queued); the
@@ -135,49 +135,78 @@ def test_one_unanswered_landing_backs_the_pane_off_until_a_landing(
     assert not marker.exists()
 
 
+def _expire(marker: Path) -> None:
+    expired = time.time() - tmux_vim._UNANSWERED_BACKOFF_SECONDS - 1
+    os.utime(marker, (expired, expired))
+
+
 @pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
-def test_a_close_during_the_backoff_still_gives_the_buffer_back(
+def test_a_close_during_the_backoff_sends_nothing_and_releases_later(
     adopted: bool, tmux_session: str, tmp_path: Path, wait_until: Callable[..., bool]
 ) -> None:
-    """Review of T6+T7, I1 (and m4): close_tab used to skip during the
-    backoff. In an adopted Vim, `claude-follow stop` then left the user's
-    own buffer readonly and nomodifiable for good (the state is cleared
-    right after); in a dedicated one each eviction left a tab no
-    bookkeeping knew. Now the call is sent anyway, without waiting."""
+    """Sweep 5 (Alberto's answer A4 = A): a close during the backoff was sent
+    at once, and a Vim blocked in `:!cmd` handed its keys to the command's
+    stdin. Now it sends nothing: the eviction (and, adopted, the release of
+    the follower's claims) is recorded for this Vim and runs at the next
+    contact once the backoff is over (review of T6+T7, I1 and m4 still
+    hold: the buffer is given back and the tab closed, only later)."""
     target = tmp_path / "t.py"
     target.write_text("a = 1\n")
     other = tmp_path / "other.txt"
     other.write_text("other\n")
+    swallowed = tmp_path / "stdin.txt"
     pane = vim_pane(tmux_session, tmp_path, wait_until, f"edit {other}")
     reader = follower(pane, adopted=adopted)
     reader.ensure_showing(str(target))  # Claude's Read: a tab, locked
+    assert state(pane, tmp_path, wait_until)[0] == "0"
     marker = tmux_vim._unanswered_path(pane)
     marker.touch()  # one landing went unanswered moments ago
+    _keys(pane, "-l", "--", f":!cat > {swallowed}")
+    _keys(pane, "Enter")
+    assert wait_until(swallowed.exists, timeout=5.0)
 
     started = time.monotonic()
     reader.close_tab(str(target))
-    assert time.monotonic() - started < 0.5  # sent, never waited for
+    assert time.monotonic() - started < 0.5
+    time.sleep(0.5)
+    assert swallowed.read_bytes() == b"", swallowed.read_bytes()
 
-    # The Read's tab was the follower's own (`:tab drop`): wiped, either way.
+    _keys(pane, "C-d")  # cat ends; Vim waits for Enter
+    _keys(pane, "Enter")
     expression = f"tabpagenr('$') . bufexists('{target}')"
+    assert state(pane, tmp_path, wait_until, expression)[2] == "21"  # still there
+    _expire(marker)
+    reader.goto_file(str(other))  # the next contact
     assert state(pane, tmp_path, wait_until, expression)[2] == "10"
-    assert marker.exists()  # nothing landed, so the backoff holds
+    assert not tmux_vim._pending_evictions_path(_vim_pid(pane)).exists()
 
 
-def test_a_stop_during_the_backoff_unlocks_the_users_own_buffer(
+def _vim_pid(pane: str) -> int:
+    vim = tmux_vim._foreground_vim(pane)
+    assert vim is not None
+    return vim.pid
+
+
+def test_a_stop_during_the_backoff_unlocks_the_users_own_buffer_at_the_next_contact(
     tmux_session: str, tmp_path: Path, wait_until: Callable[..., bool]
 ) -> None:
     """I1 as the reviewer reproduced it: the user's OWN buffer, locked by a
-    Read, released by the close `claude-follow stop` runs per open file."""
+    Read, released by the close `claude-follow stop` runs per open file —
+    now at the next contact after the backoff, not while it holds."""
     target = tmp_path / "t.py"
     target.write_text("a = 1\n")
     pane = vim_pane(tmux_session, tmp_path, wait_until, f"edit {target}")
     adopted = follower(pane, adopted=True)
     adopted.ensure_showing(str(target))
-    tmux_vim._unanswered_path(pane).touch()
+    marker = tmux_vim._unanswered_path(pane)
+    marker.touch()
 
     adopted.close_tab(str(target))
+    modifiable, *_ = state(pane, tmp_path, wait_until)
+    assert modifiable == "0"  # nothing sent yet
 
+    _expire(marker)
+    adopted.goto_file(str(target))  # the next contact: no lock of its own
     modifiable, _paste, answer, *_ = state(
         pane, tmp_path, wait_until, "&readonly . get(b:, 'vaf_ro_ours', 'x')"
     )

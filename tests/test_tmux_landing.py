@@ -258,20 +258,19 @@ def test_no_answer_backs_the_pane_off_and_the_next_calls_send_nothing(
         started = time.monotonic()
         sent, error = _run(True, call)
         assert time.monotonic() - started < 0.5, name
-        if name == "close_tab":
-            # Sent anyway, to give back what the follower holds (review of
-            # T6+T7, I1): the call alone, no define line, no verdict awaited.
-            assert error is None
-            assert len(sent) == 1 and "('evict','p2-" in sent[0], sent
-            continue
         assert sent == [], name
+        if name == "close_tab":
+            # Recorded for the next contact instead (sweep 5, A4 = A): a Vim
+            # blocked in `:!cmd` would hand the keys to its stdin.
+            assert error is None
+            continue
         if name == "probe_buffer":
             assert error is None
         else:
             assert isinstance(error, NavigationFailed), name
             assert "did not answer 0 s ago; not retrying for another 30 s" in str(error)
     assert "did not ask the follower's Vim about /tmp/t.py: the follower's Vim" in caplog.text
-    assert "closing /tmp/t.py without waiting for its verdict: the follower's Vim" in caplog.text
+    assert "did not close /tmp/t.py: the follower's Vim did not answer" in caplog.text
 
 
 def test_no_answer_explained_by_a_home_distrust_does_not_back_off() -> None:
@@ -469,3 +468,43 @@ def test_the_sweep_removes_expired_backoff_marks_of_either_naming(tmp_path: Path
     (tmp_path / "unanswered-111-3").touch()
     tmux_vim._sweep_scripts(current)
     assert sorted(path.name for path in tmp_path.glob("unanswered-*")) == ["unanswered-111-3"]
+
+
+# --- sweep 5, A4 = A: a close during the backoff waits for the next contact ---
+
+
+def test_a_close_during_the_backoff_is_recorded_and_sent_at_the_next_define() -> None:
+    tmux_vim._unanswered_path("%2").parent.mkdir(parents=True, exist_ok=True)
+    tmux_vim._unanswered_path("%2").touch()
+    with (
+        patch.object(tmux_vim, "_defer_eviction", return_value=True) as defer,
+        patch.object(tmux_vim, "mark_release_pending", return_value=True) as release,
+    ):
+        sent, error = _run(True, lambda follower: follower.close_tab("/tmp/t.py", dedicated=False))
+        assert (sent, error) == ([], None)
+        defer.assert_called_with("%2", "/tmp/t.py", dedicated=False)
+        release.assert_called_with("%2")
+        release.reset_mock()
+        sent, _error = _run(True, lambda follower: follower.close_tab("/tmp/t.py", dedicated=True))
+        assert sent == []
+        defer.assert_called_with("%2", "/tmp/t.py", dedicated=True)
+        release.assert_not_called()
+
+    tmux_vim._unanswered_path("%2").unlink()
+    deferred = [("/tmp/a.py", True), ("/tmp/b.py", False)]
+    with patch.object(tmux_vim, "_take_pending_evictions", return_value=deferred):
+        sent, _error = _run(True, ACTING["goto_file"])
+    assert "('wipe','p2-" in sent[1] and "('evict','p2-" in sent[2], sent
+    assert "'goto'" in "".join(sent[3:]), sent
+
+
+def test_a_release_during_the_backoff_is_left_for_the_next_contact(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    tmux_vim._unanswered_path("%2").parent.mkdir(parents=True, exist_ok=True)
+    tmux_vim._unanswered_path("%2").touch()
+    with patch.object(tmux_vim, "mark_release_pending", return_value=True) as release:
+        sent, _error = _run(True, lambda follower: follower.release_claims())
+    assert sent == []
+    release.assert_called_once_with("%2")
+    assert "left the release for the next contact" in caplog.text

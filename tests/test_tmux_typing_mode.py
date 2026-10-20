@@ -806,3 +806,95 @@ def test_a_blank_screen_waits_only_without_a_trusted_mode_file(
         patch("vim_ai_follower.backends.tmux_vim._runs_a_terminal_job", return_value=False),
     ):
         assert tmux_vim.typing_mode("%5") == reason
+
+
+# --- closes deferred during the landing backoff (sweep 5, A4 = A) ---------
+
+
+def _pending(pid: int, text: str, modified: float | None = None) -> Path:
+    cache.CACHE_DIRECTORY.mkdir(parents=True, exist_ok=True)
+    path = cache.CACHE_DIRECTORY / f"evict-pending-{pid}.json"
+    path.write_text(text)
+    if modified is not None:
+        os.utime(path, (modified, modified))
+    return path
+
+
+def test_deferred_closes_are_recorded_once_each_for_the_foreground_vim() -> None:
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes=_VIM_ALONE)):
+        assert tmux_vim._defer_eviction("%5", "/a.py", dedicated=False)
+        assert tmux_vim._defer_eviction("%5", "/b.py", dedicated=True)
+        assert tmux_vim._defer_eviction("%5", "/a.py", dedicated=False)
+        assert tmux_vim._take_pending_evictions("%5") == [("/a.py", False), ("/b.py", True)]
+        assert tmux_vim._take_pending_evictions("%5") == []
+    assert not list(cache.CACHE_DIRECTORY.glob("*evict-pending-*"))
+
+
+def test_no_foreground_vim_defers_nothing() -> None:
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes="")):
+        assert not tmux_vim._defer_eviction("%5", "/a.py", dedicated=False)
+    assert not list(cache.CACHE_DIRECTORY.glob("*evict-pending-*"))
+
+
+def test_a_deferred_close_that_cannot_be_written_is_none() -> None:
+    cache.CACHE_DIRECTORY.parent.mkdir(parents=True, exist_ok=True)
+    cache.CACHE_DIRECTORY.write_text("a file where the directory should be")
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes=_VIM_ALONE)):
+        assert not tmux_vim._defer_eviction("%5", "/a.py", dedicated=False)
+
+
+def test_no_deferred_close_anywhere_costs_no_process_lookup() -> None:
+    run = _world(processes=_VIM_ALONE)
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", run):
+        assert tmux_vim._take_pending_evictions("%5") == []
+    run.assert_not_called()
+
+
+def test_deferred_closes_without_a_foreground_vim_are_left() -> None:
+    record = _pending(202, '[["/a.py", false]]')
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes="")):
+        assert tmux_vim._take_pending_evictions("%5") == []
+    assert record.exists()
+
+
+def test_another_vims_deferred_closes_are_left_for_it() -> None:
+    other = _pending(303, '[["/a.py", false]]')
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes=_VIM_ALONE)):
+        assert tmux_vim._take_pending_evictions("%5") == []
+    assert other.exists()
+
+
+def test_deferred_closes_older_than_their_vim_were_a_dead_vims() -> None:
+    record = _pending(202, '[["/a.py", false]]', modified=time.time() - 60)
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes=_VIM_ALONE)):
+        assert tmux_vim._take_pending_evictions("%5") == []
+    assert not record.exists()
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["not json", '{"a": 1}', '[["/a.py"], [1, false], ["/b.py", "yes"], "x"]'],
+    ids=["garbled", "not-a-list", "bad-entries"],
+)
+def test_a_malformed_deferred_record_holds_no_close(text: str) -> None:
+    record = _pending(202, text)
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes=_VIM_ALONE)):
+        assert tmux_vim._take_pending_evictions("%5") == []
+    assert not record.exists()
+
+
+def test_a_malformed_deferred_record_is_replaced_by_the_next_close() -> None:
+    _pending(202, "not json")
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(processes=_VIM_ALONE)):
+        assert tmux_vim._defer_eviction("%5", "/a.py", dedicated=True)
+        assert tmux_vim._take_pending_evictions("%5") == [("/a.py", True)]
+
+
+def test_the_sweep_deletes_only_the_deferred_closes_of_gone_vims() -> None:
+    dead = _pending(_dead_pid(), "[]")
+    alive = _pending(os.getpid(), "[]", modified=time.time() - 10 * 86400)
+    dead_temporary = cache.CACHE_DIRECTORY / f".evict-pending-{_dead_pid()}.json.tmp"
+    dead_temporary.write_text("[]")
+    tmux_vim._sweep_scripts(cache.CACHE_DIRECTORY / "vaf-000000.vim")
+    assert not dead.exists() and not dead_temporary.exists()
+    assert alive.exists()

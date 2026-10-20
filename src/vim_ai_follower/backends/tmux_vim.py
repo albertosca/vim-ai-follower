@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import json
 import logging
 import os
 import re
@@ -1597,10 +1598,13 @@ def _sweep_scripts(current: Path) -> None:
     _sweep_mode_files(entries)
 
 
-# A Vim's mode file (_VIM_MODE) and its "release pending" mark
-# (mark_release_pending), named after its pid, and the temporaries they are
+# A Vim's mode file (_VIM_MODE), its "release pending" mark
+# (mark_release_pending) and its deferred closes (_defer_eviction), named
+# after its pid, and the temporaries they are
 # written through (left only by a rename that failed).
-_MODE_FILE_NAME = re.compile(r"\.?(?:mode|release)-([0-9]+)\.txt(?:\.tmp)?")
+_MODE_FILE_NAME = re.compile(
+    r"\.?(?:(?:mode|release)-([0-9]+)\.txt|evict-pending-([0-9]+)\.json)(?:\.tmp)?"
+)
 
 
 def _sweep_mode_files(entries: list[Path]) -> None:
@@ -1616,7 +1620,7 @@ def _sweep_mode_files(entries: list[Path]) -> None:
         match = _MODE_FILE_NAME.fullmatch(entry.name)
         if match is None:
             continue
-        pid = int(match.group(1))
+        pid = int(match.group(1) or match.group(2))
         if pid <= 0:
             # Never a Vim's; kill(0) would signal our own process group.
             continue
@@ -2249,6 +2253,78 @@ def _take_release_mark(pane_id: str) -> bool:
     return written.strip() == str(vim.pid) and modified >= vim.started - _START_SLACK_SECONDS
 
 
+def _pending_evictions_path(pid: int) -> Path:
+    return cache.CACHE_DIRECTORY / f"evict-pending-{pid}.json"
+
+
+def _defer_eviction(pane_id: str, file_path: str, *, dedicated: bool) -> bool:
+    """Record that `file_path` is to be closed in the Vim of `pane_id` at its
+    next contact (_take_pending_evictions, run by _define): close_tab during
+    the backoff sends nothing, since a Vim blocked in `:!cmd` hands every key
+    to the command's stdin (Alberto's answer A4 = A, sweep 5). Named after
+    the Vim's pid and trusted only for a Vim started before it was written,
+    like the release mark. False when the pane's Vim could not be found or
+    the record not written."""
+    vim = _foreground_vim(pane_id)
+    if vim is None:
+        return False
+    final = _pending_evictions_path(vim.pid)
+    temporary = final.with_name(f".{final.name}.tmp")
+    entries = _read_pending_evictions(final)
+    entry: list[str | bool] = [file_path, dedicated]
+    if entry not in entries:
+        entries.append(entry)
+    try:
+        final.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(json.dumps(entries), encoding="utf-8")
+        temporary.replace(final)
+    except OSError:
+        return False
+    return True
+
+
+def _read_pending_evictions(path: Path) -> list[list[str | bool]]:
+    """The [path, dedicated] pairs of a pending-evictions record; a record
+    that is missing, unreadable or not such a list holds none."""
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(loaded, list):
+        return []
+    return [
+        [entry[0], entry[1]]
+        for entry in loaded
+        if isinstance(entry, list)
+        and len(entry) == 2
+        and isinstance(entry[0], str)
+        and isinstance(entry[1], bool)
+    ]
+
+
+def _take_pending_evictions(pane_id: str) -> list[tuple[str, bool]]:
+    """The closes _defer_eviction recorded for the Vim of `pane_id`, as
+    (path, dedicated), consuming the record. One directory listing when no
+    record exists anywhere. A record older than the Vim's start was a dead
+    Vim's (a reused pid) and is deleted unused."""
+    if not any(cache.CACHE_DIRECTORY.glob("evict-pending-*.json")):  # no OSError
+        return []
+    vim = _foreground_vim(pane_id)
+    if vim is None:
+        return []
+    path = _pending_evictions_path(vim.pid)
+    try:
+        modified = path.stat().st_mtime
+    except OSError:
+        return []
+    entries = _read_pending_evictions(path)
+    with contextlib.suppress(OSError):
+        path.unlink()
+    if modified < vim.started - _START_SLACK_SECONDS:
+        return []
+    return [(str(entry[0]), bool(entry[1])) for entry in entries]
+
+
 # Vim's 'showmode' text on the bottom row, in English (a translated Vim
 # shows its own words, and reads as no typing mode here): `-- INSERT --`,
 # `-- (insert) --` (CTRL-O from insert), `-- (insert) VISUAL --`,
@@ -2558,11 +2634,18 @@ class TmuxVimFollower:
         the release concerns an earlier follower's claims, and the calls that
         follow make this one's. True when it sent that release."""
         pane.send_line(_define_line(self.pane_id))
-        if not _take_release_mark(self.pane_id):
-            return False
-        pane.send_line(_call_line("release_all"))
-        logger.info("gave back the locks a stop left pending in Vim %s", self.pane_id)
-        return True
+        released = _take_release_mark(self.pane_id)
+        if released:
+            pane.send_line(_call_line("release_all"))
+            logger.info("gave back the locks a stop left pending in Vim %s", self.pane_id)
+        for file_path, dedicated in _take_pending_evictions(self.pane_id):
+            handle = _path_handle(self.pane_id, file_path)
+            operation = "wipe" if dedicated else "evict"
+            pane.send_line(_call_line(operation, handle.name, _case_folds(file_path)))
+            logger.info(
+                "closed %s, deferred during the backoff, in Vim %s", file_path, self.pane_id
+            )
+        return released
 
     def release_claims(self) -> None:
         """Give back every claim the follower holds in this ADOPTED Vim
@@ -2570,6 +2653,11 @@ class TmuxVimFollower:
         which would otherwise forget a paused animation's readonly record,
         and the only one that gives 'paste' back (Wave A residual: a pause
         then a stop left the user's 'paste' on)."""
+        backoff = _backoff_reason(self.pane_id)
+        if backoff is not None:
+            mark_release_pending(self.pane_id)
+            logger.warning("left the release for the next contact: %s", backoff)
+            return
         pane = TmuxPane(pane_id=self.pane_id)
         self._normal_mode(pane)
         if not self._define(pane):
@@ -2699,22 +2787,32 @@ class TmuxVimFollower:
         preceded it, that pair is how the tab count climbed past max_tabs
         while the follower's own bookkeeping stayed pinned at the limit.
 
-        While the pane backs off (see _await_landing) the call is still sent,
-        with no define line (it may ask the HOME question and wait) and no
-        wait for a verdict: never blocking, and a no-op in a Vim without the
-        functions. Skipping it left an adopted Vim's own buffer locked for
-        good after `claude-follow stop`, which clears the state right after,
-        and each dedicated eviction left a tab no bookkeeping knew (review of
-        T6+T7, I1 and m4). A blocked Vim runs it once it is free.
+        While the pane backs off (see _await_landing) nothing is sent: a Vim
+        blocked in `:!cmd` hands every key to the command's stdin (sweep 5,
+        Alberto's answer A4 = A). The close is recorded instead
+        (_defer_eviction, and in an adopted Vim mark_release_pending), and
+        the next contact after the backoff runs it (_define). Skipping it
+        outright left an adopted Vim's own buffer locked for good after
+        `claude-follow stop`, which clears the state right after, and each
+        dedicated eviction left a tab no bookkeeping knew (review of T6+T7,
+        I1 and m4).
 
         `dedicated` is the caller's word for what the follower is (cmd_stop
         clears the state before it tears down); None reads the state."""
+        is_dedicated = self._is_dedicated() if dedicated is None else dedicated
         backoff = _backoff_reason(self.pane_id)
+        if backoff is not None:
+            if not is_dedicated:
+                mark_release_pending(self.pane_id)
+            if _defer_eviction(self.pane_id, file_path, dedicated=is_dedicated):
+                logger.warning("closing %s at the next contact: %s", file_path, backoff)
+            else:
+                logger.warning("did not close %s: %s", file_path, backoff)
+            return
         pane = TmuxPane(pane_id=self.pane_id)
         self._normal_mode(pane)
-        if backoff is None:
-            self._define(pane)
-        if self._is_dedicated() if dedicated is None else dedicated:
+        self._define(pane)
+        if is_dedicated:
             self._send_wipe(pane, file_path)
             return
         # The user's own Vim, or one whose state is gone (a racing `stop`:
@@ -2730,9 +2828,6 @@ class TmuxVimFollower:
         answer.unlink(missing_ok=True)
         handle = _path_handle(self.pane_id, file_path)
         pane.send_line(_call_line("evict", handle.name, _case_folds(file_path)))
-        if backoff is not None:
-            logger.warning("closing %s without waiting for its verdict: %s", file_path, backoff)
-            return
         lines = _await_answer(answer, handle.name, _PROBE_TIMEOUT_SECONDS)
         answer.unlink(missing_ok=True)
         if lines is None and _distrust_home(self.pane_id):
