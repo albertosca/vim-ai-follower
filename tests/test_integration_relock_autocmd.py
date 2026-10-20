@@ -18,7 +18,9 @@ behind eats it and the test says so.
   the `:e!` sat in a `try … finally` with no `catch`, so the exception ran the
   `finally` and then aborted the function before its `setlocal`, leaving the
   buffer modifiable with 'paste' on (BufReadPost), or empty and modifiable
-  (BufReadPre). The old bare `:silent! e! | setlocal …` locked it in both.
+  (BufReadPre). The old bare `:silent! e! | setlocal …` locked it in both,
+  and a BufReadPre throw still left it EMPTY: the relock now reads a
+  non-empty file it left empty once more, without autocommands.
 
 Isolation: tmux_session unsets TMUX and points TMUX_TMPDIR at a private
 directory; the socket is asserted before any in-process backend call."""
@@ -108,9 +110,10 @@ def state(
     ("autocmd", "expected"),
     [
         ("BufReadPost * throw 'boom'", AFTER.splitlines()),
-        # The throw comes before the read: `:e!` has already emptied the
-        # buffer. Locked empty is the safe side (nothing typed into it).
-        ("BufReadPre * throw 'boom'", [""]),
+        # The throw comes before the read, so `:e!` left the buffer empty;
+        # the relock reads the file once more without autocommands, since
+        # an empty locked buffer let a `:w!` truncate the file.
+        ("BufReadPre * throw 'boom'", AFTER.splitlines()),
         # A plain error, swallowed by `silent!` as it always was.
         ("BufReadPost * call NoSuchFunction()", AFTER.splitlines()),
     ],
@@ -133,7 +136,7 @@ def test_the_relock_locks_whatever_a_user_autocommand_does_on_its_reload(
     ops = compute_edit_script(BEFORE, AFTER)
     assert dedicated.apply_edit(str(target), ops, before=BEFORE).outcome == "completed"
 
-    assert state(pane, tmp_path, wait_until) == ["0", "0", "", *expected]
+    assert state(pane, tmp_path, wait_until, "&modified") == ["0", "0", "0", *expected]
 
 
 LONG = "".join(f"line_{number} = {number}\n" for number in range(40))

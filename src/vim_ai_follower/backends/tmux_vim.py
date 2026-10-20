@@ -475,7 +475,21 @@ function! s:relock(readonly, claim) abort
   finally
     call s:swap_answer_close()
   endtry
+  if line('$') == 1 && empty(getline(1)) && getfsize(expand('%:p')) > 0
+    call s:reread_quietly()
+  endif
   call s:lock_back(a:readonly, a:claim)
+endfunction
+
+function! s:reread_quietly() abort
+  let saved = &shortmess
+  set shortmess+=A
+  try
+    noautocmd silent! edit!
+  catch
+  finally
+    let &shortmess = saved
+  endtry
 endfunction
 """
 
