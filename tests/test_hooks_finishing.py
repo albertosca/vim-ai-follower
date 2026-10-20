@@ -31,9 +31,9 @@ def _state_at_release(monkeypatch: pytest.MonkeyPatch) -> list[str | None]:
     seen: list[str | None] = []
     real: Callable[..., None] = control.clear_animating
 
-    def release(window_id: str, base_dir: Path | None = None) -> None:
-        seen.append(control.animating_state(window_id, base_dir))
-        real(window_id, base_dir)
+    def release(window_id: str, base_directory: Path | None = None) -> None:
+        seen.append(control.animating_state(window_id, base_directory))
+        real(window_id, base_directory)
 
     monkeypatch.setattr(control, "clear_animating", release)
     return seen
@@ -47,7 +47,9 @@ def test_the_hook_marks_finishing_once_its_last_animation_returns(
     follower = _follower("absent" if outcome == "retype" else "holds")
     if outcome == "interrupted then released":
         follower.apply_edit.return_value = AnimationResult("interrupted", 0)
-        monkeypatch.setattr(hooks, "_await_user_handoff", lambda *a, **k: None)
+        monkeypatch.setattr(
+            hooks, "_await_user_handoff", lambda *arguments, **keyword_arguments: None
+        )
     seen = _state_at_release(monkeypatch)
     _run_hook(target, follower, monkeypatch)
     assert seen == ["finishing"]
@@ -129,9 +131,9 @@ def test_the_drain_marks_finishing_before_it_reads_the_signal(
     seen: list[str | None] = []
     real_check = control.check_signal
 
-    def check(window_id: str, base_dir: Path | None = None) -> str | None:
-        seen.append(control.animating_state(window_id, base_dir))
-        return real_check(window_id, base_dir)
+    def check(window_id: str, base_directory: Path | None = None) -> str | None:
+        seen.append(control.animating_state(window_id, base_directory))
+        return real_check(window_id, base_directory)
 
     monkeypatch.setattr(control, "check_signal", check)
     _run_hook(target, follower, monkeypatch)
@@ -152,7 +154,11 @@ def test_on_tmux_a_drained_press_is_answered_once_its_own_popup_closed(
     else:
         control.request_interrupt("@1")
     popups: list[tuple[object, ...]] = []
-    monkeypatch.setattr(hooks, "show_popup", lambda *args, **kwargs: popups.append((args, kwargs)))
+    monkeypatch.setattr(
+        hooks,
+        "show_popup",
+        lambda *arguments, **keyword_arguments: popups.append((arguments, keyword_arguments)),
+    )
     current = state.FollowerState(
         backend="tmux",
         target="%2",
@@ -171,7 +177,9 @@ def test_a_drained_press_outside_tmux_or_without_a_follower_shows_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     popups: list[object] = []
-    monkeypatch.setattr(hooks, "show_popup", lambda *args, **kwargs: popups.append(args))
+    monkeypatch.setattr(
+        hooks, "show_popup", lambda *arguments, **keyword_arguments: popups.append(arguments)
+    )
     tmux_state = state.FollowerState(
         backend="tmux",
         target="%2",
@@ -217,8 +225,10 @@ def test_a_press_addressed_to_a_read_is_drained_too(
 
     follower.ensure_showing.side_effect = navigate
     surface = MagicMock()
-    monkeypatch.setattr(hooks, "get_follower", lambda *args, **kwargs: follower)
-    monkeypatch.setattr(hooks, "status_surface_for", lambda *args, **kwargs: surface)
+    monkeypatch.setattr(hooks, "get_follower", lambda *arguments, **keyword_arguments: follower)
+    monkeypatch.setattr(
+        hooks, "status_surface_for", lambda *arguments, **keyword_arguments: surface
+    )
     payload: dict[str, object] = {"tool_name": "Read", "tool_input": {"file_path": str(target)}}
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()),
@@ -245,14 +255,16 @@ def test_an_interrupted_animation_reads_handoff_before_its_remainder_is_saved(
     follower = _follower("absent" if animation == "retype" else "holds")
     follower.apply_edit.return_value = AnimationResult("interrupted", 0)
     follower.show_fresh.return_value = AnimationResult("interrupted", 1)
-    monkeypatch.setattr(hooks, "_await_user_handoff", lambda *args, **kwargs: None)
+    monkeypatch.setattr(hooks, "_await_user_handoff", lambda *arguments, **keyword_arguments: None)
     seen: list[str | None] = []
     for name in ("save_pending_apply_edit", "save_pending_show_fresh"):
         real = getattr(control, name)
 
-        def save(*args: object, _real: Callable[..., None] = real, **kwargs: object) -> None:
+        def save(
+            *arguments: object, _real: Callable[..., None] = real, **keyword_arguments: object
+        ) -> None:
             seen.append(control.animating_state("@1"))
-            _real(*args, **kwargs)
+            _real(*arguments, **keyword_arguments)
 
         monkeypatch.setattr(control, name, save)
     _run_hook(target, follower, monkeypatch)
@@ -273,9 +285,9 @@ def test_an_interrupted_replay_reads_handoff_before_its_remainder_is_saved(
     seen: list[str | None] = []
     real = control.save_pending_show_fresh
 
-    def save(*args: object, **kwargs: object) -> None:
+    def save(*arguments: object, **keyword_arguments: object) -> None:
         seen.append(control.animating_state("@1"))
-        real(*args, **kwargs)  # type: ignore[arg-type]
+        real(*arguments, **keyword_arguments)  # type: ignore[arg-type]
 
     monkeypatch.setattr(control, "save_pending_show_fresh", save)
     pending = control.load_pending_animation("@1")
@@ -350,7 +362,9 @@ def test_an_interrupted_animation_hands_the_wait_the_bytes_claude_wrote(
     follower.show_fresh.return_value = AnimationResult("interrupted", 0)
     handed: list[object] = []
     monkeypatch.setattr(
-        hooks, "_await_user_handoff", lambda *a, **k: handed.append(k.get("raw_after"))
+        hooks,
+        "_await_user_handoff",
+        lambda *arguments, **keyword_arguments: handed.append(keyword_arguments.get("raw_after")),
     )
     _run_hook(target, follower, monkeypatch)
     assert handed == [b"caf\xe9\r\nX\r\n"]
@@ -374,7 +388,9 @@ def test_an_animation_a_stop_ended_while_paused_releases_claude_at_once(
         _pending_apply_edit(resolved, "a\nb\nc\n")
         follower.resume.return_value = AnimationResult("stopped", 0)
     handoffs: list[object] = []
-    monkeypatch.setattr(hooks, "_await_user_handoff", lambda *args, **kwargs: handoffs.append(1))
+    monkeypatch.setattr(
+        hooks, "_await_user_handoff", lambda *arguments, **keyword_arguments: handoffs.append(1)
+    )
     seen = _state_at_release(monkeypatch)
     _run_hook(target, follower, monkeypatch)
     assert handoffs == []

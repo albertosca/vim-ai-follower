@@ -145,9 +145,10 @@ def test_stop_standalone_stops_the_backend_but_skips_tmux_side_effects() -> None
     attach.assert_called()  # the nvim backend's stop() (qall!) actually ran
     mock_unregister.assert_not_called()
     border_calls = [
-        c.args[0]
-        for c in run.call_args_list
-        if c.args[0][:2] == ["tmux", "set-option"] and "pane-border-style" in c.args[0]
+        recorded_call.args[0]
+        for recorded_call in run.call_args_list
+        if recorded_call.args[0][:2] == ["tmux", "set-option"]
+        and "pane-border-style" in recorded_call.args[0]
     ]
     assert border_calls == []
     assert state.FollowerState.get("term-x") is None
@@ -358,14 +359,14 @@ def test_start_adopts_existing_vim_pane_when_configured(
     config_path.write_text('{"adopt_existing": true}')
     monkeypatch.setattr(config, "CONFIG_PATH", config_path)
 
-    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
-        if cmd[:3] == ["tmux", "list-panes", "-a"]:
+    def _run(command: list[str], **keyword_arguments: object) -> MagicMock:
+        if command[:3] == ["tmux", "list-panes", "-a"]:
             return MagicMock(returncode=0, stdout="%1 zsh\n%7 vim\n")
-        if cmd[:4] == ["tmux", "list-panes", "-t", "%1"]:
+        if command[:4] == ["tmux", "list-panes", "-t", "%1"]:
             return MagicMock(returncode=0, stdout="%1 zsh\n%7 vim\n")
-        if cmd[:2] == ["tmux", "display-message"]:
+        if command[:2] == ["tmux", "display-message"]:
             return MagicMock(returncode=0, stdout="@1\n")
-        if cmd[:3] == ["tmux", "list-keys", "-T"]:
+        if command[:3] == ["tmux", "list-keys", "-T"]:
             return MagicMock(returncode=1, stdout="")
         return MagicMock(returncode=0, stdout="")
 
@@ -373,7 +374,10 @@ def test_start_adopts_existing_vim_pane_when_configured(
         assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
         result = state.FollowerState.get("@1")
 
-    assert not any(c.args[0][:2] == ["tmux", "split-window"] for c in run.call_args_list)
+    assert not any(
+        recorded_call.args[0][:2] == ["tmux", "split-window"]
+        for recorded_call in run.call_args_list
+    )
     assert result is not None
     assert result.target == "%7"
     assert result.adopted is True
@@ -396,7 +400,11 @@ def test_start_falls_back_to_a_split_when_adoption_finds_nothing_to_adopt(
         assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
         result = state.FollowerState.get("@1")
 
-    splits = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "split-window"]]
+    splits = [
+        recorded_call.args[0]
+        for recorded_call in run.call_args_list
+        if recorded_call.args[0][:2] == ["tmux", "split-window"]
+    ]
     assert len(splits) == 1
     assert result is not None
     assert result.adopted is False
@@ -438,8 +446,8 @@ def test_start_standalone_nvim_launcher_failure_reports_and_exits(
         patch("vim_ai_follower.commands.launch_standalone_nvim", side_effect=failure),
     ):
         assert commands.cmd_start({}) == 1
-    out, err = capsys.readouterr()
-    assert (out, err) == (
+    out, error = capsys.readouterr()
+    assert (out, error) == (
         "",
         f"claude-follow: could not open a standalone nvim window ({failure})\n",
     )
@@ -461,8 +469,8 @@ def test_start_standalone_nvim_that_never_listens_reports_and_persists_nothing(
         patch("vim_ai_follower.commands.launch_standalone_nvim", side_effect=never),
     ):
         assert commands.cmd_start({}) == 1
-    out, err = capsys.readouterr()
-    assert (out, err) == (
+    out, error = capsys.readouterr()
+    assert (out, error) == (
         "",
         "claude-follow: could not open a standalone nvim window (nvim-qt exited but no "
         "nvim listened on /c/nvim-term-x.sock within 10 s) — check that nvim-qt can "
@@ -504,8 +512,8 @@ def test_start_reports_a_socket_path_it_cannot_clear(
         patch("vim_ai_follower.commands.launch_standalone_nvim", side_effect=blocked),
     ):
         assert commands.cmd_start({}) == 1
-    out, err = capsys.readouterr()
-    assert (out, err) == (
+    out, error = capsys.readouterr()
+    assert (out, error) == (
         "",
         f"claude-follow: could not open a standalone nvim window ({blocked})\n",
     )
@@ -531,21 +539,21 @@ def test_start_in_tmux_nvim_window_always_launcher_failure_reports_and_exits(
         assert commands.cmd_start({}) == 1
     # stdout may carry the keybinding note printed before the launch; the
     # error itself goes to stderr, and only there.
-    out, err = capsys.readouterr()
+    out, error = capsys.readouterr()
     failure = subprocess.CalledProcessError(1, ["nvim-qt"])
-    assert err == f"claude-follow: could not open a standalone nvim window ({failure})\n"
+    assert error == f"claude-follow: could not open a standalone nvim window ({failure})\n"
     assert "could not open" not in out
 
 
 def test_start_vim_backend_without_tmux_errors(capsys: pytest.CaptureFixture[str]) -> None:
     standalone_session = session.Session(window_id="term-x", origin=None, in_tmux=False)
     with patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session):
-        rc = commands.cmd_start({}, backend="tmux")
-    assert rc == 1
+        exit_code = commands.cmd_start({}, backend="tmux")
+    assert exit_code == 1
     # An error, so stderr — like its sibling "could not open a standalone
     # nvim window" — and nothing on stdout.
-    out, err = capsys.readouterr()
-    assert (out, err) == ("", commands.VIM_NEEDS_TMUX + "\n")
+    out, error = capsys.readouterr()
+    assert (out, error) == ("", commands.VIM_NEEDS_TMUX + "\n")
 
 
 def test_start_nvim_window_never_without_tmux_errors(
@@ -556,12 +564,12 @@ def test_start_nvim_window_never_without_tmux_errors(
     monkeypatch.setattr(config, "CONFIG_PATH", config_path)
     standalone_session = session.Session(window_id="term-x", origin=None, in_tmux=False)
     with patch("vim_ai_follower.commands.resolve_session", return_value=standalone_session):
-        rc = commands.cmd_start({}, backend="nvim")
-    assert rc == 1
+        exit_code = commands.cmd_start({}, backend="nvim")
+    assert exit_code == 1
     # An error, so stderr — like VIM_NEEDS_TMUX (battery check 10) — and
     # nothing on stdout.
-    out, err = capsys.readouterr()
-    assert (out, err) == (
+    out, error = capsys.readouterr()
+    assert (out, error) == (
         "",
         "claude-follow: nvim_window is 'never' but there is no tmux session — "
         "set nvim_window to auto/always, or start inside tmux\n",
@@ -594,11 +602,19 @@ def test_start_dead_tmux_pane_fails() -> None:
 
 
 def _bind_calls(run_mock: MagicMock) -> list[list[str]]:
-    return [c.args[0] for c in run_mock.call_args_list if c.args[0][:2] == ["tmux", "bind-key"]]
+    return [
+        recorded_call.args[0]
+        for recorded_call in run_mock.call_args_list
+        if recorded_call.args[0][:2] == ["tmux", "bind-key"]
+    ]
 
 
 def _unbind_calls(run_mock: MagicMock) -> list[list[str]]:
-    return [c.args[0] for c in run_mock.call_args_list if c.args[0][:2] == ["tmux", "unbind-key"]]
+    return [
+        recorded_call.args[0]
+        for recorded_call in run_mock.call_args_list
+        if recorded_call.args[0][:2] == ["tmux", "unbind-key"]
+    ]
 
 
 def test_start_registers_keybindings_with_absolute_path_and_silenced_output(
@@ -618,14 +634,14 @@ def test_start_registers_keybindings_with_absolute_path_and_silenced_output(
         assert Path(exe).is_absolute() and exe.endswith("claude-follow")
         assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
     binds = _bind_calls(run)
-    assert [cmd[4] for cmd in binds] == ["P", "S", "+", "_", "F"]
-    for cmd, subcommand in zip(
+    assert [command[4] for command in binds] == ["P", "S", "+", "_", "F"]
+    for command, subcommand in zip(
         binds, ("pause", "interrupt", "speed-up", "speed-down", "toggle"), strict=True
     ):
         # run-shell without -b blocks ALL tmux input until the command
         # exits — a resume replay lasts tens of seconds, freezing the user
-        assert cmd[6] == "-b"
-        shell_command = cmd[-1]
+        assert command[6] == "-b"
+        shell_command = command[-1]
         # a bare "claude-follow" resolves to nothing under the tmux server's
         # PATH (exit 127) — the binding must embed the resolved ABSOLUTE path
         assert exe in shell_command
@@ -735,14 +751,14 @@ def test_stop_restores_a_pre_existing_binding() -> None:
     previous = "bind-key -T prefix P paste-buffer"
     sourced: list[str] = []
 
-    def _run_with_existing_binding(cmd: list[str], **kwargs: object) -> MagicMock:
+    def _run_with_existing_binding(command: list[str], **keyword_arguments: object) -> MagicMock:
         # Full-table listing (no per-key filter arg): the caller extracts
         # P's line itself and finds nothing for S.
-        if cmd[:4] == ["tmux", "list-keys", "-T", "prefix"]:
+        if command[:4] == ["tmux", "list-keys", "-T", "prefix"]:
             return MagicMock(returncode=0, stdout=previous + "\n")
-        if cmd[:2] == ["tmux", "source-file"]:  # the restore, read before it is deleted
-            sourced.append(Path(cmd[2]).read_text())
-        return _mock_tmux_run()(cmd, **kwargs)
+        if command[:2] == ["tmux", "source-file"]:  # the restore, read before it is deleted
+            sourced.append(Path(command[2]).read_text())
+        return _mock_tmux_run()(command, **keyword_arguments)
 
     with patch(
         "vim_ai_follower.tmux.subprocess.run", side_effect=_run_with_existing_binding
@@ -760,10 +776,10 @@ def test_stop_restores_a_pre_existing_binding() -> None:
 def test_stop_unbinds_instead_of_restoring_a_stale_claude_follow_binding() -> None:
     stale = 'bind-key -T prefix P run-shell "/old/venv/claude-follow pause >/dev/null 2>&1"'
 
-    def _run_with_stale(cmd: list[str], **kwargs: object) -> MagicMock:
-        if cmd[:4] == ["tmux", "list-keys", "-T", "prefix"]:
+    def _run_with_stale(command: list[str], **keyword_arguments: object) -> MagicMock:
+        if command[:4] == ["tmux", "list-keys", "-T", "prefix"]:
             return MagicMock(returncode=0, stdout=stale + "\n")
-        return _mock_tmux_run()(cmd, **kwargs)
+        return _mock_tmux_run()(command, **keyword_arguments)
 
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_run_with_stale) as run:
         assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
@@ -783,13 +799,13 @@ def test_restart_after_crash_does_not_overwrite_the_saved_original_binding() -> 
     # simulate a crash: follower state lost, tmux bindings (ours) still live
     state.FollowerState.clear("@1")
 
-    def _run_with_our_binding(cmd: list[str], **kwargs: object) -> MagicMock:
-        if cmd[:3] == ["tmux", "list-keys", "-T"]:
+    def _run_with_our_binding(command: list[str], **keyword_arguments: object) -> MagicMock:
+        if command[:3] == ["tmux", "list-keys", "-T"]:
             return MagicMock(
                 returncode=0,
                 stdout='bind-key -T prefix P run-shell "/x/claude-follow pause"\n',
             )
-        return _mock_tmux_run()(cmd, **kwargs)
+        return _mock_tmux_run()(command, **keyword_arguments)
 
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_run_with_our_binding):
         assert commands.cmd_start({"TMUX_PANE": "%1"}) == 0
@@ -815,8 +831,8 @@ def test_stop_on_adopted_pane_closes_tabs_but_not_the_pane(
 ) -> None:
     # The mocked Vim never answers s:evict's verdict: don't wait for it.
     monkeypatch.setattr(tmux_vim, "_PROBE_TIMEOUT_SECONDS", 0.01)
-    a = "/tmp/a.py"
-    b = "/tmp/b.py"
+    first_file = "/tmp/a.py"
+    second_file = "/tmp/b.py"
     with patch(
         "vim_ai_follower.tmux.subprocess.run",
         return_value=MagicMock(returncode=0, stdout="%7 vim\n"),
@@ -827,7 +843,7 @@ def test_stop_on_adopted_pane_closes_tabs_but_not_the_pane(
             "%7",
             origin="%1",
             adopted=True,
-            open_files=(a, b),
+            open_files=(first_file, second_file),
             shown_any=True,
             server_pid=MOCK_SERVER_PID,
         )
@@ -839,21 +855,27 @@ def test_stop_on_adopted_pane_closes_tabs_but_not_the_pane(
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
 
     sends = [
-        c.args[0] for c in run.call_args_list if c.args[0][:4] == ["tmux", "send-keys", "-t", "%7"]
+        recorded_call.args[0]
+        for recorded_call in run.call_args_list
+        if recorded_call.args[0][:4] == ["tmux", "send-keys", "-t", "%7"]
     ]
-    literal = [resolve_typed_paths(c[6]) for c in sends if "-l" in c]
+    literal = [
+        resolve_typed_paths(command_line[6]) for command_line in sends if "-l" in command_line
+    ]
     # close_tab resolves a buffer NUMBER, because `:bwipeout!` takes a
     # buffer-name PATTERN, not a path: `app/[slug]/page.tsx` is a character
     # class and the wipe silently misses (measured 2026-09-22). In the user's
     # own Vim it goes through s:evict, which never wipes the user's work.
-    assert evict_spelled(a) in literal
-    assert evict_spelled(b) in literal
-    assert wipe_spelled(a) not in literal
-    assert wipe_spelled(b) not in literal
+    assert evict_spelled(first_file) in literal
+    assert evict_spelled(second_file) in literal
+    assert wipe_spelled(first_file) not in literal
+    assert wipe_spelled(second_file) not in literal
     # bwipeout alone closes each tab; a :tabclose here would eat an
     # innocent neighbor (see close_tab).
     assert not any("tabclose" in text for text in literal)
-    assert not any(c.args[0][:2] == ["tmux", "kill-pane"] for c in run.call_args_list)
+    assert not any(
+        recorded_call.args[0][:2] == ["tmux", "kill-pane"] for recorded_call in run.call_args_list
+    )
     unbinds = _unbind_calls(run)
     assert ["tmux", "unbind-key", "-T", "prefix", "P"] in unbinds
     assert state.FollowerState.get("@1") is None
@@ -867,10 +889,16 @@ def test_stop_on_adopted_nvim_closes_tabs_over_rpc_not_tmux_send_keys(
     # hardcoding TmuxVimFollower (which would aim tmux send-keys at the
     # socket path and blow up before FollowerState.clear runs).
     sock = "/tmp/nvim-@1.sock"
-    a = "/tmp/a.py"
-    b = "/tmp/b.py"
+    first_file = "/tmp/a.py"
+    second_file = "/tmp/b.py"
     state.FollowerState.set(
-        "@1", "nvim", sock, origin="%1", adopted=True, open_files=(a, b), shown_any=True
+        "@1",
+        "nvim",
+        sock,
+        origin="%1",
+        adopted=True,
+        open_files=(first_file, second_file),
+        shown_any=True,
     )
     nvim_mock = MagicMock()
     nvim_mock.exec_lua.return_value = 7
@@ -885,12 +913,15 @@ def test_stop_on_adopted_nvim_closes_tabs_over_rpc_not_tmux_send_keys(
     assert "claude-follow: stopped" in capsys.readouterr().out
     # the nvim RPC path was actually used to close the tabs...
     attach.assert_called()
-    nvim_mock.exec_lua.assert_any_call(_FIND_BUFFER_LUA, a)
-    nvim_mock.exec_lua.assert_any_call(_FIND_BUFFER_LUA, b)
+    nvim_mock.exec_lua.assert_any_call(_FIND_BUFFER_LUA, first_file)
+    nvim_mock.exec_lua.assert_any_call(_FIND_BUFFER_LUA, second_file)
     # ...and never through a tmux send-keys aimed at the socket path (what
     # the old hardcoded TmuxVimFollower(pane_id=existing.target, ...) did —
     # it never calls pynvim.attach, and instead fires send-keys -t <sock>).
-    assert not any(c.args[0][:4] == ["tmux", "send-keys", "-t", sock] for c in run.call_args_list)
+    assert not any(
+        recorded_call.args[0][:4] == ["tmux", "send-keys", "-t", sock]
+        for recorded_call in run.call_args_list
+    )
     # state cleanup still ran to completion
     assert state.FollowerState.get("@1") is None
 
@@ -902,7 +933,7 @@ def test_stop_restores_the_follower_border() -> None:
     mock_run = make_mock_tmux_run(window_id="@1", pane_id="%2")
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=mock_run) as run:
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
-    cmds = [c.args[0] for c in run.call_args_list]
+    cmds = [recorded_call.args[0] for recorded_call in run.call_args_list]
     # border color unset (both styles) + border-status restored on the pane
     assert ["tmux", "set-option", "-pu", "-t", "%2", "pane-border-style"] in cmds
     assert ["tmux", "set-option", "-wu", "-t", "%2", "pane-border-status"] in cmds
@@ -1000,9 +1031,11 @@ def test_speed_up_steps_state_and_reports(capsys: pytest.CaptureFixture[str]) ->
     assert "speed muito_rapido" in capsys.readouterr().out
     assert popen.call_args_list == []  # status line, never a keyboard-grabbing popup
     status_calls = [
-        c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "display-message"]
+        recorded_call.args[0]
+        for recorded_call in run.call_args_list
+        if recorded_call.args[0][:2] == ["tmux", "display-message"]
     ]
-    assert any("Speed: muito_rapido" in " ".join(c) for c in status_calls)
+    assert any("Speed: muito_rapido" in " ".join(command_line) for command_line in status_calls)
 
 
 def test_speed_clamps_at_the_fast_end_and_says_so(capsys: pytest.CaptureFixture[str]) -> None:
@@ -1022,9 +1055,13 @@ def test_speed_clamps_at_the_fast_end_and_says_so(capsys: pytest.CaptureFixture[
     # finding, 2026-07-15).
     assert popen.call_args_list == []
     status_calls = [
-        c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "display-message"]
+        recorded_call.args[0]
+        for recorded_call in run.call_args_list
+        if recorded_call.args[0][:2] == ["tmux", "display-message"]
     ]
-    assert any("Speed: instant (fastest)" in " ".join(c) for c in status_calls)
+    assert any(
+        "Speed: instant (fastest)" in " ".join(command_line) for command_line in status_calls
+    )
 
 
 def test_speed_clamps_at_the_slow_end_and_says_so(capsys: pytest.CaptureFixture[str]) -> None:
@@ -1057,23 +1094,25 @@ def test_speed_without_follower_is_honest_noop(capsys: pytest.CaptureFixture[str
     assert popen.call_args_list == []
 
 
-def _mock_tmux_run_with_zoom(zoomed: str, **kwargs: object) -> Callable[..., MagicMock]:
+def _mock_tmux_run_with_zoom(zoomed: str, **keyword_arguments: object) -> Callable[..., MagicMock]:
     """Like make_mock_tmux_run, but display-message queries for
     '#{window_zoomed_flag}' answer with the given flag ("0" or "1") instead
     of the window id every other display-message query returns."""
-    base = make_mock_tmux_run(**kwargs)  # type: ignore[arg-type]
+    base = make_mock_tmux_run(**keyword_arguments)  # type: ignore[arg-type]
 
-    def _run(cmd: list[str], **run_kwargs: object) -> MagicMock:
-        if cmd[:2] == ["tmux", "display-message"] and cmd[-1] == "#{window_zoomed_flag}":
+    def _run(command: list[str], **run_keyword_arguments: object) -> MagicMock:
+        if command[:2] == ["tmux", "display-message"] and command[-1] == "#{window_zoomed_flag}":
             return MagicMock(returncode=0, stdout=f"{zoomed}\n")
-        return base(cmd, **run_kwargs)
+        return base(command, **run_keyword_arguments)
 
     return _run
 
 
 def _resize_pane_calls(run_mock: MagicMock) -> list[list[str]]:
     return [
-        c.args[0] for c in run_mock.call_args_list if c.args[0][:3] == ["tmux", "resize-pane", "-Z"]
+        recorded_call.args[0]
+        for recorded_call in run_mock.call_args_list
+        if recorded_call.args[0][:3] == ["tmux", "resize-pane", "-Z"]
     ]
 
 
@@ -1148,7 +1187,9 @@ def test_toggle_on_unzooms_clears_open_files_and_keeps_tabs() -> None:
     assert result.shown_any is True
     assert _resize_pane_calls(run) == [["tmux", "resize-pane", "-Z", "-t", "%1"]]
     tabcloses = [
-        c.args[0] for c in run.call_args_list if c.args[0][:4] == ["tmux", "send-keys", "-t", "%2"]
+        recorded_call.args[0]
+        for recorded_call in run.call_args_list
+        if recorded_call.args[0][:4] == ["tmux", "send-keys", "-t", "%2"]
     ]
     assert tabcloses == []  # the pane stayed alive — no split, no tab teardown
 
@@ -1166,24 +1207,28 @@ def test_toggle_on_reopens_dead_pane_as_dedicated_split() -> None:
         server_pid=MOCK_SERVER_PID,
     )
 
-    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
-        if cmd[:3] == ["tmux", "list-panes", "-a"]:
+    def _run(command: list[str], **keyword_arguments: object) -> MagicMock:
+        if command[:3] == ["tmux", "list-panes", "-a"]:
             # the old pane %2 is dead — no vim running there anymore
             return MagicMock(returncode=0, stdout="")
-        if cmd[:2] == ["tmux", "display-message"] and cmd[-1] == "#{pid}":
+        if command[:2] == ["tmux", "display-message"] and command[-1] == "#{pid}":
             return MagicMock(returncode=0, stdout=f"{MOCK_SERVER_PID}\n")
-        if cmd[:2] == ["tmux", "display-message"] and cmd[-1] == "#{window_zoomed_flag}":
+        if command[:2] == ["tmux", "display-message"] and command[-1] == "#{window_zoomed_flag}":
             return MagicMock(returncode=0, stdout="0\n")
-        if cmd[:2] == ["tmux", "display-message"]:
+        if command[:2] == ["tmux", "display-message"]:
             return MagicMock(returncode=0, stdout="@1\n")
-        if cmd[:2] == ["tmux", "split-window"]:
+        if command[:2] == ["tmux", "split-window"]:
             return MagicMock(returncode=0, stdout="%9\n")
         return MagicMock(returncode=0, stdout="")
 
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_run) as run:
         assert commands.cmd_toggle({"TMUX_PANE": "%1"}) == 0
 
-    splits = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "split-window"]]
+    splits = [
+        recorded_call.args[0]
+        for recorded_call in run.call_args_list
+        if recorded_call.args[0][:2] == ["tmux", "split-window"]
+    ]
     assert splits == [
         [
             "tmux",
@@ -1254,14 +1299,14 @@ def _tmux_with_panes(listing: str, children: str = "") -> Callable[..., MagicMoc
     command, tab-separated) and whose `pgrep -P` answers `children`."""
     base = make_mock_tmux_run()
 
-    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
-        if cmd[:3] == ["tmux", "list-panes", "-t"]:
+    def _run(command: list[str], **keyword_arguments: object) -> MagicMock:
+        if command[:3] == ["tmux", "list-panes", "-t"]:
             return MagicMock(returncode=0, stdout=listing)
-        if cmd[:2] == ["pgrep", "-P"]:
+        if command[:2] == ["pgrep", "-P"]:
             return MagicMock(returncode=0 if children else 1, stdout=children)
-        if cmd[:2] == ["ps", "-o"]:
+        if command[:2] == ["ps", "-o"]:
             return MagicMock(returncode=0, stdout=f"nvim --embed --listen {_DEDICATED_SOCKET}\n")
-        return base(cmd, **kwargs)
+        return base(command, **keyword_arguments)
 
     return _run
 
@@ -1482,7 +1527,9 @@ def test_stop_of_an_adopted_nvim_waiting_on_its_user_sends_nothing_and_logs_one_
     # A stop never asks to take over (Alberto, 2026-10-17): it sends nothing.
     asked.assert_not_called()
     attach.assert_not_called()
-    assert not any(c.args[0][:2] == ["tmux", "kill-pane"] for c in run.call_args_list)
+    assert not any(
+        recorded_call.args[0][:2] == ["tmux", "kill-pane"] for recorded_call in run.call_args_list
+    )
     lines = [line for line in _hook_log().splitlines() if _DEDICATED_SOCKET in line]
     assert len(lines) == 1, _hook_log()
     assert f"waiting on its user ({named})" in lines[0]
@@ -1507,7 +1554,9 @@ def test_stop_of_an_adopted_nvim_in_its_command_line_window_sends_nothing() -> N
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
     cmdwin.assert_called_once_with(_DEDICATED_SOCKET)
     attach.assert_not_called()
-    assert not any(c.args[0][:2] == ["tmux", "kill-pane"] for c in run.call_args_list)
+    assert not any(
+        recorded_call.args[0][:2] == ["tmux", "kill-pane"] for recorded_call in run.call_args_list
+    )
     lines = [line for line in _hook_log().splitlines() if _DEDICATED_SOCKET in line]
     assert len(lines) == 1, _hook_log()
     assert "waiting on its user (in the command-line window)" in lines[0]
@@ -1574,7 +1623,9 @@ def test_stop_of_an_unreachable_adopted_nvim_never_touches_its_pane(verdict: str
     ):
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
     attach.assert_not_called()
-    assert not any(c.args[0][:2] == ["tmux", "kill-pane"] for c in run.call_args_list)
+    assert not any(
+        recorded_call.args[0][:2] == ["tmux", "kill-pane"] for recorded_call in run.call_args_list
+    )
     send_signal.assert_not_called()
     lines = [line for line in _hook_log().splitlines() if _DEDICATED_SOCKET in line]
     assert len(lines) == 1, _hook_log()
@@ -1597,7 +1648,11 @@ def test_stop_of_a_silent_dedicated_nvim_closes_its_pane_and_reaps_what_survives
     ):
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
     attach.assert_not_called()
-    kills = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "kill-pane"]]
+    kills = [
+        recorded_call.args[0]
+        for recorded_call in run.call_args_list
+        if recorded_call.args[0][:2] == ["tmux", "kill-pane"]
+    ]
     assert kills == [["tmux", "kill-pane", "-t", "%5"]]
     import signal
 
@@ -1610,10 +1665,10 @@ def test_stop_never_kills_a_survivor_that_is_not_the_followers_nvim() -> None:
     listing = f"%5\t200\tnvim --listen {_DEDICATED_SOCKET}\n"
     base = _tmux_with_panes(listing, children="201\n")
 
-    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
-        if cmd[:2] == ["ps", "-o"]:
+    def _run(command: list[str], **keyword_arguments: object) -> MagicMock:
+        if command[:2] == ["ps", "-o"]:
             return MagicMock(returncode=0, stdout="some-other-process\n")
-        return base(cmd, **kwargs)
+        return base(command, **keyword_arguments)
 
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_run),
@@ -1637,7 +1692,9 @@ def test_stop_of_a_silent_dedicated_nvim_without_its_pane_kills_nothing() -> Non
         patch("vim_ai_follower.commands._send_signal") as send_signal,
     ):
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
-    assert not any(c.args[0][:2] == ["tmux", "kill-pane"] for c in run.call_args_list)
+    assert not any(
+        recorded_call.args[0][:2] == ["tmux", "kill-pane"] for recorded_call in run.call_args_list
+    )
     send_signal.assert_not_called()
 
 
@@ -1650,10 +1707,10 @@ def test_stop_of_an_answering_dedicated_nvim_quits_it_and_kills_no_pane_that_clo
     )
     base = _tmux_with_panes("")
 
-    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
-        if cmd[:3] == ["tmux", "list-panes", "-t"]:
+    def _run(command: list[str], **keyword_arguments: object) -> MagicMock:
+        if command[:3] == ["tmux", "list-panes", "-t"]:
             return MagicMock(returncode=0, stdout=next(listings, "%1\t100\tzsh\n"))
-        return base(cmd, **kwargs)
+        return base(command, **keyword_arguments)
 
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_run) as run,
@@ -1663,7 +1720,9 @@ def test_stop_of_an_answering_dedicated_nvim_quits_it_and_kills_no_pane_that_clo
     ):
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
     nvim_mock.command.assert_any_call("qall!")
-    assert not any(c.args[0][:2] == ["tmux", "kill-pane"] for c in run.call_args_list)
+    assert not any(
+        recorded_call.args[0][:2] == ["tmux", "kill-pane"] for recorded_call in run.call_args_list
+    )
     send_signal.assert_not_called()
 
 
@@ -1678,7 +1737,11 @@ def test_stop_kills_the_pane_of_a_dedicated_nvim_that_did_not_quit() -> None:
         patch("vim_ai_follower.commands._process_alive", return_value=False),
     ):
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
-    kills = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "kill-pane"]]
+    kills = [
+        recorded_call.args[0]
+        for recorded_call in run.call_args_list
+        if recorded_call.args[0][:2] == ["tmux", "kill-pane"]
+    ]
     assert kills == [["tmux", "kill-pane", "-t", "%5"]]
 
 
@@ -1813,10 +1876,10 @@ def test_stop_finds_no_follower_pane_in_a_listing_it_cannot_trust(listing: str |
     _nvim_follower(adopted=False)
     base = _tmux_with_panes(listing or "")
 
-    def _run(command: list[str], **kwargs: object) -> MagicMock:
+    def _run(command: list[str], **keyword_arguments: object) -> MagicMock:
         if listing is None and command[:3] == ["tmux", "list-panes", "-t"]:
             return MagicMock(returncode=1, stdout="")
-        return base(command, **kwargs)
+        return base(command, **keyword_arguments)
 
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_run) as run,
@@ -1860,9 +1923,11 @@ def _touches_the_pane(run: MagicMock, pane_id: str) -> list[list[str]]:
     """Every call that would act on pane_id: a kill, typed keys, an option."""
     acting = ("kill-pane", "send-keys", "set-option", "resize-pane", "respawn-pane")
     return [
-        c.args[0]
-        for c in run.call_args_list
-        if len(c.args[0]) > 1 and c.args[0][1] in acting and pane_id in c.args[0]
+        recorded_call.args[0]
+        for recorded_call in run.call_args_list
+        if len(recorded_call.args[0]) > 1
+        and recorded_call.args[0][1] in acting
+        and pane_id in recorded_call.args[0]
     ]
 
 
@@ -1913,9 +1978,9 @@ def test_stop_sends_no_keys_and_no_kill_to_a_pane_that_no_longer_runs_vim(adopte
         side_effect=make_mock_tmux_run(pane_id="%9", pane_exists=False, other_panes=("%9",)),
     ) as run:
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
-    calls = [c.args[0] for c in run.call_args_list]
-    assert not any(c[:2] == ["tmux", "kill-pane"] for c in calls)
-    assert not any(c[:2] == ["tmux", "send-keys"] for c in calls)
+    calls = [recorded_call.args[0] for recorded_call in run.call_args_list]
+    assert not any(command_line[:2] == ["tmux", "kill-pane"] for command_line in calls)
+    assert not any(command_line[:2] == ["tmux", "send-keys"] for command_line in calls)
     assert "no longer runs vim" in _hook_log()
 
 
@@ -1930,7 +1995,9 @@ def test_stop_leaves_the_pane_of_a_dedicated_nvim_from_another_server() -> None:
         patch("vim_ai_follower.commands._send_signal") as send_signal,
     ):
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
-    assert not any(c.args[0][:2] == ["tmux", "kill-pane"] for c in run.call_args_list)
+    assert not any(
+        recorded_call.args[0][:2] == ["tmux", "kill-pane"] for recorded_call in run.call_args_list
+    )
     send_signal.assert_not_called()
     assert "is left alone: its state was not written under this tmux server" in _hook_log()
 
@@ -1961,7 +2028,11 @@ def test_a_second_stop_finishes_the_teardown_of_a_stop_that_was_killed() -> None
     state.mark_stopped("@1", MOCK_SERVER_PID, in_tmux=True)
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
-    kills = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "kill-pane"]]
+    kills = [
+        recorded_call.args[0]
+        for recorded_call in run.call_args_list
+        if recorded_call.args[0][:2] == ["tmux", "kill-pane"]
+    ]
     assert kills == [["tmux", "kill-pane", "-t", "%9"]]
     assert not state.stopping_path("@1").exists()
 
@@ -1971,7 +2042,9 @@ def test_a_stop_with_an_unreadable_record_tears_down_nothing() -> None:
     state.stopping_path("@1").write_text("{not json")
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert commands.cmd_stop({"TMUX_PANE": "%1"}) == 0
-    assert not any(c.args[0][:2] == ["tmux", "kill-pane"] for c in run.call_args_list)
+    assert not any(
+        recorded_call.args[0][:2] == ["tmux", "kill-pane"] for recorded_call in run.call_args_list
+    )
     assert not state.stopping_path("@1").exists()
 
 
@@ -2064,7 +2137,9 @@ def test_toggle_ignores_a_state_left_by_another_tmux_server(
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert commands.cmd_toggle({"TMUX_PANE": "%1"}) == 0
     assert "no follower to toggle" in capsys.readouterr().out
-    assert not any(c.args[0][:2] == ["tmux", "resize-pane"] for c in run.call_args_list)
+    assert not any(
+        recorded_call.args[0][:2] == ["tmux", "resize-pane"] for recorded_call in run.call_args_list
+    )
 
 
 @pytest.mark.parametrize("enabled", [True, False], ids=["off", "on"])
@@ -2081,8 +2156,13 @@ def test_toggle_never_acts_on_a_state_no_server_proves_here(
     ) as run:
         assert commands.cmd_toggle({"TMUX_PANE": "%1"}) == 0
     assert "no follower to toggle" in capsys.readouterr().out
-    assert not any(c.args[0][:2] == ["tmux", "resize-pane"] for c in run.call_args_list)
-    assert not any(c.args[0][:2] == ["tmux", "split-window"] for c in run.call_args_list)
+    assert not any(
+        recorded_call.args[0][:2] == ["tmux", "resize-pane"] for recorded_call in run.call_args_list
+    )
+    assert not any(
+        recorded_call.args[0][:2] == ["tmux", "split-window"]
+        for recorded_call in run.call_args_list
+    )
 
 
 def test_toggle_acts_on_a_standalone_nvim_which_names_no_server(
@@ -2119,7 +2199,11 @@ def test_start_reports_a_split_nvim_that_never_answers_and_records_nothing(
         "its pane is left open so you can read why\n"
     )
     assert state.FollowerState.read("@1") is None
-    assert not [c for c in run.call_args_list if c.args[0][:2] == ["tmux", "kill-pane"]]
+    assert not [
+        recorded_call
+        for recorded_call in run.call_args_list
+        if recorded_call.args[0][:2] == ["tmux", "kill-pane"]
+    ]
     # The next hook must not split a second pane next to this one at once.
     assert nvim_connect.launch_backoff_active("@1")
     assert "nvim did not answer on /c/nvim-@1.sock" in hooks.LOG_PATH.read_text()
@@ -2223,7 +2307,11 @@ def test_stop_of_an_adopted_vim_whose_user_is_typing_sends_nothing_and_asks_noth
     read.assert_called_once_with("%7")
     asked.assert_not_called()
     marked.assert_called_once_with("%7")
-    sends = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "send-keys"]]
+    sends = [
+        recorded_call.args[0]
+        for recorded_call in run.call_args_list
+        if recorded_call.args[0][:2] == ["tmux", "send-keys"]
+    ]
     assert sends == []
     assert state.FollowerState.get("@1") is None
     lines = [line for line in _hook_log().splitlines() if "waiting on its user" in line]
@@ -2326,7 +2414,11 @@ def test_start_a_stop_overtook_says_so_and_closes_the_pane_it_split(
     assert "started follower" not in captured.out
     assert "stopped while it was starting" in captured.err
     assert state.FollowerState.read("@1") is None
-    kills = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "kill-pane"]]
+    kills = [
+        recorded_call.args[0]
+        for recorded_call in run.call_args_list
+        if recorded_call.args[0][:2] == ["tmux", "kill-pane"]
+    ]
     assert kills == [["tmux", "kill-pane", "-t", "%9"]]
 
 
@@ -2348,8 +2440,12 @@ def test_start_a_stop_overtook_never_closes_an_adopted_editor(
     captured = capsys.readouterr()
     assert "adopted existing vim pane" not in captured.out
     assert "stopped while it was starting" in captured.err
-    assert not any(c.args[0][:2] == ["tmux", "kill-pane"] for c in run.call_args_list)
-    assert not any(c.args[0][:2] == ["tmux", "send-keys"] for c in run.call_args_list)
+    assert not any(
+        recorded_call.args[0][:2] == ["tmux", "kill-pane"] for recorded_call in run.call_args_list
+    )
+    assert not any(
+        recorded_call.args[0][:2] == ["tmux", "send-keys"] for recorded_call in run.call_args_list
+    )
 
 
 def test_speed_a_stop_overtook_reports_nothing_saved(capsys: pytest.CaptureFixture[str]) -> None:
@@ -2404,16 +2500,16 @@ def test_toggle_on_a_stop_overtook_says_so_and_closes_the_pane_it_split(
         "@1", "tmux", "%2", origin="%1", enabled=False, server_pid=MOCK_SERVER_PID
     )
 
-    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
-        if cmd[:3] == ["tmux", "list-panes", "-a"]:
+    def _run(command: list[str], **keyword_arguments: object) -> MagicMock:
+        if command[:3] == ["tmux", "list-panes", "-a"]:
             return MagicMock(returncode=0, stdout="")  # %2 is dead
-        if cmd[:2] == ["tmux", "display-message"] and cmd[-1] == "#{pid}":
+        if command[:2] == ["tmux", "display-message"] and command[-1] == "#{pid}":
             return MagicMock(returncode=0, stdout=f"{MOCK_SERVER_PID}\n")
-        if cmd[:2] == ["tmux", "display-message"] and cmd[-1] == "#{window_zoomed_flag}":
+        if command[:2] == ["tmux", "display-message"] and command[-1] == "#{window_zoomed_flag}":
             return MagicMock(returncode=0, stdout="0\n")
-        if cmd[:2] == ["tmux", "display-message"]:
+        if command[:2] == ["tmux", "display-message"]:
             return MagicMock(returncode=0, stdout="@1\n")
-        if cmd[:2] == ["tmux", "split-window"]:
+        if command[:2] == ["tmux", "split-window"]:
             # the stop lands while the new pane opens: after the toggle's own
             # update, before the write that records the new pane
             state.mark_stopped("@1", MOCK_SERVER_PID, in_tmux=True)
@@ -2425,7 +2521,11 @@ def test_toggle_on_a_stop_overtook_says_so_and_closes_the_pane_it_split(
     captured = capsys.readouterr()
     assert "resumed" not in captured.out
     assert "was stopped" in captured.err
-    kills = [c.args[0] for c in run.call_args_list if c.args[0][:2] == ["tmux", "kill-pane"]]
+    kills = [
+        recorded_call.args[0]
+        for recorded_call in run.call_args_list
+        if recorded_call.args[0][:2] == ["tmux", "kill-pane"]
+    ]
     assert kills == [["tmux", "kill-pane", "-t", "%9"]]
 
 

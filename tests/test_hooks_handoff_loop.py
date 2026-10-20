@@ -38,7 +38,7 @@ def _scripted(signals: list[str | None]) -> Callable[..., str | None]:
     ceiling so a hand-off that never releases fails loudly instead of hanging."""
     calls = {"n": 0}
 
-    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _check(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         if calls["n"] > len(signals) + 200:
             raise AssertionError("hand-off wait never released within the poll budget")
@@ -59,23 +59,23 @@ def _spy_saves(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Any, float, A
         lines: tuple[str, ...],
         pace_seconds: float,
         continuation: bool = False,
-        base_dir: Path | None = None,
+        base_directory: Path | None = None,
         file_path: str = "",
         partial: str | None = None,
     ) -> None:
         saved.append(("show_fresh", lines, pace_seconds, continuation))
-        real_fresh(window_id, lines, pace_seconds, continuation, base_dir, file_path, partial)
+        real_fresh(window_id, lines, pace_seconds, continuation, base_directory, file_path, partial)
 
     def _ops(
         window_id: str,
         ops: list[EditOp],
         pace_seconds: float,
-        base_dir: Path | None = None,
+        base_directory: Path | None = None,
         file_path: str = "",
         partial: str | None = None,
     ) -> None:
         saved.append(("apply_edit", list(ops), pace_seconds, file_path))
-        real_ops(window_id, ops, pace_seconds, base_dir, file_path, partial)
+        real_ops(window_id, ops, pace_seconds, base_directory, file_path, partial)
 
     monkeypatch.setattr(control, "save_pending_show_fresh", _fresh)
     monkeypatch.setattr(control, "save_pending_apply_edit", _ops)
@@ -83,9 +83,11 @@ def _spy_saves(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, Any, float, A
 
 
 def _install_fake_follower(monkeypatch: pytest.MonkeyPatch, fake: MagicMock) -> None:
-    monkeypatch.setattr(hooks, "get_follower", lambda *a, **k: fake)
-    monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: MagicMock())
-    monkeypatch.setattr(hooks, "show_popup", lambda *a, **k: None)
+    monkeypatch.setattr(hooks, "get_follower", lambda *arguments, **keyword_arguments: fake)
+    monkeypatch.setattr(
+        hooks, "status_surface_for", lambda *arguments, **keyword_arguments: MagicMock()
+    )
+    monkeypatch.setattr(hooks, "show_popup", lambda *arguments, **keyword_arguments: None)
 
 
 def _handoff_state(tmp_path: Path, content: str) -> tuple[state.FollowerState, str]:
@@ -203,7 +205,7 @@ def test_a_save_after_the_second_interrupt_reports_the_accumulated_partial(
     fake.resume.return_value = AnimationResult("interrupted", 2)
     _install_fake_follower(monkeypatch, fake)
 
-    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _check(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         if calls["n"] == 1:
             return "interrupt"
@@ -273,11 +275,11 @@ def test_two_replay_cycles_land_at_the_exact_content_in_a_real_nvim(
     target = tmp_path / "a.py"
     content = "l0\nl1\nl2\nl3\n"
     target.write_text(content)
-    file_a = str(target)
+    first_file = str(target)
     # speed=instant pins the pace to 0.0, so check_signal is called exactly
     # once per line and the script below is deterministic.
     state.FollowerState.set(
-        "@1", "nvim", headless_nvim, open_files=(file_a,), shown_any=True, speed="instant"
+        "@1", "nvim", headless_nvim, open_files=(first_file,), shown_any=True, speed="instant"
     )
     current = state.FollowerState.read("@1")
     assert current is not None
@@ -294,24 +296,32 @@ def test_two_replay_cycles_land_at_the_exact_content_in_a_real_nvim(
         None,  # replay types l3 -> completed
     ]
     monkeypatch.setattr(control, "check_signal", _scripted(script))
-    monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(
+        hooks, "status_surface_for", lambda *arguments, **keyword_arguments: MagicMock()
+    )
 
-    assert follower.show_fresh(file_a, content) == AnimationResult("interrupted", 2)
+    assert follower.show_fresh(first_file, content) == AnimationResult("interrupted", 2)
     partial = hooks._reconstruct_partial_fresh(content, 2)
-    control.save_pending_show_fresh("@1", ("l2", "l3"), 0.0, continuation=True, file_path=file_a)
+    control.save_pending_show_fresh(
+        "@1", ("l2", "l3"), 0.0, continuation=True, file_path=first_file
+    )
 
     # Every poll here answers "interrupt" immediately, so no idle sleep is
     # expected — patching it turns a hypothetical hang into a fast failure.
     with patch("vim_ai_follower.hooks.time.sleep"):
         hooks._await_user_handoff(
-            current, Session(window_id="@1", origin=None, in_tmux=False), file_a, content, partial
+            current,
+            Session(window_id="@1", origin=None, in_tmux=False),
+            first_file,
+            content,
+            partial,
         )
 
     nvim = pynvim.attach("socket", path=headless_nvim)
     assert nvim.current.buffer[:] == ["l0", "l1", "l2", "l3"]
     refreshed = state.FollowerState.read("@1")
     assert refreshed is not None
-    assert refreshed.current_file == file_a
+    assert refreshed.current_file == first_file
 
 
 def test_the_s_that_ends_a_wait_marks_the_replay_running_before_it_starts(
@@ -348,12 +358,14 @@ def test_a_hand_off_that_ends_reads_finishing_before_its_cue_comes_down(
     fake = MagicMock()
     fake.rewrite_buffer.return_value = AnimationResult("completed", 0)
     fake.resume.return_value = AnimationResult("completed", 1)
-    monkeypatch.setattr(hooks, "get_follower", lambda *args, **kwargs: fake)
-    monkeypatch.setattr(hooks, "show_popup", lambda *args, **kwargs: None)
+    monkeypatch.setattr(hooks, "get_follower", lambda *arguments, **keyword_arguments: fake)
+    monkeypatch.setattr(hooks, "show_popup", lambda *arguments, **keyword_arguments: None)
     control.save_pending_show_fresh("@1", ("a",), 0.0, file_path=target, partial="")
     control.mark_animating("@1")
     if ending == "saved":
-        monkeypatch.setattr(hooks, "_poll_until_interrupt", lambda *args, **kwargs: False)
+        monkeypatch.setattr(
+            hooks, "_poll_until_interrupt", lambda *arguments, **keyword_arguments: False
+        )
     else:
         monkeypatch.setattr(hooks, "_poll_until_interrupt", _scripted_poll([True]))
     pressed: list[str] = []
@@ -384,7 +396,7 @@ def _signal_on_poll(nth: int) -> Callable[..., str | None]:
     """check_signal double: "interrupt" on the nth poll, None before it."""
     polls = {"count": 0}
 
-    def _check(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _check(window_id: str, base_directory: Path | None = None) -> str | None:
         polls["count"] += 1
         return "interrupt" if polls["count"] == nth else None
 
@@ -587,7 +599,7 @@ def test_a_hand_off_the_stop_ended_leaves_the_surface_to_the_stop(
     # whose user is typing, deliberately sends nothing): the hook restoring
     # its saved border title after the stop would put a cue back.
     current, target = _handoff_state(tmp_path, "a\n")
-    monkeypatch.setattr(hooks, "get_follower", lambda *args, **kwargs: MagicMock())
+    monkeypatch.setattr(hooks, "get_follower", lambda *arguments, **keyword_arguments: MagicMock())
     surface = MagicMock()
     with (
         patch("vim_ai_follower.control.check_signal", _scripted([])),
@@ -603,8 +615,10 @@ def test_a_catch_up_hand_off_the_stop_ended_releases_claude(
 ) -> None:
     current, target = _handoff_state(tmp_path, "a\n")
     follower = MagicMock()
-    monkeypatch.setattr(hooks, "get_follower", lambda *args, **kwargs: follower)
-    monkeypatch.setattr(hooks, "status_surface_for", lambda *args, **kwargs: MagicMock())
+    monkeypatch.setattr(hooks, "get_follower", lambda *arguments, **keyword_arguments: follower)
+    monkeypatch.setattr(
+        hooks, "status_surface_for", lambda *arguments, **keyword_arguments: MagicMock()
+    )
     with (
         patch("vim_ai_follower.control.check_signal", _scripted([])),
         patch("vim_ai_follower.hooks.time.sleep", _stop_on_sleep(2, _stop_by_clearing_the_state)),

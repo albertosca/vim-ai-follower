@@ -217,15 +217,17 @@ def test_show_fresh_interrupt_persists_the_typed_prefix_as_the_partial(
 
     follower = _fake_follower()
     follower.show_fresh.return_value = AnimationResult("interrupted", 1)
-    monkeypatch.setattr(hooks, "get_follower", lambda *a, **k: follower)
-    monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: MagicMock())
-    monkeypatch.setattr(hooks, "show_popup", lambda *a, **k: None)
+    monkeypatch.setattr(hooks, "get_follower", lambda *arguments, **keyword_arguments: follower)
+    monkeypatch.setattr(
+        hooks, "status_surface_for", lambda *arguments, **keyword_arguments: MagicMock()
+    )
+    monkeypatch.setattr(hooks, "show_popup", lambda *arguments, **keyword_arguments: None)
     seen: dict[str, object] = {}
     real_save = control.save_pending_show_fresh
 
-    def spy(*args: object, **kwargs: object) -> None:
-        seen.update(kwargs)
-        real_save(*args, **kwargs)  # type: ignore[arg-type]
+    def spy(*arguments: object, **keyword_arguments: object) -> None:
+        seen.update(keyword_arguments)
+        real_save(*arguments, **keyword_arguments)  # type: ignore[arg-type]
 
     monkeypatch.setattr(control, "save_pending_show_fresh", spy)
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
@@ -258,15 +260,17 @@ def test_apply_edit_interrupt_persists_the_applied_prefix_as_the_partial(
 
     follower = _fake_follower()
     follower.apply_edit.return_value = AnimationResult("interrupted", 1)
-    monkeypatch.setattr(hooks, "get_follower", lambda *a, **k: follower)
-    monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: MagicMock())
-    monkeypatch.setattr(hooks, "show_popup", lambda *a, **k: None)
+    monkeypatch.setattr(hooks, "get_follower", lambda *arguments, **keyword_arguments: follower)
+    monkeypatch.setattr(
+        hooks, "status_surface_for", lambda *arguments, **keyword_arguments: MagicMock()
+    )
+    monkeypatch.setattr(hooks, "show_popup", lambda *arguments, **keyword_arguments: None)
     seen: dict[str, object] = {}
     real_save = control.save_pending_apply_edit
 
-    def spy(*args: object, **kwargs: object) -> None:
-        seen.update(kwargs)
-        real_save(*args, **kwargs)  # type: ignore[arg-type]
+    def spy(*arguments: object, **keyword_arguments: object) -> None:
+        seen.update(keyword_arguments)
+        real_save(*arguments, **keyword_arguments)  # type: ignore[arg-type]
 
     monkeypatch.setattr(control, "save_pending_apply_edit", spy)
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
@@ -326,11 +330,11 @@ def test_rearm_handoff_persists_the_grown_partial_for_ops(tmp_path: Path) -> Non
 def test_resaving_an_unusable_pending_keeps_its_partial(tmp_path: Path) -> None:
     # cmd_pause puts a loaded-but-unusable pending back on disk; dropping the
     # partial there would silently re-arm the old live-buffer behavior.
-    monkeypatch_dir = tmp_path / "cache"
-    monkeypatch_dir.mkdir()
+    cache_directory = tmp_path / "cache"
+    cache_directory.mkdir()
     from vim_ai_follower import commands
 
-    with patch.object(cache, "CACHE_DIR", monkeypatch_dir):
+    with patch.object(cache, "CACHE_DIR", cache_directory):
         commands._resave_pending(
             "@1",
             control.PendingShowFresh(
@@ -364,8 +368,10 @@ def test_catchup_runs_on_the_hook_path_with_the_partial_it_saved(
 
     follower = _fake_follower()
     follower.apply_edit.return_value = AnimationResult("completed", 1)
-    monkeypatch.setattr(hooks, "get_follower", lambda *a, **k: follower)
-    monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(hooks, "get_follower", lambda *arguments, **keyword_arguments: follower)
+    monkeypatch.setattr(
+        hooks, "status_surface_for", lambda *arguments, **keyword_arguments: MagicMock()
+    )
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
     with (
         patch("vim_ai_follower.control.check_signal", return_value=None),
@@ -376,7 +382,7 @@ def test_catchup_runs_on_the_hook_path_with_the_partial_it_saved(
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     follower.rewrite_buffer.assert_called_once_with(os.path.realpath(str(target)), "a\nb\n")
-    names = [c[0] for c in follower.mock_calls]
+    names = [recorded_call[0] for recorded_call in follower.mock_calls]
     assert names.index("rewrite_buffer") < names.index("resume") < names.index("apply_edit")
 
 
@@ -402,9 +408,10 @@ def test_catchup_rebuild_is_backend_agnostic_for_tmux(tmp_path: Path) -> None:
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
     sends = [
-        c.args[0][6]
-        for c in run_mock.call_args_list
-        if c.args[0][:4] == ["tmux", "send-keys", "-t", "%2"] and "-l" in c.args[0]
+        recorded_call.args[0][6]
+        for recorded_call in run_mock.call_args_list
+        if recorded_call.args[0][:4] == ["tmux", "send-keys", "-t", "%2"]
+        and "-l" in recorded_call.args[0]
     ]
     assert sends.index(":%d") < sends.index("PARTIAL") < sends.index("leftover")
     assert sends.index("leftover") < sends.index("NEW")  # ...all before the new edit
@@ -476,8 +483,10 @@ def test_s_during_a_catch_up_hands_the_buffer_over_as_it_is(
     resolved, payload = _orphaned_remainder_and_edit(tmp_path, adopted)
     follower = _fake_follower()
     follower.resume.return_value = resumed
-    monkeypatch.setattr(hooks, "get_follower", lambda *a, **k: follower)
-    monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(hooks, "get_follower", lambda *arguments, **keyword_arguments: follower)
+    monkeypatch.setattr(
+        hooks, "status_surface_for", lambda *arguments, **keyword_arguments: MagicMock()
+    )
     seen: dict[str, object] = {}
 
     def fake_wait(
@@ -524,9 +533,11 @@ def test_s_again_after_an_interrupted_catch_up_shows_claudes_finished_file(
     resolved, payload = _orphaned_remainder_and_edit(tmp_path)
     follower = _fake_follower()
     follower.resume.return_value = AnimationResult("interrupted", 1)
-    monkeypatch.setattr(hooks, "get_follower", lambda *a, **k: follower)
-    monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: MagicMock())
-    monkeypatch.setattr(hooks, "show_popup", lambda *a, **k: None)
+    monkeypatch.setattr(hooks, "get_follower", lambda *arguments, **keyword_arguments: follower)
+    monkeypatch.setattr(
+        hooks, "status_surface_for", lambda *arguments, **keyword_arguments: MagicMock()
+    )
+    monkeypatch.setattr(hooks, "show_popup", lambda *arguments, **keyword_arguments: None)
 
     # "interrupt" on every poll: the hand-off wait des-interrupts at once.
     _run_post_hook(payload, "interrupt")
@@ -561,8 +572,10 @@ def test_a_save_after_an_interrupted_catch_up_says_what_was_really_shown(
     resolved, payload = _orphaned_remainder_and_edit(tmp_path, partial=partial)
     follower = _fake_follower()
     follower.resume.return_value = AnimationResult("interrupted", 1)
-    monkeypatch.setattr(hooks, "get_follower", lambda *a, **k: follower)
-    monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: MagicMock())
+    monkeypatch.setattr(hooks, "get_follower", lambda *arguments, **keyword_arguments: follower)
+    monkeypatch.setattr(
+        hooks, "status_surface_for", lambda *arguments, **keyword_arguments: MagicMock()
+    )
 
     def the_user_saves(seconds: float) -> None:
         Path(resolved).write_text("a\nx\nUSER\n")

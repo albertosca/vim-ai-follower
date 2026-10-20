@@ -52,7 +52,9 @@ def _read(target: Path) -> list[list[str]]:
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert hooks.cmd_hook_post(_ENV, _payload("Read", target)) == 0
     return [
-        c for c in (call.args[0] for call in run.call_args_list) if c[:2] == ["tmux", "send-keys"]
+        command_line
+        for command_line in (call.args[0] for call in run.call_args_list)
+        if command_line[:2] == ["tmux", "send-keys"]
     ]
 
 
@@ -173,13 +175,13 @@ def test_the_edit_post_hook_clears_the_mark_once_it_holds_the_slot(tmp_path: Pat
     slot_held_at_clear: list[bool] = []
     real_clear = snapshot.clear_in_flight
 
-    def _clear(window_id: str, file_path: str, *args: Any, **kwargs: Any) -> None:
+    def _clear(window_id: str, file_path: str, *arguments: Any, **keyword_arguments: Any) -> None:
         slot_held_at_clear.append(control.is_animating(window_id))
-        real_clear(window_id, file_path, *args, **kwargs)
+        real_clear(window_id, file_path, *arguments, **keyword_arguments)
 
     at_animation: list[tuple[bool, bool]] = []
 
-    def _animate(*args: Any, **kwargs: Any) -> int:
+    def _animate(*arguments: Any, **keyword_arguments: Any) -> int:
         at_animation.append((snapshot.in_flight("@1", _real(target)), control.is_animating("@1")))
         return 0
 
@@ -369,8 +371,8 @@ def test_the_plugin_registers_the_failure_hook_for_edit_tools() -> None:
     manifest = json.loads((Path(__file__).parent.parent / "hooks" / "hooks.json").read_text())
     for event in ("PostToolUseFailure", "PermissionDenied"):
         entries = manifest["hooks"][event]
-        assert [e["matcher"] for e in entries] == ["Edit|MultiEdit|Write"], event
-        (command,) = [h["command"] for h in entries[0]["hooks"]]
+        assert [entry["matcher"] for entry in entries] == ["Edit|MultiEdit|Write"], event
+        (command,) = [hook_entry["command"] for hook_entry in entries[0]["hooks"]]
         assert command.endswith("python3 -P -m vim_ai_follower.cli hook failure"), command
 
 
@@ -387,7 +389,9 @@ def test_a_read_by_the_marks_own_writer_clears_it_and_navigates(tmp_path: Path) 
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert hooks.cmd_hook_post(_ENV, {**_payload("Read", target), "session_id": "sess-a"}) == 0
     assert [
-        c for c in (call.args[0] for call in run.call_args_list) if c[:2] == ["tmux", "send-keys"]
+        command_line
+        for command_line in (call.args[0] for call in run.call_args_list)
+        if command_line[:2] == ["tmux", "send-keys"]
     ]
     assert _open_files() == (_real(target),)
     assert not snapshot.in_flight("@1", _real(target))
@@ -405,7 +409,9 @@ def test_a_read_by_another_writer_is_still_held_back(tmp_path: Path) -> None:
         payload = {**_payload("Read", target), "session_id": "sess-a", "agent_id": "agent-2"}
         assert hooks.cmd_hook_post(_ENV, payload) == 0
     assert not [
-        c for c in (call.args[0] for call in run.call_args_list) if c[:2] == ["tmux", "send-keys"]
+        command_line
+        for command_line in (call.args[0] for call in run.call_args_list)
+        if command_line[:2] == ["tmux", "send-keys"]
     ]
     assert snapshot.in_flight("@1", _real(target))
     log = hooks.LOG_PATH.read_text()
@@ -481,7 +487,7 @@ def test_the_post_hook_clears_the_mark_when_the_slot_acquire_raises(
     _pre(target)
     target.write_text("one\ntwo\n")
 
-    def _boom(*args: Any, **kwargs: Any) -> bool:
+    def _boom(*arguments: Any, **keyword_arguments: Any) -> bool:
         raise PermissionError("cache dir went read-only")
 
     monkeypatch.setattr(control, "try_acquire_animating", _boom)
@@ -506,7 +512,9 @@ def test_a_reader_with_an_identity_is_not_told_of_another_writer_for_an_unknown_
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run:
         assert hooks.cmd_hook_post(_ENV, {**_payload("Read", target), "session_id": "sess-b"}) == 0
     assert not [
-        c for c in (call.args[0] for call in run.call_args_list) if c[:2] == ["tmux", "send-keys"]
+        command_line
+        for command_line in (call.args[0] for call in run.call_args_list)
+        if command_line[:2] == ["tmux", "send-keys"]
     ]
     assert snapshot.in_flight("@1", _real(target))
     log = hooks.LOG_PATH.read_text()

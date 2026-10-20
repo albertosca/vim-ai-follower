@@ -76,9 +76,11 @@ def _setup(
 def _run_hook(target: Path, follower: MagicMock, monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     """Runs the post hook; returns the one status surface every call shares."""
     surface = MagicMock()
-    monkeypatch.setattr(hooks, "get_follower", lambda *a, **k: follower)
-    monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: surface)
-    monkeypatch.setattr(hooks, "show_popup", lambda *a, **k: None)
+    monkeypatch.setattr(hooks, "get_follower", lambda *arguments, **keyword_arguments: follower)
+    monkeypatch.setattr(
+        hooks, "status_surface_for", lambda *arguments, **keyword_arguments: surface
+    )
+    monkeypatch.setattr(hooks, "show_popup", lambda *arguments, **keyword_arguments: None)
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
     with (
         patch("vim_ai_follower.hooks.time.sleep"),
@@ -112,10 +114,10 @@ def test_a_buffer_not_holding_the_base_is_retyped_in_full(
 
     assert follower.apply_edit.call_args_list == []
     assert follower.show_fresh.call_args == call(resolved, AFTER, in_new_tab=True)
-    fs = state.FollowerState.read("@1")
-    assert fs is not None
-    assert fs.current_file == resolved
-    assert resolved in fs.open_files
+    follower_state = state.FollowerState.read("@1")
+    assert follower_state is not None
+    assert follower_state.current_file == resolved
+    assert resolved in follower_state.open_files
 
 
 def test_a_probe_that_raises_falls_back_to_the_retype(
@@ -157,7 +159,7 @@ def test_the_probe_runs_after_the_pending_catch_up(
     order: list[str] = []
 
     def _step(name: str, answer: object) -> Callable[..., object]:
-        def _record(*args: object, **kwargs: object) -> object:
+        def _record(*arguments: object, **keyword_arguments: object) -> object:
             order.append(name)
             return answer
 
@@ -184,9 +186,13 @@ def test_a_retype_after_a_mismatch_that_is_interrupted_persists_a_show_fresh_rem
     follower.show_fresh.return_value = AnimationResult("interrupted", 1)
     saved: dict[str, object] = {}
     monkeypatch.setattr(
-        control, "save_pending_show_fresh", lambda *a, **k: saved.update(args=a, kwargs=k)
+        control,
+        "save_pending_show_fresh",
+        lambda *arguments, **keyword_arguments: saved.update(
+            args=arguments, kwargs=keyword_arguments
+        ),
     )
-    monkeypatch.setattr(hooks, "_await_user_handoff", lambda *a, **k: None)
+    monkeypatch.setattr(hooks, "_await_user_handoff", lambda *arguments, **keyword_arguments: None)
     _run_hook(target, follower, monkeypatch)
 
     assert saved["args"] == ("@1", ("B", "c"), saved["args"][2])  # type: ignore[index]
@@ -221,9 +227,9 @@ def test_an_adopted_buffer_that_is_not_the_base_is_left_alone(
     assert follower.show_fresh.call_args_list == []
     assert follower.apply_edit.call_args_list == []
     assert follower.close_tab.call_args_list == []
-    fs = state.FollowerState.read("@1")
-    assert fs is not None
-    assert fs.stale_files == (resolved,)
+    follower_state = state.FollowerState.read("@1")
+    assert follower_state is not None
+    assert follower_state.stale_files == (resolved,)
     # The cue is the surface's last word: nothing clears or overwrites it.
     cue = hooks.BASE_DIFFERS_CUE if probe == "differs" else hooks.PROBE_UNKNOWN_CUE
     assert surface.method_calls[-1] == call.set_state(cue)
@@ -244,9 +250,9 @@ def test_an_adopted_fresh_file_the_user_has_loaded_is_left_alone_untracked(
 
     assert follower.probe_buffer.call_args == call(resolved, BEFORE)
     assert follower.show_fresh.call_args_list == []
-    fs = state.FollowerState.read("@1")
-    assert fs is not None
-    assert fs.open_files == ()
+    follower_state = state.FollowerState.read("@1")
+    assert follower_state is not None
+    assert follower_state.open_files == ()
     assert surface.method_calls[-1] == call.set_state(hooks.BASE_DIFFERS_CUE)
 
 
@@ -283,9 +289,9 @@ def test_an_adopted_stale_file_the_user_resynced_gets_a_diff_and_loses_the_mark(
 
     assert follower.show_fresh.call_args_list == []
     assert follower.apply_edit.call_args.args[0] == resolved
-    fs = state.FollowerState.read("@1")
-    assert fs is not None
-    assert fs.stale_files == ()
+    follower_state = state.FollowerState.read("@1")
+    assert follower_state is not None
+    assert follower_state.stale_files == ()
     # The earlier cues come down before this animation's own cue goes up.
     retire = surface.method_calls.index(
         call.retire_state(hooks.BASE_DIFFERS_CUE, hooks.PROBE_UNKNOWN_CUE)
@@ -330,9 +336,9 @@ def test_an_adopted_catch_up_never_rewrites_a_buffer_not_holding_the_partial(
     assert follower.show_fresh.call_args_list == []
     assert follower.apply_edit.call_args_list == []
     assert control.load_pending_animation("@1") is None
-    fs = state.FollowerState.read("@1")
-    assert fs is not None
-    assert fs.stale_files == (resolved,)
+    follower_state = state.FollowerState.read("@1")
+    assert follower_state is not None
+    assert follower_state.stale_files == (resolved,)
     assert surface.method_calls[-1] == call.set_state(getattr(hooks, cue))
     if partial is not None:
         assert follower.probe_buffer.call_args_list[0] == call(resolved, partial)
@@ -454,10 +460,10 @@ def test_a_completed_catch_up_that_is_not_the_base_is_reloaded_from_disk(
     assert surface.method_calls[-1] == call.retire_state(
         hooks.BASE_DIFFERS_CUE, hooks.PROBE_UNKNOWN_CUE
     )
-    fs = state.FollowerState.read("@1")
-    assert fs is not None
-    assert resolved not in fs.stale_files
-    assert fs.current_file == resolved
+    follower_state = state.FollowerState.read("@1")
+    assert follower_state is not None
+    assert resolved not in follower_state.stale_files
+    assert follower_state.current_file == resolved
     assert "reloaded" in hooks.LOG_PATH.read_text()
 
 
@@ -495,9 +501,9 @@ def test_an_adopted_catch_up_the_user_typed_into_is_left_alone(
     assert follower.apply_edit.call_args_list == []
     assert follower.show_fresh.call_args_list == []
     assert surface.method_calls[-1] == call.set_state(getattr(hooks, cue))
-    fs = state.FollowerState.read("@1")
-    assert fs is not None
-    assert fs.stale_files == (resolved,)
+    follower_state = state.FollowerState.read("@1")
+    assert follower_state is not None
+    assert follower_state.stale_files == (resolved,)
     assert re.search(r"left the buffer .* alone .*catch-up", hooks.LOG_PATH.read_text())
 
 
@@ -513,7 +519,7 @@ def test_a_catch_up_whose_state_stops_proving_a_dedicated_follower_asks_first(
     follower = _follower("holds")
     follower.probe_buffer.side_effect = ["differs", "differs"]
 
-    def _replaced(*args: object, **kwargs: object) -> AnimationResult:
+    def _replaced(*arguments: object, **keyword_arguments: object) -> AnimationResult:
         state.FollowerState.set("@1", "nvim", "/tmp/other.sock", shown_any=True)
         return AnimationResult("completed", 1)
 
@@ -537,7 +543,7 @@ def test_a_catch_up_with_no_recorded_partial_and_no_proof_of_dedication_is_left_
     _pending_apply_edit(resolved, None)
     follower = _follower("differs")
 
-    def _replaced(*args: object, **kwargs: object) -> AnimationResult:
+    def _replaced(*arguments: object, **keyword_arguments: object) -> AnimationResult:
         state.FollowerState.clear("@1")
         return AnimationResult("completed", 1)
 

@@ -50,7 +50,7 @@ def test_the_hand_off_wait_shows_the_cue_for_its_buffer(
     follower.user_readonly.return_value = readonly
     surface = MagicMock()
 
-    def _released(*args: object, **kwargs: object) -> bool:
+    def _released(*arguments: object, **keyword_arguments: object) -> bool:
         return False  # the user saved: the wait is over
 
     with (

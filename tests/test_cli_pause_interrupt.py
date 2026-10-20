@@ -15,7 +15,9 @@ from vim_ai_follower.diff import EditOp
 
 def _popup_calls(popen_mock: MagicMock) -> list[list[str]]:
     return [
-        c.args[0] for c in popen_mock.call_args_list if c.args[0][:2] == ["tmux", "display-popup"]
+        recorded_call.args[0]
+        for recorded_call in popen_mock.call_args_list
+        if recorded_call.args[0][:2] == ["tmux", "display-popup"]
     ]
 
 
@@ -89,7 +91,7 @@ def test_pause_shows_a_popup_on_the_follower_pane_when_requesting_pause() -> Non
     assert popups[0][:3] == ["tmux", "display-popup", "-t"]
     assert popups[0][3] == "%2"
     assert "-E" in popups[0]
-    assert any("Paused" in arg for arg in popups[0])
+    assert any("Paused" in argument for argument in popups[0])
 
 
 def test_interrupt_shows_a_popup_on_the_follower_pane() -> None:
@@ -103,7 +105,7 @@ def test_interrupt_shows_a_popup_on_the_follower_pane() -> None:
     popups = _popup_calls(popen)
     assert len(popups) == 1
     assert popups[0][3] == "%2"
-    assert any("Interrupted" in arg for arg in popups[0])
+    assert any("Interrupted" in argument for argument in popups[0])
 
 
 def test_pause_skips_popup_when_no_follower_is_registered() -> None:
@@ -185,8 +187,8 @@ def test_pause_discards_a_crash_orphaned_nvim_pending_without_crashing(
         return_value=MagicMock(returncode=0, stdout="@1\n"),
     ):
         state.FollowerState.set("@1", "nvim", "/tmp/x.sock")
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
-    control.save_pending_apply_edit("@1", [op], 0.0)  # crash fallback, no live marker
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
+    control.save_pending_apply_edit("@1", [operation], 0.0)  # crash fallback, no live marker
 
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
@@ -232,8 +234,8 @@ def test_a_press_while_the_hook_is_finishing_is_nothing_to_act_on(
 
 def test_pause_resumes_pending_apply_edit(capsys: pytest.CaptureFixture[str]) -> None:
     _register_fake_follower("@1", "%2")
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
-    control.save_pending_apply_edit("@1", [op], 0.0)
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
+    control.save_pending_apply_edit("@1", [operation], 0.0)
 
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
@@ -242,9 +244,10 @@ def test_pause_resumes_pending_apply_edit(capsys: pytest.CaptureFixture[str]) ->
         assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 0
 
     sends = [
-        c.args[0][6]
-        for c in run.call_args_list
-        if c.args[0][:4] == ["tmux", "send-keys", "-t", "%2"] and "-l" in c.args[0]
+        recorded_call.args[0][6]
+        for recorded_call in run.call_args_list
+        if recorded_call.args[0][:4] == ["tmux", "send-keys", "-t", "%2"]
+        and "-l" in recorded_call.args[0]
     ]
     assert "resumed" in sends
     assert control.has_pending_animation("@1") is False
@@ -258,11 +261,11 @@ def test_a_keyboard_resume_a_stop_ends_while_paused_again_says_so(
     # replay again, then `claude-follow stop`. The replay's pause wait ends
     # "stopped": no remainder kept, no popup to the stopped follower's pane.
     _register_fake_follower("@1", "%2")
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
-    control.save_pending_apply_edit("@1", [op], 0.0)
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
+    control.save_pending_apply_edit("@1", [operation], 0.0)
     checks = {"count": 0}
 
-    def _check(window_id: str, base_dir: object = None) -> str | None:
+    def _check(window_id: str, base_directory: object = None) -> str | None:
         checks["count"] += 1
         if checks["count"] == 1:
             return "pause"
@@ -287,11 +290,11 @@ def test_pause_resume_owns_the_slot_while_it_replays_and_releases_it() -> None:
     # The keyboard resume animates from the CLI process: it must hold the
     # window's slot like a hook, or a hook arriving mid-replay animates too.
     _register_fake_follower("@1", "%2")
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
-    control.save_pending_apply_edit("@1", [op], 0.0)
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
+    control.save_pending_apply_edit("@1", [operation], 0.0)
     seen: list[str | None] = []
 
-    def _check(window_id: str, base_dir: object = None) -> None:
+    def _check(window_id: str, base_directory: object = None) -> None:
         seen.append(control.animating_state("@1"))
 
     with (
@@ -311,8 +314,8 @@ def test_pause_resume_skips_when_a_hook_owns_the_slot(
     # file, so a refusal after the load had to put it back, racing the hook
     # that holds the slot (it consumes the same file as its catch-up).
     _register_fake_follower("@1", "%2")
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
-    control.save_pending_apply_edit("@1", [op], 0.0)
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
+    control.save_pending_apply_edit("@1", [operation], 0.0)
     pending_at_acquire: list[bool] = []
 
     def held_by_a_hook(window_id: str, *_args: object, **_kwargs: object) -> bool:
@@ -326,15 +329,19 @@ def test_pause_resume_skips_when_a_hook_owns_the_slot(
     ):
         assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 1
     assert pending_at_acquire == [True], "the remainder was consumed before the slot was taken"
-    assert not [c for c in run.call_args_list if c.args[0][:2] == ["tmux", "send-keys"]]
+    assert not [
+        recorded_call
+        for recorded_call in run.call_args_list
+        if recorded_call.args[0][:2] == ["tmux", "send-keys"]
+    ]
     assert capsys.readouterr().err == (
         "claude-follow: another animation owns this window — resume it after that one ends\n"
     )
     # The keybinding runs through tmux run-shell, which discards stderr: the
     # refusal has to be SEEN.
     popups = _popup_calls(popen)
-    assert len(popups) == 1 and any("Busy" in arg for arg in popups[0])
-    assert control.load_pending_animation("@1") == control.PendingApplyEdit([op], 0.0)
+    assert len(popups) == 1 and any("Busy" in argument for argument in popups[0])
+    assert control.load_pending_animation("@1") == control.PendingApplyEdit([operation], 0.0)
 
 
 def test_pause_resume_that_finds_the_remainder_gone_after_the_acquire_releases_the_slot(
@@ -364,18 +371,18 @@ def test_pause_resume_that_finds_the_remainder_gone_after_the_acquire_releases_t
 
 def test_pause_resume_shows_resuming_popup_before_replay_and_nothing_after_completion() -> None:
     _register_fake_follower("@1", "%2")
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
-    control.save_pending_apply_edit("@1", [op], 0.0)
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
+    control.save_pending_apply_edit("@1", [operation], 0.0)
     order: list[str] = []
 
-    def _tracking_run(cmd: list[str], **kwargs: object) -> MagicMock:
-        if cmd[:2] == ["tmux", "send-keys"] and "keys" not in order:
+    def _tracking_run(command: list[str], **keyword_arguments: object) -> MagicMock:
+        if command[:2] == ["tmux", "send-keys"] and "keys" not in order:
             order.append("keys")
-        return _mock_tmux_run()(cmd, **kwargs)
+        return _mock_tmux_run()(command, **keyword_arguments)
 
-    def _tracking_popen(cmd: list[str], **kwargs: object) -> MagicMock:
-        if cmd[:2] == ["tmux", "display-popup"]:
-            order.append(f"popup:{cmd[-1]}")
+    def _tracking_popen(command: list[str], **keyword_arguments: object) -> MagicMock:
+        if command[:2] == ["tmux", "display-popup"]:
+            order.append(f"popup:{command[-1]}")
         return MagicMock()
 
     with (
@@ -392,8 +399,8 @@ def test_pause_resume_shows_resuming_popup_before_replay_and_nothing_after_compl
 
 def test_pause_resume_shows_popup_with_interrupted_message_when_resume_is_interrupted() -> None:
     _register_fake_follower("@1", "%2")
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
-    control.save_pending_apply_edit("@1", [op], 0.0)
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
+    control.save_pending_apply_edit("@1", [operation], 0.0)
 
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
@@ -404,8 +411,8 @@ def test_pause_resume_shows_popup_with_interrupted_message_when_resume_is_interr
 
     popups = _popup_calls(popen)
     assert len(popups) == 2  # "Resuming" up front, then the outcome
-    assert any("Resuming" in arg for arg in popups[0])
-    assert any("Interrupted" in arg for arg in popups[1])
+    assert any("Resuming" in argument for argument in popups[0])
+    assert any("Interrupted" in argument for argument in popups[1])
 
 
 def test_pause_resume_fails_without_registered_follower(
@@ -423,13 +430,13 @@ def test_pause_resume_fails_without_registered_follower(
 def test_pause_resume_without_follower_preserves_pending_apply_edit(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("x",))
-    control.save_pending_apply_edit("@1", [op], 0.2)
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("x",))
+    control.save_pending_apply_edit("@1", [operation], 0.2)
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()):
         assert commands.cmd_pause({"TMUX_PANE": "%1"}) == 1
     assert "no follower registered" in capsys.readouterr().err
     pending = control.load_pending_animation("@1")
-    assert pending == control.PendingApplyEdit([op], 0.2)
+    assert pending == control.PendingApplyEdit([operation], 0.2)
 
 
 def test_interrupt_with_pending_discards_it_and_hands_the_buffer_over() -> None:
@@ -448,15 +455,16 @@ def test_interrupt_with_pending_discards_it_and_hands_the_buffer_over() -> None:
     request_pause.assert_not_called()
     request_interrupt.assert_not_called()
     sends = [
-        c.args[0][6]
-        for c in run.call_args_list
-        if c.args[0][:4] == ["tmux", "send-keys", "-t", "%2"] and "-l" in c.args[0]
+        recorded_call.args[0][6]
+        for recorded_call in run.call_args_list
+        if recorded_call.args[0][:4] == ["tmux", "send-keys", "-t", "%2"]
+        and "-l" in recorded_call.args[0]
     ]
     # buffer unlocked for the user, 'paste' given back from its record
     assert call_spelled("hand_over", 0) in [resolve_typed_paths(text) for text in sends]
     popups = _popup_calls(popen)
     assert len(popups) == 1
-    assert any("Interrupted" in arg for arg in popups[0])
+    assert any("Interrupted" in argument for argument in popups[0])
 
 
 def test_interrupt_with_pending_but_dead_follower_still_discards_it(
@@ -555,7 +563,7 @@ def test_pause_over_a_paused_hook_requests_resume_with_resuming_popup(
     assert "resume requested" in capsys.readouterr().out
     popups = _popup_calls(popen)
     assert len(popups) == 1
-    assert any("Resuming" in arg for arg in popups[0])
+    assert any("Resuming" in argument for argument in popups[0])
 
 
 def test_pause_during_handoff_only_prints_guidance(
@@ -587,7 +595,7 @@ def test_interrupt_during_handoff_signals_discard(
     assert "unsaved changes discarded" in capsys.readouterr().out
     popups = _popup_calls(popen)
     assert len(popups) == 1
-    assert any("Discarded" in arg for arg in popups[0])
+    assert any("Discarded" in argument for argument in popups[0])
 
 
 def test_pause_resume_that_cannot_reach_the_file_keeps_the_remainder(
@@ -596,8 +604,8 @@ def test_pause_resume_that_cannot_reach_the_file_keeps_the_remainder(
     """The navigation failed before anything was typed: the remainder is
     still whole, so it stays recoverable, and the slot is released."""
     _register_fake_follower("@1", "%2")
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
-    control.save_pending_apply_edit("@1", [op], 0.0, file_path="/tmp/f.py")
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
+    control.save_pending_apply_edit("@1", [operation], 0.0, file_path="/tmp/f.py")
 
     with (
         patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()),
@@ -644,8 +652,8 @@ def test_a_resume_cut_short_by_a_stop_does_not_resave_the_remainder() -> None:
     failed. Re-saving the original would leave a remainder for a window
     with no follower."""
     _register_fake_follower("@1", "%2")
-    op = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
-    control.save_pending_apply_edit("@1", [op], 0.0, file_path="/tmp/f.py")
+    operation = EditOp(kind="insert", start_line=1, end_line=0, new_lines=("resumed",))
+    control.save_pending_apply_edit("@1", [operation], 0.0, file_path="/tmp/f.py")
 
     def stopped_then_failed(*_args: object, **_kwargs: object) -> None:
         state.FollowerState.clear("@1")
@@ -801,7 +809,7 @@ def test_interrupting_an_orphaned_remainder_while_a_hook_owns_the_slot_is_refuse
         "claude-follow: another animation owns this window — press S again to interrupt it\n"
     )
     popups = _popup_calls(popen)
-    assert len(popups) == 1 and any("Busy" in arg for arg in popups[0])
+    assert len(popups) == 1 and any("Busy" in argument for argument in popups[0])
     assert control.has_pending_animation("@1") is True  # the hook's catch-up decides
 
 

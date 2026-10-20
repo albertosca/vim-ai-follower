@@ -48,9 +48,11 @@ def _register_nvim_follower(target: Path) -> None:
 
 
 def _run_hook(target: Path, follower: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(hooks, "get_follower", lambda *a, **k: follower)
-    monkeypatch.setattr(hooks, "status_surface_for", lambda *a, **k: MagicMock())
-    monkeypatch.setattr(hooks, "show_popup", lambda *a, **k: None)
+    monkeypatch.setattr(hooks, "get_follower", lambda *arguments, **keyword_arguments: follower)
+    monkeypatch.setattr(
+        hooks, "status_surface_for", lambda *arguments, **keyword_arguments: MagicMock()
+    )
+    monkeypatch.setattr(hooks, "show_popup", lambda *arguments, **keyword_arguments: None)
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
     with (
         patch("vim_ai_follower.control.check_signal", return_value="interrupt"),
@@ -99,9 +101,9 @@ def test_the_before_it_passes_is_the_base_its_own_interrupt_path_uses(
     seen: dict[str, object] = {}
     real_save = control.save_pending_apply_edit
 
-    def spy(*args: object, **kwargs: object) -> None:
-        seen.update(kwargs)
-        real_save(*args, **kwargs)  # type: ignore[arg-type]
+    def spy(*arguments: object, **keyword_arguments: object) -> None:
+        seen.update(keyword_arguments)
+        real_save(*arguments, **keyword_arguments)  # type: ignore[arg-type]
 
     monkeypatch.setattr(control, "save_pending_apply_edit", spy)
     _run_hook(target, follower, monkeypatch)

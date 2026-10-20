@@ -23,7 +23,11 @@ def one_tmux_server() -> Iterator[None]:
 
 
 def _split_calls(run_mock: MagicMock) -> list[list[str]]:
-    return [c.args[0] for c in run_mock.call_args_list if c.args[0][:2] == ["tmux", "split-window"]]
+    return [
+        recorded_call.args[0]
+        for recorded_call in run_mock.call_args_list
+        if recorded_call.args[0][:2] == ["tmux", "split-window"]
+    ]
 
 
 def test_hook_post_reopens_dead_follower_when_configured(tmp_path: Path) -> None:
@@ -125,16 +129,16 @@ def test_hook_post_logs_and_stays_silent_when_reopen_fails(tmp_path: Path) -> No
     state.FollowerState.set("@1", "tmux", "%2", origin="%1", on_failure="reopen")
     payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
 
-    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
+    def _run(command: list[str], **keyword_arguments: object) -> MagicMock:
         result = MagicMock()
-        if cmd[:3] == ["tmux", "list-panes", "-a"]:
+        if command[:3] == ["tmux", "list-panes", "-a"]:
             result.returncode = 0
             result.stdout = ""
-        elif cmd[:2] == ["tmux", "display-message"]:
+        elif command[:2] == ["tmux", "display-message"]:
             result.returncode = 0
             result.stdout = "@1\n"
-        elif cmd[:2] == ["tmux", "split-window"]:
-            raise subprocess.CalledProcessError(1, cmd)
+        elif command[:2] == ["tmux", "split-window"]:
+            raise subprocess.CalledProcessError(1, command)
         else:
             result.returncode = 0
             result.stdout = ""
