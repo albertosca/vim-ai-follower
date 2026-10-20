@@ -826,10 +826,12 @@ def test_nvim_answers_true_for_a_well_formed_get_mode_reply() -> None:
             assert nvim_connect.nvim_answers(str(path)) is True
 
 
+@pytest.mark.integration
 def test_nvim_answers_true_for_a_real_nvim(headless_nvim: str) -> None:
     assert nvim_connect.nvim_answers(headless_nvim) is True
 
 
+@pytest.mark.integration
 def test_nvim_ready_true_for_a_started_real_nvim(headless_nvim: str) -> None:
     assert nvim_connect.nvim_ready(headless_nvim) is True
 
@@ -895,6 +897,7 @@ def test_in_command_line_window_is_none_for_a_socket_nobody_listens_on() -> None
         assert nvim_connect.in_command_line_window(str(directory / "nowhere.sock")) is None
 
 
+@pytest.mark.integration
 def test_in_command_line_window_asks_a_real_nvim(headless_nvim: str) -> None:
     assert nvim_connect.in_command_line_window(headless_nvim) is False
 
@@ -912,6 +915,7 @@ def test_ready_split_socket_names_the_windows_launch_socket_only_when_ready() ->
                     assert nvim_connect.ready_split_socket("@1") == str(path)
 
 
+@pytest.mark.integration
 def test_a_frozen_nvim_times_out_the_bounded_attach_and_its_requests(headless_nvim: str) -> None:
     """Measured first (Step 1 of the plan's Task 16): SIGALRM interrupts
     pynvim's asyncio loop both inside attach and inside a request, and the
@@ -948,6 +952,7 @@ def test_a_frozen_nvim_times_out_the_bounded_attach_and_its_requests(headless_nv
 _SLOW_LUA = "vim.uv.sleep(600)"
 
 
+@pytest.mark.integration
 def test_unbounded_requests_lift_the_deadline_on_that_connection_only(headless_nvim: str) -> None:
     # The typing of an animation waits for an nvim that is waiting on its
     # user; everything else on the connection keeps the deadline.
