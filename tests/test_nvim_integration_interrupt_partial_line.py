@@ -30,7 +30,7 @@ def _interrupt_at(nth: int) -> Any:
     agents in parallel, per the backlog contract)."""
     calls = {"n": 0}
 
-    def _signal(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _signal(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         return "interrupt" if calls["n"] == nth else None
 
@@ -49,14 +49,14 @@ def test_show_fresh_interrupt_leaves_exactly_the_typed_chars_on_the_row(
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.01)
-    file_a = str(tmp_path / "a.py")
+    first_file = str(tmp_path / "a.py")
     content = "ab\nwxyz\nq\n"
 
     # Call sequence: outer(line0) + char0 + char1 [types "ab"] -> 3 calls;
     # outer(line1) + char0("w") + char1("x") -> 3 more calls; the 7th call
     # (char index 2, before typing "y") fires the interrupt.
     monkeypatch.setattr(control, "check_signal", _interrupt_at(7))
-    result = follower.show_fresh(file_a, content)
+    result = follower.show_fresh(first_file, content)
 
     # The interrupted line (index 1, "wxyz") is NOT counted as shown: only
     # line0 was fully typed.
@@ -88,30 +88,30 @@ def test_show_fresh_des_interrupt_after_mid_line_stop_lands_at_full_content_no_d
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.01)
     FollowerState.set("@1", "nvim", headless_nvim, adopted=False)  # proven dedicated
-    file_a = str(tmp_path / "a.py")
+    first_file = str(tmp_path / "a.py")
     content = "ab\nwxyz\nq\n"
     lines = content.splitlines()
 
     monkeypatch.setattr(control, "check_signal", _interrupt_at(7))
-    result = follower.show_fresh(file_a, content)
+    result = follower.show_fresh(first_file, content)
     assert result == AnimationResult("interrupted", 1)
 
     nvim = pynvim.attach("socket", path=headless_nvim)
     assert nvim.current.buffer[:] == ["ab", "wx", ""]  # the mid-line stop, pre-des-interrupt
 
-    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
+    monkeypatch.setattr(control, "check_signal", lambda *arguments, **keyword_arguments: None)
     # Exactly what hooks._reconstruct_partial_fresh produces: only the fully
     # typed lines (completed_count == 1), the half-typed "wx" is discarded.
     partial = "\n".join(lines[:1])
     assert partial == "ab"
-    rebuilt = follower.rewrite_buffer(file_a, partial)
+    rebuilt = follower.rewrite_buffer(first_file, partial)
     assert rebuilt.outcome == "completed"
 
     nvim = pynvim.attach("socket", path=headless_nvim)
     assert nvim.current.buffer[:] == ["ab"]  # seedless partial; "wx" is gone
 
     pending = PendingShowFresh(
-        lines=tuple(lines[1:]), pace_seconds=0.0, continuation=True, file_path=file_a
+        lines=tuple(lines[1:]), pace_seconds=0.0, continuation=True, file_path=first_file
     )
     replay = follower.resume(pending)
     assert replay.outcome == "completed"
@@ -137,10 +137,10 @@ def test_apply_edit_des_interrupt_after_mid_op_mid_line_stop_lands_at_full_conte
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.01)
-    file_a = str(tmp_path / "a.py")
+    first_file = str(tmp_path / "a.py")
     before = "a\nb\nc\n"
     after = "a\nWXYZ\nQR\nc\n"
-    follower.show_fresh(file_a, before)
+    follower.show_fresh(first_file, before)
     ops = compute_edit_script(before, after)
     assert len(ops) == 1  # single replace op: b -> WXYZ, QR
 
@@ -148,7 +148,7 @@ def test_apply_edit_des_interrupt_after_mid_op_mid_line_stop_lands_at_full_conte
     # char1("X") -> 4 calls; the 5th call (char index 2, before typing "Y")
     # fires the interrupt.
     monkeypatch.setattr(control, "check_signal", _interrupt_at(5))
-    result = follower.apply_edit(file_a, ops)
+    result = follower.apply_edit(first_file, ops)
     assert result == AnimationResult("interrupted", 0)  # op0 not counted as done
 
     nvim = pynvim.attach("socket", path=headless_nvim)
@@ -157,17 +157,17 @@ def test_apply_edit_des_interrupt_after_mid_op_mid_line_stop_lands_at_full_conte
     # boundary, so the buffer matches what completed_count == 0 claims.
     assert nvim.current.buffer[:] == ["a", "b", "c"]
 
-    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
+    monkeypatch.setattr(control, "check_signal", lambda *arguments, **keyword_arguments: None)
     partial = apply_ops(before, ops[: result.completed_count])
     assert partial == "a\nb\nc\n"  # op0 hadn't completed: nothing of it survives
-    rebuilt = follower.rewrite_buffer(file_a, partial)
+    rebuilt = follower.rewrite_buffer(first_file, partial)
     assert rebuilt.outcome == "completed"
 
     nvim = pynvim.attach("socket", path=headless_nvim)
     assert nvim.current.buffer[:] == ["a", "b", "c"]  # back to the pre-op state, no "WX"
 
     pending = PendingApplyEdit(
-        ops=ops[result.completed_count :], pace_seconds=0.0, file_path=file_a
+        ops=ops[result.completed_count :], pace_seconds=0.0, file_path=first_file
     )
     replay = follower.resume(pending)
     assert replay.outcome == "completed"

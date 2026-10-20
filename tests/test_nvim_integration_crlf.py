@@ -38,7 +38,7 @@ pytestmark = pytest.mark.integration
 
 
 def _buffer(nvim: Any, name: str) -> Any:
-    return next(b for b in nvim.buffers if b.name.endswith("/" + name))
+    return next(buffer for buffer in nvim.buffers if buffer.name.endswith("/" + name))
 
 
 @pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])

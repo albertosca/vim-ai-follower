@@ -24,13 +24,13 @@ from vim_ai_follower.backends.nvim import NvimFollower  # noqa: E402
 
 pytestmark = pytest.mark.integration
 
-CONTENT = "".join(f"line_{n} = {n}\n" for n in range(1, 7))
+CONTENT = "".join(f"line_{number} = {number}\n" for number in range(1, 7))
 
 
 def _interrupt_at(nth: int) -> Any:
     calls = {"n": 0}
 
-    def _signal(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _signal(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         return "interrupt" if calls["n"] == nth else None
 

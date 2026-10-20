@@ -55,7 +55,7 @@ def _adopted_nvim(
 
 
 def _buffer(nvim: Any, name: str) -> Any:
-    return next(b for b in nvim.buffers if b.name.endswith("/" + name))
+    return next(buffer for buffer in nvim.buffers if buffer.name.endswith("/" + name))
 
 
 def _status_text(nvim: Any) -> str:
@@ -63,9 +63,9 @@ def _status_text(nvim: Any) -> str:
     for win in nvim.api.list_wins():
         if nvim.api.win_get_config(win).get("relative", "") == "":
             continue
-        buf = nvim.api.win_get_buf(win)
-        if nvim.api.buf_get_name(buf).endswith("vaf-status"):
-            return " ".join(line.strip() for line in nvim.api.buf_get_lines(buf, 0, -1, True))
+        buffer = nvim.api.win_get_buf(win)
+        if nvim.api.buf_get_name(buffer).endswith("vaf-status"):
+            return " ".join(line.strip() for line in nvim.api.buf_get_lines(buffer, 0, -1, True))
     return ""
 
 
@@ -144,7 +144,7 @@ def test_after_the_user_reloads_the_next_edit_animates_normally(
     # A diff onto the reloaded buffer, not a retype: the same buffer survives
     # (show_fresh wipes and recreates it) and no frame lost the kept lines.
     assert _buffer(nvim, "a.py").number == handle
-    assert all(s[:2] == ["x = 1", "y = 3"] for s in _states(log, "a.py"))
+    assert all(state_lines[:2] == ["x = 1", "y = 3"] for state_lines in _states(log, "a.py"))
     state = FollowerState.read(_WINDOW)
     assert state is not None
     assert str(target) not in state.stale_files
@@ -292,12 +292,12 @@ def test_typing_during_an_adopted_catch_up_survives(
     checks: list[int] = []
     check_signal = control.check_signal
 
-    def _user_types_mid_catch_up(*args: Any, **kwargs: Any) -> str | None:
+    def _user_types_mid_catch_up(*arguments: Any, **keyword_arguments: Any) -> str | None:
         checks.append(len(checks) + 1)
         if len(checks) == 5:
             end = len(rows[0])
             user.api.buf_set_text(handle, 0, end, 0, end, [" user text"])
-        return check_signal(*args, **kwargs)
+        return check_signal(*arguments, **keyword_arguments)
 
     monkeypatch.setattr(control, "check_signal", _user_types_mid_catch_up)
     _edit(target, "".join(row + "\n" for row in [*rows, "# fmt", "z = 4"]))

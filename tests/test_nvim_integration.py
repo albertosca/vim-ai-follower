@@ -31,7 +31,7 @@ def _interrupt_at(nth: int) -> Any:
     resume/hand-over tests below drive."""
     calls = {"n": 0}
 
-    def _signal(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _signal(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         return "interrupt" if calls["n"] == nth else None
 
@@ -98,8 +98,8 @@ def _tab_buffer_names(nvim: Any) -> list[str]:
     names = []
     for tabpage in nvim.api.list_tabpages():
         win = nvim.api.tabpage_get_win(tabpage)
-        buf = nvim.api.win_get_buf(win)
-        names.append(nvim.api.buf_get_name(buf))
+        buffer = nvim.api.win_get_buf(win)
+        names.append(nvim.api.buf_get_name(buffer))
     return names
 
 
@@ -176,11 +176,11 @@ def test_pause_stops_the_animation_then_resumes_to_the_full_content(
 ) -> None:
     from vim_ai_follower import cache
 
-    cache_dir = tmp_path / "cache"
-    monkeypatch.setattr(cache, "CACHE_DIR", cache_dir)
+    cache_directory = tmp_path / "cache"
+    monkeypatch.setattr(cache, "CACHE_DIR", cache_directory)
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
 
-    lines = [f"line {i}" for i in range(5)]
+    lines = [f"line {index}" for index in range(5)]
     content = "\n".join(lines) + "\n"
 
     # Deterministic pause at line 2's boundary (3rd signal check), resumed on
@@ -188,7 +188,7 @@ def test_pause_stops_the_animation_then_resumes_to_the_full_content(
     # the run has truly finished, exactly like the vim pause integration test.
     calls = {"n": 0}
 
-    def _pause_then_resume(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _pause_then_resume(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         if calls["n"] in (3, 4):
             return "pause"
@@ -198,7 +198,7 @@ def test_pause_stops_the_animation_then_resumes_to_the_full_content(
     result = follower.show_fresh("/tmp/p.py", content)
     assert result == AnimationResult("completed", 5)
     # The crash fallback written during the wait is disarmed on resume.
-    assert control.has_pending_animation("@1", cache_dir) is False
+    assert control.has_pending_animation("@1", cache_directory) is False
 
     nvim = pynvim.attach("socket", path=headless_nvim)
     assert nvim.current.buffer[:] == lines  # every line landed, none skipped
@@ -215,7 +215,7 @@ def test_interrupt_leaves_the_buffer_modifiable_for_hand_over(
 
     calls = {"n": 0}
 
-    def _interrupt_midway(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _interrupt_midway(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         return "interrupt" if calls["n"] == 2 else None
 
@@ -259,29 +259,33 @@ def test_goto_file_navigates_between_buffers_and_close_tab_evicts(
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     nvim = pynvim.attach("socket", path=headless_nvim)
 
-    file_a = str(tmp_path / "a.py")
-    file_b = str(tmp_path / "b.py")
+    first_file = str(tmp_path / "a.py")
+    second_file = str(tmp_path / "b.py")
 
-    follower.show_fresh(file_a, "a = 1\n")
-    follower.show_fresh(file_b, "b = 1\n")
+    follower.show_fresh(first_file, "a = 1\n")
+    follower.show_fresh(second_file, "b = 1\n")
 
     def _buf_names() -> list[str]:
-        return [nvim.api.buf_get_name(b) for b in nvim.api.list_bufs()]
+        return [nvim.api.buf_get_name(buffer) for buffer in nvim.api.list_bufs()]
 
     names = _buf_names()
-    assert file_a in names
-    assert file_b in names
-    assert nvim.api.buf_get_name(nvim.api.get_current_buf()) == file_b
+    assert first_file in names
+    assert second_file in names
+    assert nvim.api.buf_get_name(nvim.api.get_current_buf()) == second_file
 
-    follower.goto_file(file_a)
-    assert nvim.api.buf_get_name(nvim.api.get_current_buf()) == file_a
+    follower.goto_file(first_file)
+    assert nvim.api.buf_get_name(nvim.api.get_current_buf()) == first_file
 
-    follower.close_tab(file_b)
-    assert file_b not in _buf_names()
+    follower.close_tab(second_file)
+    assert second_file not in _buf_names()
 
 
 def _floating_windows(nvim: Any) -> list[int]:
-    return [w for w in nvim.api.list_wins() if nvim.api.win_get_config(w)["relative"] != ""]
+    return [
+        window
+        for window in nvim.api.list_wins()
+        if nvim.api.win_get_config(window)["relative"] != ""
+    ]
 
 
 @pytest.mark.integration
@@ -302,14 +306,14 @@ def test_set_writer_opens_a_floating_window_with_the_label_then_clear_closes_it(
     # The identity is the (colored) window title; the body shows the activity.
     title = nvim.api.win_get_config(floating[0])["title"]
     assert any("code-reviewer" in chunk[0] for chunk in title)
-    buf = nvim.api.win_get_buf(floating[0])
-    lines = nvim.api.buf_get_lines(buf, 0, -1, True)
+    buffer = nvim.api.win_get_buf(floating[0])
+    lines = nvim.api.buf_get_lines(buffer, 0, -1, True)
     # Identity only — no activity line: "Writing..." here outlived the
     # animation and lied (2026-08-25 battery Check 5 finding).
     assert not any("Writing..." in line for line in lines)
 
     surface.set_state("Claude waiting — :w releases · S discards")
-    lines_with_state = nvim.api.buf_get_lines(buf, 0, -1, True)
+    lines_with_state = nvim.api.buf_get_lines(buffer, 0, -1, True)
     assert any("Claude waiting" in line for line in lines_with_state)
     # still exactly one floating status window, not a second one stacked on top
     assert len(_floating_windows(nvim)) == 1
@@ -335,18 +339,20 @@ def test_goto_file_finds_the_buffer_despite_a_symlinked_path_component(
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     nvim = pynvim.attach("socket", path=headless_nvim)
 
-    file_a = f"/tmp/vaf-symlink-regress-{uuid.uuid4().hex}.py"
+    first_file = f"/tmp/vaf-symlink-regress-{uuid.uuid4().hex}.py"
 
-    follower.show_fresh(file_a, "a = 1\n")
-    buf_after_show = nvim.api.get_current_buf()
-    canonical_name = nvim.api.buf_get_name(buf_after_show)
+    follower.show_fresh(first_file, "a = 1\n")
+    buffer_after_show = nvim.api.get_current_buf()
+    canonical_name = nvim.api.buf_get_name(buffer_after_show)
 
     # Must not raise E95, and must land on the SAME buffer already showing
     # file_a (by canonical name) rather than creating a duplicate.
-    follower.goto_file(file_a)
-    assert nvim.api.get_current_buf() == buf_after_show
+    follower.goto_file(first_file)
+    assert nvim.api.get_current_buf() == buffer_after_show
 
-    matching = [b for b in nvim.api.list_bufs() if nvim.api.buf_get_name(b) == canonical_name]
+    matching = [
+        buffer for buffer in nvim.api.list_bufs() if nvim.api.buf_get_name(buffer) == canonical_name
+    ]
     assert len(matching) == 1
 
 
@@ -364,25 +370,30 @@ def test_touch_and_evict_wipes_the_evicted_buffer_on_real_nvim(
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     nvim = pynvim.attach("socket", path=headless_nvim)
 
-    file_a = str(tmp_path / "a.py")
-    file_b = str(tmp_path / "b.py")
+    first_file = str(tmp_path / "a.py")
+    second_file = str(tmp_path / "b.py")
 
-    follower.show_fresh(file_a, "a = 1\n")
+    follower.show_fresh(first_file, "a = 1\n")
     FollowerState.set(
-        "@1", "nvim", headless_nvim, current_file=file_a, open_files=(file_a,), shown_any=True
+        "@1",
+        "nvim",
+        headless_nvim,
+        current_file=first_file,
+        open_files=(first_file,),
+        shown_any=True,
     )
     current = FollowerState.read("@1")
     assert current is not None
 
-    hooks._touch_and_evict("@1", follower, current, file_b, max_tabs=1)
-    follower.show_fresh(file_b, "b = 1\n")
+    hooks._touch_and_evict("@1", follower, current, second_file, max_tabs=1)
+    follower.show_fresh(second_file, "b = 1\n")
 
-    names = [nvim.api.buf_get_name(b) for b in nvim.api.list_bufs()]
-    assert file_a not in names
-    assert file_b in names
+    names = [nvim.api.buf_get_name(buffer) for buffer in nvim.api.list_bufs()]
+    assert first_file not in names
+    assert second_file in names
     refreshed = FollowerState.read("@1")
     assert refreshed is not None
-    assert refreshed.open_files == (file_b,)
+    assert refreshed.open_files == (second_file,)
 
 
 @pytest.mark.integration
@@ -395,20 +406,20 @@ def test_reload_and_relock_reloads_disk_and_relocks_a_launched_follower(
     from vim_ai_follower import cache
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
-    file_a = str(tmp_path / "a.py")
-    Path(file_a).write_text("final = 1\n")
+    first_file = str(tmp_path / "a.py")
+    Path(first_file).write_text("final = 1\n")
     FollowerState.set(
-        "@1", "nvim", headless_nvim, open_files=(file_a,), shown_any=True, adopted=False
+        "@1", "nvim", headless_nvim, open_files=(first_file,), shown_any=True, adopted=False
     )
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
-    follower.show_fresh(file_a, "typed = 999\n")
+    follower.show_fresh(first_file, "typed = 999\n")
 
     nvim = pynvim.attach("socket", path=headless_nvim)
-    buf = nvim.api.get_current_buf().handle
-    nvim.api.buf_set_option(buf, "modifiable", True)
-    nvim.api.buf_set_lines(buf, 0, -1, True, ["user junk in progress"])
+    buffer = nvim.api.get_current_buf().handle
+    nvim.api.buf_set_option(buffer, "modifiable", True)
+    nvim.api.buf_set_lines(buffer, 0, -1, True, ["user junk in progress"])
 
-    follower.reload_and_relock(file_a)
+    follower.reload_and_relock(first_file)
 
     nvim = pynvim.attach("socket", path=headless_nvim)
     # the user's typing is gone; the buffer holds the finished disk content
@@ -423,15 +434,15 @@ def test_reload_and_relock_leaves_an_adopted_follower_modifiable(
     from vim_ai_follower import cache
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
-    file_a = str(tmp_path / "a.py")
-    Path(file_a).write_text("final = 1\n")
+    first_file = str(tmp_path / "a.py")
+    Path(first_file).write_text("final = 1\n")
     FollowerState.set(
-        "@1", "nvim", headless_nvim, open_files=(file_a,), shown_any=True, adopted=True
+        "@1", "nvim", headless_nvim, open_files=(first_file,), shown_any=True, adopted=True
     )
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
-    follower.show_fresh(file_a, "typed = 999\n")
+    follower.show_fresh(first_file, "typed = 999\n")
 
-    follower.reload_and_relock(file_a)
+    follower.reload_and_relock(first_file)
 
     nvim = pynvim.attach("socket", path=headless_nvim)
     assert nvim.current.buffer[:] == ["final = 1"]
@@ -454,20 +465,20 @@ def test_des_interrupt_replays_a_show_fresh_remainder_to_exact_content(
     FollowerState.set(
         "@1", "nvim", headless_nvim, adopted=False, speed="instant"
     )  # proven dedicated; instant keeps the pace-0 signal count
-    file_a = str(tmp_path / "a.py")
+    first_file = str(tmp_path / "a.py")
     content = "l0\nl1\nl2\nl3\n"
     lines = content.splitlines()
 
     monkeypatch.setattr(control, "check_signal", _interrupt_at(3))  # stop before l2
-    result = follower.show_fresh(file_a, content)
+    result = follower.show_fresh(first_file, content)
     assert result == AnimationResult("interrupted", 2)
 
-    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
+    monkeypatch.setattr(control, "check_signal", lambda *arguments, **keyword_arguments: None)
     partial = "\n".join(lines[:2])
-    rebuilt = follower.rewrite_buffer(file_a, partial)
+    rebuilt = follower.rewrite_buffer(first_file, partial)
     assert rebuilt.outcome == "completed"
     pending = PendingShowFresh(
-        lines=tuple(lines[2:]), pace_seconds=0.0, continuation=True, file_path=file_a
+        lines=tuple(lines[2:]), pace_seconds=0.0, continuation=True, file_path=first_file
     )
     replay = follower.resume(pending)
     assert replay.outcome == "completed"
@@ -486,22 +497,22 @@ def test_des_interrupt_replays_an_apply_edit_remainder_to_exact_content(
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
-    file_a = str(tmp_path / "a.py")
+    first_file = str(tmp_path / "a.py")
     before = "a\nb\nc\n"
     after = "a\nB1\nB2\nB3\n"
-    follower.show_fresh(file_a, before)
+    follower.show_fresh(first_file, before)
     ops = compute_edit_script(before, after)
 
     monkeypatch.setattr(control, "check_signal", _interrupt_at(2))
-    result = follower.apply_edit(file_a, ops)
+    result = follower.apply_edit(first_file, ops)
     assert result.outcome == "interrupted"
 
-    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
+    monkeypatch.setattr(control, "check_signal", lambda *arguments, **keyword_arguments: None)
     partial = apply_ops(before, ops[: result.completed_count])
-    rebuilt = follower.rewrite_buffer(file_a, partial)
+    rebuilt = follower.rewrite_buffer(first_file, partial)
     assert rebuilt.outcome == "completed"
     pending = PendingApplyEdit(
-        ops=ops[result.completed_count :], pace_seconds=0.0, file_path=file_a
+        ops=ops[result.completed_count :], pace_seconds=0.0, file_path=first_file
     )
     replay = follower.resume(pending)
     assert replay.outcome == "completed"
@@ -522,20 +533,20 @@ def test_pace0_consume_of_an_interrupted_show_fresh_lands_at_full_content(
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
-    file_a = str(tmp_path / "a.py")
+    first_file = str(tmp_path / "a.py")
     content = "l0\nl1\nl2\nl3\n"
     lines = content.splitlines()
 
     monkeypatch.setattr(control, "check_signal", _interrupt_at(3))
-    assert follower.show_fresh(file_a, content) == AnimationResult("interrupted", 2)
+    assert follower.show_fresh(first_file, content) == AnimationResult("interrupted", 2)
 
     nvim = pynvim.attach("socket", path=headless_nvim)
     # the interrupt left a trailing seed blank at the bottom (the crux)
     assert nvim.current.buffer[:] == ["l0", "l1", ""]
 
-    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
+    monkeypatch.setattr(control, "check_signal", lambda *arguments, **keyword_arguments: None)
     pending = PendingShowFresh(
-        lines=tuple(lines[2:]), pace_seconds=0.0, continuation=True, file_path=file_a
+        lines=tuple(lines[2:]), pace_seconds=0.0, continuation=True, file_path=first_file
     )
     # entry B: the live buffer still carries show_fresh's trailing seed blank,
     # so provenance is passed explicitly (seeded=True) rather than sniffed.
@@ -557,28 +568,28 @@ def test_des_interrupt_replays_a_remainder_after_consecutive_trailing_blanks(
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
-    file_a = str(tmp_path / "a.py")
+    first_file = str(tmp_path / "a.py")
     content = "a\n\n\nb\nc\n"
     lines = content.splitlines()
     assert lines == ["a", "", "", "b", "c"]
 
     monkeypatch.setattr(control, "check_signal", _interrupt_at(4))  # stop before "b"
-    result = follower.show_fresh(file_a, content)
+    result = follower.show_fresh(first_file, content)
     assert result == AnimationResult("interrupted", 3)  # a + the two blanks typed
 
-    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
+    monkeypatch.setattr(control, "check_signal", lambda *arguments, **keyword_arguments: None)
     # Exactly what hooks._reconstruct_partial_fresh produces for the hook, then
     # rewrite_buffer rebuilds the seedless interrupt-point buffer from it.
-    partial = "".join(f"{ln}\n" for ln in lines[:3])
+    partial = "".join(f"{line}\n" for line in lines[:3])
     assert partial == "a\n\n\n"
-    rebuilt = follower.rewrite_buffer(file_a, partial)
+    rebuilt = follower.rewrite_buffer(first_file, partial)
     assert rebuilt.outcome == "completed"
 
     nvim = pynvim.attach("socket", path=headless_nvim)
     assert nvim.current.buffer[:] == ["a", "", ""]  # seedless partial, blanks intact
 
     pending = PendingShowFresh(
-        lines=tuple(lines[3:]), pace_seconds=0.0, continuation=True, file_path=file_a
+        lines=tuple(lines[3:]), pace_seconds=0.0, continuation=True, file_path=first_file
     )
     replay = follower.resume(pending, seeded=False)
     assert replay.outcome == "completed"
@@ -599,21 +610,21 @@ def test_pace0_consume_after_consecutive_trailing_blanks_lands_at_full_content(
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
-    file_a = str(tmp_path / "a.py")
+    first_file = str(tmp_path / "a.py")
     content = "a\n\n\nb\nc\n"
     lines = content.splitlines()
 
     monkeypatch.setattr(control, "check_signal", _interrupt_at(4))
-    assert follower.show_fresh(file_a, content) == AnimationResult("interrupted", 3)
+    assert follower.show_fresh(first_file, content) == AnimationResult("interrupted", 3)
 
     nvim = pynvim.attach("socket", path=headless_nvim)
     # a + two content blanks + the trailing seed blank show_fresh has not
     # dropped yet (four lines, the last being the seed).
     assert nvim.current.buffer[:] == ["a", "", "", ""]
 
-    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
+    monkeypatch.setattr(control, "check_signal", lambda *arguments, **keyword_arguments: None)
     pending = PendingShowFresh(
-        lines=tuple(lines[3:]), pace_seconds=0.0, continuation=True, file_path=file_a
+        lines=tuple(lines[3:]), pace_seconds=0.0, continuation=True, file_path=first_file
     )
     follower.resume(pending, seeded=True)
 
@@ -632,16 +643,16 @@ def test_resume_from_scratch_types_the_whole_file_when_nothing_was_shown(
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
-    file_a = str(tmp_path / "a.py")
+    first_file = str(tmp_path / "a.py")
     content = "x\ny\nz\n"
     lines = content.splitlines()
 
     monkeypatch.setattr(control, "check_signal", _interrupt_at(1))  # nothing shown
-    assert follower.show_fresh(file_a, content) == AnimationResult("interrupted", 0)
+    assert follower.show_fresh(first_file, content) == AnimationResult("interrupted", 0)
 
-    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
+    monkeypatch.setattr(control, "check_signal", lambda *arguments, **keyword_arguments: None)
     pending = PendingShowFresh(
-        lines=tuple(lines), pace_seconds=0.0, continuation=False, file_path=file_a
+        lines=tuple(lines), pace_seconds=0.0, continuation=False, file_path=first_file
     )
     # entry B on a lone seed buffer ([""]): seeded=True types into it and drops
     # the seed on completion.
@@ -662,8 +673,8 @@ def test_hand_over_reasserts_the_buffer_is_modifiable(
     FollowerState.set(
         "@1", "nvim", headless_nvim, adopted=False, speed="instant"
     )  # proven dedicated, at the pace this follower was built with
-    file_a = str(tmp_path / "a.py")
-    follower.show_fresh(file_a, "a = 1\n")  # completes -> relocked nomodifiable
+    first_file = str(tmp_path / "a.py")
+    follower.show_fresh(first_file, "a = 1\n")  # completes -> relocked nomodifiable
     nvim = pynvim.attach("socket", path=headless_nvim)
     assert nvim.api.buf_get_option(nvim.current.buffer.handle, "modifiable") is False
 
@@ -684,18 +695,20 @@ def test_resume_persists_a_remainder_when_paused_mid_replay(
     # correct op-granular remainder.
     from vim_ai_follower import cache
 
-    cache_dir = tmp_path / "cache"
-    monkeypatch.setattr(cache, "CACHE_DIR", cache_dir)
+    cache_directory = tmp_path / "cache"
+    monkeypatch.setattr(cache, "CACHE_DIR", cache_directory)
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
-    file_a = str(tmp_path / "a.py")
-    follower.show_fresh(file_a, "p\n")  # a one-line prefix already on screen
+    first_file = str(tmp_path / "a.py")
+    follower.show_fresh(first_file, "p\n")  # a one-line prefix already on screen
 
     saved: list[tuple[str, ...]] = []
     real_save = control.save_pending_show_fresh
 
-    def _spy_save(window_id: str, lines: tuple[str, ...], *args: Any, **kwargs: Any) -> None:
+    def _spy_save(
+        window_id: str, lines: tuple[str, ...], *arguments: Any, **keyword_arguments: Any
+    ) -> None:
         saved.append(tuple(lines))
-        real_save(window_id, lines, *args, **kwargs)
+        real_save(window_id, lines, *arguments, **keyword_arguments)
 
     monkeypatch.setattr(control, "save_pending_show_fresh", _spy_save)
 
@@ -703,7 +716,7 @@ def test_resume_persists_a_remainder_when_paused_mid_replay(
     # then interrupt out of the wait.
     calls = {"n": 0}
 
-    def _pause_then_interrupt(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _pause_then_interrupt(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         if calls["n"] == 2:
             return "pause"
@@ -713,7 +726,7 @@ def test_resume_persists_a_remainder_when_paused_mid_replay(
 
     monkeypatch.setattr(control, "check_signal", _pause_then_interrupt)
     pending = PendingShowFresh(
-        lines=("q", "r", "s"), pace_seconds=0.05, continuation=True, file_path=file_a
+        lines=("q", "r", "s"), pace_seconds=0.05, continuation=True, file_path=first_file
     )
     result = follower.resume(pending)
     assert result.outcome == "interrupted"
@@ -736,13 +749,13 @@ def test_standalone_hook_post_edit_animates_a_headless_nvim_end_to_end(
 
     target = tmp_path / "standalone.py"
     target.write_text("def f():\n    return 1\n")
-    env = {"TERM_SESSION_ID": "qa"}  # deliberately no TMUX_PANE
+    environment = {"TERM_SESSION_ID": "qa"}  # deliberately no TMUX_PANE
     payload: dict[str, Any] = {
         "tool_name": "Write",
         "tool_input": {"file_path": str(target)},
     }
 
-    assert hooks.cmd_hook_post(env, payload) == 0
+    assert hooks.cmd_hook_post(environment, payload) == 0
 
     nvim = pynvim.attach("socket", path=headless_nvim)
     assert nvim.current.buffer[:] == ["def f():", "    return 1"]
@@ -759,8 +772,8 @@ def test_resume_without_a_file_path_operates_on_the_current_buffer(
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
-    file_a = str(tmp_path / "a.py")
-    follower.show_fresh(file_a, "one\n")  # current buffer, one line, no seed
+    first_file = str(tmp_path / "a.py")
+    follower.show_fresh(first_file, "one\n")  # current buffer, one line, no seed
 
     pending = PendingShowFresh(
         lines=("two", "three"), pace_seconds=0.0, continuation=True, file_path=""
@@ -791,7 +804,7 @@ def test_the_float_comes_back_after_its_tab_is_closed_under_it(headless_nvim: st
     # Wiped WITH its window, not merely hidden — checked here, before the
     # next cue, because _ensure_window's stale-buffer sweep would otherwise
     # clean up after a hidden one and mask it.
-    names = [nvim.api.buf_get_name(b) for b in nvim.api.list_bufs()]
+    names = [nvim.api.buf_get_name(buffer) for buffer in nvim.api.list_bufs()]
     assert not any(name.endswith("vaf-status") for name in names), names
 
     surface.set_state("Writing...")
@@ -832,9 +845,9 @@ def test_the_status_float_follows_the_animation_to_the_current_tab(headless_nvim
     surface.set_state("Writing...")
 
     current = [
-        w
-        for w in nvim.api.tabpage_list_wins(nvim.api.get_current_tabpage())
-        if nvim.api.win_get_config(w)["relative"] != ""
+        window
+        for window in nvim.api.tabpage_list_wins(nvim.api.get_current_tabpage())
+        if nvim.api.win_get_config(window)["relative"] != ""
     ]
     assert len(current) == 1, "no status float on the tab the animation runs in"
     config = nvim.api.win_get_config(current[0])
@@ -872,21 +885,24 @@ def test_the_status_float_follows_the_backend_into_a_new_tab(
     nvim = pynvim.attach("socket", path=headless_nvim)
     assert Path(nvim.api.buf_get_name(nvim.api.get_current_buf())).name == "second.py"
     here = [
-        w
-        for w in nvim.api.tabpage_list_wins(nvim.api.get_current_tabpage())
-        if nvim.api.win_get_config(w)["relative"] != ""
+        window
+        for window in nvim.api.tabpage_list_wins(nvim.api.get_current_tabpage())
+        if nvim.api.win_get_config(window)["relative"] != ""
     ]
     assert len(here) == 1, "the cue stayed behind in the tab the backend left"
-    assert any("code-reviewer" in c[0] for c in nvim.api.win_get_config(here[0])["title"])
+    assert any(
+        "code-reviewer" in title_chunk[0]
+        for title_chunk in nvim.api.win_get_config(here[0])["title"]
+    )
     assert len(_floating_windows(nvim)) == 1
 
     # A Read's navigation switches tabs through set_current_win, not :tabnew.
     follower.goto_file(str(first))
     assert Path(nvim.api.buf_get_name(nvim.api.get_current_buf())).name == "first.py"
     here = [
-        w
-        for w in nvim.api.tabpage_list_wins(nvim.api.get_current_tabpage())
-        if nvim.api.win_get_config(w)["relative"] != ""
+        window
+        for window in nvim.api.tabpage_list_wins(nvim.api.get_current_tabpage())
+        if nvim.api.win_get_config(window)["relative"] != ""
     ]
     assert len(here) == 1, "the cue stayed behind when goto_file switched tabs"
     assert len(_floating_windows(nvim)) == 1
@@ -917,7 +933,7 @@ def test_show_freshs_read_then_clear_leaves_no_undo_step(
     target = tmp_path / "big.py"
     content = "".join(f"line {index}\n" for index in range(count))
     target.write_text(content)
-    monkeypatch.setattr(control, "check_signal", lambda *args, **kwargs: signal)
+    monkeypatch.setattr(control, "check_signal", lambda *arguments, **keyword_arguments: signal)
     expected = "interrupted" if signal else "completed"
     assert follower.show_fresh(str(target), content).outcome == expected
 

@@ -37,12 +37,12 @@ def _adopted(headless_nvim: str) -> tuple[Any, NvimFollower]:
     return nvim, NvimFollower(socket_path=headless_nvim, window_id=_WINDOW, pace_seconds=0.0)
 
 
-def _read(follower: NvimFollower, path: Path, max_tabs: int) -> None:
+def _read(follower: NvimFollower, path: Path, maximum_tabs: int) -> None:
     """The calls _handle_hook_post_read makes for a Read."""
     hooks._ensure_buffer(_WINDOW, follower, str(path))
     current = FollowerState.read(_WINDOW)
     assert current is not None
-    hooks._touch_and_evict(_WINDOW, follower, current, str(path), max_tabs)
+    hooks._touch_and_evict(_WINDOW, follower, current, str(path), maximum_tabs)
 
 
 def _buffer(nvim: Any, path: Path) -> Any | None:

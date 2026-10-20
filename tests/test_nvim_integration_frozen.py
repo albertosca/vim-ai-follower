@@ -48,11 +48,11 @@ def _new_window(world: E2EFollower) -> tuple[str, str]:
 
 
 def _timed_cli(
-    world: E2EFollower, *args: str, pane_id: str, stdin: str | None = None
+    world: E2EFollower, *arguments: str, pane_id: str, stdin: str | None = None
 ) -> tuple[subprocess.CompletedProcess[str], float]:
     started = time.monotonic()
     result = subprocess.run(
-        [str(CLI), *args],
+        [str(CLI), *arguments],
         input=stdin,
         env=world.env_with(TMUX_PANE=pane_id),
         capture_output=True,

@@ -36,11 +36,11 @@ def world() -> Iterator[E2EFollower]:
 
 
 def _timed_cli(
-    world: E2EFollower, *args: str, pane_id: str, stdin: str | None = None
+    world: E2EFollower, *arguments: str, pane_id: str, stdin: str | None = None
 ) -> tuple[subprocess.CompletedProcess[str], float]:
     started = time.monotonic()
     result = subprocess.run(
-        [str(CLI), *args],
+        [str(CLI), *arguments],
         input=stdin,
         env=world.env_with(TMUX_PANE=pane_id),
         capture_output=True,
@@ -104,8 +104,8 @@ def test_a_stop_elsewhere_keeps_a_busy_followers_state(world: E2EFollower) -> No
     snapshot.save(busy_window, str(tracked), "a\n", base_dir=world.cache_dir / "snapshots")
     pane_file = world.cache_dir / f"{busy_window}.pane"
     pending_file = world.cache_dir / f"{busy_window}.pending_animation.json"
-    snapshot_dir = world.cache_dir / "snapshots" / busy_window
-    assert pane_file.exists() and pending_file.exists() and any(snapshot_dir.iterdir())
+    snapshot_directory = world.cache_dir / "snapshots" / busy_window
+    assert pane_file.exists() and pending_file.exists() and any(snapshot_directory.iterdir())
 
     # `:!sleep` stands in for `:!make`: the nvim is alive and answers nothing.
     world.tmux("send-keys", "-t", busy_pane, "-l", ":!sleep 20\r")
@@ -119,7 +119,7 @@ def test_a_stop_elsewhere_keeps_a_busy_followers_state(world: E2EFollower) -> No
     assert probe_nvim(str(busy_socket)) == "silent", "the nvim finished its command too early"
     assert pane_file.exists(), "a stop elsewhere collected a busy follower's state"
     assert pending_file.exists(), "a stop elsewhere dropped a busy follower's remainder"
-    assert any(snapshot_dir.iterdir()), "a stop elsewhere dropped a busy follower's snapshots"
+    assert any(snapshot_directory.iterdir()), "a stop elsewhere dropped a busy follower's snapshots"
     assert busy_socket.exists()
 
     status, status_seconds = _timed_cli(world, "status", pane_id=world.origin_pane)

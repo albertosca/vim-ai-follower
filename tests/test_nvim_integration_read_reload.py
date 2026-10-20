@@ -181,8 +181,8 @@ def test_a_read_never_reloads_typing_that_landed_as_an_edit_completed(
     user = pynvim.attach("socket", path=headless_nvim)
     real_animate = nvim_backend._animate_lines
 
-    def animate_then_user_types(*args: Any, **kwargs: Any) -> AnimationResult:
-        result = real_animate(*args, **kwargs)
+    def animate_then_user_types(*arguments: Any, **keyword_arguments: Any) -> AnimationResult:
+        result = real_animate(*arguments, **keyword_arguments)
         bufnr = user.funcs.bufnr(str(target))
         user.api.buf_set_lines(bufnr, 0, 0, True, ["user typed"])
         return result

@@ -33,9 +33,9 @@ CONTENT = "x = 1\n"
 AFTER = "x = 1\ny = 2\n"
 
 
-def _tmux(*args: str) -> str:
+def _tmux(*arguments: str) -> str:
     return subprocess.run(
-        ["tmux", *args], capture_output=True, text=True, check=True
+        ["tmux", *arguments], capture_output=True, text=True, check=True
     ).stdout.strip()
 
 

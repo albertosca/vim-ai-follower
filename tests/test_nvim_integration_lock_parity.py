@@ -24,8 +24,8 @@ from vim_ai_follower.diff import compute_edit_script  # noqa: E402
 from vim_ai_follower.state import FollowerState  # noqa: E402
 
 
-def _modifiable(nvim: Any, buf: int) -> bool:
-    value = nvim.api.buf_get_option(buf, "modifiable")
+def _modifiable(nvim: Any, buffer: int) -> bool:
+    value = nvim.api.buf_get_option(buffer, "modifiable")
     return bool(value)
 
 
@@ -46,9 +46,9 @@ def test_ensure_showing_a_never_seen_file_locks_the_loaded_buffer(
     follower.ensure_showing(str(read_me))
 
     nvim = pynvim.attach("socket", path=headless_nvim)
-    buf = nvim.funcs.bufnr(str(read_me))
-    assert buf != -1
-    assert _modifiable(nvim, buf) is False
+    buffer = nvim.funcs.bufnr(str(read_me))
+    assert buffer != -1
+    assert _modifiable(nvim, buffer) is False
     assert nvim.current.buffer[:] == ["disk1", "disk2"]  # content untouched by the lock
 
 
@@ -67,10 +67,10 @@ def test_ensure_showing_a_never_seen_file_leaves_an_adopted_buffer_modifiable(
     follower.ensure_showing(str(read_me))
 
     nvim = pynvim.attach("socket", path=headless_nvim)
-    buf = nvim.funcs.bufnr(str(read_me))
-    assert buf != -1
+    buffer = nvim.funcs.bufnr(str(read_me))
+    assert buffer != -1
     # an adopted nvim is the user's own editor: never locked out of it
-    assert _modifiable(nvim, buf) is True
+    assert _modifiable(nvim, buffer) is True
     assert nvim.current.buffer[:] == ["disk1", "disk2"]
 
 
@@ -90,22 +90,22 @@ def test_ensure_showing_an_existing_unlocked_buffer_switches_to_it_and_locks_it(
     target.write_text("STALE DISK CONTENT\n")
     follower.show_fresh(str(target), "typed line 1\ntyped line 2\n")
     nvim = pynvim.attach("socket", path=headless_nvim)
-    buf = nvim.funcs.bufnr(str(target))
+    buffer = nvim.funcs.bufnr(str(target))
     # show_fresh's own completion already locked it; unlock it first (e.g.
     # hand_over after an interrupt) so this test actually exercises
     # ensure_showing's own lock rather than finding it already locked.
     follower.hand_over()
-    assert _modifiable(nvim, buf) is True
+    assert _modifiable(nvim, buffer) is True
     # ...and the user types into it, unsaved: a Read re-reads only a CLEAN
     # buffer, and follower text alone would count as clean.
-    nvim.api.buf_set_lines(buf, 2, 2, True, ["user line"])
+    nvim.api.buf_set_lines(buffer, 2, 2, True, ["user line"])
 
     follower.show_fresh(str(tmp_path / "other.py"), "other\n", in_new_tab=True)
     follower.ensure_showing(str(target))
 
     assert nvim.current.buffer.name.endswith("/live.py")
     assert nvim.current.buffer[:] == ["typed line 1", "typed line 2", "user line"]  # untouched
-    assert _modifiable(nvim, buf) is False
+    assert _modifiable(nvim, buffer) is False
 
 
 @pytest.mark.integration
@@ -122,19 +122,19 @@ def test_ensure_showing_an_adopted_followers_existing_buffer_stays_modifiable(
     target.write_text("STALE DISK CONTENT\n")
     follower.show_fresh(str(target), "typed line 1\ntyped line 2\n")
     nvim = pynvim.attach("socket", path=headless_nvim)
-    buf = nvim.funcs.bufnr(str(target))
+    buffer = nvim.funcs.bufnr(str(target))
     # show_fresh's own completion never locked it (adopted), so this test
     # actually exercises ensure_showing's own (non-)lock.
-    assert _modifiable(nvim, buf) is True
+    assert _modifiable(nvim, buffer) is True
     # The user types into it, unsaved (a clean buffer would be re-read).
-    nvim.api.buf_set_lines(buf, 2, 2, True, ["user line"])
+    nvim.api.buf_set_lines(buffer, 2, 2, True, ["user line"])
 
     follower.show_fresh(str(tmp_path / "other.py"), "other\n", in_new_tab=True)
     follower.ensure_showing(str(target))
 
     assert nvim.current.buffer.name.endswith("/live.py")
     assert nvim.current.buffer[:] == ["typed line 1", "typed line 2", "user line"]  # untouched
-    assert _modifiable(nvim, buf) is True
+    assert _modifiable(nvim, buffer) is True
 
 
 @pytest.mark.integration
@@ -163,9 +163,9 @@ def test_apply_edit_on_a_vanished_buffer_locks_the_disk_loaded_buffer(
     result = follower.apply_edit(str(target), ops)
 
     assert result == AnimationResult("completed", len(ops))
-    buf = nvim.funcs.bufnr(str(target))
-    assert buf != -1
-    assert _modifiable(nvim, buf) is False
+    buffer = nvim.funcs.bufnr(str(target))
+    assert buffer != -1
+    assert _modifiable(nvim, buffer) is False
     assert nvim.current.buffer[:] == ["a", "B", "c"]
 
 
@@ -193,10 +193,10 @@ def test_apply_edit_on_a_vanished_buffer_leaves_an_adopted_disk_loaded_buffer_mo
     result = follower.apply_edit(str(target), ops)
 
     assert result == AnimationResult("completed", len(ops))
-    buf = nvim.funcs.bufnr(str(target))
-    assert buf != -1
+    buffer = nvim.funcs.bufnr(str(target))
+    assert buffer != -1
     # an adopted nvim is the user's own editor: never locked out of it
-    assert _modifiable(nvim, buf) is True
+    assert _modifiable(nvim, buffer) is True
     assert nvim.current.buffer[:] == ["a", "B", "c"]
 
 
@@ -223,8 +223,8 @@ def test_read_navigation_then_a_real_edit_on_the_same_file_still_animates(
     # Read navigation: never-seen file, loaded from disk and locked.
     follower.ensure_showing(str(target))
     nvim = pynvim.attach("socket", path=headless_nvim)
-    buf = nvim.funcs.bufnr(str(target))
-    assert _modifiable(nvim, buf) is False
+    buffer = nvim.funcs.bufnr(str(target))
+    assert _modifiable(nvim, buffer) is False
 
     # A cursor move (goto_line, as the real Read hook does) must not choke
     # on the locked buffer.
@@ -239,7 +239,7 @@ def test_read_navigation_then_a_real_edit_on_the_same_file_still_animates(
 
     assert result == AnimationResult("completed", len(ops))
     assert nvim.current.buffer[:] == ["a", "B", "c"]
-    assert _modifiable(nvim, buf) is False  # relocked on completion
+    assert _modifiable(nvim, buffer) is False  # relocked on completion
 
 
 @pytest.mark.integration

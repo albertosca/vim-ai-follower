@@ -129,7 +129,7 @@ def test_apply_edit_interrupted_mid_wipe_leaves_a_sane_buffer(
 
     calls = {"n": 0}
 
-    def _interrupt_midway(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _interrupt_midway(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         return "interrupt" if calls["n"] == 3 else None
 

@@ -127,9 +127,16 @@ def test_edit_after_an_outside_rewrite_is_retyped_not_typed_onto_the_stale_buffe
 
     states = _edit(log, target, FORMATTED_THREE)
     after = FORMATTED_THREE.splitlines()
-    trace = "\n".join(f"defs={_defs(s)} lines={len(s)} stale={STALE_LINE in s}" for s in states)
+    trace = "\n".join(
+        f"defs={_defs(state_lines)} lines={len(state_lines)} stale={STALE_LINE in state_lines}"
+        for state_lines in states
+    )
     assert len(states) >= 2, f"observer caught no intermediate state:\n{trace}"
-    mixed = [s for s in states if STALE_LINE in s and any("def bravo" in line for line in s)]
+    mixed = [
+        state_lines
+        for state_lines in states
+        if STALE_LINE in state_lines and any("def bravo" in line for line in state_lines)
+    ]
     assert not mixed, f"the diff was typed onto the stale buffer:\n{trace}"
     assert after not in states[:-1], f"finished file shown before the animation ended:\n{trace}"
 
@@ -145,22 +152,26 @@ def test_edit_of_a_read_file_whose_tab_was_closed_under_nohidden_is_retyped(
     # Both opened by a Read: clean, disk-backed buffers, a.py in tab 2.
     assert hooks.cmd_hook_post(_ENV, _payload("Read", target)) == 0
     assert hooks.cmd_hook_post(_ENV, _payload("Read", other)) == 0
-    a_tab = next(
+    first_tab = next(
         tab.number
         for tab in nvim.tabpages
         if any(win.buffer.name.endswith("/a.py") for win in tab.windows)
     )
     nvim.command("set nohidden")
-    nvim.command(f"{a_tab}tabclose")
-    a_buf = next(b for b in nvim.buffers if b.name.endswith("/a.py"))
-    assert nvim.api.buf_is_loaded(a_buf.number) is False, "setup: a.py should be unloaded"
+    nvim.command(f"{first_tab}tabclose")
+    first_buffer = next(buffer for buffer in nvim.buffers if buffer.name.endswith("/a.py"))
+    assert nvim.api.buf_is_loaded(first_buffer.number) is False, "setup: a.py should be unloaded"
 
     states = _edit(log, target, THREE_DEFS)
     after = THREE_DEFS.splitlines()
-    trace = "\n".join(f"defs={_defs(s)} lines={len(s)}" for s in states)
+    trace = "\n".join(
+        f"defs={_defs(state_lines)} lines={len(state_lines)}" for state_lines in states
+    )
     assert len(states) >= 2, f"observer caught no intermediate state:\n{trace}"
     assert after not in states[:-1], f"finished file shown before the animation ended:\n{trace}"
-    assert max(_defs(s) for s in states) <= _defs(after), f"duplicated defs:\n{trace}"
+    assert max(_defs(state_lines) for state_lines in states) <= _defs(after), (
+        f"duplicated defs:\n{trace}"
+    )
 
 
 @pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
@@ -194,8 +205,12 @@ def test_a_read_landing_between_an_edits_pre_and_post_hooks_never_flashes_the_fi
     after = THREE_DEFS.splitlines()
     settled = _wait(lambda: _last_state(log, target.name) == after, timeout=5.0)
     states = _states(log, target.name)
-    trace = "\n".join(f"defs={_defs(s)} lines={len(s)}" for s in states)
+    trace = "\n".join(
+        f"defs={_defs(state_lines)} lines={len(state_lines)}" for state_lines in states
+    )
     assert settled, f"the buffer never reached the edited file:\n{trace}"
     assert len(states) >= 2, f"observer caught no intermediate state:\n{trace}"
     assert after not in states[:-1], f"finished file shown before the animation ended:\n{trace}"
-    assert min(len(s) for s in states) >= len(ONE_DEF.splitlines()), f"retyped:\n{trace}"
+    assert min(len(state_lines) for state_lines in states) >= len(ONE_DEF.splitlines()), (
+        f"retyped:\n{trace}"
+    )

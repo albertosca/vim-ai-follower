@@ -36,7 +36,7 @@ def _interrupt_at(nth: int) -> Any:
     not imported, because that module is edited by other agents in parallel."""
     calls = {"n": 0}
 
-    def _signal(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _signal(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         return "interrupt" if calls["n"] == nth else None
 
@@ -55,11 +55,11 @@ def test_catchup_after_a_mid_line_show_fresh_stop_does_not_duplicate_the_partial
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.01)
-    file_a = str(tmp_path / "a.py")
+    first_file = str(tmp_path / "a.py")
     content = "ab\nwxyz\nq\n"
 
     monkeypatch.setattr(control, "check_signal", _interrupt_at(7))
-    result = follower.show_fresh(file_a, content)
+    result = follower.show_fresh(first_file, content)
     assert result == AnimationResult("interrupted", 1)
 
     nvim = pynvim.attach("socket", path=headless_nvim)
@@ -68,19 +68,19 @@ def test_catchup_after_a_mid_line_show_fresh_stop_does_not_duplicate_the_partial
     assert nvim.current.buffer[:] == ["ab", "wx", ""]
 
     # Exactly what hooks._animate_edit persists on the interrupt path.
-    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
+    monkeypatch.setattr(control, "check_signal", lambda *arguments, **keyword_arguments: None)
     control.save_pending_show_fresh(
         "@1",
         tuple(content.splitlines())[result.completed_count :],
         0.01,
         continuation=result.completed_count > 0,
-        file_path=file_a,
+        file_path=first_file,
         partial=hooks._reconstruct_partial_fresh(content, result.completed_count),
     )
 
     pending = control.load_pending_animation("@1")
     assert pending is not None
-    hooks._consume_pending_catchup(follower, file_a, pending)
+    hooks._consume_pending_catchup(follower, first_file, pending)
 
     nvim = pynvim.attach("socket", path=headless_nvim)
     # No duplicated "wx", no stray seed blank: exactly the intended content.
@@ -99,11 +99,11 @@ def test_catchup_after_a_mid_op_mid_line_apply_edit_stop_lands_at_full_content(
     from vim_ai_follower import cache
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
-    file_a = str(tmp_path / "a.py")
+    first_file = str(tmp_path / "a.py")
     before = "a\nb\nc\n"
     after = "a\nWW\nXX\nYY\nc\n"
     NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0).show_fresh(
-        file_a, before
+        first_file, before
     )
     ops = compute_edit_script(before, after)
     assert len(ops) == 1
@@ -112,7 +112,7 @@ def test_catchup_after_a_mid_op_mid_line_apply_edit_stop_lands_at_full_content(
     # op-boundary + line0-boundary + "W" + "W" + line1-boundary + "X" -> 6
     # calls; the 7th (before the second "X") fires the interrupt.
     monkeypatch.setattr(control, "check_signal", _interrupt_at(7))
-    result = follower.apply_edit(file_a, ops)
+    result = follower.apply_edit(first_file, ops)
     assert result == AnimationResult("interrupted", 0)
 
     nvim = pynvim.attach("socket", path=headless_nvim)
@@ -124,18 +124,18 @@ def test_catchup_after_a_mid_op_mid_line_apply_edit_stop_lands_at_full_content(
     assert nvim.current.buffer[:] == ["a", "b", "c"]
     nvim.current.buffer[:] = ["a", "WW", "X", "c"]  # two leftover rows
 
-    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
+    monkeypatch.setattr(control, "check_signal", lambda *arguments, **keyword_arguments: None)
     control.save_pending_apply_edit(
         "@1",
         ops[result.completed_count :],
         0.01,
-        file_path=file_a,
+        file_path=first_file,
         partial=apply_ops(before, ops[: result.completed_count]),
     )
 
     pending = control.load_pending_animation("@1")
     assert pending is not None
-    hooks._consume_pending_catchup(follower, file_a, pending)
+    hooks._consume_pending_catchup(follower, first_file, pending)
 
     nvim = pynvim.attach("socket", path=headless_nvim)
     # No stranded "X" row left over from the abandoned op.
@@ -153,30 +153,30 @@ def test_catchup_with_a_clean_boundary_tail_still_converges(
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
-    file_a = str(tmp_path / "a.py")
+    first_file = str(tmp_path / "a.py")
     content = "ab\nwxyz\nq\n"
 
     # pace 0: one check per line, so the 2nd call stops cleanly before line 1.
     monkeypatch.setattr(control, "check_signal", _interrupt_at(2))
-    result = follower.show_fresh(file_a, content)
+    result = follower.show_fresh(first_file, content)
     assert result == AnimationResult("interrupted", 1)
 
     nvim = pynvim.attach("socket", path=headless_nvim)
     assert nvim.current.buffer[:] == ["ab", ""]  # clean boundary + seed blank
 
-    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
+    monkeypatch.setattr(control, "check_signal", lambda *arguments, **keyword_arguments: None)
     control.save_pending_show_fresh(
         "@1",
         tuple(content.splitlines())[result.completed_count :],
         0.0,
         continuation=True,
-        file_path=file_a,
+        file_path=first_file,
         partial=hooks._reconstruct_partial_fresh(content, result.completed_count),
     )
 
     pending = control.load_pending_animation("@1")
     assert pending is not None
-    hooks._consume_pending_catchup(follower, file_a, pending)
+    hooks._consume_pending_catchup(follower, first_file, pending)
 
     nvim = pynvim.attach("socket", path=headless_nvim)
     assert nvim.current.buffer[:] == content.splitlines()
@@ -194,18 +194,20 @@ def test_catchup_from_a_legacy_pending_without_a_partial_still_converges(
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
-    file_a = str(tmp_path / "a.py")
+    first_file = str(tmp_path / "a.py")
     content = "ab\nwxyz\nq\n"
 
     monkeypatch.setattr(control, "check_signal", _interrupt_at(2))
-    assert follower.show_fresh(file_a, content) == AnimationResult("interrupted", 1)
+    assert follower.show_fresh(first_file, content) == AnimationResult("interrupted", 1)
 
-    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
-    control.save_pending_show_fresh("@1", ("wxyz", "q"), 0.0, continuation=True, file_path=file_a)
+    monkeypatch.setattr(control, "check_signal", lambda *arguments, **keyword_arguments: None)
+    control.save_pending_show_fresh(
+        "@1", ("wxyz", "q"), 0.0, continuation=True, file_path=first_file
+    )
     pending = control.load_pending_animation("@1")
     assert pending is not None
     assert pending.partial is None
-    hooks._consume_pending_catchup(follower, file_a, pending)
+    hooks._consume_pending_catchup(follower, first_file, pending)
 
     nvim = pynvim.attach("socket", path=headless_nvim)
     assert nvim.current.buffer[:] == content.splitlines()

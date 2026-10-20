@@ -34,7 +34,7 @@ def _interrupt_at(nth: int) -> Any:
     the backlog contract)."""
     calls = {"n": 0}
 
-    def _signal(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _signal(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         return "interrupt" if calls["n"] == nth else None
 
@@ -145,7 +145,7 @@ def test_des_interrupt_after_a_rolled_back_interrupt_lands_at_the_full_content(
     nvim = pynvim.attach("socket", path=headless_nvim)
     assert nvim.current.buffer[:] == partial.splitlines()
 
-    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
+    monkeypatch.setattr(control, "check_signal", lambda *arguments, **keyword_arguments: None)
     assert follower.rewrite_buffer("/tmp/x.py", partial).outcome == "completed"
     nvim = pynvim.attach("socket", path=headless_nvim)
     assert nvim.current.buffer[:] == partial.splitlines()
@@ -175,7 +175,7 @@ def test_des_interrupt_after_a_rolled_back_wiping_op_lands_at_the_full_content(
     assert result == AnimationResult("interrupted", 0)
 
     partial = apply_ops(before, ops[: result.completed_count])
-    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
+    monkeypatch.setattr(control, "check_signal", lambda *arguments, **keyword_arguments: None)
     assert follower.rewrite_buffer("/tmp/x.py", partial).outcome == "completed"
 
     pending = PendingApplyEdit(

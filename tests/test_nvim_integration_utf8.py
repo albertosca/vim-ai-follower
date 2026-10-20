@@ -65,7 +65,7 @@ def _interrupt_at(nth: int) -> Any:
     tasks)."""
     calls = {"n": 0}
 
-    def _signal(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _signal(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         return "interrupt" if calls["n"] == nth else None
 
@@ -97,13 +97,13 @@ def test_apply_edit_replaces_a_line_with_a_multi_byte_one_byte_identically(
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.001)
-    file_a = str(tmp_path / "edit.py")
+    first_file = str(tmp_path / "edit.py")
     before = "primeira\nsegunda\nterceira\n"
     after = f"primeira\n{_PORTUGUESE}\nterceira\n"
 
-    follower.show_fresh(file_a, before)
+    follower.show_fresh(first_file, before)
     ops = compute_edit_script(before, after)
-    result = follower.apply_edit(file_a, ops)
+    result = follower.apply_edit(first_file, ops)
     assert result == AnimationResult("completed", len(ops))
 
     assert _encoded(_buffer_lines(headless_nvim)) == _expected(after.splitlines())
@@ -124,25 +124,25 @@ def test_interrupt_after_a_multi_byte_character_leaves_a_decodable_prefix(
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.01)
-    file_a = str(tmp_path / "interrompe.py")
+    first_file = str(tmp_path / "interrompe.py")
     lines = ["ok", "ação", "fim"]
     content = "".join(line + "\n" for line in lines)
 
     # calls: line0 boundary(1) + "o"(2) + "k"(3); line1 boundary(4) +
     # "a"(5) + "ç"(6) + "ã"(7); the 8th call, before "o", interrupts.
     monkeypatch.setattr(control, "check_signal", _interrupt_at(8))
-    result = follower.show_fresh(file_a, content)
+    result = follower.show_fresh(first_file, content)
     assert result == AnimationResult("interrupted", 1)
 
     # "" is show_fresh's own seed blank, never consumed because the retype
     # stopped before reaching it.
     assert _encoded(_buffer_lines(headless_nvim)) == _expected(["ok", "açã", ""])
 
-    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
+    monkeypatch.setattr(control, "check_signal", lambda *arguments, **keyword_arguments: None)
     partial = "\n".join(lines[:1])
-    assert follower.rewrite_buffer(file_a, partial).outcome == "completed"
+    assert follower.rewrite_buffer(first_file, partial).outcome == "completed"
     pending = PendingShowFresh(
-        lines=tuple(lines[1:]), pace_seconds=0.0, continuation=True, file_path=file_a
+        lines=tuple(lines[1:]), pace_seconds=0.0, continuation=True, file_path=first_file
     )
     assert follower.resume(pending).outcome == "completed"
 
@@ -168,7 +168,7 @@ def test_pause_across_a_multi_byte_character_converges_byte_identically(
     # "ç" has gone in and the byte offset has overtaken the char index.
     calls = {"n": 0}
 
-    def _pause_then_resume(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _pause_then_resume(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         return "pause" if calls["n"] in (6, 7) else None
 

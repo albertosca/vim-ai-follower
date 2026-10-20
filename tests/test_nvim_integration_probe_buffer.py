@@ -48,7 +48,7 @@ def test_an_unloaded_buffer_is_absent(headless_nvim: str, tmp_path: Path) -> Non
     follower.ensure_showing(str(target))
     nvim = pynvim.attach("socket", path=headless_nvim)
     nvim.command("tabnew")
-    buf = nvim.funcs.bufadd(str(target))
-    nvim.command(f"bunload! {buf}")
-    assert nvim.api.buf_is_loaded(buf) is False
+    buffer = nvim.funcs.bufadd(str(target))
+    nvim.command(f"bunload! {buffer}")
+    assert nvim.api.buf_is_loaded(buffer) is False
     assert follower.probe_buffer(str(target), "a\nb\n") == "absent"

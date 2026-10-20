@@ -34,9 +34,9 @@ _EX_HOSTILE_NAMES = ["a b.py", "a#1.py", "p%.py", "app/[slug]/page.tsx"]
 def _buffers_for(nvim: Any, path: Path) -> list[int]:
     want = os.path.realpath(path)
     return [
-        buf.number
-        for buf in nvim.api.list_bufs()
-        if nvim.api.buf_get_name(buf) and os.path.realpath(nvim.api.buf_get_name(buf)) == want
+        buffer.number
+        for buffer in nvim.api.list_bufs()
+        if nvim.api.buf_get_name(buffer) and os.path.realpath(nvim.api.buf_get_name(buffer)) == want
     ]
 
 
@@ -111,9 +111,9 @@ def test_show_fresh_over_an_existing_buffer_leaves_exactly_one_for_the_path(
     follower.show_fresh(str(path), "NEW\n", in_new_tab=True)
 
     nvim = pynvim.attach("socket", path=headless_nvim)
-    [buf] = _buffers_for(nvim, path)
-    assert nvim.api.buf_get_lines(buf, 0, -1, True) == ["NEW"]
-    assert nvim.current.buffer.number == buf
+    [buffer] = _buffers_for(nvim, path)
+    assert nvim.api.buf_get_lines(buffer, 0, -1, True) == ["NEW"]
+    assert nvim.current.buffer.number == buffer
 
 
 @pytest.mark.integration

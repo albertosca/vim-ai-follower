@@ -39,7 +39,7 @@ def _interrupt_at(nth: int) -> Any:
     imported, because those files are edited by other agents in parallel."""
     calls = {"n": 0}
 
-    def _signal(window_id: str, base_dir: Path | None = None) -> str | None:
+    def _signal(window_id: str, base_directory: Path | None = None) -> str | None:
         calls["n"] += 1
         return "interrupt" if calls["n"] == nth else None
 
@@ -57,16 +57,16 @@ def _interrupt_after_the_blank_line_hunk(
     from vim_ai_follower import cache
 
     monkeypatch.setattr(cache, "CACHE_DIR", tmp_path / "cache")
-    file_a = str(tmp_path / "a.py")
+    first_file = str(tmp_path / "a.py")
     NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0).show_fresh(
-        file_a, _BEFORE
+        first_file, _BEFORE
     )
     ops = compute_edit_script(_BEFORE, _AFTER)
     assert len(ops) == 2  # not vacuous: one op would make every prefix agree
 
     follower = NvimFollower(socket_path=headless_nvim, window_id="@1", pace_seconds=0.0)
     monkeypatch.setattr(control, "check_signal", _interrupt_at(3))
-    result = follower.apply_edit(file_a, ops)
+    result = follower.apply_edit(first_file, ops)
     assert result == AnimationResult("interrupted", 1)
 
     nvim = pynvim.attach("socket", path=headless_nvim)
@@ -74,8 +74,8 @@ def _interrupt_after_the_blank_line_hunk(
     # really on screen. Anything the partial cannot express is a line lost.
     assert nvim.current.buffer[:] == _PREFIX_LINES
 
-    monkeypatch.setattr(control, "check_signal", lambda *a, **k: None)
-    return follower, file_a, ops, apply_ops(_BEFORE, ops[: result.completed_count])
+    monkeypatch.setattr(control, "check_signal", lambda *arguments, **keyword_arguments: None)
+    return follower, first_file, ops, apply_ops(_BEFORE, ops[: result.completed_count])
 
 
 @pytest.mark.integration
@@ -92,15 +92,15 @@ def test_the_persisted_partial_reproduces_the_live_buffer_including_the_blank_li
 def test_des_interrupt_replay_keeps_the_blank_line_of_the_rebuilt_prefix(
     headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    follower, file_a, ops, partial = _interrupt_after_the_blank_line_hunk(
+    follower, first_file, ops, partial = _interrupt_after_the_blank_line_hunk(
         headless_nvim, tmp_path, monkeypatch
     )
     # Exactly what hooks._replay_remainder does with the stored pair.
-    assert follower.rewrite_buffer(file_a, partial).outcome == "completed"
+    assert follower.rewrite_buffer(first_file, partial).outcome == "completed"
     nvim = pynvim.attach("socket", path=headless_nvim)
     assert nvim.current.buffer[:] == _PREFIX_LINES
 
-    pending = control.PendingApplyEdit(ops=ops[1:], pace_seconds=0.0, file_path=file_a)
+    pending = control.PendingApplyEdit(ops=ops[1:], pace_seconds=0.0, file_path=first_file)
     assert follower.resume(pending, seeded=False).outcome == "completed"
 
     nvim = pynvim.attach("socket", path=headless_nvim)
@@ -111,13 +111,13 @@ def test_des_interrupt_replay_keeps_the_blank_line_of_the_rebuilt_prefix(
 def test_crash_fallback_catchup_keeps_the_blank_line_of_the_rebuilt_prefix(
     headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    follower, file_a, ops, partial = _interrupt_after_the_blank_line_hunk(
+    follower, first_file, ops, partial = _interrupt_after_the_blank_line_hunk(
         headless_nvim, tmp_path, monkeypatch
     )
-    control.save_pending_apply_edit("@1", ops[1:], 0.01, file_path=file_a, partial=partial)
+    control.save_pending_apply_edit("@1", ops[1:], 0.01, file_path=first_file, partial=partial)
     pending = control.load_pending_animation("@1")
     assert pending is not None
-    hooks._consume_pending_catchup(follower, file_a, pending)
+    hooks._consume_pending_catchup(follower, first_file, pending)
 
     nvim = pynvim.attach("socket", path=headless_nvim)
     assert nvim.current.buffer[:] == _AFTER.splitlines()

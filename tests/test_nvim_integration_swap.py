@@ -77,12 +77,12 @@ def swap_aware_nvim() -> Iterator[Callable[[], str]]:
     try:
         yield _launch
     finally:
-        for proc in procs:
-            proc.terminate()
+        for process in procs:
+            process.terminate()
             try:
-                proc.wait(timeout=5)
+                process.wait(timeout=5)
             except subprocess.TimeoutExpired:  # pragma: no cover - defensive cleanup
-                proc.kill()
+                process.kill()
         shutil.rmtree(work, ignore_errors=True)
 
 

@@ -150,14 +150,14 @@ def ui_nvim(tmux_session: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[Call
         shutil.rmtree(work, ignore_errors=True)
 
 
-def _in_thread(fn: Callable[[], Any]) -> tuple[bool, dict[str, Any]]:
+def _in_thread(function: Callable[[], Any]) -> tuple[bool, dict[str, Any]]:
     box: dict[str, Any] = {}
 
     def run() -> None:
         try:
-            box["value"] = fn()
-        except Exception as exc:  # pragma: no cover - surfaced by the assert below
-            box["error"] = exc
+            box["value"] = function()
+        except Exception as error:  # pragma: no cover - surfaced by the assert below
+            box["error"] = error
 
     worker = threading.Thread(target=run, daemon=True)
     worker.start()
@@ -251,15 +251,23 @@ def test_a_plugin_prompt_never_freezes_the_dedicated_follower(
 
         # What the prompt said reached hook.log (captured output or the
         # :messages tail logged with a dismissal).
-        logged = " ".join(r.getMessage() for r in caplog.records if r.name == "vim_ai_follower")
+        logged = " ".join(
+            record.getMessage() for record in caplog.records if record.name == "vim_ai_follower"
+        )
         assert ("Spawning language server" if trigger == "lsp" else "vaf-probe") in logged, logged
 
         # Nothing left behind: every watchdog thread ended and every
         # connection it opened is gone from nvim's channel list.
         assert watchdog_channels
-        assert not [t for t in threading.enumerate() if t.name == nvim_prompt.WATCHDOG_THREAD_NAME]
+        assert not [
+            thread
+            for thread in threading.enumerate()
+            if thread.name == nvim_prompt.WATCHDOG_THREAD_NAME
+        ]
         assert wait_until(
-            lambda: not {c["id"] for c in probe.api.list_chans()} & set(watchdog_channels)
+            lambda: (
+                not {channel["id"] for channel in probe.api.list_chans()} & set(watchdog_channels)
+            )
         ), (watchdog_channels, probe.api.list_chans())
     finally:
         _unfreeze(probe)
@@ -305,18 +313,18 @@ def test_two_connections_both_answering_one_more_prompt_leave_nvim_usable(
     # worst-case interleaving, pinned.
     sock = ui_nvim("none")
     probe = pynvim.attach("socket", path=sock)
-    a = pynvim.attach("socket", path=sock)
-    b = pynvim.attach("socket", path=sock)
+    first_connection = pynvim.attach("socket", path=sock)
+    second_connection = pynvim.attach("socket", path=sock)
     try:
         probe.exec_lua("vim.defer_fn(function() " + _TALL + " end, 50)")
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline and probe.api.get_mode()["mode"] != "rm":
             time.sleep(0.02)
         more = {"mode": "rm", "blocking": True}
-        assert a.api.get_mode() == more
-        assert b.api.get_mode() == more
-        a.api.input(nvim_prompt._ANSWERS["rm"])
-        b.api.input(nvim_prompt._ANSWERS["rm"])
+        assert first_connection.api.get_mode() == more
+        assert second_connection.api.get_mode() == more
+        first_connection.api.input(nvim_prompt._ANSWERS["rm"])
+        second_connection.api.input(nvim_prompt._ANSWERS["rm"])
         time.sleep(0.3)
         assert _usable(probe), probe.api.get_mode()
     finally:
@@ -427,24 +435,35 @@ def test_two_guard_processes_seeing_one_prompt_send_exactly_one_answer(
     barriers = tmp_path / "barriers"
     (barriers / "seen").mkdir(parents=True)
     (barriers / "send").mkdir()
-    cache_dir = tmp_path / "cache"
-    env = {k: v for k, v in os.environ.items() if k not in ("TMUX", "TMUX_PANE")}
+    cache_directory = tmp_path / "cache"
+    environment = {
+        key: value for key, value in os.environ.items() if key not in ("TMUX", "TMUX_PANE")
+    }
     try:
         probe.api.buf_set_lines(0, 0, -1, True, ["keep"])
         guards = [
             subprocess.Popen(
-                [sys.executable, str(script), sock, str(cache_dir), str(barriers), name, "2", kind],
+                [
+                    sys.executable,
+                    str(script),
+                    sock,
+                    str(cache_directory),
+                    str(barriers),
+                    name,
+                    "2",
+                    kind,
+                ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                env=env,
+                env=environment,
             )
             for name in ("a", "b")
         ]
         echo = _ECHO if message == "hit-enter" else _TALL
         probe.exec_lua("vim.defer_fn(function() " + echo + " end, 300)")
-        outputs = [g.communicate(timeout=20) for g in guards]
-        assert all(g.returncode == 0 for g in guards), outputs
+        outputs = [guard.communicate(timeout=20) for guard in guards]
+        assert all(guard.returncode == 0 for guard in guards), outputs
         time.sleep(0.3)
         # The damage first (mode before any non-fast read), then its cause.
         assert probe.api.get_mode() == {"mode": "n", "blocking": False}
@@ -585,13 +604,21 @@ def test_an_adopted_nvim_answers_a_plugin_prompt_while_the_follower_acts(
 
         assert probe.api.get_mode()["blocking"] is False
         assert _buffer_bytes(probe, str(target)) == [b"x = 1", "y = 'é'".encode()]
-        logged = " ".join(r.getMessage() for r in caplog.records if r.name == "vim_ai_follower")
+        logged = " ".join(
+            record.getMessage() for record in caplog.records if record.name == "vim_ai_follower"
+        )
         assert "vaf-probe" in logged, logged
         assert "dismissed a" in logged, logged
 
-        assert not [t for t in threading.enumerate() if t.name == nvim_prompt.WATCHDOG_THREAD_NAME]
+        assert not [
+            thread
+            for thread in threading.enumerate()
+            if thread.name == nvim_prompt.WATCHDOG_THREAD_NAME
+        ]
         assert wait_until(
-            lambda: not {c["id"] for c in probe.api.list_chans()} & set(watchdog_channels)
+            lambda: (
+                not {channel["id"] for channel in probe.api.list_chans()} & set(watchdog_channels)
+            )
         ), (watchdog_channels, probe.api.list_chans())
     finally:
         _unfreeze(probe)

@@ -170,9 +170,9 @@ def test_ensure_showing_an_existing_modified_buffer_never_reloads_it(
     # animation stamps the changedtick) and a Read re-reads it; the user's
     # typing moves the tick, and that buffer must never be re-read.
     nvim = pynvim.attach("socket", path=headless_nvim)
-    buf = nvim.funcs.bufnr(str(target))
-    nvim.api.buf_set_option(buf, "modifiable", True)
-    nvim.api.buf_set_lines(buf, 0, 0, True, ["user line"])
+    buffer = nvim.funcs.bufnr(str(target))
+    nvim.api.buf_set_option(buffer, "modifiable", True)
+    nvim.api.buf_set_lines(buffer, 0, 0, True, ["user line"])
     follower.show_fresh(str(tmp_path / "other.py"), "other\n", in_new_tab=True)
 
     follower.ensure_showing(str(target))

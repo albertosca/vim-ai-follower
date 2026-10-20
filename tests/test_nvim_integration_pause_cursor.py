@@ -39,9 +39,9 @@ class _PausedAnimation:
     """An animation typing into the follower's buffer from its own connection,
     paused once its first line is on screen; `user` is a second connection."""
 
-    def __init__(self, socket_path: str, base_dir: Path, follower_file: Path) -> None:
+    def __init__(self, socket_path: str, base_directory: Path, follower_file: Path) -> None:
         self.socket_path = socket_path
-        self.base_dir = base_dir
+        self.base_dir = base_directory
         self.user = pynvim.attach("socket", path=socket_path)
         self.user.command(f"edit {follower_file}")
         self.follower_buffer = self.user.api.get_current_buf().handle
@@ -197,9 +197,9 @@ def test_every_entry_point_types_with_the_followers_own_kind(
     real_animate = nvim_backend._animate_lines
     seen: list[bool] = []
 
-    def recording(*args: object, **kwargs: object) -> AnimationResult:
-        seen.append(bool(kwargs["dedicated"]))
-        return real_animate(*args, **kwargs)  # type: ignore[arg-type]
+    def recording(*arguments: object, **keyword_arguments: object) -> AnimationResult:
+        seen.append(bool(keyword_arguments["dedicated"]))
+        return real_animate(*arguments, **keyword_arguments)  # type: ignore[arg-type]
 
     monkeypatch.setattr(nvim_backend, "_animate_lines", recording)
     target = tmp_path / "kind.py"

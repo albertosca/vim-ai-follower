@@ -48,10 +48,12 @@ def world() -> Iterator[E2EFollower]:
         yield live
 
 
-def _timed_cli(world: E2EFollower, *args: str) -> tuple[subprocess.CompletedProcess[str], float]:
+def _timed_cli(
+    world: E2EFollower, *arguments: str
+) -> tuple[subprocess.CompletedProcess[str], float]:
     started = time.monotonic()
     result = subprocess.run(
-        [str(CLI), *args],
+        [str(CLI), *arguments],
         env=world.env,
         capture_output=True,
         text=True,
