@@ -342,6 +342,7 @@ def test_every_typed_call_fits_two_screen_rows(
         tmux_vim._call_line("give_back", handle, 1),
         tmux_vim._call_line("restore_readonly", number, 999999),
         tmux_vim._call_line("reload", 1, 1),
+        tmux_vim._call_line("reground", number, 999999, 1),
         tmux_vim._call_line("relock", 1, 1),
         tmux_vim._call_line("lock_back", 1, 1),
         tmux_vim._call_line("lock"),

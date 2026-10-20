@@ -451,7 +451,9 @@ def test_a_completed_catch_up_that_is_not_the_base_is_reloaded_from_disk(
     expected = [partial, base, end] if adopted else [base]
     assert follower.probe_buffer.call_args_list == expected
     assert follower.resume.call_args_list != []
-    assert follower.reload_from_disk.call_args_list == [call(resolved)]
+    assert follower.reload_from_disk.call_args_list == [
+        call(resolved, unless_changed_since_probe=adopted)
+    ]
     assert follower.apply_edit.call_args_list == []
     assert follower.show_fresh.call_args_list == []
     assert call.set_state(hooks.BASE_DIFFERS_CUE) not in surface.method_calls
@@ -599,6 +601,30 @@ def test_a_catch_up_that_did_not_complete_is_never_grounded(
     assert follower.show_fresh.call_args_list == []
     assert follower.apply_edit.call_args_list == []
     assert call.set_state(hooks.BASE_DIFFERS_CUE) not in surface.method_calls
+
+
+def test_a_buffer_that_changed_after_the_probe_is_left_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The adopted reload ran only if the buffer did not change since the
+    second probe (backlog-sweep-4 T14), and it did: nothing was discarded,
+    so the buffer is the user's, marked stale, with the cue."""
+    target, resolved = _setup(tmp_path, adopted=True)
+    _pending_apply_edit(resolved, "a\nb\nc\n")
+    follower = _caught_up_follower(True, "differs")
+    follower.reload_from_disk.return_value = False
+    surface = _run_hook(target, follower, monkeypatch)
+
+    assert follower.reload_from_disk.call_args_list == [
+        call(resolved, unless_changed_since_probe=True)
+    ]
+    assert call.set_state(hooks.BASE_DIFFERS_CUE) in surface.method_calls
+    follower_state = state.FollowerState.read("@1")
+    assert follower_state is not None
+    assert resolved in follower_state.stale_files
+    log = hooks.LOG_PATH.read_text()
+    assert "changed between the probe" in log
+    assert "reloaded" not in log
 
 
 def test_a_reload_that_raises_never_fails_the_hook(

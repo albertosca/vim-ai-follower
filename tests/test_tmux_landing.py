@@ -78,7 +78,9 @@ ACTING = {
         "/tmp/t.py", compute_edit_script("a\n", "a\nb\n"), "a\n"
     ),
     "reload_and_relock": lambda follower: follower.reload_and_relock("/tmp/t.py"),
-    "reload_from_disk": lambda follower: follower.reload_from_disk("/tmp/t.py"),
+    "reload_from_disk": lambda follower: follower.reload_from_disk(
+        "/tmp/t.py", unless_changed_since_probe=True
+    ),
     "rewrite_buffer": lambda follower: follower.rewrite_buffer("/tmp/t.py", "a\n"),
     "show_fresh": lambda follower: follower.show_fresh("/tmp/t.py", "a\n"),
 }

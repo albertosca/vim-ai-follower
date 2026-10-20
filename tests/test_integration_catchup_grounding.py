@@ -222,3 +222,67 @@ def test_typing_during_an_adopted_catch_up_survives(
     state = FollowerState.read(window_id)
     assert state is not None
     assert str(target) in state.stale_files
+
+
+def test_typing_between_the_probe_and_the_reload_survives(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    """BACKLOG B2 (sweep-4 T14): the second probe found the caught-up buffer
+    holding only follower text, and the user changed it in the few ms before
+    the reload's `:e!`, which discarded that change. The reload now runs only
+    when the buffer's changedtick is still the one the probe read, checked in
+    the same Vim call as the `:e!`, so the change survives and the buffer is
+    left alone with the cue.
+
+    The interleaving is held open, not raced: the change lands, and is seen
+    in the buffer, between the probe's answer and the reload."""
+    log, pane, window_id = _observed_follower(tmux_session, monkeypatch, tmp_path, wait_until)
+    assert _width(pane) == 49
+    target = tmp_path / "a.py"
+    _write(monkeypatch, log, wait_until, target, WRITTEN)
+    FollowerState.update(window_id, adopted=True)
+    target.write_text(KILLED)
+    control.save_pending_apply_edit(
+        window_id,
+        compute_edit_script(WRITTEN, KILLED),
+        0.0,
+        file_path=str(target),
+        partial=WRITTEN,
+    )
+    target.write_text(FORMATTED)  # outside Claude
+
+    from vim_ai_follower import hooks
+
+    held_probe = hooks._caught_up_buffer_held
+    changed: list[str] = []
+
+    def _user_changes_it_after_the_probe(*arguments: object) -> object:
+        held = held_probe(*arguments)  # type: ignore[arg-type]
+        if held == "holds" and not changed:
+            changed.append("zz")
+            buffer = f"bufnr('{target}')"
+            _keys(
+                pane,
+                f":call setbufvar({buffer},'&modifiable',1)|call setbufline({buffer},1,'zz')",
+            )
+            assert wait_until(
+                lambda: _dump(pane, target, tmp_path, wait_until)[1][:1] == ["zz"], timeout=5.0
+            )
+        return held
+
+    monkeypatch.setattr(hooks, "_caught_up_buffer_held", _user_changes_it_after_the_probe)
+    _hook(monkeypatch, "pre", "Edit", target)
+    target.write_text(FINISHED)
+    _hook(monkeypatch, "post", "Edit", target)
+
+    assert changed == ["zz"], "the second probe never said holds"
+    expected = ["zz", *KILLED.splitlines()[1:]]
+    assert _dump(pane, target, tmp_path, wait_until) == ("1", expected)
+    title = TmuxPane(pane_id=pane).title()
+    assert title == BASE_DIFFERS_CUE, title
+    state = FollowerState.read(window_id)
+    assert state is not None
+    assert str(target) in state.stale_files

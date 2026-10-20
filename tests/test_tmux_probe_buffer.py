@@ -78,7 +78,11 @@ def test_the_probe_never_leaves_a_prompt_and_dumps_the_buffer_by_number() -> Non
     pane's answer file, and the whole body inside try with an empty
     catch-all, so no failure (an unwritable cache, E482) leaves a prompt."""
     probe = vim_function("probe")
-    assert "let lines = getbufline(s:find(path, a:folds), 1, '$')" in probe
+    assert "let number = s:find(path, a:folds)" in probe
+    assert "let lines = getbufline(number, 1, '$')" in probe
+    # The changedtick is recorded in the same call as the lines are read,
+    # for reload_from_disk's s:reground (backlog-sweep-4 T14).
+    assert "call setbufvar(number, 'vaf_probed_tick', getbufvar(number, 'changedtick'))" in probe
     assert "call writefile(lines + [a:token], s:dir . 'probe-' . s:pane(a:token) . '.txt')" in (
         probe
     )

@@ -321,6 +321,30 @@ _SWAP_BACK_ON = (
 # toward "not clean", the side that never discards typing. An interrupt does
 # not stamp: the handed-over buffer is the user's.
 _SYNCED_TICK = "vaf_synced_tick"
+# probe_buffer records the buffer's changedtick BEFORE it reads the lines, so
+# a change landing between the two reads as "moved" at the reload, never as
+# unchanged; a b: variable, which changes no tick.
+_RECORD_PROBED_TICK_LUA = """
+local buffer = ...
+vim.b[buffer].vaf_probed_tick = vim.api.nvim_buf_get_changedtick(buffer)
+"""
+
+# reload_from_disk's in an adopted nvim: `edit!` only while the buffer's
+# changedtick is still the one the last probe recorded, compared in the same
+# request, so a change the user made after the probe answered is never
+# discarded (backlog-sweep-4 T14). True when it reloaded.
+_RELOAD_IF_UNCHANGED_LUA = """
+local buffer = ...
+local probed = vim.b[buffer].vaf_probed_tick
+vim.b[buffer].vaf_probed_tick = nil
+if vim.api.nvim_get_current_buf() ~= buffer
+    or probed ~= vim.api.nvim_buf_get_changedtick(buffer) then
+  return false
+end
+vim.cmd('edit!')
+return true
+"""
+
 _IS_CLEAN_LUA = f"""
 local buf = ...
 if not vim.bo[buf].modified then return true end
@@ -1178,12 +1202,26 @@ class NvimFollower:
                 buffer = nvim.api.get_current_buf().handle
                 nvim.api.buf_set_option(buffer, "modifiable", False)
 
-    def reload_from_disk(self, file_path: str) -> None:
+    def reload_from_disk(self, file_path: str, *, unless_changed_since_probe: bool) -> bool:
         """Ground a buffer holding only follower text on the file on disk (a
         catch-up that just completed, hooks._animate_edit). Exactly the
         des-interrupt's reload: `edit!`, then the lock a dedicated follower
-        gets; an adopted nvim is never locked."""
-        self.reload_and_relock(file_path)
+        gets; an adopted nvim is never locked.
+
+        With unless_changed_since_probe (an adopted nvim), the `edit!` runs
+        only if the buffer did not change since the last probe_buffer of it
+        (_RELOAD_IF_UNCHANGED_LUA, one request), and False means it did."""
+        if not unless_changed_since_probe:
+            self.reload_and_relock(file_path)
+            return True
+        nvim = self._connect()
+        with self._guarded(nvim, "reload_from_disk"):
+            self.goto_file(file_path)
+            buffer = nvim.api.get_current_buf().handle
+            reloaded = bool(nvim.exec_lua(_RELOAD_IF_UNCHANGED_LUA, buffer))
+            if reloaded and self._locks_buffers():
+                nvim.api.buf_set_option(buffer, "modifiable", False)
+            return reloaded
 
     def rewrite_buffer(self, file_path: str, content: str) -> AnimationResult:
         """Instantly (no animation) rebuild the buffer to `content` — the
@@ -1521,7 +1559,9 @@ class NvimFollower:
         'nohidden') is "absent" with no check of its own: buf_get_lines of an
         unloaded buffer is an empty list (measured, nvim 0.12) — and
         goto_file's win_set_buf would load the finished file from disk into
-        it. Pure reads — no navigation, no lock change, adopted or not.
+        it. Reads only — no navigation, no lock change, adopted or not — but
+        for the changedtick it records first in `b:vaf_probed_tick`, which
+        reload_from_disk compares (a variable: no tick, no 'modified').
         buf_get_lines decodes with surrogateescape, so a buffer holding bytes
         that are not UTF-8 never equals the hook's decoded `content`: it
         reads as "differs".
@@ -1539,6 +1579,7 @@ class NvimFollower:
             bufnr = _buffer_number(nvim, file_path)
             if bufnr == -1:
                 return "absent"
+            nvim.exec_lua(_RECORD_PROBED_TICK_LUA, bufnr)
             lines: list[str] = nvim.api.buf_get_lines(bufnr, 0, -1, False)
             held = classify_buffer(lines, content)
             if (

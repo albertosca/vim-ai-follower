@@ -12,12 +12,13 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from helpers import fresh_buffer, route_exec_lua, shows_the_buffer
 
 from vim_ai_follower.animate import AnimationResult
+from vim_ai_follower.backends import nvim as nvim_module
 from vim_ai_follower.backends.nvim import NvimFollower
 from vim_ai_follower.control import PendingShowFresh
 from vim_ai_follower.diff import EditOp
@@ -197,5 +198,25 @@ def test_reload_from_disk_is_the_des_interrupt_reload() -> None:
     adopted-never-locked rule rather than a second copy of them."""
     follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
     with patch.object(NvimFollower, "reload_and_relock") as reload:
-        follower.reload_from_disk("/tmp/f.py")
+        assert follower.reload_from_disk("/tmp/f.py", unless_changed_since_probe=False)
     reload.assert_called_once_with("/tmp/f.py")
+
+
+@pytest.mark.parametrize("unchanged", [True, False])
+def test_an_adopted_reload_from_disk_runs_only_while_the_probed_tick_holds(
+    unchanged: bool,
+) -> None:
+    """One request compares the changedtick the probe recorded and runs
+    `edit!` (backlog-sweep-4 T14); an adopted nvim is never locked."""
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
+    nvim = MagicMock()
+    nvim.api.get_current_buf.return_value.handle = 7
+    nvim.exec_lua.return_value = unchanged
+    with (
+        patch.object(NvimFollower, "_connect", return_value=nvim),
+        patch.object(NvimFollower, "goto_file"),
+        patch.object(NvimFollower, "_locks_buffers", return_value=False),
+    ):
+        assert follower.reload_from_disk("/tmp/f.py", unless_changed_since_probe=True) is unchanged
+    assert nvim.exec_lua.call_args_list == [call(nvim_module._RELOAD_IF_UNCHANGED_LUA, 7)]
+    assert call.api.buf_set_option(7, "modifiable", False) not in nvim.mock_calls

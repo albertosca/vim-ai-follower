@@ -308,3 +308,34 @@ def test_typing_during_an_adopted_catch_up_survives(
     expected = [rows[0] + " user text", *rows[1:]]
     _assert_left_alone(nvim, tmp_path, target, expected)
     assert nvim.api.buf_get_option(_buffer(nvim, "a.py").handle, "modified") is True
+
+
+def test_typing_between_the_probe_and_the_reload_survives(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The nvim twin of tests/test_integration_catchup_grounding.py's test
+    of the same name: the second probe found only the catch-up's text, and
+    the user typed into the buffer (a second RPC connection) before the
+    reload. The reload's `edit!` runs only while the changedtick is still
+    the probe's, in the same request, so the user's text survives and the
+    buffer is left alone with the cue."""
+    nvim, target = _animated_then_pending(headless_nvim, tmp_path, monkeypatch)
+    target.write_text("x = 1\ny = 3\n# fmt\n")  # outside Claude
+    user = pynvim.attach("socket", path=headless_nvim)
+    handle = _buffer(user, "a.py").handle
+    held_probe = hooks._caught_up_buffer_held
+    changed: list[str] = []
+
+    def _user_types_after_the_probe(*arguments: Any) -> Any:
+        held = held_probe(*arguments)
+        if held == "holds" and not changed:
+            changed.append("zz")
+            user.api.buf_set_lines(handle, 0, 1, True, ["zz"])
+        return held
+
+    monkeypatch.setattr(hooks, "_caught_up_buffer_held", _user_types_after_the_probe)
+    _edit(target, "x = 1\ny = 3\n# fmt\nz = 4\n")
+
+    assert changed == ["zz"], "the second probe never said holds"
+    _assert_left_alone(nvim, tmp_path, target, ["zz", "y = 3"])
+    assert nvim.api.buf_get_option(_buffer(nvim, "a.py").handle, "modified") is True

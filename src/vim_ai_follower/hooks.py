@@ -1828,10 +1828,27 @@ def _ground_caught_up_buffer(
     "unknown" (the editor did not answer the base probe) is grounded in an
     adopted editor by the same reasoning once that second probe answers: the
     buffer holds nothing of the user's, and leaving it alone would leave it
-    modified, the W12 hazard above. A
+    modified, the W12 hazard above. In an adopted editor the reload itself
+    runs only if the buffer did not change since that second probe (checked
+    editor-side in the same call as the `:e!`); a change in between leaves
+    it alone, as _leave_adopted_buffer_alone would. A
     dedicated follower keeps retyping on "unknown", as for any buffer it
     cannot check: show_fresh's own relock ends in the same disk sync, so it is
     grounded either way, and the edit stays visible."""
+    try:
+        reloaded = follower.reload_from_disk(file_path, unless_changed_since_probe=current.adopted)
+    except Exception:
+        logger.exception("could not reload %s after a catch-up", file_path)
+        return
+    if not reloaded:
+        _leave_adopted_buffer_alone(
+            current,
+            window_id,
+            file_path,
+            "differs",
+            "it changed between the probe that found only the catch-up's text and the reload",
+        )
+        return
     logger.info(
         "reloaded %s from disk after a catch-up: its buffer %s",
         file_path,
@@ -1839,11 +1856,6 @@ def _ground_caught_up_buffer(
         if probe == "differs"
         else "could not be checked",
     )
-    try:
-        follower.reload_from_disk(file_path)
-    except Exception:
-        logger.exception("could not reload %s after a catch-up", file_path)
-        return
     # Never stale here: a stale file is fresh, and a fresh file gets no
     # catch-up. Nor is it marked: the buffer now matches disk.
     FollowerState.update_current_file(window_id, file_path)

@@ -3,7 +3,8 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import call as mock_call
 
 import pytest
 from helpers import (
@@ -764,7 +765,7 @@ def test_reload_from_disk_discards_under_the_swap_answer_and_locks() -> None:
     _prove_dedicated()
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
-        follower.reload_from_disk("/tmp/a.py")
+        assert follower.reload_from_disk("/tmp/a.py", unless_changed_since_probe=False)
     assert _sent_commands(run) == [
         ("Escape", False),
         ("Escape", False),
@@ -781,6 +782,34 @@ def test_reload_from_disk_discards_under_the_swap_answer_and_locks() -> None:
         (":setlocal readonly nomodifiable" + _CLEARED, True),
         ("Enter", False),
     ]
+
+
+@pytest.mark.parametrize(
+    ("verdict", "reloaded"),
+    [(["reloaded"], True), (["moved"], False), (None, True)],
+    ids=["reloaded", "moved", "no-answer"],
+)
+def test_an_adopted_reload_from_disk_is_one_call_that_checks_the_probed_tick(
+    verdict: list[str] | None, reloaded: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """s:reground compares the changedtick the last probe recorded
+    and runs `:e!` in the same call (backlog-sweep-4 T14); "moved" sends
+    nothing more, so the user's change keeps its buffer unlocked as they
+    left it. No verdict is taken as a reload, as before."""
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path)
+    follower = TmuxVimFollower(pane_id="%2", window_id="@1")
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run") as run,
+        patch.object(tmux_vim, "_readonly_token", return_value=123456),
+        patch.object(tmux_vim, "_await_answer", return_value=verdict) as answer,
+        patch.object(TmuxVimFollower, "goto_file"),
+    ):
+        assert follower.reload_from_disk("/tmp/a.py", unless_changed_since_probe=True) is reloaded
+    assert answer.call_args == mock_call(tmp_path / "reload-2.txt", "123456", ANY)
+    expected = [(call_spelled("reground", 2, 123456, 1), True), ("Enter", False)]
+    if reloaded:
+        expected += [(call_spelled("lock"), True), ("Enter", False)]
+    assert _sent_commands(run) == expected
 
 
 def _wipe(path: str) -> str:

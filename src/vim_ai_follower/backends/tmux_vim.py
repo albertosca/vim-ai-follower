@@ -769,6 +769,13 @@ endfunction
 # catch-up), or the user's typing a des-interrupt discards. In an adopted
 # Vim (`adopted`) the user's readonly is noted first, since the reload resets
 # it (see s:note_user_readonly).
+#
+# s:reground is reload_from_disk's in an adopted Vim: the discarding
+# re-read only while the buffer's changedtick is still the one the last
+# s:probe of it recorded (b:vaf_probed_tick), checked in the same call as the
+# `:e!`, so nothing the user changed after the probe answered is discarded
+# (backlog-sweep-4 T14: a few ms between the probe and a separate reload).
+# Its verdict, "reloaded" or "moved", goes to `reload-<pane>.txt`.
 _VIM_RELOAD = r"""
 function! s:reload(discard, adopted) abort
   if a:adopted
@@ -783,6 +790,19 @@ function! s:reload(discard, adopted) abort
     endif
   finally
     call s:swap_answer_close()
+  endtry
+endfunction
+
+function! s:reground(pane, token, adopted) abort
+  let verdict = 'moved'
+  if b:changedtick == get(b:, 'vaf_probed_tick', -1)
+    call s:reload(1, a:adopted)
+    let verdict = 'reloaded'
+  endif
+  unlet! b:vaf_probed_tick
+  try
+    call writefile([verdict, a:token], s:dir . 'reload-' . a:pane . '.txt')
+  catch
   endtry
 endfunction
 """
@@ -1147,7 +1167,11 @@ function! s:probe(token, folds) abort
   try
     let path = s:read(a:token)
     if path !=# ''
-      let lines = getbufline(s:find(path, a:folds), 1, '$')
+      let number = s:find(path, a:folds)
+      let lines = getbufline(number, 1, '$')
+      if number > 0
+        call setbufvar(number, 'vaf_probed_tick', getbufvar(number, 'changedtick'))
+      endif
       call writefile(lines + [a:token], s:dir . 'probe-' . s:pane(a:token) . '.txt')
     endif
   catch
@@ -1457,6 +1481,11 @@ def _raise_if_backing_off(pane_id: str, file_path: str) -> None:
 def _probe_path(pane_id: str) -> Path:
     """Where Vim writes probe_buffer's answer for this pane (s:probe)."""
     return cache.CACHE_DIRECTORY / f"probe-{pane_id.lstrip('%')}.txt"
+
+
+def _reload_answer_path(pane_id: str) -> Path:
+    """Where s:reground leaves its verdict for this pane."""
+    return cache.CACHE_DIRECTORY / f"reload-{pane_id.lstrip('%')}.txt"
 
 
 def _evict_answer_path(pane_id: str) -> Path:
@@ -2754,15 +2783,39 @@ class TmuxVimFollower:
         # holds, it put up the whole ATTENTION dialog (see _VIM_RELOCK).
         self._send_reload_and_lock(pane, discard=True)
 
-    def reload_from_disk(self, file_path: str) -> None:
+    def reload_from_disk(self, file_path: str, *, unless_changed_since_probe: bool) -> bool:
         """Ground the buffer on the file as it is on disk, discarding what it
         holds, and lock it. Only for a buffer holding nothing but follower
         text: a catch-up that just completed (hooks._animate_edit). Without
         it that buffer stays modified while disk moved on, and the next
-        `:checktime` raises the blocking W12 dialog."""
+        `:checktime` raises the blocking W12 dialog.
+
+        With unless_changed_since_probe (an adopted Vim), the re-read runs
+        only if the buffer did not change since the last probe_buffer of it
+        (s:reground, one call), and False means it did: nothing was
+        sent after the verdict, the buffer holds what the user made of it.
+        No verdict within _PROBE_TIMEOUT_SECONDS is logged and taken as a
+        reload (the lock is sent, as it always was)."""
         self.goto_file(file_path)
         pane = TmuxPane(pane_id=self.pane_id)
-        self._send_reload_and_lock(pane, discard=True)
+        if not unless_changed_since_probe:
+            self._send_reload_and_lock(pane, discard=True)
+            return True
+        adopted = self._is_adopted()
+        answer = _reload_answer_path(self.pane_id)
+        answer.parent.mkdir(parents=True, exist_ok=True)
+        answer.unlink(missing_ok=True)
+        token = _readonly_token()
+        number = int(self.pane_id.lstrip("%"))
+        pane.send_line(_call_line("reground", number, token, int(adopted)))
+        verdict = _await_answer(answer, str(token), _PROBE_TIMEOUT_SECONDS)
+        answer.unlink(missing_ok=True)
+        if verdict == ["moved"]:
+            return False
+        if verdict != ["reloaded"]:
+            logger.warning("no reload verdict from the follower's Vim about %s", file_path)
+        pane.send_line(_call_line("lock") if adopted else _cleared(_LOCK_READONLY))
+        return True
 
     def rewrite_buffer(self, file_path: str, content: str) -> AnimationResult:
         """Instantly (pace 0) rebuild the buffer to `content` — the
