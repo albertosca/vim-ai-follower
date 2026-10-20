@@ -7,6 +7,7 @@ nvim floating-window implementation."""
 from __future__ import annotations
 
 import contextlib
+import unicodedata
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
@@ -47,22 +48,43 @@ def _cterm_to_hex(number: int) -> str:
     return f"#{red:02x}{green:02x}{blue:02x}"
 
 
+def display_width(text: str) -> int:
+    """The terminal cells `text` takes: two for a wide or fullwidth
+    character (east_asian_width W or F), none for a combining mark, one for
+    anything else."""
+    return sum(
+        0
+        if unicodedata.combining(character)
+        else 2
+        if unicodedata.east_asian_width(character) in "WF"
+        else 1
+        for character in text
+    )
+
+
 def _window_width(columns: int, lines: list[str]) -> int:
     """The float's width for a body of `lines`: _MIN_WIDTH, or wider by the
-    longest line plus a cell each side, so both hand-off cues (41/42 cells)
-    sit on one row instead of wrapping inside a fixed 32; never more than
-    the editor's `columns` minus the rounded border's two cells, and never
-    under one cell."""
-    longest = max((len(line) for line in lines), default=0)
-    return max(1, min(max(_MIN_WIDTH, longest + 2), columns - 2))
+    widest line plus a cell each side, so both hand-off cues sit on one row
+    instead of wrapping inside a fixed 32; never more than the editor's
+    `columns` minus the rounded border's two cells, and never under one
+    cell. Widths are display cells, so a wide-character cue fits too."""
+    widest = max((display_width(line) for line in lines), default=0)
+    return max(1, min(max(_MIN_WIDTH, widest + 2), columns - 2))
+
+
+def _centered(line: str, width: int) -> str:
+    """`line` centered in `width` display cells, as str.center places it."""
+    padding = max(0, width - display_width(line))
+    left = padding // 2 + (padding & width & 1)
+    return " " * left + line + " " * (padding - left)
 
 
 def _centered_box(lines: list[str], width: int = _MIN_WIDTH) -> list[str]:
-    """Pad `lines` (each centered horizontally in `width`) with blank rows top
-    and bottom so the content sits vertically centered in a
+    """Pad `lines` (each centered horizontally in `width` display cells) with
+    blank rows top and bottom so the content sits vertically centered in a
     _WINDOW_HEIGHT-tall box."""
     top = (_WINDOW_HEIGHT - len(lines)) // 2
-    out = [""] * top + [line.center(width) for line in lines]
+    out = [""] * top + [_centered(line, width) for line in lines]
     out += [""] * (_WINDOW_HEIGHT - len(out))
     return out[:_WINDOW_HEIGHT]
 

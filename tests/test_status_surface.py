@@ -25,6 +25,8 @@ from vim_ai_follower.status_surface import (
     TmuxStatusSurface,
     _centered_box,
     _cterm_to_hex,
+    _window_width,
+    display_width,
     status_surface_for,
 )
 
@@ -552,3 +554,22 @@ def test_an_existing_float_is_resized_for_a_longer_cue() -> None:
     nvim.api.win_set_config.assert_any_call(
         3, {"relative": "editor", "row": 1, "col": 49 - width - 2, "width": width}
     )
+
+
+def test_a_wide_character_cue_fits_its_float() -> None:
+    cue = "\u7de8\u96c6\u4e2d \u2014 \u5f85\u6a5f"
+    assert display_width(cue) == 13
+    wide_cue = " ".join([cue] * 3)
+    assert len(wide_cue) < 32 < display_width(wide_cue)
+    assert _window_width(80, [wide_cue]) == display_width(wide_cue) + 2
+
+
+def test_the_box_centers_by_display_cells() -> None:
+    cue = "\u7de8\u96c6\u4e2d"
+    row = next(line for line in _centered_box([cue], width=10) if line.strip())
+    assert display_width(row) == 10
+    assert row == "  " + cue + "  "
+
+
+def test_a_combining_mark_takes_no_cell() -> None:
+    assert display_width("e\u0301") == 1
