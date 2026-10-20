@@ -305,3 +305,19 @@ def test_a_tabnew_that_throws_is_navigation_failed_and_taken_back() -> None:
     nvim.api.win_set_buf.assert_not_called()
     nvim.api.tabpage_list_wins.assert_called()
     nvim.command.assert_any_call(f"silent! bwipeout! {buffer.handle}")
+
+
+def test_a_buffer_nvim_refuses_to_create_is_navigation_failed() -> None:
+    nvim, _buffer = _mock()
+    nvim.api.create_buf.side_effect = pynvim.NvimError("Failed to create buffer")
+    with pytest.raises(NavigationFailed, match="could not create a buffer"):
+        _follower()._fresh_buffer(nvim, "/tmp/f.py", True)
+    nvim.command.assert_not_called()
+
+
+def test_a_buffer_nvim_refuses_to_name_is_wiped_and_navigation_failed() -> None:
+    nvim, buffer = _mock()
+    nvim.api.buf_set_name.side_effect = pynvim.NvimError("Invalid buffer id: 7")
+    with pytest.raises(NavigationFailed, match="could not name a buffer"):
+        _follower()._fresh_buffer(nvim, "/tmp/f.py", True)
+    assert nvim.command.call_args_list == [call(f"silent! bwipeout! {buffer.handle}")]

@@ -67,3 +67,27 @@ def test_a_failed_new_tab_leaves_no_tab(
     nvim.command("autocmd! WinEnter")
     nvim.command("autocmd! TabNew")
     assert _tab_layout(nvim) == tabs_before
+
+
+@pytest.mark.parametrize("entry", ["show_fresh", "read", "goto_missing"])
+def test_a_bufadd_that_wipes_the_new_buffer_is_navigation_failed(
+    headless_nvim: str, tmp_path: Path, entry: str
+) -> None:
+    root = Path(os.path.realpath(tmp_path))
+    target = root / "target.py"
+    if entry != "goto_missing":
+        target.write_text("target = 1\n")
+    nvim, follower = _adopted(headless_nvim, root)
+    nvim.command("autocmd BufAdd * execute 'silent! bwipeout!' expand('<abuf>')")
+    tabs_before = _tab_layout(nvim)
+
+    with pytest.raises(NavigationFailed):
+        if entry == "show_fresh":
+            follower.show_fresh(str(target), "target = 1\n", in_new_tab=True)
+        elif entry == "read":
+            follower.ensure_showing(str(target))
+        else:
+            follower.goto_file(str(target))
+
+    nvim.command("autocmd! BufAdd")
+    assert _tab_layout(nvim) == tabs_before

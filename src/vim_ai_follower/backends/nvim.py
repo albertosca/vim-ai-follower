@@ -903,11 +903,25 @@ class NvimFollower:
         empty it, unsaved text and all (final review of backlog-sweep-3, I1,
         reproduced at acce2b2). If it is not current afterwards
         (NavigationFailed), the new buffer is wiped again: nothing has acted
-        on any other buffer."""
-        created = nvim.api.create_buf(True, False)
-        _name_without_swap(nvim, created, file_path)
-        nvim.api.buf_set_var(created, _CREATED, 1)
+        on any other buffer. A user BufAdd that wipes the buffer as it is
+        made fails `create_buf` itself ("Failed to create buffer"), which
+        used to escape the hook raw (T8 matrix m2): any refusal while making
+        and naming it is NavigationFailed too."""
+        try:
+            created = nvim.api.create_buf(True, False)
+        except pynvim.NvimError as error:
+            raise NavigationFailed(
+                f"the follower's nvim could not create a buffer for {file_path}: {error}"
+            ) from error
         handle: int = created.handle
+        try:
+            _name_without_swap(nvim, created, file_path)
+            nvim.api.buf_set_var(created, _CREATED, 1)
+        except pynvim.NvimError as error:
+            nvim.command(f"silent! bwipeout! {handle}")
+            raise NavigationFailed(
+                f"the follower's nvim could not name a buffer {file_path}: {error}"
+            ) from error
         try:
             if in_new_tab:
                 self._show_in_new_tab(nvim, handle, file_path)
