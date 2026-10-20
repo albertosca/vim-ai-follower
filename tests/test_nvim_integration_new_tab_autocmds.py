@@ -91,3 +91,29 @@ def test_a_bufadd_that_wipes_the_new_buffer_is_navigation_failed(
 
     nvim.command("autocmd! BufAdd")
     assert _tab_layout(nvim) == tabs_before
+
+
+@pytest.mark.parametrize(
+    "autocmd",
+    ["autocmd TabNew * tabfirst", "autocmd TabNew * tabfirst | enew"],
+    ids=["hijack", "users-own-enew"],
+)
+def test_a_users_own_switch_to_an_empty_buffer_reads_as_a_hijack_and_is_given_back(
+    headless_nvim: str, tmp_path: Path, autocmd: str
+) -> None:
+    """T8 matrix m4, measured 2026-10-20 (nvim 0.12): a TabNew that jumps to
+    the first tab and `:enew`s there on purpose leaves the SAME state as a
+    plain jump: the tabnew's own empty buffer reuses the one `:enew` made, so
+    window and buffer handles match and nothing tells the two apart. Both are
+    given back; leaving them would bring back the hijack of review I2."""
+    root = Path(os.path.realpath(tmp_path))
+    target = root / "target.py"
+    target.write_text("target = 1\n")
+    nvim, follower = _adopted(headless_nvim, root)
+    user_window, user_buffer = nvim.current.window, nvim.current.buffer
+    nvim.command(autocmd)
+
+    assert follower.show_fresh(str(target), "target = 1\n", in_new_tab=True).outcome == "completed"
+
+    assert user_window.buffer.handle == user_buffer.handle
+    assert [buffer.handle for buffer in nvim.buffers if buffer.name == ""] == []
