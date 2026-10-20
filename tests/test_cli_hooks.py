@@ -53,6 +53,8 @@ from vim_ai_follower.backends.nvim_connect import NvimNeverListened
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.session import Session
 
+pytestmark = pytest.mark.usefixtures("guarded_define_line")
+
 # The readonly completion relock of a dedicated follower: the scoped swap
 # answer around a silent re-read, then the lock (s:relock).
 _READONLY_RELOCK = call_spelled("relock", 1, 0)

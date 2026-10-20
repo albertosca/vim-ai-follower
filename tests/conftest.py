@@ -78,6 +78,20 @@ def nvim_state_outside_home(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
 
 
 @pytest.fixture
+def guarded_define_line(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The define line these tests expect is the guarded one, whatever the
+    platform's temporary directory. tmux_vim._define_line drops the guard
+    when the guarded form passes two rows (_MAXIMUM_TYPED_LINE) and the bare
+    one fits; pytest's tmp_path is long on macOS (neither fits, so the guard
+    stays) and short on a Linux runner (the bare one fits), so those tests
+    passed on one and failed on the other. A limit no path reaches pins the
+    guarded outcome. The tests about the length rules themselves
+    (tests/test_tmux_typed_path.py) do not use this and pin all three
+    outcomes with paths of an exact length."""
+    monkeypatch.setattr(tmux_vim, "_MAXIMUM_TYPED_LINE", 10_000)
+
+
+@pytest.fixture
 def temporaries_in_tmp_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """`tempfile` creates its files under this test's tmp_path, not the
     system $TMPDIR: keybindings' restore writes a `vaf-binding-*.conf` with

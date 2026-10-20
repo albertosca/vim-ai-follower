@@ -47,11 +47,14 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from helpers import define_line, goto_spelled, landed_line, resolve_typed_paths, vim_function
 
 from vim_ai_follower import control
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.diff import EditOp, compute_edit_script
+
+pytestmark = pytest.mark.usefixtures("guarded_define_line")
 
 
 def _goto(path: str) -> str:

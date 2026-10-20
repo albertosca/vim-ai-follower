@@ -25,6 +25,8 @@ from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
 from vim_ai_follower.diff import EditOp
 from vim_ai_follower.state import FollowerState
 
+pytestmark = pytest.mark.usefixtures("guarded_define_line")
+
 # The random part of the probe's handle name, which is also its nonce.
 HANDLE_HEX = "abc123"
 NONCE = f"p3-{HANDLE_HEX}"

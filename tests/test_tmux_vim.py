@@ -23,6 +23,8 @@ from vim_ai_follower.backends import NavigationFailed, get_follower, tmux_vim
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower, _case_folds
 from vim_ai_follower.diff import EditOp, compute_edit_script
 
+pytestmark = pytest.mark.usefixtures("guarded_define_line")
+
 
 def _goto(path: str) -> str:
     """The call goto_file sends for `path` (helpers.goto_spelled: spelled out

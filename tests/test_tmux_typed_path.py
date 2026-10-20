@@ -611,6 +611,7 @@ def test_asking_again_clears_every_marker_of_the_pane_and_no_other(home_cache: P
     assert {path.name for path in cache.CACHE_DIR.glob("h3*-*")} == {"h33-0a0a0a", asked.group(1)}
 
 
+@pytest.mark.usefixtures("guarded_define_line")
 def test_a_cache_dir_outside_home_is_named_in_full_without_asking(
     home_cache: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
