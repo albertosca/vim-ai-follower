@@ -26,6 +26,14 @@ MOCK_SERVER_PID = 4242
 HERMETIC_VIMINIT = "set nocompatible noloadplugins viminfofile=NONE"
 
 
+def load_scaled(seconds: float) -> float:
+    """A timeout stretched by the machine's load per CPU, at most four times: the
+    full suite runs at load 30 on 8 CPUs (N-D, 2026-10-20), where a 30 s hook
+    wait failed for time alone. A real hang still fails, at most four times later."""
+    load_per_cpu = os.getloadavg()[0] / (os.cpu_count() or 1)
+    return seconds * min(4.0, max(1.0, load_per_cpu))
+
+
 def make_mock_tmux_run(
     window_id: str = "@1",
     pane_id: str = "%2",

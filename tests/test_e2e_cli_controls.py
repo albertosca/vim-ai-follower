@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 from e2e_harness import E2EFollower, e2e_world, payload
+from helpers import load_scaled
 
 from vim_ai_follower import control
 from vim_ai_follower.hooks import HANDOFF_CUE
@@ -676,7 +677,7 @@ def test_an_s_during_a_catch_up_hands_over_and_w_releases_the_users_version(
         # The same W11 question would block a bare `:w` sent over RPC.
         nvim.command("write!")
 
-    world.wait_for_hook_exit(process, timeout=30.0)
+    world.wait_for_hook_exit(process, timeout=load_scaled(30.0))
     assert path.read_bytes() == held + (USER_LINE + "\n").encode()
     assert "SAVED their own version" in world.background_log(process)
 
@@ -690,7 +691,7 @@ def test_a_second_s_after_an_interrupted_catch_up_shows_claudes_file(
     target, path, process, _ = _interrupt_a_catch_up(world, backend)
 
     assert world.cli("interrupt").stdout.startswith("claude-follow: hand-off cancelled")
-    world.wait_for_hook_exit(process, timeout=30.0)
+    world.wait_for_hook_exit(process, timeout=load_scaled(30.0))
     assert world.buffer_bytes(backend, target, path) == _catch_up_edit(backend).encode()
     assert path.read_text() == _catch_up_edit(backend)
 
@@ -729,7 +730,7 @@ def _wait_for_handoff_cue(world: E2EFollower, pane: str) -> None:
     world.wait_until(
         lambda: world.animating_state() == "handoff",
         "the marker to read 'handoff'",
-        timeout=30.0,
+        timeout=load_scaled(30.0),
     )
     world.wait_until(
         lambda: (
@@ -750,7 +751,7 @@ def _save_and_release(world: E2EFollower, pane: str, process: subprocess.Popen[b
     )
     if process.poll() is None:
         world.tmux("send-keys", "-t", pane, "y")
-    world.wait_for_hook_exit(process, timeout=30.0)
+    world.wait_for_hook_exit(process, timeout=load_scaled(30.0))
 
 
 REBUILD_BASE = _text(*(f"base_line_{index:05d} = {index}" for index in range(400)))
@@ -793,7 +794,7 @@ def test_an_s_during_the_catch_up_rebuild_hands_over_the_whole_partial(
             and "base_line_000" in screen
         ),
         "the rebuild to be retyping the partial",
-        timeout=30.0,
+        timeout=load_scaled(30.0),
         interval=0.01,
     )
     assert world.cli("interrupt").stdout == "claude-follow: interrupt requested\n"
@@ -866,7 +867,7 @@ def test_an_s_during_the_catch_up_replay_gives_the_users_options_back(
     if adopted:
         assert _vim_option(world, pane, "modifiable") == ("1" if modifiable else "0")
     world.cli("interrupt")  # S again: Claude's file, and the hook ends
-    world.wait_for_hook_exit(process, timeout=30.0)
+    world.wait_for_hook_exit(process, timeout=load_scaled(30.0))
 
 
 @pytest.mark.parametrize("adopted", [True, False], ids=["adopted", "dedicated"])

@@ -51,6 +51,11 @@ from vim_ai_follower import cli, control
 
 pytestmark = pytest.mark.integration
 
+# How long a wait for Vim to have done something may take on a loaded machine
+# (N-D: a 5 s probe wait failed in the full suite at load 30). A wait returns
+# as soon as its condition holds, so a pass costs nothing extra.
+INTEGRATION_WAIT_SECONDS = 15.0
+
 ONE_DEF = "import os\n\n\ndef alpha(root):\n    return os.path.join(root, 'a')\n"
 THREE_DEFS = (
     "import os\n\n\ndef alpha(root):\n    return os.path.join(root, 'a')\n"
@@ -278,9 +283,9 @@ def test_edit_of_a_loaded_file_shown_in_no_window_is_typed_from_the_pre_edit_buf
         check=True,
     )
     subprocess.run(["tmux", "send-keys", "-t", follower_pane, "Enter"], check=True)
-    assert wait_until(lambda: probe.exists() and probe.read_text() == "1\n1\n", timeout=5.0), (
-        "setup failed: a.py should be loaded with its tab closed"
-    )
+    assert wait_until(
+        lambda: probe.exists() and probe.read_text() == "1\n1\n", timeout=INTEGRATION_WAIT_SECONDS
+    ), "setup failed: a.py should be loaded with its tab closed"
     _edit_and_assert_typed_from_the_pre_edit_buffer(monkeypatch, log, wait_until, target)
 
 
@@ -330,7 +335,9 @@ def test_interrupted_edit_hands_over_the_persisted_partial_not_the_finished_file
         assert partial != after, "interrupt landed after the edit finished; nothing to measure"
         # Rollback and hand-off keystrokes may still be landing: wait for the
         # buffer to reach the partial, and fail if it never does.
-        settled = wait_until(lambda: _last_state(log, target.name) == partial, timeout=5.0)
+        settled = wait_until(
+            lambda: _last_state(log, target.name) == partial, timeout=INTEGRATION_WAIT_SECONDS
+        )
         states = _states(log, target.name)
         trace = "\n".join(
             f"defs={_defs(state_lines)} lines={len(state_lines)}" for state_lines in states
@@ -450,9 +457,9 @@ def test_read_of_an_open_clean_file_changed_outside_claude_shows_the_new_content
     assert cli.main(["hook", "post"]) == 0
 
     after = THREE_DEFS.splitlines()
-    assert wait_until(lambda: _last_state(log, target.name) == after, timeout=5.0), (
-        f"the Read left stale content on screen: {_last_state(log, target.name)!r}"
-    )
+    assert wait_until(
+        lambda: _last_state(log, target.name) == after, timeout=INTEGRATION_WAIT_SECONDS
+    ), f"the Read left stale content on screen: {_last_state(log, target.name)!r}"
 
 
 def test_a_read_landing_between_an_edits_pre_and_post_hooks_never_flashes_the_finished_file(

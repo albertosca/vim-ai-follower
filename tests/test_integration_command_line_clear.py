@@ -4,7 +4,8 @@ Vim leaves a typed Ex command on its bottom row until something redraws it,
 so the lock line after every Read (`:setlocal readonly nomodifiable`) stayed
 there, and in a pane wide enough for a call to fit one row, every dispatcher
 call did too (review I1 of T23, measured 2026-10-17: 12 of 12 calls at 200
-columns). Checked with capture-pane 300 ms after each call returns, in a
+columns). Checked with capture-pane once two captures 300 ms apart agree
+after each call returns (see `_lingering`), in a
 narrow (the follower's 49 columns) and a wide pane, dedicated and adopted."""
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from helpers import load_scaled
 from test_integration_handoff_write import _prove_private
 
 from vim_ai_follower import control
@@ -38,19 +40,34 @@ def _tmux(*arguments: str) -> str:
     ).stdout.strip()
 
 
-def _bottom_rows(pane: str) -> list[str]:
-    time.sleep(0.3)
-    return _tmux("capture-pane", "-p", "-t", pane).splitlines()[-2:]
+def _follower_rows(pane: str) -> list[str]:
+    """The follower text on the pane's last two rows (a call spans two at
+    49 columns), if any."""
+    return [
+        row
+        for row in _tmux("capture-pane", "-p", "-t", pane).splitlines()[-2:]
+        if row.startswith(":") or any(mark in row for mark in FOLLOWER_MARKS)
+    ]
 
 
 def _lingering(pane: str) -> list[str]:
-    """The follower text left on the pane's last two rows (a call spans two
-    at 49 columns), if any."""
-    return [
-        row
-        for row in _bottom_rows(pane)
-        if row.startswith(":") or any(mark in row for mark in FOLLOWER_MARKS)
-    ]
+    """The follower text that STAYS on the bottom rows once Vim has run the
+    call, if any. A line Vim has not run yet is on screen too, and on a
+    loaded machine it may still be there at any fixed time (N-D: this test
+    failed at load 30 with a single capture 300 ms after the call), so the
+    rows count as clear only when two captures 300 ms apart both are; a line
+    that has run and stayed (the bug) is never clear, and fails at the
+    deadline with what it showed last."""
+    deadline = time.monotonic() + load_scaled(5.0)
+    clear_in_a_row = 0
+    rows: list[str] = []
+    while time.monotonic() < deadline:
+        time.sleep(0.3)
+        rows = _follower_rows(pane)
+        clear_in_a_row = 0 if rows else clear_in_a_row + 1
+        if clear_in_a_row == 2:
+            return []
+    return rows
 
 
 def _follower(
@@ -83,7 +100,10 @@ def _follower(
         "sleep 0.3; exec vim mine.py",
     )
     assert _tmux("display-message", "-p", "-t", pane, "#{pane_width}") == str(width)
-    time.sleep(1.0)
+    deadline = time.monotonic() + load_scaled(10.0)
+    while "mine = 0" not in _tmux("capture-pane", "-p", "-t", pane):
+        assert time.monotonic() < deadline, "setup failed: Vim never showed mine.py"
+        time.sleep(0.05)
     window_id = _tmux("display-message", "-p", "-t", pane, "#{window_id}")
     FollowerState.set(
         window_id,
