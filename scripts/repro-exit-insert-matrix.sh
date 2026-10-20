@@ -79,9 +79,9 @@ run_variant() {
   T ":%d"; K Enter
   sleep 0.5
 
-  local n=0 opener
+  local line_number=0 opener
   while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ $n -eq 0 ]]; then opener=i; else opener=o; fi
+    if [[ $line_number -eq 0 ]]; then opener=i; else opener=o; fi
     T "$opener"; sleep $PACE
     T "$line";   sleep $PACE
     K Escape;    sleep $PACE
@@ -90,7 +90,7 @@ run_variant() {
       K 'C-\'; sleep $PACE
       K C-n;   sleep $PACE
     fi
-    n=$((n+1))
+    line_number=$((line_number+1))
   done < "$F"
   sleep 0.5
 

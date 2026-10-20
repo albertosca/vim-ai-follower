@@ -60,7 +60,7 @@ VENV_BIN = REPO_ROOT / ".venv" / "bin"
 # Captured at import, while HOME is still the developer's own: the exact two
 # locations a subprocess that escaped the isolated HOME would corrupt.
 _REAL_HOME = Path(os.environ.get("HOME") or Path.home())
-REAL_CACHE_DIR = _REAL_HOME / ".cache" / "claude-vim-follower"
+REAL_CACHE_DIRECTORY = _REAL_HOME / ".cache" / "claude-vim-follower"
 REAL_CONFIG_PATH = _REAL_HOME / ".config" / "claude-vim-follower" / "config.json"
 
 # Names a leaked child would create in the real cache dir. hook.log and
@@ -131,11 +131,11 @@ def _fingerprint_real_home() -> _RealHomeFingerprint:
         config_exists=config_exists,
         config_bytes=REAL_CONFIG_PATH.read_bytes() if config_exists else None,
         cache_entries=frozenset(
-            str(path.relative_to(REAL_CACHE_DIR))
+            str(path.relative_to(REAL_CACHE_DIRECTORY))
             for glob in _LEAK_GLOBS
-            for path in REAL_CACHE_DIR.glob(glob)
+            for path in REAL_CACHE_DIRECTORY.glob(glob)
         )
-        if REAL_CACHE_DIR.exists()
+        if REAL_CACHE_DIRECTORY.exists()
         else frozenset(),
         tmux_sessions=_default_socket_sessions(),
     )
@@ -240,11 +240,11 @@ class E2EFollower:
 
     def assert_real_home_untouched(self) -> None:
         after = _fingerprint_real_home()
-        leaked = _files_mentioning(REAL_CACHE_DIR, self.token)
+        leaked = _files_mentioning(REAL_CACHE_DIRECTORY, self.token)
         assert not leaked, f"the isolated HOME's token leaked into the real cache: {leaked}"
         new_entries = after.cache_entries - self._before.cache_entries
         assert not new_entries, (
-            f"new follower state appeared in {REAL_CACHE_DIR}: {sorted(new_entries)}"
+            f"new follower state appeared in {REAL_CACHE_DIRECTORY}: {sorted(new_entries)}"
         )
         assert after.config_exists == self._before.config_exists, (
             f"{REAL_CONFIG_PATH} existence changed during the test"
@@ -272,17 +272,17 @@ class E2EFollower:
         """This world's env with keys removed and/or replaced — another
         window's TMUX_PANE, or none at all. Built from `self.env`, so the
         isolating keys (HOME, TMUX_TMPDIR, no TMUX) always come along."""
-        env = {key: value for key, value in self.env.items() if key not in drop}
-        env.update(overrides)
-        assert "TMUX" not in env, "TMUX would override the private TMUX_TMPDIR"
-        return env
+        environment = {key: value for key, value in self.env.items() if key not in drop}
+        environment.update(overrides)
+        assert "TMUX" not in environment, "TMUX would override the private TMUX_TMPDIR"
+        return environment
 
     def cli(
         self,
-        *args: str,
+        *arguments: str,
         stdin: str | None = None,
         expect_rc: int = 0,
-        env: dict[str, str] | None = None,
+        environment: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Run the bundled wrapper in the foreground. Every hook exit is 0 by
         design (hooks must never fail the tool call), so an exit other than
@@ -290,21 +290,21 @@ class E2EFollower:
         ignored. `env` replaces this world's env for this one call (see
         env_with)."""
         result = subprocess.run(
-            [str(CLI), *args],
+            [str(CLI), *arguments],
             input=stdin,
-            env=self.env if env is None else env,
+            env=self.env if environment is None else environment,
             capture_output=True,
             text=True,
             check=False,
         )
         assert result.returncode == expect_rc, (
-            f"claude-follow {' '.join(args)} exited {result.returncode}, not {expect_rc}\n"
+            f"claude-follow {' '.join(arguments)} exited {result.returncode}, not {expect_rc}\n"
             f"stdout: {result.stdout}\nstderr: {result.stderr}"
         )
         return result
 
     def cli_background(
-        self, *args: str, stdin: str, env: dict[str, str] | None = None
+        self, *arguments: str, stdin: str, environment: dict[str, str] | None = None
     ) -> subprocess.Popen[bytes]:
         """Start a hook that will block (animating, or holding a hand-off) and
         return its Popen. Output goes to a FILE, never a pipe: an unread pipe
@@ -321,23 +321,23 @@ class E2EFollower:
         log_path = self.workdir / f"bg-{uuid.uuid4().hex[:8]}.log"
         log = log_path.open("wb")
         self._logs.append(log)
-        proc = subprocess.Popen(
-            [str(CLI), *args],
+        process = subprocess.Popen(
+            [str(CLI), *arguments],
             stdin=subprocess.PIPE,
             stdout=log,
             stderr=subprocess.STDOUT,
-            env=self.env if env is None else env,
+            env=self.env if environment is None else environment,
         )
-        assert proc.stdin is not None
-        proc.stdin.write(stdin.encode())
-        proc.stdin.close()
-        self._background.append(proc)
-        self._log_paths[proc.pid] = log_path
-        return proc
+        assert process.stdin is not None
+        process.stdin.write(stdin.encode())
+        process.stdin.close()
+        self._background.append(process)
+        self._log_paths[process.pid] = log_path
+        return process
 
-    def background_log(self, proc: subprocess.Popen[bytes]) -> str:
+    def background_log(self, process: subprocess.Popen[bytes]) -> str:
         """Everything a backgrounded hook printed (stdout and stderr merged)."""
-        return self._log_paths[proc.pid].read_text(errors="replace")
+        return self._log_paths[process.pid].read_text(errors="replace")
 
     def set_vimrc(self, text: str) -> Path:
         """Install a `~/.vimrc` in the isolated HOME. Must run BEFORE `start`:
@@ -413,15 +413,15 @@ class E2EFollower:
             timeout,
         )
 
-    def wait_for_hook_exit(self, proc: subprocess.Popen[bytes], timeout: float = 120.0) -> None:
+    def wait_for_hook_exit(self, process: subprocess.Popen[bytes], timeout: float = 120.0) -> None:
         """A backgrounded hook must finish, and finish 0 — a hook that fails
         the tool call is a bug by design, so a non-zero exit is a finding."""
         self.wait_until(
-            lambda: proc.poll() is not None,
-            f"the background hook (pid {proc.pid}) to exit",
+            lambda: process.poll() is not None,
+            f"the background hook (pid {process.pid}) to exit",
             timeout,
         )
-        assert proc.returncode == 0, f"the hook exited {proc.returncode}, not 0"
+        assert process.returncode == 0, f"the hook exited {process.returncode}, not 0"
 
     def pending(self) -> dict[str, Any]:
         """The persisted crash-fallback remainder, non-consuming (production
@@ -445,9 +445,11 @@ class E2EFollower:
         symlink to /private/tmp, so a buffer opened as /tmp/x.py reports
         /private/tmp/x.py and a string compare silently finds nothing."""
         wanted = Path(file_path).resolve()
-        for buf in self._nvim(sock).buffers:
-            if buf.name and Path(buf.name).resolve() == wanted:
-                return b"".join(line.encode("utf-8", "surrogateescape") + b"\n" for line in buf[:])
+        for buffer in self._nvim(sock).buffers:
+            if buffer.name and Path(buffer.name).resolve() == wanted:
+                return b"".join(
+                    line.encode("utf-8", "surrogateescape") + b"\n" for line in buffer[:]
+                )
         return None
 
     def nvim_buffer_lines(self, sock: str, file_path: str | Path) -> list[str]:
@@ -544,11 +546,11 @@ class E2EFollower:
 
     # ----------------------------------------------------------------- tmux
 
-    def tmux(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    def tmux(self, *arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         """Every tmux call the harness makes carries the private TMUX_TMPDIR,
         so none of them can reach the developer's own server."""
         return subprocess.run(
-            ["tmux", *args], env=self.env, capture_output=True, text=True, check=check
+            ["tmux", *arguments], env=self.env, capture_output=True, text=True, check=check
         )
 
     # -------------------------------------------------------------- cleanup
@@ -564,11 +566,11 @@ class E2EFollower:
             with suppress(Exception):
                 client.close()
         self._nvim_clients.clear()
-        for proc in self._background:
-            if proc.poll() is None:
-                proc.kill()
+        for process in self._background:
+            if process.poll() is None:
+                process.kill()
             with suppress(Exception):
-                proc.wait(timeout=5)
+                process.wait(timeout=5)
         self._background.clear()
         for log in self._logs:
             with suppress(OSError):
@@ -622,13 +624,13 @@ def _carries_token(pid: int, token: str) -> bool:
     return token in command
 
 
-def _reap_world(token: str, env: dict[str, str], server_pid: int | None) -> None:
+def _reap_world(token: str, environment: dict[str, str], server_pid: int | None) -> None:
     """Kill a world's private tmux server by socket (TMUX_TMPDIR in `env`, no
     $TMUX), give it and its panes' editors two seconds to leave on their own,
     then SIGKILL whatever still carries the token plus the recorded server
     pid. Shared by close() and by e2e_world's setup-failure path, where no
     E2EFollower exists yet to own the teardown."""
-    subprocess.run(["tmux", "kill-server"], env=env, capture_output=True, check=False)
+    subprocess.run(["tmux", "kill-server"], env=environment, capture_output=True, check=False)
     deadline = time.monotonic() + 2.0
     while time.monotonic() < deadline and _token_pids(token):
         time.sleep(0.05)
@@ -675,14 +677,14 @@ def _assert_socket_paths_fit(home: Path, tmux_tmpdir: str) -> None:
         )
 
 
-def _checked(cmd: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def _checked(command: list[str], environment: dict[str, str]) -> subprocess.CompletedProcess[str]:
     """subprocess.run(check=True) with the STDERR in the exception message.
     A bare CalledProcessError prints the (very long) argv and swallows the one
     line that says what tmux actually objected to."""
-    result = subprocess.run(cmd, env=env, capture_output=True, text=True, check=False)
+    result = subprocess.run(command, env=environment, capture_output=True, text=True, check=False)
     if result.returncode != 0:
         raise RuntimeError(
-            f"{cmd[0]} {' '.join(cmd[1:3])} exited {result.returncode}: "
+            f"{command[0]} {' '.join(command[1:3])} exited {result.returncode}: "
             f"{result.stderr.strip() or result.stdout.strip()!r}"
         )
     return result
@@ -703,7 +705,7 @@ def e2e_world() -> Iterator[E2EFollower]:
     for directory in (home / ".cache", home / ".config", workdir, Path(tmux_tmpdir)):
         directory.mkdir(parents=True)
 
-    env = _child_env(home, workdir, tmux_tmpdir)
+    environment = _child_env(home, workdir, tmux_tmpdir)
     session = f"{token}-s"
     server_pid: int | None = None
     world: E2EFollower | None = None
@@ -729,19 +731,21 @@ def e2e_world() -> Iterator[E2EFollower]:
                 # environment, and these are the variables that keep it isolated
                 # and hermetic. No ~/.vimrc and no ~/.config/nvim exist under the
                 # throwaway HOME, so neither editor loads user config or plugins.
-                *_session_env_flags(env),
+                *_session_env_flags(environment),
                 "sh",
             ],
-            env,
+            environment,
         )
-        server_pid = int(_checked(["tmux", "display-message", "-p", "#{pid}"], env).stdout.strip())
+        server_pid = int(
+            _checked(["tmux", "display-message", "-p", "#{pid}"], environment).stdout.strip()
+        )
         origin_pane = _checked(
-            ["tmux", "list-panes", "-t", session, "-F", "#{pane_id}"], env
+            ["tmux", "list-panes", "-t", session, "-F", "#{pane_id}"], environment
         ).stdout.split()[0]
         window_id = _checked(
-            ["tmux", "display-message", "-p", "-t", origin_pane, "#{window_id}"], env
+            ["tmux", "display-message", "-p", "-t", origin_pane, "#{window_id}"], environment
         ).stdout.strip()
-        env["TMUX_PANE"] = origin_pane
+        environment["TMUX_PANE"] = origin_pane
 
         world = E2EFollower(
             token=token,
@@ -751,7 +755,7 @@ def e2e_world() -> Iterator[E2EFollower]:
             session=session,
             origin_pane=origin_pane,
             window_id=window_id,
-            env=env,
+            env=environment,
             _before=before,
             server_pid=server_pid,
         )
@@ -764,7 +768,7 @@ def e2e_world() -> Iterator[E2EFollower]:
         if world is not None:
             world.close()
         else:
-            _reap_world(token, env, server_pid)
+            _reap_world(token, environment, server_pid)
         shutil.rmtree(root, ignore_errors=True)
     world.assert_real_home_untouched()
 
@@ -879,7 +883,7 @@ def _child_env(home: Path, workdir: Path, tmux_tmpdir: str) -> dict[str, str]:
     }
 
 
-def _session_env_flags(env: dict[str, str]) -> list[str]:
+def _session_env_flags(environment: dict[str, str]) -> list[str]:
     keys = (
         "HOME",
         "TMPDIR",
@@ -893,4 +897,4 @@ def _session_env_flags(env: dict[str, str]) -> list[str]:
         "TERM",
         "LANG",
     )
-    return [flag for key in keys for flag in ("-e", f"{key}={env[key]}")]
+    return [flag for key in keys for flag in ("-e", f"{key}={environment[key]}")]

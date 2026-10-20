@@ -23,9 +23,9 @@ class StampError(Exception):
     """A condition under which stamping would write wrong dates."""
 
 
-def _git(cwd: Path, *args: str) -> str:
+def _git(cwd: Path, *arguments: str) -> str:
     result = subprocess.run(
-        ["git", "-C", str(cwd), *args],
+        ["git", "-C", str(cwd), *arguments],
         check=True,
         capture_output=True,
         text=True,

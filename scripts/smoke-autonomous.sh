@@ -52,9 +52,9 @@ bstatus()   { tmux show-options -wv -t "$1" pane-border-status 2>/dev/null | tr 
 title()     { tmux display-message -p -t "$1" '#{pane_title}' 2>/dev/null; }
 edit() {  # $1 origin-pane, $2 file, $3 fixture, $4 id-json
   cp "$FIX/$3" "$2"
-  local p="{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$2\"}$4}"
-  echo "$p" | TMUX_PANE=$1 "$CF" hook pre >/dev/null 2>&1
-  echo "$p" | TMUX_PANE=$1 "$CF" hook post >/dev/null 2>&1
+  local payload="{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$2\"}$4}"
+  echo "$payload" | TMUX_PANE=$1 "$CF" hook pre >/dev/null 2>&1
+  echo "$payload" | TMUX_PANE=$1 "$CF" hook post >/dev/null 2>&1
 }
 
 tmux -f /dev/null new-session -d -s auto -x 200 -y 50
@@ -92,9 +92,9 @@ edit "$O0" /tmp/vaf-auto-a.py window-alpha.py ',"session_id":"w"'
 edit "$O1" /tmp/vaf-auto-b.py window-beta.py ',"session_id":"w"'
 if [[ -n "$F0b" && -n "$F1b" && "$F0b" != "$F1b" ]]; then
   ok "two windows -> two distinct follower panes ($F0b vs $F1b)"
-  c0=$(tmux capture-pane -t "$F0b" -p); c1=$(tmux capture-pane -t "$F1b" -p)
-  { echo "$c0" | grep -q "WINDOW ZERO" && ! echo "$c0" | grep -q "WINDOW ONE"; } && ok "window 0 shows only its own edit" || bad "window 0 bleed/empty"
-  { echo "$c1" | grep -q "WINDOW ONE"  && ! echo "$c1" | grep -q "WINDOW ZERO"; } && ok "window 1 shows only its own edit" || bad "window 1 bleed/empty"
+  first_capture=$(tmux capture-pane -t "$F0b" -p); second_capture=$(tmux capture-pane -t "$F1b" -p)
+  { echo "$first_capture" | grep -q "WINDOW ZERO" && ! echo "$first_capture" | grep -q "WINDOW ONE"; } && ok "window 0 shows only its own edit" || bad "window 0 bleed/empty"
+  { echo "$second_capture" | grep -q "WINDOW ONE"  && ! echo "$second_capture" | grep -q "WINDOW ZERO"; } && ok "window 1 shows only its own edit" || bad "window 1 bleed/empty"
 else
   bad "window-scoping: expected two distinct follower panes (got '$F0b' / '$F1b')"
 fi

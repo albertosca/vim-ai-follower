@@ -26,9 +26,9 @@ F=$(tmux list-panes -t vaf-reedit -F '#{pane_id}' | grep -v "^$O\$" | head -1)
 
 step() {  # $1 label, $2 content
   printf '%s' "$2" > "$FILE"
-  local p="{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$FILE\"},\"session_id\":\"me\"}"
-  echo "$p" | TMUX_PANE=$O "$CF" hook pre >/dev/null 2>&1
-  echo "$p" | TMUX_PANE=$O "$CF" hook post >/dev/null 2>&1
+  local payload="{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$FILE\"},\"session_id\":\"me\"}"
+  echo "$payload" | TMUX_PANE=$O "$CF" hook pre >/dev/null 2>&1
+  echo "$payload" | TMUX_PANE=$O "$CF" hook post >/dev/null 2>&1
   sleep 1
   echo "======== after $1 ========"
   echo "-- DISK --";     cat "$FILE"

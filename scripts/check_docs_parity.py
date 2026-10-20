@@ -33,16 +33,18 @@ def heading_levels(text: str) -> list[int]:
 
 
 def parity_problems(guide_root: Path) -> list[str]:
-    en, pt = guide_root / "en", guide_root / "pt"
-    en_pages = {p.relative_to(en).as_posix() for p in en.rglob("*.md")}
-    pt_pages = {p.relative_to(pt).as_posix() for p in pt.rglob("*.md")}
+    english_root, portuguese_root = guide_root / "en", guide_root / "pt"
+    en_pages = {page.relative_to(english_root).as_posix() for page in english_root.rglob("*.md")}
+    pt_pages = {
+        page.relative_to(portuguese_root).as_posix() for page in portuguese_root.rglob("*.md")
+    }
     if not en_pages:
-        return [f"no pages under {en}"]
+        return [f"no pages under {english_root}"]
     problems = [f"missing in pt: {rel}" for rel in sorted(en_pages - pt_pages)]
     problems += [f"missing in en: {rel}" for rel in sorted(pt_pages - en_pages)]
     for rel in sorted(en_pages & pt_pages):
-        en_levels = heading_levels((en / rel).read_text())
-        pt_levels = heading_levels((pt / rel).read_text())
+        en_levels = heading_levels((english_root / rel).read_text())
+        pt_levels = heading_levels((portuguese_root / rel).read_text())
         if en_levels != pt_levels:
             problems.append(f"{rel}: en H2/H3 sequence {en_levels} != pt {pt_levels}")
     return problems

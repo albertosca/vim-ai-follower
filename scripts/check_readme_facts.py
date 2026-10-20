@@ -58,7 +58,7 @@ class Facts:
 def junit_test_count(junit: Path) -> int:
     root = ET.parse(junit).getroot()
     suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
-    return sum(int(s.get("tests", "0")) - int(s.get("skipped", "0")) for s in suites)
+    return sum(int(suite.get("tests", "0")) - int(suite.get("skipped", "0")) for suite in suites)
 
 
 def real_facts(repo: Path, junit: Path) -> Facts:
@@ -172,19 +172,23 @@ def link_problems(repo: Path, rel_file: str) -> list[str]:
         if re.match(r"^[a-z]+:", target):
             continue
         path_part, _, anchor = target.partition("#")
-        dest = source if path_part == "" else (source.parent / path_part)
-        if not dest.exists():
+        destination = source if path_part == "" else (source.parent / path_part)
+        if not destination.exists():
             problems.append(f"{rel_file}: {target} does not exist")
-        elif anchor and dest.suffix == ".md" and anchor not in anchors(dest.read_text()):
+        elif (
+            anchor
+            and destination.suffix == ".md"
+            and anchor not in anchors(destination.read_text())
+        ):
             problems.append(f"{rel_file}: {target} — no such anchor")
     return problems
 
 
 def main(argv: list[str]) -> int:
-    args = dict(zip(argv[1::2], argv[2::2], strict=False))
-    repo = Path(args.get("--repo", Path(__file__).resolve().parents[1]))
+    arguments = dict(zip(argv[1::2], argv[2::2], strict=False))
+    repo = Path(arguments.get("--repo", Path(__file__).resolve().parents[1]))
     try:
-        real = real_facts(repo, Path(args["--junit"]))
+        real = real_facts(repo, Path(arguments["--junit"]))
     except ValueError as error:
         print(error, file=sys.stderr)
         return 1

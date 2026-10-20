@@ -88,10 +88,10 @@ def site_problems(site: Path, guide: Path, require_dates: bool) -> list[str]:
             if problem:
                 problems.append(problem)
     for lang, out_prefix in _LANG_OUTPUT.items():
-        for md in sorted((guide / lang).rglob("*.md")):
-            html = site / out_prefix / page_output(md.relative_to(guide / lang))
+        for markdown_page in sorted((guide / lang).rglob("*.md")):
+            html = site / out_prefix / page_output(markdown_page.relative_to(guide / lang))
             if not html.is_file():
-                problems.append(f"{md}: no built page at {html}")
+                problems.append(f"{markdown_page}: no built page at {html}")
             elif require_dates and _DATE_MARK not in html.read_text():
                 problems.append(f"{html}: no revision date rendered")
     return problems

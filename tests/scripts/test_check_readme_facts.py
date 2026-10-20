@@ -120,14 +120,14 @@ def _write_repo(
         (tmp_path / "pyproject.toml").write_text(
             f'[tool.pytest.ini_options]\naddopts = "--cov --cov-fail-under={pyproject_gate}"\n'
         )
-    scripts_dir = tmp_path / "scripts"
-    scripts_dir.mkdir()
-    scripts_dir.joinpath("full_suite.sh").write_text(
+    scripts_directory = tmp_path / "scripts"
+    scripts_directory.mkdir()
+    scripts_directory.joinpath("full_suite.sh").write_text(
         f'#!/usr/bin/env bash\nexec uv run pytest --cov-fail-under={full_suite_gate} "$@"\n'
     )
-    plugin_dir = tmp_path / ".claude-plugin"
-    plugin_dir.mkdir()
-    plugin_dir.joinpath("plugin.json").write_text(f'{{"version": "{version}"}}')
+    plugin_directory = tmp_path / ".claude-plugin"
+    plugin_directory.mkdir()
+    plugin_directory.joinpath("plugin.json").write_text(f'{{"version": "{version}"}}')
 
 
 def test_real_facts_read_the_repo(tmp_path: Path) -> None:
@@ -178,9 +178,9 @@ def test_link_problems_find_dead_files_and_anchors(tmp_path: Path) -> None:
 
 
 def test_real_facts_raises_without_the_coverage_gate(tmp_path: Path) -> None:
-    scripts_dir = tmp_path / "scripts"
-    scripts_dir.mkdir()
-    scripts_dir.joinpath("full_suite.sh").write_text(
+    scripts_directory = tmp_path / "scripts"
+    scripts_directory.mkdir()
+    scripts_directory.joinpath("full_suite.sh").write_text(
         '#!/usr/bin/env bash\nexec uv run pytest "$@"\n'
     )
     with pytest.raises(ValueError, match="no --cov-fail-under"):
@@ -190,20 +190,20 @@ def test_real_facts_raises_without_the_coverage_gate(tmp_path: Path) -> None:
 def test_main_exits_cleanly_when_the_coverage_gate_is_missing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    scripts_dir = tmp_path / "scripts"
-    scripts_dir.mkdir()
-    scripts_dir.joinpath("full_suite.sh").write_text(
+    scripts_directory = tmp_path / "scripts"
+    scripts_directory.mkdir()
+    scripts_directory.joinpath("full_suite.sh").write_text(
         '#!/usr/bin/env bash\nexec uv run pytest "$@"\n'
     )
-    plugin_dir = tmp_path / ".claude-plugin"
-    plugin_dir.mkdir()
-    plugin_dir.joinpath("plugin.json").write_text('{"version": "0.2.8"}')
+    plugin_directory = tmp_path / ".claude-plugin"
+    plugin_directory.mkdir()
+    plugin_directory.joinpath("plugin.json").write_text('{"version": "0.2.8"}')
     report = tmp_path / "r.xml"
     report.write_text('<testsuite tests="1"/>')
     assert _crf().main(["x", "--junit", str(report), "--repo", str(tmp_path)]) == 1
-    err = capsys.readouterr().err
-    assert "full_suite.sh" in err and "--cov-fail-under" in err
-    assert "Traceback" not in err
+    error = capsys.readouterr().err
+    assert "full_suite.sh" in error and "--cov-fail-under" in error
+    assert "Traceback" not in error
 
 
 def test_main_exit_codes(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

@@ -21,12 +21,14 @@ _TOLERATED = (
 _OTHER = f"  {_BULLET} hooks: something else is wrong."
 
 
-def _fake_claude(bin_dir: Path, strict_output: str, strict_status: int, plain_status: int) -> None:
+def _fake_claude(
+    bin_directory: Path, strict_output: str, strict_status: int, plain_status: int
+) -> None:
     """A `claude` that answers `plugin validate [--strict] .` like the real one."""
-    bin_dir.mkdir()
-    strict_file = bin_dir / "strict.txt"
+    bin_directory.mkdir()
+    strict_file = bin_directory / "strict.txt"
     strict_file.write_text(strict_output)
-    fake = bin_dir / "claude"
+    fake = bin_directory / "claude"
     fake.write_text(
         "#!/bin/bash\n"
         'if [ "$3" = "--strict" ]; then\n'

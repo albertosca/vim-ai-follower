@@ -7,9 +7,9 @@
 
 # Generate unique run token (timestamp + random 8-char suffix, usable in /tmp/vaf-qa-<id>/)
 qa_run_id() {
-  local ts=$(date +%s)
+  local timestamp=$(date +%s)
   local rand=$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' ')
-  echo "${ts}-${rand}"
+  echo "${timestamp}-${rand}"
 }
 
 # The tmux window id this pane belongs to — the id the follower keys ALL of
@@ -96,25 +96,25 @@ qa_dump_vim_buffer() {
 # earlier check created. qa_teardown removes the marker once it has used it,
 # so the next independent run starts fresh.
 qa_snapshot_cache() {
-  local cache_dir=~/.cache/claude-vim-follower
-  mkdir -p "$cache_dir"
-  local marker="$cache_dir/.qa-snapshot-marker"
+  local cache_directory=~/.cache/claude-vim-follower
+  mkdir -p "$cache_directory"
+  local marker="$cache_directory/.qa-snapshot-marker"
   [[ -f "$marker" ]] || touch "$marker"
 }
 
 # List cache entries created since qa_snapshot_cache was called.
 # Empty output if nothing created or cache doesn't exist.
 qa_cache_created() {
-  local cache_dir=~/.cache/claude-vim-follower
-  local marker="$cache_dir/.qa-snapshot-marker"
+  local cache_directory=~/.cache/claude-vim-follower
+  local marker="$cache_directory/.qa-snapshot-marker"
 
   # If marker or cache doesn't exist, nothing was tracked/created
   if [[ ! -f "$marker" ]]; then
     return 0
   fi
 
-  if [[ -d "$cache_dir" ]]; then
-    find "$cache_dir" -type f -newer "$marker" 2>/dev/null
+  if [[ -d "$cache_directory" ]]; then
+    find "$cache_directory" -type f -newer "$marker" 2>/dev/null
   fi
 }
 
@@ -145,9 +145,9 @@ qa_cache_created() {
 # qa_config_handoff, the trap restores unconditionally the moment the
 # script's shell exits.
 qa_protect_config() {
-  local config_dir=~/.config/claude-vim-follower
-  local config="$config_dir/config.json"
-  mkdir -p "$config_dir"
+  local config_directory=~/.config/claude-vim-follower
+  local config="$config_directory/config.json"
+  mkdir -p "$config_directory"
   QA_CONFIG_PATH="$config"
   QA_CONFIG_BACKUP="/tmp/vaf-config-backup-$(qa_run_id).json"
   if [[ -f "$config" ]]; then

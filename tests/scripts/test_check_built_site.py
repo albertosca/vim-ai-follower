@@ -73,7 +73,7 @@ def test_a_pages_url_with_no_built_file_is_reported(tmp_path: Path) -> None:
     site, guide = _good_site(tmp_path)
     (site / "assets/diagrams/how-light.svg").unlink()
     problems = _cbs().site_problems(site, guide, require_dates=False)
-    assert len(problems) == 2 and all("how-light.svg" in p for p in problems)
+    assert len(problems) == 2 and all("how-light.svg" in problem for problem in problems)
 
 
 def test_a_page_without_a_revision_date_fails_only_when_required(tmp_path: Path) -> None:

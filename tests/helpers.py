@@ -38,22 +38,22 @@ def make_mock_tmux_run(
     (other_panes, listed as zsh) and optional other live vim panes
     (vim_panes, listed as vim — e.g. another window's live follower)."""
 
-    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
+    def _run(command: list[str], **keyword_arguments: object) -> MagicMock:
         result = MagicMock()
         result.returncode = 0
-        if cmd[:3] == ["tmux", "list-panes", "-a"]:
+        if command[:3] == ["tmux", "list-panes", "-a"]:
             lines = [f"{pane} zsh" for pane in other_panes]
             lines.extend(f"{pane} vim" for pane in vim_panes)
             if pane_exists:
                 lines.append(f"{pane_id} vim")
             result.stdout = "".join(line + "\n" for line in lines)
-        elif cmd == ["tmux", "display-message", "-p", "#{pid}"]:
+        elif command == ["tmux", "display-message", "-p", "#{pid}"]:
             result.stdout = f"{MOCK_SERVER_PID}\n"
-        elif cmd[:2] == ["tmux", "display-message"]:
+        elif command[:2] == ["tmux", "display-message"]:
             result.stdout = f"{window_id}\n"
-        elif cmd[:2] == ["tmux", "split-window"]:
+        elif command[:2] == ["tmux", "split-window"]:
             result.stdout = f"{pane_id}\n"
-        elif cmd[:2] == ["tmux", "list-keys"]:
+        elif command[:2] == ["tmux", "list-keys"]:
             result.returncode = 1
             result.stdout = ""
         else:
@@ -176,7 +176,7 @@ def route_exec_lua(nvim: MagicMock, *, buffer: int, display_name: str) -> None:
         _FOLLOWER_WINDOW_LUA: 1000,
     }
 
-    def answer(code: str, *args: object) -> object:
+    def answer(code: str, *arguments: object) -> object:
         return answers[code]
 
     nvim.exec_lua.side_effect = answer
@@ -209,14 +209,14 @@ def typed_path(path: object) -> str:
     return f"<typed-path {path}>"
 
 
-def call_spelled(op: str, *arguments: object) -> str:
+def call_spelled(operation: str, *arguments: object) -> str:
     """The typed line that runs s:<op>(arguments) through the dispatcher,
     guarded so a Vim without it runs nothing (tmux_vim._call_line)."""
     rendered = ",".join(
         f"'{argument}'"
         if isinstance(argument, str) and not argument.startswith("<")
         else str(argument)
-        for argument in (op, *arguments)
+        for argument in (operation, *arguments)
     )
     return f":if exists('*{FUNCTION}')|call {FUNCTION}({rendered})|endif"
 
@@ -291,15 +291,15 @@ def resolve_typed_paths(text: str) -> str:
     text = _SOURCED.sub("<script>", _FUNCTION_NAME.sub(FUNCTION, text))
 
     def resolve(call: re.Match[str]) -> str:
-        op, arguments = call.group(1), call.group(2)
+        operation, arguments = call.group(1), call.group(2)
 
         def argument(match: re.Match[str]) -> str:
-            if op not in _READING_OPS:
+            if operation not in _READING_OPS:
                 return "<token>"
             handle = PATH_HANDLES[match.group(1)]
             return typed_path(os.fsdecode(handle.read_bytes()))
 
-        return f"call {FUNCTION}('{op}'{_HANDLE.sub(argument, arguments)})"
+        return f"call {FUNCTION}('{operation}'{_HANDLE.sub(argument, arguments)})"
 
     return _CALL.sub(resolve, text)
 

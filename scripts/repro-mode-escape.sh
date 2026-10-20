@@ -49,11 +49,11 @@ DOUBLE=$(probe double)
 echo "== single Escape =="; print -r -- "$SINGLE" | grep -v '^[[:space:]]*$'
 echo "== double Escape =="; print -r -- "$DOUBLE" | grep -v '^[[:space:]]*$'
 
-single_has_cmd=$(print -r -- "$SINGLE" | grep -c ':2d' || true)
-double_has_cmd=$(print -r -- "$DOUBLE" | grep -c ':2d' || true)
-if [[ "$single_has_cmd" -ge 1 && "$double_has_cmd" -eq 0 ]]; then
+single_has_command=$(print -r -- "$SINGLE" | grep -c ':2d' || true)
+double_has_command=$(print -r -- "$DOUBLE" | grep -c ':2d' || true)
+if [[ "$single_has_command" -ge 1 && "$double_has_command" -eq 0 ]]; then
   echo "PASS: single-Escape typed ':2d' as literal text (bug); double-Escape deleted the line (fix)"
 else
-  echo "INCONCLUSIVE: single=$single_has_cmd double=$double_has_cmd (vim/tmux behavior changed?)"
+  echo "INCONCLUSIVE: single=$single_has_command double=$double_has_command (vim/tmux behavior changed?)"
   exit 2
 fi

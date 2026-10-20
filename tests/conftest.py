@@ -51,7 +51,7 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[N
 
 
 @pytest.fixture(scope="session")
-def no_tmux_server_dir() -> Iterator[str]:
+def no_tmux_server_directory() -> Iterator[str]:
     """A short private directory (a tmux socket path must fit sun_path, so
     not pytest's long tmp_path), removed when the run ends: created at
     import, one was left behind by every pytest run."""
@@ -103,7 +103,7 @@ def temporaries_in_tmp_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> 
 
 
 @pytest.fixture(autouse=True)
-def no_real_tmux_server(monkeypatch: pytest.MonkeyPatch, no_tmux_server_dir: str) -> None:
+def no_real_tmux_server(monkeypatch: pytest.MonkeyPatch, no_tmux_server_directory: str) -> None:
     """An unmocked in-process tmux call reaches no server at all. pytest run
     from a tmux pane inherits $TMUX, and code that asks the server for its
     pid (binding.tmux_server_pid, which FollowerState.set calls to record
@@ -116,7 +116,7 @@ def no_real_tmux_server(monkeypatch: pytest.MonkeyPatch, no_tmux_server_dir: str
     FollowerState.set there must name world.server_pid itself."""
     monkeypatch.delenv("TMUX", raising=False)
     monkeypatch.delenv("TMUX_PANE", raising=False)
-    monkeypatch.setenv("TMUX_TMPDIR", no_tmux_server_dir)
+    monkeypatch.setenv("TMUX_TMPDIR", no_tmux_server_directory)
 
 
 @pytest.fixture(autouse=True)
@@ -194,8 +194,8 @@ def format_reads_under_tmp_path(
 
     real = nvim_backend._format_from_disk
 
-    def under_tmp_path(nvim: Any, buf: int, file_path: str) -> None:
-        real(nvim, buf, str(tmp_path / "disk" / file_path.lstrip("/")))
+    def under_tmp_path(nvim: Any, buffer: int, file_path: str) -> None:
+        real(nvim, buffer, str(tmp_path / "disk" / file_path.lstrip("/")))
 
     monkeypatch.setattr(nvim_backend, "_format_from_disk", under_tmp_path)
 
@@ -249,8 +249,8 @@ def tmux_session(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     # ~104-char Unix domain socket limit, and pytest's per-test tmp_path is
     # nested too deeply for that.
     monkeypatch.delenv("TMUX", raising=False)
-    socket_dir = tempfile.mkdtemp(prefix="cf-tmux-")
-    monkeypatch.setenv("TMUX_TMPDIR", socket_dir)
+    socket_directory = tempfile.mkdtemp(prefix="cf-tmux-")
+    monkeypatch.setenv("TMUX_TMPDIR", socket_directory)
     # Keep the integration vims hermetic: VIMINIT replaces the user's vimrc,
     # so no Copilot/CoC/LSP plugins boot inside every test vim. Plugins react
     # to the animated keystrokes nondeterministically (completion popups can
@@ -266,7 +266,7 @@ def tmux_session(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     # SAVEHIST=1000), overriding the environment's, so its lever is a private
     # ZDOTDIR whose .zshrc (read after /etc/zshrc) unsets it; bash honours
     # HISTFILE.
-    shell_home = Path(socket_dir) / "zdotdir"
+    shell_home = Path(socket_directory) / "zdotdir"
     shell_home.mkdir()
     (shell_home / ".zshrc").write_text("unset HISTFILE\n")
     monkeypatch.setenv("ZDOTDIR", str(shell_home))
@@ -296,7 +296,7 @@ def tmux_session(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     finally:
         subprocess.run(["tmux", "kill-session", "-t", session_name], check=False)
         subprocess.run(["tmux", "kill-server"], check=False)
-        shutil.rmtree(socket_dir, ignore_errors=True)
+        shutil.rmtree(socket_directory, ignore_errors=True)
 
 
 @pytest.fixture
@@ -305,9 +305,9 @@ def headless_nvim() -> Iterator[str]:
     tmux_session. `-n` (no swap), `-u NONE -i NONE` (no vimrc/shada) keep it
     hermetic — no user plugins or config leak into the animation. The socket
     file appears within ~1s of launch; poll for it before yielding."""
-    socket_dir = tempfile.mkdtemp(prefix="cf-nvim-")
-    sock = str(Path(socket_dir) / "nvim.sock")
-    proc = subprocess.Popen(
+    socket_directory = tempfile.mkdtemp(prefix="cf-nvim-")
+    sock = str(Path(socket_directory) / "nvim.sock")
+    process = subprocess.Popen(
         ["nvim", "--headless", "-n", "-u", "NONE", "-i", "NONE", "--listen", sock]
     )
     deadline = time.monotonic() + 5.0
@@ -316,12 +316,12 @@ def headless_nvim() -> Iterator[str]:
     try:
         yield sock
     finally:
-        proc.terminate()
+        process.terminate()
         try:
-            proc.wait(timeout=5)
+            process.wait(timeout=5)
         except subprocess.TimeoutExpired:  # pragma: no cover - defensive cleanup
-            proc.kill()
-        shutil.rmtree(socket_dir, ignore_errors=True)
+            process.kill()
+        shutil.rmtree(socket_directory, ignore_errors=True)
 
 
 @pytest.fixture
@@ -358,15 +358,15 @@ def follower(sent: list[str], tmp_path: Path) -> Iterator[TmuxVimFollower]:
     both, so they stay split."""
     follower_instance = TmuxVimFollower(pane_id="%2", window_id="@1")
 
-    def capture_run(cmd: list[str], **kwargs: str) -> MagicMock:
+    def capture_run(command: list[str], **keyword_arguments: str) -> MagicMock:
         """Mock subprocess.run that captures tmux send-keys commands."""
-        if cmd[:4] == ["tmux", "send-keys", "-t", "%2"]:
-            if "-l" in cmd:
+        if command[:4] == ["tmux", "send-keys", "-t", "%2"]:
+            if "-l" in command:
                 # send_text: ["tmux", "send-keys", "-t", "%2", "-l", "--", text]
-                sent.append(f"text::{resolve_typed_paths(cmd[6])}")
+                sent.append(f"text::{resolve_typed_paths(command[6])}")
             else:
                 # send_key: ["tmux", "send-keys", "-t", "%2", key_name]
-                sent.append(f"key::{cmd[4]}")
+                sent.append(f"key::{command[4]}")
         mock = MagicMock()
         mock.stdout = "%1 zsh\n%2 vim\n"
         return mock

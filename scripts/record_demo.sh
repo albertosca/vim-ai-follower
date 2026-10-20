@@ -52,12 +52,12 @@ world_processes() {
 }
 
 cleanup() {
-    local status=$? server_pid="" survivors="" i
+    local status=$? server_pid="" survivors="" attempt
     if [[ -S "$SOCK" ]]; then
         server_pid=$(tmux_demo display-message -p '#{pid}' 2> /dev/null || true)
         tmux_demo kill-server 2> /dev/null || true
     fi
-    for ((i = 0; i < 50; i++)); do
+    for ((attempt = 0; attempt < 50; attempt++)); do
         survivors=$(world_processes)
         if [[ -z "$survivors" ]] && { [[ -z "$server_pid" ]] || ! kill -0 "$server_pid" 2> /dev/null; }; then
             break

@@ -54,7 +54,7 @@ def _follower_leftovers(world: E2EFollower) -> list[str]:
     cache = world.cache_dir
     if not cache.exists():
         return []
-    return sorted(p.name for glob in ("*.pane", "nvim-*.sock") for p in cache.glob(glob))
+    return sorted(entry.name for glob in ("*.pane", "nvim-*.sock") for entry in cache.glob(glob))
 
 
 FIXTURES = REPO_ROOT / "qa" / "fixtures"
@@ -65,14 +65,18 @@ def _write_through_hooks(
     path: Path,
     content: str,
     identity: dict[str, str] | None = None,
-    env: dict[str, str] | None = None,
+    environment: dict[str, str] | None = None,
 ) -> None:
     """One synchronous Write: pre snapshots the current file, the new content
     lands, post animates the diff — the order a PreToolUse/PostToolUse pair
     fires in."""
-    world.cli("hook", "pre", stdin=payload("Write", path, identity=identity), env=env)
+    world.cli(
+        "hook", "pre", stdin=payload("Write", path, identity=identity), environment=environment
+    )
     path.write_text(content)
-    world.cli("hook", "post", stdin=payload("Write", path, identity=identity), env=env)
+    world.cli(
+        "hook", "post", stdin=payload("Write", path, identity=identity), environment=environment
+    )
 
 
 def _pane_option(world: E2EFollower, pane: str, name: str) -> str:
@@ -117,13 +121,13 @@ def test_second_writer_tints_and_titles_the_follower_border_and_stop_restores_it
     writer1 = (FIXTURES / "cue-writer1.py").read_text()
     world.cli("hook", "pre", stdin=payload("Write", path))
     path.write_text(writer1)
-    proc = world.cli_background("hook", "post", stdin=payload("Write", path))
+    process = world.cli_background("hook", "post", stdin=payload("Write", path))
     styles_while_running: list[str] = []
-    while proc.poll() is None:
+    while process.poll() is None:
         if world.animating_state() == "running":
             styles_while_running.append(_pane_option(world, follower, "pane-border-style"))
         time.sleep(0.05)
-    world.wait_for_hook_exit(proc)
+    world.wait_for_hook_exit(process)
     assert len(styles_while_running) >= 10, (
         f"only {len(styles_while_running)} samples during the animation: nothing was watched"
     )
@@ -192,8 +196,8 @@ def test_two_windows_never_bleed_content_into_each_others_follower(
     ).stdout.strip()
     window1 = world.tmux("display-message", "-p", "-t", pane1, "#{window_id}").stdout.strip()
     assert window1 != world.window_id
-    env1 = world.env_with(TMUX_PANE=pane1)
-    world.cli("start", "--backend", "tmux", "--speed", "instant", env=env1)
+    first_environment = world.env_with(TMUX_PANE=pane1)
+    world.cli("start", "--backend", "tmux", "--speed", "instant", environment=first_environment)
     state1 = json.loads((world.cache_dir / f"{window1}.pane").read_text())
     follower1 = state1["target"]
     assert follower1 not in (follower0, pane1, world.origin_pane)
@@ -203,7 +207,7 @@ def test_two_windows_never_bleed_content_into_each_others_follower(
     alpha_text = (FIXTURES / "window-alpha.py").read_text()
     beta_text = (FIXTURES / "window-beta.py").read_text()
     _write_through_hooks(world, alpha, alpha_text)
-    _write_through_hooks(world, beta, beta_text, env=env1)
+    _write_through_hooks(world, beta, beta_text, environment=first_environment)
 
     assert _vim_listed_buffers(world, follower0) == [alpha.resolve()]
     assert _vim_listed_buffers(world, follower1) == [beta.resolve()]
@@ -252,7 +256,7 @@ return {
 def _sample_while_running(
     world: E2EFollower,
     sock: str,
-    proc: subprocess.Popen[bytes],
+    process: subprocess.Popen[bytes],
     path: Path,
     running: Callable[[], bool] | None = None,
 ) -> list[dict[str, Any]]:
@@ -263,13 +267,13 @@ def _sample_while_running(
     if running is None:
         running = lambda: world.animating_state() == "running"  # noqa: E731
     samples: list[dict[str, Any]] = []
-    while proc.poll() is None:
+    while process.poll() is None:
         if running():
             sample = nvim.exec_lua(_NVIM_SAMPLE_LUA, [])
             if sample["name"] and Path(sample["name"]).resolve() == wanted:
                 samples.append(sample)
         time.sleep(0.03)
-    world.wait_for_hook_exit(proc)
+    world.wait_for_hook_exit(process)
     return samples
 
 
@@ -311,10 +315,10 @@ def test_nvim_types_char_by_char_with_the_cursor_and_shows_the_writer_float(
     first = world.workdir / "typed.py"
     world.cli("hook", "pre", stdin=payload("Write", first))
     first.write_text("".join(line + "\n" for line in WRITER1_LINES))
-    proc = world.cli_background("hook", "post", stdin=payload("Write", first))
-    samples = _sample_while_running(world, sock, proc, first)
+    process = world.cli_background("hook", "post", stdin=payload("Write", first))
+    samples = _sample_while_running(world, sock, process, first)
 
-    caught = [s for s in samples if _strict_prefix_rows(s, WRITER1_LINES)]
+    caught = [sample for sample in samples if _strict_prefix_rows(sample, WRITER1_LINES)]
     assert caught, (
         f"no sample caught a line part-way typed ({len(samples)} samples): "
         "the lines landed whole, not character by character"
@@ -323,18 +327,20 @@ def test_nvim_types_char_by_char_with_the_cursor_and_shows_the_writer_float(
     # typed: the first character's buf_set_text lands just before its
     # win_set_cursor, and an atomic sample can fall between the two.
     typing = [
-        s
-        for s in samples
-        if len(s["typing_rows"]) == 1 and len(s["lines"][s["typing_rows"][0]]) >= 2
+        sample
+        for sample in samples
+        if len(sample["typing_rows"]) == 1 and len(sample["lines"][sample["typing_rows"][0]]) >= 2
     ]
     assert len(typing) >= 5, f"only {len(typing)} samples of a line being typed"
-    for s in typing:
-        assert s["cursor_row"] == s["typing_rows"][0], f"cursor off the typed line: {s}"
-        assert _strict_prefix_rows(s, WRITER1_LINES) in ([], s["typing_rows"]), s
+    for sample in typing:
+        assert sample["cursor_row"] == sample["typing_rows"][0], (
+            f"cursor off the typed line: {sample}"
+        )
+        assert _strict_prefix_rows(sample, WRITER1_LINES) in ([], sample["typing_rows"]), sample
     # Writer 1 is alone: its float (the "Writing..." cue) has the default
     # title and no writer tint.
-    for s in samples:
-        for float_ in s["floats"]:
+    for sample in samples:
+        for float_ in sample["floats"]:
             assert "code-reviewer" not in float_["title"], float_
             assert "VafWriterCue" not in float_["winhighlight"], float_
     assert world.nvim_buffer_lines(sock, first) == WRITER1_LINES
@@ -342,9 +348,16 @@ def test_nvim_types_char_by_char_with_the_cursor_and_shows_the_writer_float(
     second = world.workdir / "reviewed.py"
     world.cli("hook", "pre", stdin=payload("Write", second, identity=REVIEWER))
     second.write_text("".join(line + "\n" for line in WRITER2_LINES))
-    proc = world.cli_background("hook", "post", stdin=payload("Write", second, identity=REVIEWER))
-    samples = _sample_while_running(world, sock, proc, second)
-    during = [f for s in samples for f in s["floats"] if "code-reviewer" in f["title"]]
+    process = world.cli_background(
+        "hook", "post", stdin=payload("Write", second, identity=REVIEWER)
+    )
+    samples = _sample_while_running(world, sock, process, second)
+    during = [
+        float_window
+        for sample in samples
+        for float_window in sample["floats"]
+        if "code-reviewer" in float_window["title"]
+    ]
     assert during, "writer 2's float never showed its label while it animated"
 
     nvim = world._nvim(sock)
@@ -385,14 +398,14 @@ def _nvim_animation(world: E2EFollower, path: Path) -> tuple[str, subprocess.Pop
     sock = world.follower_target()
     world.cli("hook", "pre", stdin=payload("Write", path))
     path.write_text(CONTROLS)
-    proc = world.cli_background("hook", "post", stdin=payload("Write", path))
+    process = world.cli_background("hook", "post", stdin=payload("Write", path))
     world.wait_for_animating("running")
     world.wait_until(
         lambda: "ALPHA_MARK" in "".join(world.nvim_buffer_lines(sock, path)),
         "ALPHA_MARK to be typed",
         timeout=60.0,
     )
-    return sock, proc
+    return sock, process
 
 
 def _interrupt_and_take_over(world: E2EFollower, sock: str, path: Path) -> Any:
@@ -416,7 +429,7 @@ def test_nvim_pause_then_resume_through_the_cli_ends_on_the_exact_bytes(
     would pass), and the resume runs on to exactly the file Claude wrote.
     On nvim a pause can land mid-line — it is checked per character."""
     path = world.workdir / "paused.py"
-    sock, proc = _nvim_animation(world, path)
+    sock, process = _nvim_animation(world, path)
 
     world.cli("pause")
     world.wait_for_animating("paused")
@@ -426,7 +439,7 @@ def test_nvim_pause_then_resume_through_the_cli_ends_on_the_exact_bytes(
     assert held is not None and held != CONTROLS.encode(), "the pause landed after the end"
 
     world.cli("pause")
-    world.wait_for_hook_exit(proc)
+    world.wait_for_hook_exit(process)
     assert world.nvim_buffer_bytes(sock, path) == CONTROLS.encode()
 
 
@@ -438,15 +451,15 @@ def test_nvim_interrupt_then_save_releases_the_hook_with_its_notification(
     the notification telling Claude the user saved their version, the file
     on disk is the user's, and no crash-fallback remainder is left."""
     path = world.workdir / "handed.py"
-    sock, proc = _nvim_animation(world, path)
+    sock, process = _nvim_animation(world, path)
     nvim = _interrupt_and_take_over(world, sock, path)
 
     nvim.api.buf_set_lines(0, -1, -1, True, ["USER_LINE = 1"])
     nvim.command("w")
-    world.wait_for_hook_exit(proc)
+    world.wait_for_hook_exit(process)
 
     assert "USER_LINE = 1" in path.read_text()
-    output = world.background_log(proc)
+    output = world.background_log(process)
     assert "SAVED their own version" in output, f"no release notification: {output!r}"
     assert not world.pending_path.exists(), "the released hand-off left a remainder behind"
 
@@ -456,13 +469,13 @@ def test_nvim_des_interrupt_discards_the_users_unsaved_typing(world: E2EFollower
     does NOT save; a second prefix S throws that typing away and replays the
     rest of the animation onto exactly the content, double blanks and all."""
     path = world.workdir / "discarded.py"
-    sock, proc = _nvim_animation(world, path)
+    sock, process = _nvim_animation(world, path)
     nvim = _interrupt_and_take_over(world, sock, path)
 
     nvim.api.buf_set_lines(0, -1, -1, True, ["JUNK_TYPED = 1"])
     assert "JUNK_TYPED = 1" in world.nvim_buffer_lines(sock, path)
     world.cli("interrupt")  # the des-interrupt
-    world.wait_for_hook_exit(proc)
+    world.wait_for_hook_exit(process)
 
     assert world.nvim_buffer_bytes(sock, path) == CONTROLS.encode()
     assert path.read_text() == CONTROLS, "the unsaved typing reached the disk"
@@ -550,7 +563,8 @@ def test_six_parallel_hooks_animate_exactly_one_file_cleanly(world: E2EFollower)
     world.wait_until(log.exists, "the observer timer to start", timeout=15.0)
 
     contents = {
-        f"{tag}.py": [f"{tag}_{i} = '{tag.upper()}_{i}'" for i in range(8)] for tag in PARALLEL_TAGS
+        f"{tag}.py": [f"{tag}_{index} = '{tag.upper()}_{index}'" for index in range(8)]
+        for tag in PARALLEL_TAGS
     }
     paths = {name: world.workdir / name for name in contents}
     for name, path in paths.items():
@@ -564,27 +578,33 @@ def test_six_parallel_hooks_animate_exactly_one_file_cleanly(world: E2EFollower)
     marker_at_exit: dict[int, str | None] = {}
     deadline = time.monotonic() + 120.0
     while len(marker_at_exit) < len(procs) and time.monotonic() < deadline:
-        for proc in procs:
-            if proc.pid not in marker_at_exit and proc.poll() is not None:
-                marker_at_exit[proc.pid] = world.animating_state()
+        for process in procs:
+            if process.pid not in marker_at_exit and process.poll() is not None:
+                marker_at_exit[process.pid] = world.animating_state()
         time.sleep(0.01)
-    for proc in procs:
-        world.wait_for_hook_exit(proc)
+    for process in procs:
+        world.wait_for_hook_exit(process)
     racing = [pid for pid, state in marker_at_exit.items() if state == "running"]
     assert len(racing) == 5, (
         f"only {len(racing)} hooks exited while another was animating: {marker_at_exit}"
     )
 
     states = _observed_states(log)
-    animated = {s["name"] for s in states if s["name"] in contents and any(s["lines"])}
+    animated = {
+        observed_state["name"]
+        for observed_state in states
+        if observed_state["name"] in contents and any(observed_state["lines"])
+    }
     assert len(animated) == 1, f"more than one file reached the follower: {animated}"
     [winner] = animated
     assert _stray_lines(states, contents) == []
-    assert len([s for s in states if s["name"] == winner]) >= 3, "the animation was not observed"
+    assert (
+        len([observed_state for observed_state in states if observed_state["name"] == winner]) >= 3
+    ), "the animation was not observed"
     assert _vim_eval_dump(world, follower, "tabpagenr('$')") == "1"
     assert world.vim_buffer_bytes(follower) == _text(*contents[winner]).encode()
     state = json.loads((world.cache_dir / f"{world.window_id}.pane").read_text())
-    assert [Path(p).name for p in state["open_files"]] == [winner]
+    assert [Path(open_file).name for open_file in state["open_files"]] == [winner]
 
 
 # The observer again, with the global 'paste' option in each logged state.
@@ -632,20 +652,39 @@ def test_paste_is_on_for_the_whole_animation_and_off_after_the_relock(
     path = world.workdir / "paste_check.py"
     world.cli("hook", "pre", stdin=payload("Write", path))
     path.write_text(content)
-    proc = world.cli_background("hook", "post", stdin=payload("Write", path))
-    world.wait_for_hook_exit(proc)
+    process = world.cli_background("hook", "post", stdin=payload("Write", path))
+    world.wait_for_hook_exit(process)
 
-    states = [s for s in _observed_states(log) if s["name"] == path.name]
-    trace = "\n".join(f"paste={s['paste']} rows={len(s['lines'])}" for s in states)
-    finished = next(i for i, s in enumerate(states) if s["lines"] == source)
-    typing = [s for s in states[: finished + 1] if any(s["lines"])]
+    states = [
+        observed_state
+        for observed_state in _observed_states(log)
+        if observed_state["name"] == path.name
+    ]
+    trace = "\n".join(
+        f"paste={observed_state['paste']} rows={len(observed_state['lines'])}"
+        for observed_state in states
+    )
+    finished = next(
+        index for index, observed_state in enumerate(states) if observed_state["lines"] == source
+    )
+    typing = [
+        observed_state for observed_state in states[: finished + 1] if any(observed_state["lines"])
+    ]
     # Non-vacuity: the first line was seen part-way, and so was a state in
     # the middle of the file — not just the first and last frames.
-    first_row = [s for s in typing if len([line for line in s["lines"] if line]) == 1]
-    middle = [s for s in typing if 2 <= len(s["lines"]) <= len(source) - 2]
+    first_row = [
+        observed_state
+        for observed_state in typing
+        if len([line for line in observed_state["lines"] if line]) == 1
+    ]
+    middle = [
+        observed_state
+        for observed_state in typing
+        if 2 <= len(observed_state["lines"]) <= len(source) - 2
+    ]
     assert first_row, f"no state caught on the first line:\n{trace}"
     assert middle, f"no state caught mid-file:\n{trace}"
-    off = [s for s in typing if s["paste"] != 1]
+    off = [observed_state for observed_state in typing if observed_state["paste"] != 1]
     assert not off, f"'paste' was off while the follower typed:\n{trace}"
     assert states[-1]["lines"] == source
     assert states[-1]["paste"] == 0, f"'paste' left on after the relock:\n{trace}"
@@ -708,14 +747,17 @@ def test_insert_exit_stays_clean_under_a_remapped_esc_and_a_ctrl_backslash_map(
     path = world.workdir / "esc_exit.py"
     world.cli("hook", "pre", stdin=payload("Write", path))
     path.write_text(content)
-    proc = world.cli_background("hook", "post", stdin=payload("Write", path))
-    world.wait_for_hook_exit(proc)
+    process = world.cli_background("hook", "post", stdin=payload("Write", path))
+    world.wait_for_hook_exit(process)
 
     assert not bslash_log.exists(), f"the animation fired <C-\\>: {bslash_log.read_text()}"
     leaves = leave_log.read_text().splitlines() if leave_log.exists() else []
     assert len(leaves) == len(source), f"left Insert {len(leaves)} times for {len(source)} lines"
     states = _observed_states(obs_log)
-    assert len([s for s in states if s["name"] == path.name]) >= 3, "the animation went unseen"
+    assert (
+        len([observed_state for observed_state in states if observed_state["name"] == path.name])
+        >= 3
+    ), "the animation went unseen"
     assert _stray_lines(states, {path.name: source}) == []
     assert _vim_eval_dump(world, follower, "g:vaf_esc_swallowed") == "0", (
         "the <Esc> stand-in fired during the animation: 'paste' no longer shields it"
@@ -794,7 +836,7 @@ def test_standalone_nvim_starts_animates_stays_open_and_stops_without_tmux(
     sock = str(world.cache_dir / "nvim-term-e2e.sock")
     try:
         began = time.monotonic()
-        result = world.cli("start", "--speed", "lento", env=outside)
+        result = world.cli("start", "--speed", "lento", environment=outside)
         assert time.monotonic() - began < 10.0, "start blocked the origin terminal"
         assert result.stdout == f"claude-follow: attached to standalone Neovim at {sock}\n"
         assert markers["nvim-qt"].exists(), "the nvim-qt tier was not the one launched"
@@ -807,17 +849,19 @@ def test_standalone_nvim_starts_animates_stays_open_and_stops_without_tmux(
         assert Path(sock).is_socket(), "the launched nvim is not listening on the socket"
 
         path = world.workdir / "standalone.py"
-        world.cli("hook", "pre", stdin=payload("Write", path), env=outside)
+        world.cli("hook", "pre", stdin=payload("Write", path), environment=outside)
         path.write_text(_text(*WRITER1_LINES))
-        proc = world.cli_background("hook", "post", stdin=payload("Write", path), env=outside)
-        samples = _sample_while_running(world, sock, proc, path, running=lambda: True)
-        assert any(_strict_prefix_rows(s, WRITER1_LINES) for s in samples), (
+        process = world.cli_background(
+            "hook", "post", stdin=payload("Write", path), environment=outside
+        )
+        samples = _sample_while_running(world, sock, process, path, running=lambda: True)
+        assert any(_strict_prefix_rows(sample, WRITER1_LINES) for sample in samples), (
             f"no sample caught a line part-way typed ({len(samples)} samples)"
         )
         assert world.nvim_buffer_bytes(sock, path) == _text(*WRITER1_LINES).encode()
         assert world._nvim(sock).eval("1") == 1, "the standalone nvim closed after the edit"
 
-        world.cli("stop", env=outside)
+        world.cli("stop", environment=outside)
         world.wait_until(
             lambda: subprocess.run(["pgrep", "-f", sock], capture_output=True).returncode == 1,
             "the standalone nvim to quit on stop",
@@ -874,7 +918,7 @@ def test_standalone_start_fails_loudly_when_no_nvim_ever_listens(
     if leftover != "nothing":
         _leave_a_sigkilled_nvims_socket(world, sock)
 
-    result = world.cli("start", expect_rc=1, env=outside)
+    result = world.cli("start", expect_rc=1, environment=outside)
 
     assert markers["nvim-qt"].read_text() == f"-- --listen {sock}\n", "nvim-qt was not launched"
     assert not markers["osascript"].exists() and not markers["open"].exists()
@@ -885,7 +929,7 @@ def test_standalone_start_fails_loudly_when_no_nvim_ever_listens(
         "then run start again\n"
     )
     assert _follower_leftovers(world) == [], "start left follower state behind"
-    status = world.cli("status", env=outside)
+    status = world.cli("status", environment=outside)
     assert "no follower" in status.stdout, status.stdout
 
 
@@ -911,12 +955,12 @@ def test_a_failed_auto_open_costs_one_short_wait_then_backs_off(world: E2EFollow
     costs: list[float] = []
     for index in range(3):
         path = world.workdir / f"auto{index}.py"
-        world.cli("hook", "pre", stdin=payload("Write", path), env=outside)
+        world.cli("hook", "pre", stdin=payload("Write", path), environment=outside)
         path.write_text(_text(*WRITER1_LINES))
         began = time.monotonic()
-        world.cli("hook", "post", stdin=payload("Write", path), env=outside)
+        world.cli("hook", "post", stdin=payload("Write", path), environment=outside)
         costs.append(time.monotonic() - began)
-    print(f"hook post cost per call: {[round(c, 2) for c in costs]} s")
+    print(f"hook post cost per call: {[round(cost, 2) for cost in costs]} s")
 
     assert len(markers["nvim-qt"].read_text().splitlines()) == 1, "a hook relaunched"
     assert 3.0 <= costs[0] < 6.0, f"the first hook's wait was {costs[0]:.2f} s"
@@ -924,7 +968,7 @@ def test_a_failed_auto_open_costs_one_short_wait_then_backs_off(world: E2EFollow
     assert not markers["osascript"].exists() and not markers["open"].exists()
     assert list(world.cache_dir.glob("*.pane")) == [], "a follower was persisted"
 
-    world.cli("start", expect_rc=1, env=outside)  # the explicit retry
+    world.cli("start", expect_rc=1, environment=outside)  # the explicit retry
     assert len(markers["nvim-qt"].read_text().splitlines()) == 2, "start did not retry"
 
 
@@ -959,22 +1003,22 @@ def test_an_nvim_that_binds_after_the_auto_open_gave_up_is_attached_and_animates
     sock = world.cache_dir / "nvim-term-e2e.sock"
     try:
         first = world.workdir / "first.py"
-        world.cli("hook", "pre", stdin=payload("Write", first), env=outside)
+        world.cli("hook", "pre", stdin=payload("Write", first), environment=outside)
         first.write_text(_text(*WRITER1_LINES))
-        world.cli("hook", "post", stdin=payload("Write", first), env=outside)
+        world.cli("hook", "post", stdin=payload("Write", first), environment=outside)
         assert list(world.cache_dir.glob("*.pane")) == [], "hook 1 attached to nothing"
         world.wait_until(
             lambda: nvim_connect.nvim_answers(str(sock)), "the slow nvim to listen", timeout=15.0
         )
 
         second = world.workdir / "second.py"
-        world.cli("hook", "pre", stdin=payload("Write", second), env=outside)
+        world.cli("hook", "pre", stdin=payload("Write", second), environment=outside)
         second.write_text(_text(*WRITER1_LINES))
-        world.cli("hook", "post", stdin=payload("Write", second), env=outside)
+        world.cli("hook", "post", stdin=payload("Write", second), environment=outside)
         assert world.nvim_buffer_bytes(str(sock), second) == _text(*WRITER1_LINES).encode(), (
             "hook 2 did not animate into the nvim that came up"
         )
-        world.cli("start", env=outside)
+        world.cli("start", environment=outside)
         assert len(markers["nvim-qt"].read_text().splitlines()) == 1, "a second window launched"
         assert not markers["osascript"].exists() and not markers["open"].exists()
     finally:
@@ -1000,7 +1044,7 @@ def test_tmux_backend_outside_tmux_fails_loudly_and_opens_nothing(world: E2EFoll
     outside = world.env_with(drop=("TMUX_PANE",), TERM_SESSION_ID="e2e")
     panes_before = _all_panes(world)
 
-    result = world.cli("start", expect_rc=1, env=outside)
+    result = world.cli("start", expect_rc=1, environment=outside)
 
     assert result.stderr == VIM_NEEDS_TMUX + "\n"
     assert result.stdout == ""

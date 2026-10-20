@@ -28,7 +28,7 @@ mkdir -p "$HOME/.config/claude-vim-follower"
 printf '{"open_policy": "manual", "backend": "tmux"}\n' > "$HOME/.config/claude-vim-follower/config.json"
 
 TAGS=(alpha bravo charlie delta echo foxtrot)
-for t in $TAGS; do : > "$HOME/$t.txt"; for i in $(seq -w 1 8); do print -r -- "${t}_${i}" >> "$HOME/$t.txt"; done; done
+for tag in $TAGS; do : > "$HOME/$tag.txt"; for index in $(seq -w 1 8); do print -r -- "${tag}_${index}" >> "$HOME/$tag.txt"; done; done
 
 tmux -f /dev/null new-session -d -s w -x 180 -y 45
 ORIGIN=$(tmux list-panes -t w -F '#{pane_id}' | head -1)
@@ -40,10 +40,10 @@ sleep 1.0
 
 post() { print -r -- "{\"tool_name\": \"Write\", \"tool_input\": {\"file_path\": \"$1\"}}" | TMUX_PANE="$ORIGIN" CLI hook post >/dev/null 2>&1; }
 echo "=== firing 6 concurrent hook-post processes ==="
-for t in $TAGS; do post "$HOME/$t.txt" & done
+for tag in $TAGS; do post "$HOME/$tag.txt" & done
 
 SNAP="$HOME/snaps.txt"; : > "$SNAP"
-for n in $(seq 1 14); do tmux capture-pane -p -t "$FOLLOWER" 2>/dev/null >> "$SNAP"; sleep 0.3; done
+for sample in $(seq 1 14); do tmux capture-pane -p -t "$FOLLOWER" 2>/dev/null >> "$SNAP"; sleep 0.3; done
 wait
 sleep 1.0
 

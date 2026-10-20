@@ -347,7 +347,7 @@ def test_s6_pre_and_post_on_different_pane_identities(world: E2EFollower) -> Non
             "hook",
             "post",
             stdin=payload("Edit", target),
-            env=world.env_with(drop=("TMUX_PANE",)),
+            environment=world.env_with(drop=("TMUX_PANE",)),
         )
 
     _measure_nvim(

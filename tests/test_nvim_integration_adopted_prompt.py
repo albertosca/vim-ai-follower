@@ -41,11 +41,11 @@ def world() -> Iterator[E2EFollower]:
 
 
 def _timed_cli(
-    world: E2EFollower, *args: str, pane_id: str, stdin: str | None = None
+    world: E2EFollower, *arguments: str, pane_id: str, stdin: str | None = None
 ) -> tuple[subprocess.CompletedProcess[str], float]:
     started = time.monotonic()
     result = subprocess.run(
-        [str(CLI), *args],
+        [str(CLI), *arguments],
         input=stdin,
         env=world.env_with(TMUX_PANE=pane_id),
         capture_output=True,
@@ -438,9 +438,9 @@ def test_an_nvim_whose_user_is_typing_is_skipped_and_the_edit_marked_stale(
 
 
 def _question_seconds(world: E2EFollower, seconds: float) -> None:
-    config_dir = world.home / ".config" / "claude-vim-follower"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    (config_dir / "config.json").write_text(f'{{"take_over_question_seconds": {seconds}}}')
+    config_directory = world.home / ".config" / "claude-vim-follower"
+    config_directory.mkdir(parents=True, exist_ok=True)
+    (config_directory / "config.json").write_text(f'{{"take_over_question_seconds": {seconds}}}')
 
 
 @pytest.mark.parametrize("answer", ["y", "n", "none", "y-in-flight"])
@@ -478,7 +478,7 @@ def test_an_nvim_whose_user_is_typing_is_asked_and_only_y_takes_it_over(
         with attached_client(world) as client:
             started = time.monotonic()
             post = world.cli_background(
-                "hook", "post", stdin=hook, env=world.env_with(TMUX_PANE=pane_id)
+                "hook", "post", stdin=hook, environment=world.env_with(TMUX_PANE=pane_id)
             )
             wait_for_take_over_question(world, armed=answer != "y-in-flight")
             if answer != "none":

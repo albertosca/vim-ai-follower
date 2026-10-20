@@ -19,8 +19,8 @@ def _srd() -> ModuleType:
     return stamp_revision_dates
 
 
-def _git(repo: Path, *args: str, date: str | None = None) -> None:
-    env = {
+def _git(repo: Path, *arguments: str, date: str | None = None) -> None:
+    environment = {
         **os.environ,
         "GIT_AUTHOR_NAME": "t",
         "GIT_AUTHOR_EMAIL": "t@t",
@@ -28,8 +28,10 @@ def _git(repo: Path, *args: str, date: str | None = None) -> None:
         "GIT_COMMITTER_EMAIL": "t@t",
     }
     if date:
-        env["GIT_AUTHOR_DATE"] = env["GIT_COMMITTER_DATE"] = f"{date}T12:00:00"
-    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, env=env)
+        environment["GIT_AUTHOR_DATE"] = environment["GIT_COMMITTER_DATE"] = f"{date}T12:00:00"
+    subprocess.run(
+        ["git", "-C", str(repo), *arguments], check=True, capture_output=True, env=environment
+    )
 
 
 def _repo_with_two_pages(root: Path) -> Path:
