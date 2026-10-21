@@ -753,3 +753,23 @@ def test_a_press_landing_while_the_file_is_claimed_is_not_lost(
 
 def test_a_press_with_no_live_owner_counts_nothing(tmp_path: Path) -> None:
     assert control.request_pause("@1", base_directory=tmp_path) == 0
+
+
+@pytest.mark.usefixtures("animating")
+def test_a_claim_right_after_the_press_is_written_still_counts_it(tmp_path: Path) -> None:
+    """A consumer claims by rename WITHOUT the lock, so it can take the file
+    between the press's write and its recount: the recount reads the file
+    the press wrote into, never the path again, which no longer exists
+    (final review of backlog-sweep-5, M2: FileNotFoundError out of P)."""
+    signal = tmp_path / "@1.pause"
+    claimed = tmp_path / "@1.pause.claimed-by-test"
+    real_write = os.write
+
+    def write_then_claim(descriptor: int, data: bytes) -> int:
+        written = real_write(descriptor, data)
+        signal.rename(claimed)
+        return written
+
+    with patch.object(os, "write", write_then_claim):
+        assert control.request_pause("@1", base_directory=tmp_path) == 1
+    assert claimed.read_text() == f"{os.getpid()}\n"

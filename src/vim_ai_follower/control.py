@@ -159,10 +159,14 @@ def _append_press(path: Path, owner: int) -> int:
     """One `O_APPEND` line under the file's lock. The file is the one at
     `path` when the line is written: a consumer that renamed it away first
     (it claims by rename, then reads under the lock) leaves this open handle
-    on its claimed copy, and the press goes to a new file instead."""
+    on its claimed copy, and the press goes to a new file instead. The
+    count is read back through the same descriptor: the claim's rename takes
+    no lock, so the path may already be gone after the write (final review
+    of backlog-sweep-5, M2), and the file written into is the one whose
+    presses the consumer reads."""
     path.parent.mkdir(parents=True, exist_ok=True)
     while True:
-        descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        descriptor = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX)
             try:
@@ -172,8 +176,9 @@ def _append_press(path: Path, owner: int) -> int:
             if current.st_ino != os.fstat(descriptor).st_ino:
                 continue
             os.write(descriptor, f"{owner}\n".encode())
-            with path.open("r") as handle:
-                return handle.read().split().count(str(owner))
+            size = os.fstat(descriptor).st_size
+            content = os.pread(descriptor, size, 0).decode(errors="replace")
+            return content.split().count(str(owner))
         finally:
             os.close(descriptor)
 
