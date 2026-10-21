@@ -2642,3 +2642,17 @@ def test_start_a_stop_overtook_reports_an_editor_it_could_not_close(
         get_follower.return_value.stop.side_effect = OSError("pane gone")
         assert commands.cmd_start({"TMUX_PANE": "%1"}) == 1
     assert "could not close the tmux it opened (%9)" in capsys.readouterr().err
+
+
+def test_toggle_on_drops_every_recorded_stale_base() -> None:
+    # open_files is zeroed, so every stale mark goes with it and no base is
+    # ever read again (final review of backlog-sweep-5, M4).
+    _register_fake_follower("@1", "%2", open_files=("/a.py",), shown_any=True)
+    state.FollowerState.update("@1", enabled=False, stale_files=("/a.py",))
+    snapshot.save_stale_base("@1", "/a.py", "base\n")
+    with patch(
+        "vim_ai_follower.tmux.subprocess.run",
+        side_effect=_mock_tmux_run_with_zoom("1", pane_id="%2"),
+    ):
+        assert commands.cmd_toggle({"TMUX_PANE": "%1"}) == 0
+    assert snapshot.load_stale_base("@1", "/a.py") is None

@@ -1163,6 +1163,7 @@ def cmd_toggle(environment: dict[str, str]) -> int:
     if not FollowerState.update(session.window_id, enabled=True, open_files=()):
         print(_STOPPED_MEANWHILE.format(what="not resumed"), file=sys.stderr)
         return 1
+    snapshot.clear_stale_bases(session.window_id)
     if raw.origin:
         TmuxPane(pane_id=raw.origin).set_zoomed(False)
     if raw.backend == "tmux" and FollowerState.get(session.window_id) is None and raw.origin:

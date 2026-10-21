@@ -622,10 +622,13 @@ def _touch_and_evict(
     falls past max_tabs. close_tab wipes the buffer on nvim (which, since
     the buffer is that tab's only window, closes the tab too) and closes
     the tab directly on tmux — both backends implement the Follower
-    protocol's close_tab, so eviction is generic here."""
+    protocol's close_tab, so eviction is generic here. An evicted file loses
+    its stale mark (stale is a subset of open), so its stale base goes too
+    (final review of backlog-sweep-5, M4)."""
     new_open, evicted = touch_open_files(current.open_files, file_path, maximum_tabs)
     for old in evicted:
         follower.close_tab(old)
+        snapshot.clear_stale_base(window_id, old)
     FollowerState.update(window_id, open_files=new_open, shown_any=True)
 
 

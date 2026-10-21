@@ -137,3 +137,15 @@ def test_a_skip_of_a_file_with_no_tab_records_no_base(tmp_path: Path) -> None:
     _target, resolved = _setup(tmp_path, is_open=False)
     hooks._mark_stale("@1", resolved)
     assert snapshot.load_stale_base("@1", resolved) is None
+
+
+def test_an_evicted_stale_file_loses_its_recorded_base(tmp_path: Path) -> None:
+    """Eviction drops the file's stale mark (stale is a subset of open), so
+    its base would never be read again: it goes with the tab (final review
+    of backlog-sweep-5, M4)."""
+    _target, resolved = _setup(tmp_path, stale=True)
+    snapshot.save_stale_base("@1", resolved, BEFORE_SKIPPED)
+    current = state.FollowerState.read("@1")
+    assert current is not None
+    hooks._touch_and_evict("@1", MagicMock(), current, str(tmp_path / "other.txt"), 1)
+    assert snapshot.load_stale_base("@1", resolved) is None

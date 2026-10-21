@@ -62,6 +62,14 @@ def clear_stale_base(window_id: str, file_path: str, base_directory: Path | None
     _stale_base_path(window_id, file_path, base_directory).unlink(missing_ok=True)
 
 
+def clear_stale_bases(window_id: str, base_directory: Path | None = None) -> None:
+    """Delete every stale base of the window: the stale marks are gone with
+    its open_files (a toggle's un-mute), so none would be read again."""
+    directory = base_directory if base_directory is not None else SNAPSHOT_DIRECTORY
+    for path in (directory / window_id).glob("*.stalebase"):
+        path.unlink(missing_ok=True)
+
+
 # How long an Edit's in-flight mark holds a Read of its file back. A post hook
 # normally follows the file write within a second, but the mark is set BEFORE
 # any permission prompt, so the pre->post gap includes the user deciding. An
