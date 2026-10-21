@@ -598,6 +598,43 @@ def _is_scratch(nvim: pynvim.Nvim, buffer: pynvim.api.Buffer) -> bool:
     )
 
 
+# Wipe a buffer the follower made for a navigation that then failed. In the
+# command-line window (`q:`) every `:bwipeout`, and nvim_buf_delete too,
+# raises E11 (measured, nvim 0.12), and a user who opened it AFTER the
+# hook's probe left the half-made buffer listed under Claude's file name
+# (sweep-4 residual of T24c): the buffer is unlisted at once and its wipe
+# waits for CmdwinLeave, running only while the buffer is still the
+# follower's, unmodified and shown nowhere.
+_WIPE_CREATED_LUA = f"""
+local buf = ...
+local function wipe()
+  if vim.api.nvim_buf_is_valid(buf) and vim.b[buf].{_CREATED} == 1
+      and not vim.bo[buf].modified and #vim.fn.win_findbuf(buf) == 0 then
+    vim.cmd('silent! bwipeout! ' .. buf)
+  end
+end
+if vim.fn.getcmdwintype() ~= '' then
+  pcall(function() vim.bo[buf].buflisted = false end)
+  vim.api.nvim_create_autocmd('CmdwinLeave', {{
+    once = true,
+    callback = function() vim.schedule(wipe) end,
+  }})
+  return 'deferred'
+end
+vim.cmd('silent! bwipeout! ' .. buf)
+return 'wiped'
+"""
+
+
+def _wipe_created(nvim: pynvim.Nvim, buffer: int) -> None:
+    """Wipe `buffer`, which the follower created for a navigation that
+    failed, now or when the user leaves the command-line window
+    (_WIPE_CREATED_LUA). Best effort: the caller raises NavigationFailed
+    either way."""
+    with contextlib.suppress(pynvim.NvimError):
+        nvim.exec_lua(_WIPE_CREATED_LUA, buffer)
+
+
 def _wipe_if_scratch(nvim: pynvim.Nvim, scratch: pynvim.api.Buffer, kept: int) -> None:
     """Wipe `scratch` when it is a `:tabnew`'s empty buffer (_is_scratch)
     shown in no window, and not `kept`. Anything else may be the user's and
@@ -955,7 +992,7 @@ class NvimFollower:
             _name_without_swap(nvim, created, file_path)
             nvim.api.buf_set_var(created, _CREATED, 1)
         except pynvim.NvimError as error:
-            nvim.command(f"silent! bwipeout! {handle}")
+            _wipe_created(nvim, handle)
             raise NavigationFailed(
                 f"the follower's nvim could not name a buffer {file_path}: {error}"
             ) from error
@@ -965,7 +1002,7 @@ class NvimFollower:
             else:
                 _show_in_window(nvim, nvim.api.get_current_win(), handle, file_path)
         except NavigationFailed:
-            nvim.command(f"silent! bwipeout! {handle}")
+            _wipe_created(nvim, handle)
             raise
         return handle
 
@@ -1558,7 +1595,7 @@ class NvimFollower:
         try:
             self._show_in_new_tab(nvim, bufnr, file_path)
         except NavigationFailed:
-            nvim.command(f"silent! bwipeout! {bufnr}")
+            _wipe_created(nvim, bufnr)
             raise
         self._restore_swap_if_adopted(nvim)
         self._exec(nvim, "filetype detect")

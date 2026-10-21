@@ -14,7 +14,7 @@ import pytest
 from helpers import fresh_buffer, route_exec_lua, tabnew_adds_a_tab
 
 from vim_ai_follower.backends import NavigationFailed
-from vim_ai_follower.backends.nvim import NvimFollower
+from vim_ai_follower.backends.nvim import _WIPE_CREATED_LUA, NvimFollower
 from vim_ai_follower.state import FollowerState
 
 
@@ -34,7 +34,7 @@ def test_a_landing_on_another_buffer_wipes_the_new_one_and_fails_safe() -> None:
     nvim.api.get_current_buf.return_value = MagicMock(name="the user's buffer")
     with pytest.raises(NavigationFailed):
         _follower()._fresh_buffer(nvim, "/tmp/f.py", True)
-    nvim.command.assert_any_call(f"silent! bwipeout! {buffer.handle}")
+    nvim.exec_lua.assert_any_call(_WIPE_CREATED_LUA, buffer.handle)
 
 
 def test_a_tabnew_that_adds_no_tab_fails_safe() -> None:
@@ -44,7 +44,7 @@ def test_a_tabnew_that_adds_no_tab_fails_safe() -> None:
     with pytest.raises(NavigationFailed):
         _follower()._fresh_buffer(nvim, "/tmp/f.py", True)
     nvim.api.win_set_buf.assert_not_called()
-    nvim.command.assert_any_call(f"silent! bwipeout! {buffer.handle}")
+    nvim.exec_lua.assert_any_call(_WIPE_CREATED_LUA, buffer.handle)
 
 
 def test_the_empty_buffer_the_tabnew_made_is_wiped_once_replaced() -> None:
@@ -97,7 +97,7 @@ def test_a_refused_switch_is_navigation_failed_and_wipes_the_new_buffer() -> Non
     nvim.api.win_set_buf.side_effect = pynvim.NvimError("Vim:E37: No write since last change")
     with pytest.raises(NavigationFailed, match="E37"):
         _follower()._fresh_buffer(nvim, "/tmp/f.py", True)
-    nvim.command.assert_any_call(f"silent! bwipeout! {buffer.handle}")
+    nvim.exec_lua.assert_any_call(_WIPE_CREATED_LUA, buffer.handle)
 
 
 def test_a_failed_new_tab_never_wipes_a_buffer_it_did_not_create() -> None:
@@ -129,7 +129,7 @@ def test_a_read_that_does_not_land_wipes_the_buffer_it_loaded() -> None:
         pytest.raises(NavigationFailed),
     ):
         _follower().ensure_showing("/tmp/f.py")
-    nvim.command.assert_any_call("silent! bwipeout! 42")
+    nvim.exec_lua.assert_any_call(_WIPE_CREATED_LUA, 42)
 
 
 def _after_tabnew(
@@ -224,7 +224,7 @@ def test_a_give_back_nvim_refuses_is_navigation_failed() -> None:
     nvim.api.win_is_valid.side_effect = pynvim.NvimError("Invalid window id")
     with pytest.raises(NavigationFailed, match="Invalid window id"):
         _follower()._fresh_buffer(nvim, "/tmp/f.py", True)
-    nvim.command.assert_any_call(f"silent! bwipeout! {buffer.handle}")
+    nvim.exec_lua.assert_any_call(_WIPE_CREATED_LUA, buffer.handle)
 
 
 @pytest.mark.parametrize(
@@ -304,7 +304,7 @@ def test_a_tabnew_that_throws_is_navigation_failed_and_taken_back() -> None:
         _follower()._fresh_buffer(nvim, "/tmp/f.py", True)
     nvim.api.win_set_buf.assert_not_called()
     nvim.api.tabpage_list_wins.assert_called()
-    nvim.command.assert_any_call(f"silent! bwipeout! {buffer.handle}")
+    nvim.exec_lua.assert_any_call(_WIPE_CREATED_LUA, buffer.handle)
 
 
 def test_a_buffer_nvim_refuses_to_create_is_navigation_failed() -> None:
@@ -320,4 +320,5 @@ def test_a_buffer_nvim_refuses_to_name_is_wiped_and_navigation_failed() -> None:
     nvim.api.buf_set_name.side_effect = pynvim.NvimError("Invalid buffer id: 7")
     with pytest.raises(NavigationFailed, match="could not name a buffer"):
         _follower()._fresh_buffer(nvim, "/tmp/f.py", True)
-    assert nvim.command.call_args_list == [call(f"silent! bwipeout! {buffer.handle}")]
+    nvim.command.assert_not_called()
+    nvim.exec_lua.assert_any_call(_WIPE_CREATED_LUA, buffer.handle)
