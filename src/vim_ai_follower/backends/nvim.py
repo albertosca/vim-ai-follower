@@ -30,7 +30,6 @@ from vim_ai_follower.backends import (
     log_state_gone,
     nvim_connect,
     nvim_prompt,
-    typed_form,
 )
 from vim_ai_follower.backends.nvim_connect import bounded_attach, closing_connections, probe_nvim
 from vim_ai_follower.backends.nvim_prompt import dismiss_prompt, exec_logged, prompt_guard
@@ -1660,14 +1659,10 @@ class NvimFollower:
         that are not UTF-8 never equals the hook's decoded `content`: it
         reads as "differs".
 
-        A buffer in the follower's own typed form (backends.typed_form) also
-        "holds" when the follower produced it: a dedicated follower's buffer,
-        or one still clean (_IS_CLEAN_LUA: unmodified, or stamped at a
-        completed animation and untouched since). That is what a retype of a
-        file with MIXED line endings leaves (every CR dropped), which nvim's
-        own load never shows. An adopted buffer the user changed into that
-        form (`:%s/\\r$//`) is not the base and stays "differs", so an
-        adopted editor leaves it alone (T12+T13 review I1)."""
+        What the follower's own typing leaves (backends.typed_form) is one of
+        the buffer forms since T24, which types a mixed file's CRs, so it
+        needs no exception here; a buffer the user stripped of them
+        (`:%s/\\r$//`) stays "differs" (T12+T13 review I1)."""
         nvim = self._connect()
         with self._guarded(nvim, "probe_buffer"):
             bufnr = _buffer_number(nvim, file_path)
@@ -1675,14 +1670,7 @@ class NvimFollower:
                 return "absent"
             nvim.exec_lua(_RECORD_PROBED_TICK_LUA, bufnr)
             lines: list[str] = nvim.api.buf_get_lines(bufnr, 0, -1, False)
-            held = classify_buffer(lines, content)
-            if (
-                held == "differs"
-                and lines == typed_form(content)
-                and (self._is_dedicated() or nvim.exec_lua(_IS_CLEAN_LUA, bufnr))
-            ):
-                return "holds"
-            return held
+            return classify_buffer(lines, content)
 
     @_closes_its_connections
     def ensure_showing(self, file_path: str) -> None:

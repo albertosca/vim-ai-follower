@@ -661,6 +661,23 @@ def test_withdrawing_a_showing_correction_waits_until_it_closed(tmp_path: Path) 
     assert not showing.exists() and not closed.exists()
 
 
+def test_withdrawing_a_correction_that_already_closed_does_not_wait(tmp_path: Path) -> None:
+    """Its popup closed on its own (`.closed` written) before the shell
+    removed `.showing`: the scan must leave `.closed` for the wait, which
+    then finds it at once instead of sitting out wait_seconds."""
+    import time
+
+    token = control.new_correction_token("@1", tmp_path)
+    showing = token.with_name(token.name + ".showing")
+    closed = token.with_name(token.name + ".closed")
+    token.rename(showing)
+    closed.touch()
+    started = time.monotonic()
+    control.withdraw_corrections("@1", tmp_path, wait_seconds=1.0)
+    assert time.monotonic() - started < 0.5
+    assert not showing.exists() and not closed.exists()
+
+
 def test_withdrawing_gives_up_on_a_correction_that_never_closes(tmp_path: Path) -> None:
     import time
 

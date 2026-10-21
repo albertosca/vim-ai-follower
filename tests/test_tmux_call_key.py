@@ -91,6 +91,16 @@ def test_a_ready_file_counts_only_for_this_script_and_a_live_pid() -> None:
     assert not tmux_vim._vim_ready("%6")
 
 
+def test_a_ready_file_naming_another_users_live_process_counts() -> None:
+    """kill(pid, 0) answering EPERM is a live process of another user, as
+    the mode-file sweep reads it: the Vim is ready, not gone."""
+    _ready_file(os.getpid())
+    with patch(
+        "vim_ai_follower.backends.tmux_vim.os.kill", side_effect=PermissionError("not yours")
+    ):
+        assert tmux_vim._vim_ready("%5")
+
+
 def test_the_ready_file_of_another_server_does_not_count() -> None:
     _ready_file(os.getpid())
     with patch.object(tmux_vim, "_server_pid", return_value=_SERVER + 1):
@@ -152,6 +162,8 @@ def test_the_sweep_deletes_only_the_ready_files_of_gone_vims() -> None:
     unreadable.write_text("nonsense")
     zero = cache.CACHE_DIRECTORY / "ready-3"
     zero.write_text("VafFollower_000000 0\n")
+    undecodable = cache.CACHE_DIRECTORY / "ready-5-6"
+    undecodable.write_bytes(b"\xff\xfe 1\n")
     old_record = cache.CACHE_DIRECTORY / "keyed-4321-7"
     old_record.write_text("12345678")
     os.utime(old_record, (long_ago, long_ago))
@@ -161,7 +173,7 @@ def test_the_sweep_deletes_only_the_ready_files_of_gone_vims() -> None:
         tmux_vim._sweep_scripts(cache.CACHE_DIRECTORY / "vaf-000000.vim")
     assert not old_record.exists() and recent_record.exists()
     assert not dead.exists() and not dead_old.exists()
-    assert alive.exists() and unreadable.exists() and zero.exists()
+    assert alive.exists() and unreadable.exists() and zero.exists() and undecodable.exists()
     assert all(call.args[0] > 0 for call in kill.call_args_list)
 
 

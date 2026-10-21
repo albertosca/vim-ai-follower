@@ -220,3 +220,21 @@ def test_an_adopted_reload_from_disk_runs_only_while_the_probed_tick_holds(
         assert follower.reload_from_disk("/tmp/f.py", unless_changed_since_probe=True) is unchanged
     assert nvim.exec_lua.call_args_list == [call(nvim_module._RELOAD_IF_UNCHANGED_LUA, 7)]
     assert call.api.buf_set_option(7, "modifiable", False) not in nvim.mock_calls
+
+
+def test_a_dedicated_reload_from_disk_is_locked_again() -> None:
+    """The reload compared against the probed tick is the adopted one, but a
+    caller asking it of a dedicated follower (a stop and start between the
+    hook's state read and the reload) gets the dedicated lock back: a
+    dedicated buffer is never left modifiable."""
+    follower = NvimFollower(socket_path="/tmp/x.sock", window_id="@1", pace_seconds=0.0)
+    nvim = MagicMock()
+    nvim.api.get_current_buf.return_value.handle = 7
+    nvim.exec_lua.return_value = True
+    with (
+        patch.object(NvimFollower, "_connect", return_value=nvim),
+        patch.object(NvimFollower, "goto_file"),
+        patch.object(NvimFollower, "_locks_buffers", return_value=True),
+    ):
+        assert follower.reload_from_disk("/tmp/f.py", unless_changed_since_probe=True)
+    assert call.api.buf_set_option(7, "modifiable", False) in nvim.mock_calls

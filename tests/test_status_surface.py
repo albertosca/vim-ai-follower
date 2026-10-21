@@ -634,3 +634,23 @@ def test_the_cue_closes_the_connection_it_opened() -> None:
     assert main
     for nvim in main:
         nvim.close.assert_called_once_with()
+
+
+def test_tmux_busy_always_shows_on_the_border() -> None:
+    """A refused press on tmux answers with a popup, so nothing competes for
+    the border: "Busy" is set like any state and always reported shown."""
+    surface = TmuxStatusSurface(pane_id="%2")
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()) as run:
+        assert surface.set_state_if_idle("Busy") is True
+    commands = [recorded_call.args[0] for recorded_call in run.call_args_list]
+    assert ["tmux", "select-pane", "-t", "%2", "-T", "Busy"] in commands
+
+
+def test_nvim_busy_reads_not_shown_when_the_nvim_cannot_be_reached() -> None:
+    """A press's "Busy" never raises out of the cue: an nvim that refuses
+    the connection reads as "not shown", so the press says nothing more."""
+    surface = NvimStatusSurface(socket_path="/tmp/gone.sock", adopted=False)
+    with patch(
+        "vim_ai_follower.backends.nvim_connect.open_session", side_effect=OSError("refused")
+    ):
+        assert surface.set_state_if_idle("Busy") is False

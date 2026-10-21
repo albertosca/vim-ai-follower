@@ -10,6 +10,7 @@ tests/test_integration_edit_base_mismatch.py.
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Callable
 from pathlib import Path
 from typing import Literal
@@ -204,6 +205,23 @@ def test_buffer_forms(content: str, forms: list[list[str]]) -> None:
 )
 def test_typed_form(content: str, lines: list[str]) -> None:
     assert typed_form(content) == lines
+
+
+def test_the_typed_form_is_always_one_of_the_buffer_forms() -> None:
+    """Since T24 the follower types a mixed file's CRs, so what it leaves is
+    a form an editor's own load shows: classify_buffer reads it "holds" for
+    any follower, and nvim's probe needs no clean-or-dedicated exception for
+    it. Every string of up to six characters over the separators that
+    matter (CR, LF, BOM, form feed)."""
+    alphabet = ["a", "\r", "\n", "\ufeff", "\x0c"]
+    contents = (
+        "".join(characters)
+        for length in range(7)
+        for characters in itertools.product(alphabet, repeat=length)
+    )
+    assert [
+        content for content in contents if typed_form(content) not in buffer_forms(content)
+    ] == []
 
 
 @pytest.mark.real_send_line

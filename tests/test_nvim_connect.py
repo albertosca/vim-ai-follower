@@ -1410,9 +1410,10 @@ def _failing_ps_and_panes(*panes: str, tmux_fails: bool = False) -> MagicMock:
         (("0\tzsh",), False, "absent"),
         (("0\tzsh", "1\tnvim --listen {sock}"), False, "absent"),
         (("0\tzsh", "0\tnvim --listen {sock}"), False, "silent"),
+        (("0\tnvim --listen '{sock}",), False, "absent"),
         ((), True, "silent"),
     ],
-    ids=["pane-gone", "pane-dead", "pane-runs-it", "tmux-fails"],
+    ids=["pane-gone", "pane-dead", "pane-runs-it", "pane-unparsable", "tmux-fails"],
 )
 def test_a_failed_scan_asks_tmux_for_the_split_pane(
     panes: tuple[str, ...], tmux_fails: bool, verdict: str
