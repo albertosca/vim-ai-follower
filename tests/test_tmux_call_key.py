@@ -291,3 +291,31 @@ def test_the_start_of_a_process_is_read_from_ps() -> None:
     started = tmux_vim._process_started(os.getpid())
     assert started is not None and started <= time.time()
     assert tmux_vim._process_started(_dead_pid()) is None
+
+
+def test_a_ready_file_removed_while_it_is_checked_does_not_count() -> None:
+    # The Vim quits between the read and the stat: its VimLeave removes the
+    # file, and keys sent now would reach the shell left in the pane.
+    path = _ready_file(os.getpid())
+
+    def quit_meanwhile(pid: int) -> float:
+        path.unlink()
+        return time.time() - 60
+
+    with patch.object(tmux_vim, "_process_started", side_effect=quit_meanwhile):
+        assert not tmux_vim._vim_ready("%5")
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [OSError("ps missing"), subprocess.TimeoutExpired("ps", 2)],
+    ids=["os-error", "timeout"],
+)
+def test_a_ps_that_fails_says_nothing_and_is_asked_again(
+    monkeypatch: pytest.MonkeyPatch, failure: Exception
+) -> None:
+    monkeypatch.setattr(tmux_vim, "_PROCESS_STARTS", {})
+    with patch.object(subprocess, "run", side_effect=failure):
+        assert tmux_vim._process_started(os.getpid()) is None
+    assert tmux_vim._PROCESS_STARTS == {}
+    assert tmux_vim._process_started(os.getpid()) is not None
