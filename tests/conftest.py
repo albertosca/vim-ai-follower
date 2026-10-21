@@ -228,7 +228,7 @@ def calls_typed_without_a_vim(
     ):
         return
     monkeypatch.setattr(tmux_vim, "_vim_ready", lambda _pane_id: False)
-    monkeypatch.setattr(tmux_vim, "_READY_WAIT_SECONDS", 0.0)
+    monkeypatch.setattr(tmux_vim, "_await_ready", lambda _pane_id: None)
 
 
 @pytest.fixture(autouse=True)

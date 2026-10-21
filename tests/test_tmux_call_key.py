@@ -15,6 +15,7 @@ import pytest
 
 from vim_ai_follower import cache
 from vim_ai_follower.backends import tmux_vim
+from vim_ai_follower.tmux import TmuxPane
 
 pytestmark = pytest.mark.real_call_key
 
@@ -149,6 +150,26 @@ def test_the_ready_wait_ends_when_the_file_appears_or_gives_up() -> None:
         started = time.monotonic()
         tmux_vim._await_ready("%5")
         assert time.monotonic() - started < 0.05
+
+
+def test_a_vim_that_never_got_ready_is_waited_for_once_per_pane_process() -> None:
+    # A Vim that can never write its ready file (no TMUX_PANE, no +eval) is
+    # typed the define on every contact; waiting the full second each time
+    # cost every Edit two seconds (final review of backlog-sweep-5, I1).
+    def elapsed(pane_pid: int | None) -> float:
+        with (
+            patch.object(tmux_vim, "_READY_WAIT_SECONDS", 0.2),
+            patch.object(TmuxPane, "pane_pid", return_value=pane_pid),
+        ):
+            started = time.monotonic()
+            tmux_vim._await_ready("%5")
+            return time.monotonic() - started
+
+    assert elapsed(111) >= 0.2
+    assert elapsed(111) < 0.1
+    assert elapsed(222) >= 0.2  # another process in the pane: a new Vim
+    assert elapsed(None) >= 0.2  # tmux cannot say: waited, as before
+    assert elapsed(None) >= 0.2
 
 
 def test_the_sweep_deletes_only_the_ready_files_of_gone_vims() -> None:

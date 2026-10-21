@@ -1968,9 +1968,31 @@ def _send(pane: TmuxPane, line: str) -> None:
 
 def _await_ready(pane_id: str) -> None:
     """Wait, up to _READY_WAIT_SECONDS, for the define line just sent to
-    leave a ready file: until then the calls are typed."""
+    leave a ready file: until then the calls are typed.
+
+    Once per pane process (tmux's `pane_pid`, as _vim_shares_home): a Vim
+    that can never write the file (no TMUX_PANE, no +eval, another HOME) is
+    typed the define on every contact, and waiting the full second each time
+    cost every Edit two (final review of backlog-sweep-5, I1). A wait that
+    gave up is remembered in `unready-<pane>`, and the next ones in the same
+    pane process do not wait: a Vim that gets ready later is keyed from its
+    next call on, since _send reads the ready file on every call. The cost
+    of a wrong mark (a Vim restarted in the same shell) is one hook whose
+    calls are typed."""
+    pane_pid = TmuxPane(pane_id=pane_id).pane_pid()
+    record = cache.CACHE_DIRECTORY / f"unready-{pane_id.lstrip('%')}"
+    if pane_pid is not None:
+        with contextlib.suppress(OSError):
+            if record.read_text().strip() == str(pane_pid):
+                return
     deadline = time.monotonic() + _READY_WAIT_SECONDS
-    while not _vim_ready(pane_id) and time.monotonic() < deadline:
+    while not _vim_ready(pane_id):
+        if time.monotonic() >= deadline:
+            if pane_pid is not None:
+                with contextlib.suppress(OSError):
+                    record.parent.mkdir(parents=True, exist_ok=True)
+                    record.write_text(f"{pane_pid}\n")
+            return
         time.sleep(_READY_POLL_SECONDS)
 
 
