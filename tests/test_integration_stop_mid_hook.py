@@ -202,11 +202,11 @@ def test_a_stop_before_a_reads_lock_leaves_the_buffer_unlocked(world: E2EFollowe
     claudes_file.write_text("one\n")
     pane_id, observed, _ = _users_vim(world, claudes_file)
     _adopted_state(world, pane_id, "instant")
-    hook = _held_hook(world, "_send_reload_and_lock", payload("Read", claudes_file))
+    hook = _held_hook(world, "_send_lock", payload("Read", claudes_file))
 
     stopped = world.cli("stop")
     assert stopped.returncode == 0, stopped.stderr
-    _release(world, "_send_reload_and_lock", hook)
+    _release(world, "_send_lock", hook)
 
     report = _settled(world, observed)
     assert (report["mode"], report["readonly"], report["modifiable"]) == ("n", "0", "1"), report

@@ -27,6 +27,7 @@ from helpers import (
     rename_spelled,
     resolve_typed_paths,
     route_exec_lua,
+    show_spelled,
     shows_the_buffer,
     wipe_spelled,
 )
@@ -75,11 +76,6 @@ def _goto(path: object) -> str:
 def _rename(path: object, *, in_new_tab: bool = False) -> str:
     """show_fresh's rename-in-place line (helpers.rename_spelled)."""
     return rename_spelled(path, in_new_tab=in_new_tab)
-
-
-# ensure_showing's clean-only disk re-read (s:reload) in a dedicated Vim,
-# spelled out for the same reason as _goto.
-_RELOAD_IF_CLEAN = call_spelled("reload", 0, 0)
 
 
 def _literal_sends(run_mock: MagicMock) -> list[str]:
@@ -282,9 +278,8 @@ def test_hook_post_skips_binary_files_on_first_open(tmp_path: Path) -> None:
 
     assert _literal_sends(run) == [
         define_line(),
-        _goto(target),
+        show_spelled(target),
         landed_line(),
-        _RELOAD_IF_CLEAN,
         ":setlocal readonly nomodifiable|redraw|echo ''",
     ]
 
@@ -306,9 +301,8 @@ def test_hook_post_shows_a_rewritten_binary_on_subsequent_edit(tmp_path: Path) -
 
     assert _literal_sends(run) == [
         define_line(),
-        _goto(target),
+        show_spelled(target),
         landed_line(),
-        _RELOAD_IF_CLEAN,
         ":setlocal readonly nomodifiable|redraw|echo ''",
     ]
 
@@ -327,9 +321,8 @@ def test_hook_post_read_without_offset_does_not_navigate(tmp_path: Path) -> None
 
     assert _literal_sends(run) == [
         define_line(),
-        _goto(target),
+        show_spelled(target),
         landed_line(),
-        _RELOAD_IF_CLEAN,
         ":setlocal readonly nomodifiable|redraw|echo ''",
     ]
 
@@ -369,9 +362,8 @@ def test_hook_post_read_navigates_to_file_and_offset(tmp_path: Path) -> None:
 
     assert _literal_sends(run) == [
         define_line(),
-        _goto(target),
+        show_spelled(target),
         landed_line(),
-        _RELOAD_IF_CLEAN,
         ":setlocal readonly nomodifiable|redraw|echo ''",
         ":exe 2|redraw|echo ''",
     ]
@@ -394,9 +386,8 @@ def test_hook_post_read_navigates_even_when_file_already_current(tmp_path: Path)
 
     assert _literal_sends(run) == [
         define_line(),
-        _goto(target),
+        show_spelled(target),
         landed_line(),
-        _RELOAD_IF_CLEAN,
         ":setlocal readonly nomodifiable|redraw|echo ''",
         ":exe 2|redraw|echo ''",
     ]

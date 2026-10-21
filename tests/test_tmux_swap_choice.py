@@ -180,7 +180,9 @@ def test_every_navigation_goes_through_the_guarded_goto() -> None:
         with patch("vim_ai_follower.tmux.subprocess.run") as run:
             getattr(follower, name)(*arguments)
         sent = _sent_text(run)
-        assert any("('goto'," in text for text in sent), f"{name} sent no navigation"
+        assert any("('goto'," in text or "('show'," in text for text in sent), (
+            f"{name} sent no navigation"
+        )
         assert not any("tab drop" in text for text in sent), sent
     script = _vim_functions()[1]
     assert script.count("tab drop") == 1, "a second `tab drop` outside s:goto"
@@ -197,8 +199,11 @@ def test_ensure_showings_reload_carries_the_same_scoped_answer() -> None:
     follower = TmuxVimFollower(pane_id="%2", window_id="@1")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.ensure_showing("/tmp/f.py")
-    reloads = [text for text in _sent_text(run) if "'reload'" in text]
-    assert [resolve_typed_paths(text) for text in reloads] == [call_spelled("reload", 0, 0)]
+    shows = [text for text in _sent_text(run) if "'show'" in text]
+    assert [resolve_typed_paths(text) for text in shows] == [
+        call_spelled("show", typed_path("/tmp/f.py"), case_folds("/tmp/f.py"), 0)
+    ]
+    assert "call s:reload(0, a:adopted)" in vim_function("show")
     reload = vim_function("reload")
     assert reload.index("call s:swap_answer_open()") < reload.index("silent edit\n")
     assert reload.index("silent edit\n") < reload.index("  finally\n")

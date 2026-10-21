@@ -206,7 +206,7 @@ _SOURCED = re.compile(r"sil! so [^|\s]+|exe 'sil! so ' \. fnameescape\('(?:[^']|
 _CALL = re.compile(r"call <fn>\('(\w+)'((?:,[^,)]+)*)\)")
 _HANDLE = re.compile(r"'(p[0-9]+-[0-9a-f]{6})'")
 # The calls whose handle argument names a path (tmux_vim._path_handle).
-_READING_OPS = {"goto", "rename", "wipe", "probe", "evict", "give_back"}
+_READING_OPS = {"goto", "show", "rename", "wipe", "probe", "evict", "give_back"}
 # Every handle the backend created during the test, by name (conftest's
 # autouse record_path_handles): a test may read its sends after its own
 # CACHE_DIRECTORY patch is gone, and the line names the handle only.
@@ -260,6 +260,12 @@ def goto_spelled(path: object) -> str:
     """What resolve_typed_paths leaves of the call goto_file sends for
     `path` (s:goto)."""
     return call_spelled("goto", typed_path(path), case_folds(path))
+
+
+def show_spelled(path: object, *, adopted: bool = False) -> str:
+    """What resolve_typed_paths leaves of ensure_showing's navigation for
+    `path` (s:show: s:goto, then the clean-only re-read, in one call)."""
+    return call_spelled("show", typed_path(path), case_folds(path), int(adopted))
 
 
 def rename_spelled(path: object, *, adopted: bool = False, in_new_tab: bool = False) -> str:

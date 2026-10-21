@@ -738,8 +738,28 @@ function! s:goto(token, folds) abort
     let w:vaf_opened = 1
   endif
 endfunction
+
+function! s:show(token, folds, adopted) abort
+  call s:goto(a:token, a:folds)
+  if !exists('g:vaf_landed')
+    return
+  endif
+  try
+    call s:reload(0, a:adopted)
+  catch
+    let g:vaf_nav_error = v:exception
+  endtry
+endfunction
 """
 
+# s:show is ensure_showing's navigation: s:goto, then, once it landed, the
+# clean-only re-read below, in the SAME call, so s:landed's answer (sent
+# next) is read only after the re-read ran. With the re-read on a line of
+# its own after the landing answer, the Read hook returned while Vim still
+# showed the stale buffer (sweep-4 residual of T24c;
+# tests/test_integration_read_reload_order.py). An error the re-read raises
+# (a user BufReadPost) is kept for s:landed's report like a goto's.
+#
 # ensure_showing's disk re-read (s:reload with discard 0), for the Read/binary
 # navigation where showing the file AS IT IS ON DISK is the whole point.
 # goto_file no longer re-reads a loaded buffer (it runs before animations,
@@ -2782,6 +2802,11 @@ class TmuxVimFollower:
         s:note_user_readonly)."""
         adopted = self._is_adopted()
         pane.send_line(_call_line("reload", int(discard), int(adopted)))
+        self._send_lock(pane, adopted=adopted)
+
+    def _send_lock(self, pane: TmuxPane, *, adopted: bool) -> None:
+        """The follower's readonly lock after a re-read (adopted: the claim,
+        s:lock, a call so the user's readonly is noted first)."""
         pane.send_line(_call_line("lock") if adopted else _cleared(_LOCK_READONLY))
 
     def goto_file(self, file_path: str) -> None:
@@ -2811,13 +2836,19 @@ class TmuxVimFollower:
         Waits for Vim to confirm it landed (s:landed) and raises
         NavigationFailed otherwise, so no caller sends a lock, an unlock, an
         animation or a relock onto whatever buffer is current instead."""
+        self._navigate(file_path, "goto")
+
+    def _navigate(self, file_path: str, operation: str, *extra: int) -> TmuxPane:
+        """goto_file's body, for s:goto or s:show (ensure_showing's goto
+        plus re-read); returns the pane once Vim confirmed the landing."""
         _raise_if_backing_off(self.pane_id, file_path)
         pane = TmuxPane(pane_id=self.pane_id)
         self._normal_mode(pane)
         self._define(pane)
         handle = _path_handle(self.pane_id, file_path)
-        pane.send_line(_call_line("goto", handle.name, _case_folds(file_path)))
+        pane.send_line(_call_line(operation, handle.name, _case_folds(file_path), *extra))
         _confirm_landing(pane, file_path, handle)
+        return pane
 
     def reload_and_relock(self, file_path: str) -> None:
         """Des-interrupt: discard the user's unsaved typing by reloading the
@@ -2963,12 +2994,12 @@ class TmuxVimFollower:
         is the one navigation that re-reads a loaded buffer (clean only, see
         s:reload); goto_file itself never does, because it also runs
         before every animation."""
-        self.goto_file(file_path)
-        pane = TmuxPane(pane_id=self.pane_id)
+        adopted = self._is_adopted()
+        pane = self._navigate(file_path, "show", int(adopted))
         # Locked by default so a stray keystroke into this pane can't corrupt
         # the buffer: our own animation is indistinguishable from real
         # typing at the tty level, so it must explicitly unlock around itself.
-        self._send_reload_and_lock(pane, discard=False)
+        self._send_lock(pane, adopted=adopted)
         self._release_if_stopped(pane)
 
     def probe_buffer(self, file_path: str, content: str) -> BufferProbe:

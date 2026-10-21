@@ -15,7 +15,9 @@ from helpers import (
     make_mock_tmux_run,
     rename_spelled,
     resolve_typed_paths,
+    show_spelled,
     typed_path,
+    vim_function,
     wipe_spelled,
 )
 from helpers import register_fake_follower as _register_fake_follower
@@ -40,10 +42,6 @@ def _goto(path: str) -> str:
 # for the same reason as _goto. The define line comes first in every entry
 # point that may be the first thing a Vim hears.
 _DEFINE = define_line()
-# ensure_showing's clean-only disk re-read and the discarding one, in a
-# dedicated Vim (an adopted Vim's carry adopted=1: they note the user's
-# readonly first).
-_RELOAD_IF_CLEAN = call_spelled("reload", 0, 0)
 _RELOAD_DISCARDING = call_spelled("reload", 1, 0)
 # The completion relocks, with their `:e!` disk sync under the scoped
 # (E)dit-anyway answer.
@@ -684,13 +682,11 @@ def test_ensure_showing_navigates_by_tab_drop_and_locks() -> None:
         ("Escape", False),
         (_DEFINE, True),
         ("Enter", False),
-        (_goto("/tmp/a.py"), True),
+        (show_spelled("/tmp/a.py"), True),
         ("Enter", False),
         ("Escape", False),
         ("Escape", False),
         (landed_line(), True),
-        ("Enter", False),
-        (_RELOAD_IF_CLEAN, True),
         ("Enter", False),
         (":setlocal readonly nomodifiable" + _CLEARED, True),
         ("Enter", False),
@@ -1175,19 +1171,33 @@ def test_an_adopted_show_fresh_relock_claims_its_own_readonly() -> None:
     ]
 
 
-@pytest.mark.parametrize(("entry", "discard"), [("ensure_showing", 0), ("reload_and_relock", 1)])
-def test_an_adopted_reload_notes_the_users_readonly_before_it_and_claims_the_lock(
-    entry: str, discard: int
-) -> None:
+def test_an_adopted_reload_notes_the_users_readonly_before_it_and_claims_the_lock() -> None:
     follower = _adopted_follower()
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
-        getattr(follower, entry)("/tmp/f.txt")
+        follower.reload_and_relock("/tmp/f.txt")
     assert _sent_commands(run)[-4:] == [
-        (call_spelled("reload", discard, 1), True),
+        (call_spelled("reload", 1, 1), True),
         ("Enter", False),
         (_ADOPTED_LOCK_READONLY, True),
         ("Enter", False),
     ]
+
+
+def test_an_adopted_read_reloads_inside_its_navigation_and_claims_the_lock() -> None:
+    # The re-read runs in s:show, before the landing answer (see s:show), with
+    # the adopted flag that notes the user's readonly first.
+    follower = _adopted_follower()
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        follower.ensure_showing("/tmp/f.txt")
+    commands = _sent_commands(run)
+    assert (show_spelled("/tmp/f.txt", adopted=True), True) in commands
+    assert commands[-4:] == [
+        (landed_line(), True),
+        ("Enter", False),
+        (_ADOPTED_LOCK_READONLY, True),
+        ("Enter", False),
+    ]
+    assert "call s:reload(0, a:adopted)" in vim_function("show")
 
 
 def test_an_adopted_hand_over_restores_the_readonly() -> None:

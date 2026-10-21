@@ -48,7 +48,14 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from helpers import define_line, goto_spelled, landed_line, resolve_typed_paths, vim_function
+from helpers import (
+    define_line,
+    goto_spelled,
+    landed_line,
+    resolve_typed_paths,
+    show_spelled,
+    vim_function,
+)
 
 from vim_ai_follower import control
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
@@ -86,11 +93,13 @@ def _sent_commands(run_mock: MagicMock) -> list[tuple[str, bool]]:
     return commands
 
 
-def _assert_navigates_through_the_guard(commands: list[tuple[str, bool]], file_path: str) -> None:
+def _assert_navigates_through_the_guard(
+    commands: list[tuple[str, bool]], file_path: str, *, guarded_line: str | None = None
+) -> None:
     """Every goto_file call site must navigate through the guarded call
-    (s:goto) — never a bare `:tab drop`, which is what would put the prompt
-    back."""
-    guarded = (_goto(file_path), True)
+    (s:goto, or s:show, which calls it) — never a bare `:tab drop`, which is
+    what would put the prompt back."""
+    guarded = (guarded_line or _goto(file_path), True)
     indices = [position for position, command in enumerate(commands) if command == guarded]
     assert indices, f"no guarded navigation to {file_path!r} found in {commands!r}"
     for index in indices:
@@ -181,7 +190,10 @@ def test_ensure_showing_navigates_through_the_guard() -> None:
     follower = TmuxVimFollower(pane_id="%2")
     with patch("vim_ai_follower.tmux.subprocess.run") as run:
         follower.ensure_showing("/tmp/f.py")
-    _assert_navigates_through_the_guard(_sent_commands(run), "/tmp/f.py")
+    _assert_navigates_through_the_guard(
+        _sent_commands(run), "/tmp/f.py", guarded_line=show_spelled("/tmp/f.py", adopted=True)
+    )
+    assert "call s:goto(a:token, a:folds)" in vim_function("show")
 
 
 def test_reload_and_relock_navigates_through_the_guard() -> None:
