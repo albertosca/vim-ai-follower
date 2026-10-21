@@ -510,3 +510,61 @@ def test_an_nvim_whose_user_is_typing_is_asked_and_only_y_takes_it_over(
                 assert seconds >= 3.0, f"the question closed after {seconds:.1f} s"
     finally:
         world.tmux("send-keys", "-t", pane_id, "Escape")
+
+
+_STORM_LUA = """
+local stop_file = ...
+vim.g.storm_answered = 0
+local message = string.rep('storm line\\n', 80)
+vim.fn.timer_start(150, function(timer)
+  if vim.uv.fs_stat(stop_file) then
+    vim.fn.timer_stop(timer)
+    return
+  end
+  vim.api.nvim_echo({{message}}, false, {})
+  vim.g.storm_answered = vim.g.storm_answered + 1
+end, {['repeat'] = -1})
+"""
+
+
+def test_a_prompt_storm_is_skipped_after_three_rounds(world: E2EFollower) -> None:
+    # T22 review M3: a plugin raising a more-prompt every 150 ms. The sweep
+    # answered ~25 of them into the user's editor and an adopted navigation
+    # took 15 s. Now the sweep answers at most three rounds, then the hook
+    # skips (A3 = A) and leaves the prompt to its user.
+    socket_path = world.cache_dir / "nvim-adopted.sock"
+    world.cache_dir.mkdir(parents=True, exist_ok=True)
+    target = world.workdir / "file.py"
+    target.write_text("one\ntwo\n")
+    stop_file = world.workdir / "stop-the-storm"
+    window_id, pane_id = _nvim_window(world, socket_path, target)
+    _adopted_state(world, window_id, pane_id, socket_path, target)
+    edit = payload("Edit", target)
+    pre, _seconds = _timed_cli(world, "hook", "pre", pane_id=pane_id, stdin=edit)
+    assert pre.returncode == 0, pre.stderr
+    target.write_text("one\nTWO\n")
+    user = world._nvim(str(socket_path))
+    user.exec_lua(_STORM_LUA, str(stop_file))
+    world.wait_until(
+        lambda: user.api.get_mode()["blocking"], "the first storm prompt", timeout=10.0
+    )
+    try:
+        post, seconds = _timed_cli(world, "hook", "post", pane_id=pane_id, stdin=edit)
+    finally:
+        stop_file.touch()
+    assert post.returncode == 0, post.stderr
+    log = _hook_log(world)
+    assert "Traceback" not in log, log
+    assert seconds < 3.0, f"the hook took {seconds:.1f} s in the storm\n{log}"
+    assert "keeps raising prompts" in log, log
+    # The test answers the prompt still up, then counts the rounds answered.
+    for _attempt in range(20):
+        if not user.api.get_mode()["blocking"]:
+            break
+        user.api.input("<Esc>")
+        time.sleep(0.1)
+    answered = user.vars["storm_answered"]
+    assert answered <= 3 + 1, f"{answered} storm prompts answered (≤ 3 by the hook + 1 here)"
+    state = FollowerState.read(window_id, base_directory=world.cache_dir)
+    assert state is not None and state.stale_files == (os.path.realpath(target),)
+    assert _buffer_lines(world, socket_path, target) == ["one", "two"]

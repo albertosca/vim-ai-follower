@@ -47,7 +47,7 @@ from vim_ai_follower import (
     writer_cue,
 )
 from vim_ai_follower.animate import AnimationResult
-from vim_ai_follower.backends import NavigationFailed, nvim_connect, tmux_vim
+from vim_ai_follower.backends import NavigationFailed, nvim_connect, nvim_prompt, tmux_vim
 from vim_ai_follower.backends.nvim import _FIND_BUFFER_LUA
 from vim_ai_follower.backends.nvim_connect import NvimNeverListened
 from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
@@ -3126,6 +3126,26 @@ def test_an_adopted_prompt_that_cannot_be_reached_is_skipped(
         busy = hooks._busy_nvim(current)
     assert busy is not None
     assert "could not be answered" in busy and "did not answer within 3 s" in busy
+
+
+def test_an_adopted_prompt_storm_is_skipped_with_its_reason() -> None:
+    current = state.FollowerState(
+        backend="nvim",
+        target="/tmp/user.sock",
+        current_file=None,
+        origin="%9",
+        on_failure="silent",
+        speed="normal",
+        adopted=True,
+    )
+    storm = nvim_prompt.PromptStorm("keeps raising prompts (3 answered before the hook, …)")
+    with (
+        patch("vim_ai_follower.backends.nvim_connect._probe", return_value=("answers", True, "rm")),
+        patch.object(nvim_prompt, "sweep_socket", side_effect=storm),
+    ):
+        nvim_connect.probe_nvim("/tmp/user.sock")
+        busy = hooks._busy_nvim(current)
+    assert busy == "nvim at /tmp/user.sock keeps raising prompts (3 answered before the hook, …)"
 
 
 def test_a_base_probe_that_times_out_logs_one_line(caplog: pytest.LogCaptureFixture) -> None:

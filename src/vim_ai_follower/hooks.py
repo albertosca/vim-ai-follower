@@ -1577,6 +1577,8 @@ def sweep_adopted_prompt(socket_path: str, label: str) -> str | None:
         nvim_prompt.sweep_socket(
             functools.partial(nvim_connect.bounded_attach, socket_path), socket_path, label
         )
+    except nvim_prompt.PromptStorm as storm:
+        return f"nvim at {socket_path} {storm}"
     except (OSError, EOFError) as error:  # RpcTimeout is an OSError
         return f"nvim at {socket_path} is at a prompt that could not be answered: {error}"
     return None

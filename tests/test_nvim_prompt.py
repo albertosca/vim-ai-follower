@@ -480,6 +480,32 @@ def test_sweep_socket_answers_a_prompt_queued_behind_the_one_it_answered() -> No
     dog.api.input.assert_called_once_with("<CR>")
 
 
+def _rounds(count: int) -> tuple[dict[str, Any], ...]:
+    """get_mode's answers for `count` sweep rounds whose prompt comes back:
+    seen, re-read under the lock, gone after the answer, back again."""
+    return (_PROMPT, _PROMPT, _IDLE, _PROMPT) * count
+
+
+def test_sweep_socket_stops_answering_a_storm_after_three_rounds() -> None:
+    # T22 review M3 (A3 = A): a plugin raising a prompt every 150 ms.
+    nvim = _nvim(*_rounds(nvim_prompt.STORM_ROUNDS))
+    with pytest.raises(nvim_prompt.PromptStorm, match=r"keeps raising prompts \(3 answered"):
+        nvim_prompt.sweep_socket(lambda: nvim, "/s", "the hook")
+    assert nvim.api.input.call_count == nvim_prompt.STORM_ROUNDS
+    nvim.api.exec2.assert_not_called()  # no tail read held behind the next prompt
+    nvim.close.assert_called_once_with()
+
+
+def test_sweep_socket_answers_prompts_that_stop_before_the_cap() -> None:
+    nvim = _nvim(*_rounds(nvim_prompt.STORM_ROUNDS - 1), _PROMPT, _PROMPT)
+    dog = _nvim()
+    connections = iter([nvim, dog])
+    with patch.object(nvim_prompt, "_STORM_WINDOW_SECONDS", 0.05):
+        assert nvim_prompt.sweep_socket(lambda: next(connections), "/s", "x") == _PROMPT
+    assert nvim.api.input.call_count == nvim_prompt.STORM_ROUNDS
+    nvim.api.exec2.assert_called_once()
+
+
 def test_sweep_socket_with_nothing_up_sends_nothing_and_closes(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

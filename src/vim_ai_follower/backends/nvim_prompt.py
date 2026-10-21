@@ -114,6 +114,12 @@ _SETTLE_POLL_SECONDS = 0.02
 _ANSWERS = {"r": "<CR>", "rm": "<Esc>"}
 _NAMES = {"r": "hit-enter prompt", "rm": "more-prompt"}
 WATCHDOG_THREAD_NAME = "vaf-hit-enter-watchdog"
+# A sweep answers at most this many prompts in a row (Alberto's A3 = A): a
+# plugin raising a more-prompt every 150 ms had ~25 Escapes pressed into the
+# user's editor and the hook taking 15 s and more (T22 review M3). After the
+# last round, a prompt back within _STORM_WINDOW_SECONDS is a storm.
+STORM_ROUNDS = 3
+_STORM_WINDOW_SECONDS = 0.4
 
 # Sockets whose animation is paused right now, in this process (`paused`): an
 # ADOPTED watchdog answers nothing while its socket's event is set.
@@ -389,6 +395,23 @@ def _log_sweep(seen: dict[str, Any], label: str) -> None:
     )
 
 
+class PromptStorm(OSError):
+    """The nvim raised a new prompt after each of STORM_ROUNDS answers: the
+    sweep stops answering and leaves the prompt up for its user. An OSError,
+    so a caller that skips an unreachable nvim skips this one too."""
+
+
+def _prompt_back(nvim: Any, seconds: float) -> bool:
+    """Whether an answerable prompt is up again within `seconds`."""
+    deadline = time.monotonic() + seconds
+    while True:
+        if _answer_for(nvim.api.get_mode()) is not None:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_SETTLE_POLL_SECONDS)
+
+
 def sweep_socket(connect: Callable[[], Any], key: str, label: str) -> dict[str, Any] | None:
     """One sweep on a connection of its own, closed after: what a hook runs
     before the status cue when its probe found an ADOPTED nvim at a hit-enter
@@ -396,22 +419,37 @@ def sweep_socket(connect: Callable[[], Any], key: str, label: str) -> dict[str, 
     the mode answered, or None. Connection errors propagate (the caller
     skips, as for any nvim it cannot reach).
 
-    As in prompt_guard, the `:messages` tail is read under a watchdog: a
-    plugin's message queued behind the one answered (two FileType callbacks,
-    say) raises its own prompt the moment the first is gone, and the read
-    would wait behind it."""
+    A prompt back right after an answer is answered too (a plugin's message
+    queued behind the first, two FileType callbacks say), up to STORM_ROUNDS
+    answers; one more after those raises PromptStorm, with nothing more sent.
+    The `:messages` tail is read under a watchdog, since a prompt raised by
+    then would hold the read."""
     nvim = connect()
     try:
-        seen = dismiss_prompt(nvim, key)
-        if seen is not None:
+        first: dict[str, Any] | None = None
+        rounds = 0
+        while True:
+            seen = dismiss_prompt(nvim, key)
+            if seen is None:
+                break
             _log_sweep(seen, label)
+            first = first or seen
+            rounds += 1
+            if not _prompt_back(nvim, _STORM_WINDOW_SECONDS):
+                break
+            if rounds >= STORM_ROUNDS:
+                raise PromptStorm(
+                    f"keeps raising prompts ({rounds} answered before {label}, "
+                    "the one up now left to its user)"
+                )
+        if first is not None:
             watchdog = Watchdog(connect, label, key)
             watchdog.start()
             try:
                 _log_messages_tail(nvim, label)
             finally:
                 watchdog.stop()
-        return seen
+        return first
     finally:
         close_connection(nvim)
 
