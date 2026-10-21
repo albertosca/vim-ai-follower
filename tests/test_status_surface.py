@@ -613,3 +613,24 @@ def test_nvim_busy_loses_to_a_cue_that_lands_after_its_check(headless_nvim: str)
         assert press.set_state_if_idle("Busy") is False
     status = _status_float(pynvim.attach("socket", path=headless_nvim))
     assert status is not None and status[1] == ["Writing..."]
+
+
+def test_the_cue_closes_the_connection_it_opened() -> None:
+    by_thread: list[tuple[bool, MagicMock]] = []
+
+    def connect(_socket_path: str) -> MagicMock:
+        import threading
+
+        nvim = MagicMock()
+        nvim.api.list_wins.return_value = []
+        nvim.api.buf_get_lines.return_value = []
+        nvim.api.win_get_cursor.return_value = (1, 0)
+        by_thread.append((threading.current_thread() is threading.main_thread(), nvim))
+        return nvim
+
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", side_effect=connect):
+        NvimStatusSurface(socket_path="/tmp/x.sock").set_writer("code-reviewer", "colour78")
+    main = [nvim for on_main, nvim in by_thread if on_main]
+    assert main
+    for nvim in main:
+        nvim.close.assert_called_once_with()

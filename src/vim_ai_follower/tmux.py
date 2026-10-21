@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 import shlex
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -314,14 +315,18 @@ def show_popup(
 
 def _spawn_detached(command: list[str]) -> None:
     # Detached: the child lives as long as the popup (plus any delay), and a
-    # hook's caller waiting for end-of-output must not wait for it too.
-    subprocess.Popen(
+    # hook's caller waiting for end-of-output must not wait for it too. A
+    # daemon thread reaps it: a Popen dropped while its child runs is left to
+    # the collector ("subprocess N is still running") and the child, once it
+    # ends, to a zombie for as long as this process lives.
+    process = subprocess.Popen(
         command,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         start_new_session=True,
     )
+    threading.Thread(target=process.wait, daemon=True).start()
 
 
 def show_status(pane_id: str, message: str) -> None:

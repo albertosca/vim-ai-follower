@@ -1067,3 +1067,24 @@ def test_animate_lines_ends_stopped_on_a_stop_in_a_line_boundary_pause(tmp_path:
         result = _animate_lines(nvim, 7, ("a", "b"), 0, lambda: 0.0, "@1", namespace_id=1)
     assert result == AnimationResult("stopped", 1)
     assert nvim.api.buf_set_text.call_count == 1
+
+
+def test_a_public_call_closes_the_connection_it_opened() -> None:
+    # pynvim leaves an unclosed connection to the garbage collector: an
+    # unclosed-transport ResourceWarning in whatever runs next.
+    by_thread: list[tuple[bool, MagicMock]] = []
+
+    def connect(_socket_path: str) -> MagicMock:
+        import threading
+
+        nvim = MagicMock()
+        nvim.api.buf_line_count.return_value = 10
+        by_thread.append((threading.current_thread() is threading.main_thread(), nvim))
+        return nvim
+
+    with patch("vim_ai_follower.backends.nvim_connect.open_session", side_effect=connect):
+        NvimFollower(socket_path="/tmp/x.sock", window_id="@1").goto_line(3)
+    main = [nvim for on_main, nvim in by_thread if on_main]
+    assert main
+    for nvim in main:
+        nvim.close.assert_called_once_with()

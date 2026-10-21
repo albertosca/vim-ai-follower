@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import gc
 import os
 import re
 import subprocess
 import sys
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -480,3 +482,13 @@ def test_a_delayed_popup_whose_token_stands_opens_and_closes_when_withdrawn(
     started = time.monotonic()
     assert _wait_for(closed.exists, seconds=1.0)
     assert time.monotonic() - started < tmux.POPUP_SECONDS / 2
+
+
+def test_a_detached_spawn_is_reaped_and_never_left_to_the_collector() -> None:
+    # A Popen dropped while its child runs warns "subprocess N is still
+    # running" when collected, and a child nobody waits for stays a zombie.
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        tmux._spawn_detached(["sleep", "0.3"])
+        gc.collect()
+    assert not [warning for warning in caught if issubclass(warning.category, ResourceWarning)]

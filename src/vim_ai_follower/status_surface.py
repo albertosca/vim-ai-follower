@@ -272,19 +272,24 @@ class NvimStatusSurface:
 
     @contextlib.contextmanager
     def _guarded(self) -> Iterator[pynvim.Nvim]:
-        nvim = self._connect()
-        with prompt_guard(
-            nvim,
-            self._connect,
-            key=self.socket_path,
-            adopted=self.adopted,
-            label="status cue",
-            # The cue does not act on the user's buffer (the tmux cue is a
-            # border and sends nothing into Vim): an adopted nvim gets no
-            # sweep from it.
-            acting=False,
-        ):
-            yield nvim
+        from vim_ai_follower.backends.nvim_connect import closing_connections
+
+        # Closed after: pynvim leaves an unclosed connection to the garbage
+        # collector.
+        with closing_connections():
+            nvim = self._connect()
+            with prompt_guard(
+                nvim,
+                self._connect,
+                key=self.socket_path,
+                adopted=self.adopted,
+                label="status cue",
+                # The cue does not act on the user's buffer (the tmux cue is a
+                # border and sends nothing into Vim): an adopted nvim gets no
+                # sweep from it.
+                acting=False,
+            ):
+                yield nvim
 
     def _find_window(self, nvim: pynvim.Nvim) -> Any | None:
         for win in nvim.api.list_wins():

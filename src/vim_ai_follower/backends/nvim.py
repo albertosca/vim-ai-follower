@@ -10,11 +10,13 @@ does not exist here."""
 from __future__ import annotations
 
 import contextlib
+import functools
 import logging
 import time
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import ParamSpec, TypeVar
 
 import pynvim
 
@@ -30,7 +32,7 @@ from vim_ai_follower.backends import (
     nvim_prompt,
     typed_form,
 )
-from vim_ai_follower.backends.nvim_connect import bounded_attach, probe_nvim
+from vim_ai_follower.backends.nvim_connect import bounded_attach, closing_connections, probe_nvim
 from vim_ai_follower.backends.nvim_prompt import dismiss_prompt, exec_logged, prompt_guard
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
 from vim_ai_follower.diff import EditOp, apply_ops, text_lines
@@ -710,6 +712,25 @@ def _undo_new_tab(
             nvim.api.set_current_win(original)
 
 
+_Parameters = ParamSpec("_Parameters")
+_Result = TypeVar("_Result")
+
+
+def _closes_its_connections(
+    method: Callable[_Parameters, _Result],
+) -> Callable[_Parameters, _Result]:
+    """Run a public NvimFollower call inside nvim_connect.closing_connections:
+    each opens its own connection, and pynvim leaves an unclosed one to the
+    garbage collector."""
+
+    @functools.wraps(method)
+    def closing(*arguments: _Parameters.args, **keywords: _Parameters.kwargs) -> _Result:
+        with closing_connections():
+            return method(*arguments, **keywords)
+
+    return closing
+
+
 @dataclass(frozen=True)
 class NvimFollower:
     """Follower backend that animates edits in a real Neovim over the RPC API.
@@ -886,6 +907,7 @@ class NvimFollower:
                     nvim.api.buf_set_option(buffer, "modifiable", False)
         return result
 
+    @_closes_its_connections
     def show_fresh(self, file_path: str, content: str, in_new_tab: bool = False) -> AnimationResult:
         """Rebuild the buffer named `file_path` from `content` and type it in.
 
@@ -1195,6 +1217,7 @@ class NvimFollower:
             index += 1
         return AnimationResult("completed", len(ops))
 
+    @_closes_its_connections
     def apply_edit(
         self, file_path: str, ops: list[EditOp], before: str | None = None
     ) -> AnimationResult:
@@ -1249,6 +1272,7 @@ class NvimFollower:
                 format_from=file_path,
             )
 
+    @_closes_its_connections
     def reload_and_relock(self, file_path: str) -> None:
         """Des-interrupt with NO stored remainder: discard the user's unsaved
         typing by reloading the file Claude wrote (`edit!`), then relock. The
@@ -1266,6 +1290,7 @@ class NvimFollower:
                 buffer = nvim.api.get_current_buf().handle
                 nvim.api.buf_set_option(buffer, "modifiable", False)
 
+    @_closes_its_connections
     def reload_from_disk(self, file_path: str, *, unless_changed_since_probe: bool) -> bool:
         """Ground a buffer holding only follower text on the file on disk (a
         catch-up that just completed, hooks._animate_edit). Exactly the
@@ -1287,6 +1312,7 @@ class NvimFollower:
                 nvim.api.buf_set_option(buffer, "modifiable", False)
             return reloaded
 
+    @_closes_its_connections
     def rewrite_buffer(self, file_path: str, content: str) -> AnimationResult:
         """Instantly (no animation) rebuild the buffer to `content` — the
         des-interrupt replay needs the buffer back at the interrupt-point state,
@@ -1362,6 +1388,7 @@ class NvimFollower:
             nvim.api.buf_set_lines(buffer, drop, drop + 1, True, [])
         return result
 
+    @_closes_its_connections
     def resume(
         self,
         pending: PendingApplyEdit | PendingShowFresh,
@@ -1443,6 +1470,7 @@ class NvimFollower:
                 format_from=format_from,
             )
 
+    @_closes_its_connections
     def hand_over(self) -> None:
         """Unlock the current buffer for direct user editing. The interrupt
         path already leaves the buffer modifiable via _drive; this is the
@@ -1456,6 +1484,7 @@ class NvimFollower:
             buffer = nvim.api.get_current_buf().handle
             nvim.api.buf_set_option(buffer, "modifiable", True)
 
+    @_closes_its_connections
     def goto_file(self, file_path: str) -> None:
         """Switch to the window showing file_path (by name, immune to the
         user closing/reordering tabs), opening one if missing. Checks every
@@ -1616,6 +1645,7 @@ class NvimFollower:
         if self._locks_buffers():
             nvim.api.buf_set_option(bufnr, "modifiable", False)
 
+    @_closes_its_connections
     def probe_buffer(self, file_path: str, content: str) -> BufferProbe:
         """What file_path's buffer holds relative to `content`, the base an
         edit script is about to be typed onto (see BufferProbe). Read
@@ -1654,6 +1684,7 @@ class NvimFollower:
                 return "holds"
             return held
 
+    @_closes_its_connections
     def ensure_showing(self, file_path: str) -> None:
         """Show file_path with its REAL on-disk content — the Read-navigation
         and binary-file entry point, where the finished content is exactly
@@ -1717,6 +1748,7 @@ class NvimFollower:
         if nvim.exec_lua(_IS_CLEAN_LUA, buffer):
             self._exec(nvim, "silent edit!")
 
+    @_closes_its_connections
     def close_tab(
         self, file_path: str, dedicated: bool | None = None, spare_current_tab: bool = False
     ) -> None:
@@ -1756,6 +1788,7 @@ class NvimFollower:
             if bufnr != -1:
                 nvim.command(f"silent! bwipeout! {bufnr}")
 
+    @_closes_its_connections
     def user_readonly(self, file_path: str) -> bool:
         """See Follower.user_readonly. This backend never sets 'readonly'
         itself, so in an adopted nvim a readonly buffer is the user's. A
@@ -1773,6 +1806,7 @@ class NvimFollower:
             logger.warning("adopted nvim: could not read %s's readonly", file_path)
             return False
 
+    @_closes_its_connections
     def goto_line(self, offset: int) -> None:
         """Move the cursor to line `offset`, CLAMPED to the buffer's last
         line. An out-of-range Read offset is normal — Claude can read a file
@@ -1784,6 +1818,7 @@ class NvimFollower:
         with self._guarded(nvim, "goto_line"):
             nvim.current.window.cursor = (min(offset, nvim.api.buf_line_count(0)), 0)
 
+    @_closes_its_connections
     def stop(self, dedicated: bool | None = None) -> None:
         # Quit the dedicated nvim this follower launched — its tmux split
         # closes with it. cmd_stop only routes a NON-adopted follower here (an

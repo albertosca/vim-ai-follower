@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import shlex
 import shutil
@@ -50,6 +51,42 @@ def isolated_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[N
     for handler in list(hooks.logger.handlers):
         hooks.logger.removeHandler(handler)
         handler.close()
+
+
+@pytest.fixture(autouse=True)
+def test_connections_closed(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Every `pynvim.attach` a test makes is closed when the test ends,
+    through nvim_connect.close_connection: pynvim's own close() leaves its
+    event loop and socket to the garbage collector, an unclosed-transport
+    ResourceWarning that `-W error` turns into a failure of whatever test
+    runs next. The follower itself connects through nvim_connect, never
+    through pynvim.attach, so only the tests' own connections land here."""
+    import pynvim
+
+    original_attach = pynvim.attach
+    opened: list[Any] = []
+
+    def recording_attach(*arguments: Any, **keyword_arguments: Any) -> Any:
+        connection = original_attach(*arguments, **keyword_arguments)
+        pynvim_close = connection.close
+
+        def close_transport_first() -> None:
+            # A test's own close() goes the same way: once pynvim's close()
+            # has closed the event loop, the transport can never finish
+            # closing, and nothing after it can help.
+            nvim_connect._close_transport_first(connection._session)
+            with contextlib.suppress(Exception):
+                pynvim_close()
+
+        connection.close = close_transport_first
+        opened.append(connection)
+        return connection
+
+    monkeypatch.setattr(pynvim, "attach", recording_attach)
+    yield
+    for connection in opened:
+        with contextlib.suppress(Exception):
+            nvim_connect.close_connection(connection)
 
 
 @pytest.fixture(scope="session")

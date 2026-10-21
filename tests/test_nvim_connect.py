@@ -259,9 +259,10 @@ def _short_socket_dir() -> Iterator[Path]:
 
 def _dead_nvims_socket(path: Path) -> None:
     """What a SIGKILLed nvim leaves: the socket file, with nobody listening."""
-    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    server.bind(str(path))
-    server.close()  # closed without unlinking
+    # Closed without unlinking, and closed too when the bind fails (the file
+    # is already there): a socket left open fails a run under -W error.
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+        server.bind(str(path))
 
 
 def _patched_launcher(sock_path: Path, run: Any) -> AbstractContextManager[Any]:
@@ -987,8 +988,11 @@ _SLOW_LUA = "vim.uv.sleep(600)"
 def test_unbounded_requests_lift_the_deadline_on_that_connection_only(headless_nvim: str) -> None:
     # The typing of an animation waits for an nvim that is waiting on its
     # user; everything else on the connection keeps the deadline.
-    connected = nvim_connect.bounded_attach(headless_nvim)
-    with patch("vim_ai_follower.backends.nvim_connect.RPC_TIMEOUT_SECONDS", 0.2):
+    with (
+        nvim_connect.closing_connections(),
+        patch("vim_ai_follower.backends.nvim_connect.RPC_TIMEOUT_SECONDS", 0.2),
+    ):
+        connected = nvim_connect.bounded_attach(headless_nvim)
         with pytest.raises(nvim_connect.RpcTimeout):
             connected.exec_lua(_SLOW_LUA, [])
         # A fresh connection: the abandoned request's late answer would end
@@ -1772,3 +1776,45 @@ def test_a_scan_with_no_time_left_fails_closed_without_running_ps() -> None:
     ):
         assert nvim_connect.is_listened_on_by_a_live_process("/tmp/nvim-@1.sock")
     run.assert_not_called()
+
+
+# --- closing_connections: what pynvim leaves to the garbage collector -------
+
+
+def test_a_closing_scope_closes_what_it_opened_and_only_that() -> None:
+    opened = [MagicMock(), MagicMock(), MagicMock()]
+    with patch.object(nvim_connect, "open_session", side_effect=opened):
+        outside = nvim_connect.bounded_attach("/s")
+        with nvim_connect.closing_connections():
+            nvim_connect.bounded_attach("/s")
+            with nvim_connect.closing_connections():
+                nvim_connect.bounded_attach("/s")
+            opened[2].close.assert_called_once_with()
+            opened[1].close.assert_not_called()
+        opened[1].close.assert_called_once_with()
+    outside.close.assert_not_called()
+
+
+def test_a_closing_scope_closes_on_an_exception() -> None:
+    nvim = MagicMock()
+    with (
+        patch.object(nvim_connect, "open_session", return_value=nvim),
+        pytest.raises(ValueError, match="boom"),
+        nvim_connect.closing_connections(),
+    ):
+        nvim_connect.bounded_attach("/s")
+        raise ValueError("boom")
+    nvim.close.assert_called_once_with()
+
+
+def test_a_connection_another_thread_opens_is_not_the_scopes() -> None:
+    # A watchdog connects on its own thread and closes its connection itself.
+    nvim = MagicMock()
+    with (
+        patch.object(nvim_connect, "open_session", return_value=nvim),
+        nvim_connect.closing_connections(),
+    ):
+        thread = threading.Thread(target=nvim_connect.bounded_attach, args=("/s",))
+        thread.start()
+        thread.join()
+    nvim.close.assert_not_called()

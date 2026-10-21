@@ -409,10 +409,34 @@ def bounded_attach(socket_path: str) -> Any:
 
     setattr(session, "request", bounded_request)  # noqa: B010 - an instance override of a method
     setattr(session, _BOUNDS_ATTRIBUTE, bounds)
+    scopes: list[list[Any]] = getattr(_closing_scopes, "stack", [])
+    if scopes:
+        scopes[-1].append(nvim)
     return nvim
 
 
 _BOUNDS_ATTRIBUTE = "_vaf_bounds"
+
+_closing_scopes = threading.local()
+
+
+@contextlib.contextmanager
+def closing_connections() -> Iterator[None]:
+    """Close every connection bounded_attach opens on THIS thread inside the
+    block, on every exit path: one never closed is left to the garbage
+    collector, an unclosed-transport ResourceWarning in whatever runs next
+    (and a channel nvim keeps until then). Nested blocks close only their
+    own; a watchdog connects on its own thread and closes its own."""
+    stack: list[list[Any]] = getattr(_closing_scopes, "stack", None) or []
+    _closing_scopes.stack = stack
+    opened: list[Any] = []
+    stack.append(opened)
+    try:
+        yield
+    finally:
+        stack.pop()
+        for nvim in opened:
+            close_connection(nvim)
 
 
 @contextlib.contextmanager

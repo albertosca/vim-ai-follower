@@ -4,4 +4,6 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 bash scripts/validate_plugin.sh
-exec uv run pytest -q --cov=vim_ai_follower --cov-branch --cov-fail-under=100 "$@"
+# -W error: a connection, socket or child left to the garbage collector fails
+# the run instead of warning in whichever test the collector happens to hit.
+exec uv run pytest -q -W error --cov=vim_ai_follower --cov-branch --cov-fail-under=100 "$@"
