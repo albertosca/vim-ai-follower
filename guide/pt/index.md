@@ -6,7 +6,7 @@
 
 Cada edição é reproduzida linha a linha, num ritmo que dá pra acompanhar de verdade — pause, pegue o teclado, devolva.
 
-<!-- facts -->2100+ testes de unidade no CI · 100% de branch coverage na suíte completa · backends Vim + Neovim · v0.4.0<!-- /facts -->
+<!-- facts -->2300+ testes de unidade no CI · 100% de branch coverage na suíte completa · backends Vim + Neovim · v0.5.0<!-- /facts -->
 
 **[Comece agora →](getting-started/install.md)**
 
