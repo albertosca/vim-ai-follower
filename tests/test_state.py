@@ -337,6 +337,49 @@ def test_a_tombstone_proven_to_be_an_earlier_servers_is_swept() -> None:
     assert not state.stopped_note_path("@4").exists()
 
 
+@pytest.mark.parametrize(
+    ("written_before_the_start", "swept"),
+    [(10.0, True), (1.0, False), (-60.0, False)],
+    ids=["older-than-the-server", "within-the-grace", "newer-than-the-server"],
+)
+def test_a_pid_only_tombstone_older_than_the_server_is_swept(
+    written_before_the_start: float, swept: bool
+) -> None:
+    """Wave A residual: a tombstone with a pid but no start time (written
+    when tmux did not answer #{start_time}, or by an older version) held
+    under a new server that reused the pid. Its file's mtime dates it: one
+    written more than 2 s before this server started is an earlier one's."""
+    import os
+
+    from vim_ai_follower import state
+
+    started = 1792500000
+    state.mark_stopped("@4", 64091, in_tmux=True)
+    written = started - written_before_the_start
+    os.utime(state.stopped_path("@4"), (written, written))
+    with (
+        patch("vim_ai_follower.binding.tmux_server_pid", return_value=64091),
+        patch("vim_ai_follower.binding.tmux_server_started", return_value=started),
+    ):
+        assert state._stopped_here("@4", None) is not swept
+    assert state.stopped_path("@4").exists() is not swept
+
+
+def test_a_pid_only_tombstone_holds_when_the_server_start_is_unknown() -> None:
+    import os
+
+    from vim_ai_follower import state
+
+    state.mark_stopped("@4", 64091, in_tmux=True)
+    os.utime(state.stopped_path("@4"), (1000.0, 1000.0))
+    with (
+        patch("vim_ai_follower.binding.tmux_server_pid", return_value=64091),
+        patch("vim_ai_follower.binding.tmux_server_started", return_value=None),
+    ):
+        assert state._stopped_here("@4", None) is True
+    assert state.stopped_path("@4").exists()
+
+
 def test_a_tombstone_whose_server_is_gone_is_swept() -> None:
     from vim_ai_follower import state
 

@@ -148,6 +148,30 @@ def _stopped_here(window_id: str, base_directory: Path | None) -> bool:
     )
 
 
+_START_GRACE_SECONDS = 2.0
+
+
+def _written_before_the_server(
+    window_id: str,
+    server_pid: int | None,
+    server_started: int | None,
+    base_directory: Path | None,
+) -> bool:
+    """Whether the window's tombstone names server_pid with no start time
+    and its file is older than that server (see stopped_under)."""
+    if server_pid is None or server_started is None:
+        return False
+    path = stopped_path(window_id, base_directory)
+    try:
+        recorded = path.read_text().strip()
+        written = path.stat().st_mtime
+    except OSError:
+        return False
+    if recorded != str(server_pid):
+        return False
+    return written < server_started - _START_GRACE_SECONDS
+
+
 def stopped_under(
     window_id: str,
     server_pid: int | None,
@@ -159,7 +183,16 @@ def stopped_under(
     gone. Nothing else ever removed one (final review M10), and its
     `.stopped-noted` then kept auto-open from saying why it stayed off. A
     tombstone of another LIVE server is kept: the cache is shared, and that
-    server's window may have the same id; one naming no server is kept too."""
+    server's window may have the same id; one naming no server is kept too.
+
+    A tombstone with this server's pid and no start time of its own is
+    dated by its file: written more than _START_GRACE_SECONDS before this
+    server started, it is an earlier server's that had the same pid (a stop
+    under THIS server is always newer than its start). With this server's
+    start unknown it holds, as is_stopped says."""
+    if _written_before_the_server(window_id, server_pid, server_started, base_directory):
+        clear_stopped(window_id, base_directory)
+        return False
     if is_stopped(window_id, server_pid, base_directory, server_started):
         return True
     try:
