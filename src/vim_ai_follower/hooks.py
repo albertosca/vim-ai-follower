@@ -263,6 +263,24 @@ def _live_follower_healing_keys(session: Session) -> FollowerState | None:
     return current
 
 
+def _note_unshown_edit(window_id: str, file_path: str) -> None:
+    """One log line for an edit a follower RECORDED for this window did not
+    show because it does not read as live (BACKLOG sweep-4 "Unseen first
+    Edit": that skip was the one `_animate_edit` made without a word). A
+    window with no follower recorded stays silent: that is the ordinary case
+    (see _warn_lost_window_identity)."""
+    recorded = FollowerState.read(window_id)
+    if recorded is None:
+        return
+    logger.warning(
+        "did not show %s: the %s follower recorded for %s (%s) does not read as live",
+        file_path,
+        recorded.backend,
+        window_id,
+        recorded.target,
+    )
+
+
 def _warn_lost_window_identity(session: Session) -> None:
     """One log line for the give-up that used to be silent.
 
@@ -2035,6 +2053,7 @@ def _animate_edit(
         session, file_path, loaded_config
     )
     if current is None:
+        _note_unshown_edit(session.window_id, file_path)
         _warn_lost_window_identity(session)
         return 0
     busy = _busy_follower(

@@ -163,6 +163,31 @@ def test_hook_post_noop_when_no_follower_registered(tmp_path: Path) -> None:
         assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
 
 
+def test_an_edit_a_recorded_follower_does_not_show_names_itself(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # BACKLOG sweep-4 "Unseen first Edit": an Edit into a just-started
+    # follower once showed nothing and hook.log said nothing. A follower
+    # recorded for the window that does not read as live now says so.
+    target = tmp_path / "f.txt"
+    target.write_text("content\n")
+    _register_fake_follower("@1", "%2")
+    payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": str(target)}}
+    with (
+        patch(
+            "vim_ai_follower.tmux.subprocess.run",
+            return_value=MagicMock(returncode=0, stdout="@1\n"),
+        ),
+        patch.object(state.FollowerState, "get", return_value=None),
+        caplog.at_level(logging.INFO, logger="vim_ai_follower"),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+    assert (
+        f"did not show {target.resolve()}: the tmux follower recorded for @1 (%2) "
+        "does not read as live"
+    ) in caplog.text
+
+
 def test_hook_post_edit_noop_without_tmux_env() -> None:
     payload: dict[str, object] = {"tool_name": "Edit", "tool_input": {"file_path": "/tmp/f.txt"}}
     assert hooks.cmd_hook_post({}, payload) == 0
