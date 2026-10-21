@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from vim_ai_follower.backends import typed_text
+from vim_ai_follower.backends import dos_lines, loads_as_dos, typed_onto, typed_text
 from vim_ai_follower.diff import (
     EditOp,
     apply_ops,
@@ -155,6 +155,42 @@ def test_typed_text_is_the_buffer_s_lines_each_newline_terminated() -> None:
     assert typed_text("a\r\nb") == "a\nb\n"
     assert typed_text("a\x0cb") == "a\x0cb\n"
     assert typed_text("") == ""
+
+
+@pytest.mark.parametrize(
+    ("content", "dos"),
+    [
+        ("a\r\nb\r\n", True),
+        ("\ufeffa\r\nb", True),
+        ("a\r\nb\n", False),
+        ("a\nb\n", False),
+        ("", False),
+    ],
+)
+def test_loads_as_dos(content: str, dos: bool) -> None:
+    assert loads_as_dos(content) is dos
+
+
+def test_dos_lines_drop_the_one_cr_before_each_lf() -> None:
+    assert dos_lines("a\r\nX\nb\r\r\nc\r") == ["a", "X", "b\r", "c\r"]
+    assert dos_lines("\ufeffa\r\n") == ["a"]
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "typed"),
+    [
+        # A dos buffer an Edit leaves mixed: no CR its option writes.
+        ("a\r\nb\r\n", "a\r\nX\nb\r\n", "a\nX\nb\n"),
+        # Still all CRLF, or a buffer that is not dos: typed_text.
+        ("a\r\nb\r\n", "a\r\nX\r\nb\r\n", "a\nX\nb\n"),
+        ("a\r\nb\n", "a\r\nX\nb\n", "a\r\nX\nb\n"),
+        ("a\r\nb\r\n", "a\nb\n", "a\nb\n"),
+    ],
+)
+def test_typed_onto_types_a_mixed_after_in_a_dos_buffers_form(
+    before: str, after: str, typed: str
+) -> None:
+    assert typed_onto(before, after) == typed
 
 
 def test_an_edit_script_keeps_a_form_feed_inside_its_line() -> None:

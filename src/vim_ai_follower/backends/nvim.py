@@ -26,10 +26,12 @@ from vim_ai_follower.backends import (
     BufferProbe,
     NavigationFailed,
     classify_buffer,
+    dos_lines,
     log_adopted_close,
     log_state_gone,
     nvim_connect,
     nvim_prompt,
+    without_bom,
 )
 from vim_ai_follower.backends.nvim_connect import bounded_attach, closing_connections, probe_nvim
 from vim_ai_follower.backends.nvim_prompt import dismiss_prompt, exec_logged, prompt_guard
@@ -381,7 +383,7 @@ def _fileformat_of(data: bytes) -> str | None:
     return "dos" if crlf == breaks else "unix"
 
 
-def _format_from_disk(nvim: pynvim.Nvim, buffer: int, file_path: str) -> None:
+def _format_from_disk(nvim: pynvim.Nvim, buffer: int, file_path: str) -> list[str] | None:
     """Set `buf`'s 'bomb' and 'fileformat' from the file at file_path.
 
     Both editors keep a leading BOM in 'bomb' and a CRLF file's line breaks
@@ -395,7 +397,10 @@ def _format_from_disk(nvim: pynvim.Nvim, buffer: int, file_path: str) -> None:
     finished file whenever a completed animation runs from the post hook.
     A file that cannot be read leaves both alone; mixed endings set
     'fileformat' to unix only when the buffer holds the file's lines with
-    their CRs (as the follower types them), else leave it alone. 'fileformat' is set only when it
+    their CRs (as nvim loads them), or when a dos buffer holds them without
+    (backends.typed_onto typed an Edit that left a CRLF file mixed that way):
+    its lines are then set to the file's, which this returns so the caller
+    stamps them; else it leaves it alone. 'fileformat' is set only when it
     changes, and before the caller's relock: nvim refuses it (E21) on a
     nomodifiable buffer.
 
@@ -409,23 +414,32 @@ def _format_from_disk(nvim: pynvim.Nvim, buffer: int, file_path: str) -> None:
     try:
         data = Path(file_path).read_bytes()
     except OSError:
-        return
+        return None
+    reread = None
     was_modified = nvim.api.buf_get_option(buffer, "modified")
     nvim.api.buf_set_option(buffer, "bomb", data[:3] == b"\xef\xbb\xbf")
     fileformat = _fileformat_of(data)
-    if fileformat is None and nvim.api.buf_get_lines(buffer, 0, -1, False) == text_lines(
-        data.decode("utf-8", errors="surrogateescape").removeprefix("\ufeff")
-    ):
-        # Mixed endings: the follower typed each CR into its line (as nvim
-        # loads such a file), so only 'unix' writes the file back; a CRLF
-        # buffer an Edit made mixed stayed 'dos' and doubled every typed CR.
-        fileformat = "unix"
+    if fileformat is None:
+        text = data.decode("utf-8", errors="surrogateescape")
+        lines = nvim.api.buf_get_lines(buffer, 0, -1, False)
+        if lines == text_lines(without_bom(text)):
+            # Mixed endings: the buffer holds each CR in its line (as nvim
+            # loads such a file), so only 'unix' writes the file back.
+            fileformat = "unix"
+        elif nvim.api.buf_get_option(buffer, "fileformat") == "dos" and lines == dos_lines(text):
+            # A dos buffer an Edit made mixed was typed without the CRs its
+            # option writes (backends.typed_onto); it now holds the file as
+            # nvim loads it: each CR in its line, under 'unix'.
+            reread = text_lines(without_bom(text))
+            nvim.api.buf_set_lines(buffer, 0, -1, False, reread)
+            fileformat = "unix"
     if fileformat is not None and nvim.api.buf_get_option(buffer, "fileformat") != fileformat:
         nvim.api.buf_set_option(buffer, "fileformat", fileformat)
     if not was_modified:
         lines = nvim.api.buf_get_lines(buffer, 0, -1, False)
         if classify_buffer(lines, data.decode("utf-8", errors="replace")) == "holds":
             nvim.api.buf_set_option(buffer, "modified", False)
+    return reread
 
 
 def _buffer_lines(content: str) -> list[str]:
@@ -898,7 +912,9 @@ class NvimFollower:
             result = run()
             if result.outcome == "completed":
                 if format_from is not None:
-                    _format_from_disk(nvim, buffer, format_from)
+                    # Lines it set from the file (a dos buffer an Edit made
+                    # mixed) are what the buffer must hold to be stamped.
+                    expected = _format_from_disk(nvim, buffer, format_from) or expected
                 # Clean only if it holds exactly what Claude wrote: see _IS_CLEAN_LUA.
                 if expected is not None:
                     nvim.exec_lua(_STAMP_IF_EXPECTED_LUA, buffer, list(expected))

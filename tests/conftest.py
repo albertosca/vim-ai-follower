@@ -251,8 +251,8 @@ def format_reads_under_tmp_path(
 
     real = nvim_backend._format_from_disk
 
-    def under_tmp_path(nvim: Any, buffer: int, file_path: str) -> None:
-        real(nvim, buffer, str(tmp_path / "disk" / file_path.lstrip("/")))
+    def under_tmp_path(nvim: Any, buffer: int, file_path: str) -> list[str] | None:
+        return real(nvim, buffer, str(tmp_path / "disk" / file_path.lstrip("/")))
 
     monkeypatch.setattr(nvim_backend, "_format_from_disk", under_tmp_path)
 

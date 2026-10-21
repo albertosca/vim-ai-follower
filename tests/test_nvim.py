@@ -1018,6 +1018,36 @@ def test_format_from_disk_leaves_a_mixed_files_fileformat_alone(tmp_path: Path) 
     nvim.api.buf_set_option.assert_called_once_with(7, "bomb", False)
 
 
+@pytest.mark.parametrize(
+    ("current", "lines", "reread"),
+    [
+        ("dos", ["a", "X", "b"], ["a\r", "X", "b\r"]),
+        ("unix", ["a", "X", "b"], None),
+        ("dos", ["a", "Y", "b"], None),
+    ],
+)
+def test_format_from_disk_gives_a_dos_buffer_left_mixed_the_files_lines(
+    tmp_path: Path, current: str, lines: list[str], reread: list[str] | None
+) -> None:
+    """An Edit that left a CRLF file mixed is typed into its dos buffer
+    without the CRs (backends.typed_onto); the completion sets the file's
+    own lines under 'unix', and returns them for the stamp."""
+    target = tmp_path / "a.py"
+    target.write_bytes(b"a\r\nX\nb\r\n")
+    nvim = MagicMock()
+    nvim.api.buf_get_option.side_effect = lambda _buffer, name: (
+        True if name == "modified" else current
+    )
+    nvim.api.buf_get_lines.return_value = lines
+    assert _format_from_disk(nvim, 7, str(target)) == reread
+    calls = [call.args for call in nvim.api.buf_set_option.call_args_list]
+    assert ((7, "fileformat", "unix") in calls) is (reread is not None)
+    if reread is None:
+        nvim.api.buf_set_lines.assert_not_called()
+    else:
+        nvim.api.buf_set_lines.assert_called_once_with(7, 0, -1, False, reread)
+
+
 def test_format_from_disk_leaves_both_alone_when_the_file_cannot_be_read(tmp_path: Path) -> None:
     nvim = MagicMock()
     _format_from_disk(nvim, 7, str(tmp_path / "gone.py"))

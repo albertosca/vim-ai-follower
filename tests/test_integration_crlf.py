@@ -142,6 +142,52 @@ def test_an_edit_of_a_crlf_file_is_one_typed_insert(
     assert target.stat().st_mtime_ns == written
 
 
+@pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
+def test_an_edit_that_makes_a_crlf_file_mixed_types_no_cr_into_its_dos_buffer(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+    adopted: bool,
+) -> None:
+    """A CRLF file loads as fileformat=dos, so a line typed WITH its CR is
+    written with that CR doubled. An Edit that leaves the file mixed used to
+    retype every CRLF line with its CR (mixed lines keep theirs): an interrupt
+    mid-run handed over a dos buffer whose `:w` wrote `\\r\\r\\n` (residual of
+    Task 24). It is typed in the dos buffer's own form, one insert, and the
+    completion's re-read gives the buffer the file's mixed lines."""
+    before, after = b"a\r\nb\r\n", b"a\r\nX\nb\r\n"
+    log, pane, window_id = _observed_follower(tmux_session, monkeypatch, tmp_path, wait_until)
+    target = tmp_path / "a.py"
+    if adopted:
+        FollowerState.update(window_id, adopted=True)
+        target.write_bytes(before)
+        _keys(pane, f":tabedit {target}")
+    else:
+        _hook(monkeypatch, "pre", "Write", target)
+        target.write_bytes(before)
+        _hook(monkeypatch, "post", "Write", target)
+    assert wait_until(lambda: _last_state(log, "a.py") == ["a", "b"], timeout=15.0)
+
+    probes, scripts = _spy(monkeypatch)
+    with log.open("a") as handle:
+        handle.write(_MARK + "\n")
+    _hook(monkeypatch, "pre", "Edit", target)
+    target.write_bytes(after)
+    _hook(monkeypatch, "post", "Edit", target)
+
+    assert wait_until(lambda: _last_state(log, "a.py") == ["a\r", "X", "b\r"], timeout=15.0)
+    assert probes == ["holds"]
+    assert scripts == [[EditOp(kind="insert", start_line=2, end_line=1, new_lines=("X",))]]
+    assert _dump(pane, target, tmp_path, wait_until) == ("unix", ["a\r", "X", "b\r"])
+    copy = tmp_path / "saved.py"
+    for _attempt in range(3):  # a loaded machine can swallow the Escape pair
+        _keys(pane, f":silent write! {copy}")
+        if wait_until(lambda: copy.exists() and copy.read_bytes() == after, 5.0):
+            break
+    assert copy.read_bytes() == after
+
+
 def test_a_save_of_the_dos_buffer_writes_the_crlf_bytes_back(
     tmux_session: str,
     monkeypatch: pytest.MonkeyPatch,

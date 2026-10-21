@@ -35,6 +35,7 @@ from vim_ai_follower.backends import (
     nvim_connect,
     nvim_prompt,
     tmux_vim,
+    typed_onto,
     typed_text,
 )
 from vim_ai_follower.backends.nvim_connect import (
@@ -2291,7 +2292,9 @@ def _animate_edit(
             _refresh_writer_cue(session.window_id, current.target, payload)
         return 0
 
-    ops = diff_module.compute_edit_script(typed_before, typed_after)
+    # Typed onto the buffer that holds `before`: a dos buffer gets a mixed
+    # `after` without the CRs its option writes (backends.typed_onto).
+    ops = diff_module.compute_edit_script(typed_before, typed_onto(before, after))
     # `before` goes along for the tmux backend: its driver cannot read the
     # buffer, so this is the only way its pause-time crash fallback can record
     # the applied prefix. It is the same string the interrupt path below

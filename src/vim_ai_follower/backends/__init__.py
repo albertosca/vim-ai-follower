@@ -5,7 +5,7 @@ from typing import Literal, Protocol
 
 from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
-from vim_ai_follower.diff import EditOp, file_lines
+from vim_ai_follower.diff import EditOp, file_lines, text_lines
 
 # The answer to "is this buffer the edit's base?", in the four shapes the hook
 # acts on differently:
@@ -196,6 +196,40 @@ def typed_text(content: str) -> str:
     the hooks hand to show_fresh and the diff, and what every partial is
     built from, so each consumer splits it with diff.text_lines."""
     return "".join(line + "\n" for line in file_lines(without_bom(content)))
+
+
+def loads_as_dos(content: str) -> bool:
+    """Whether an editor loads the file `content` with fileformat=dos (every
+    LF ends a CRLF: diff.file_lines leaves those CRs to the option)."""
+    body = without_bom(content)
+    return file_lines(body) != text_lines(body)
+
+
+def dos_lines(content: str) -> list[str]:
+    """`content`'s lines as a buffer with fileformat=dos holds what writes
+    back as them: each terminated line without the one CR before its LF,
+    which the option writes. For a file that loads as dos, its file_lines."""
+    body = without_bom(content)
+    terminated = body.count("\n")
+    return [
+        line.removesuffix("\r") if index < terminated else line
+        for index, line in enumerate(text_lines(body))
+    ]
+
+
+def typed_onto(before: str, after: str) -> str:
+    """typed_text(after) as typed into the buffer that holds `before`. A
+    buffer loaded as dos writes a CR before every LF, so the lines of an
+    `after` that is no longer all CRLF (an Edit that left the file MIXED)
+    go in without the CRs they keep in typed_text: typed with them, every
+    kept CRLF line differed from its base and was retyped, and an interrupt
+    mid-run handed over a dos buffer whose `:w` wrote each typed CR doubled
+    (residual of backlog-sweep-5 Task 24). The completion gives the buffer
+    the file's own lines: tmux's relock re-reads it, nvim's
+    _format_from_disk sets them with fileformat=unix."""
+    if loads_as_dos(before) and not loads_as_dos(after):
+        return "".join(line + "\n" for line in dos_lines(after))
+    return typed_text(after)
 
 
 def typed_form(content: str) -> list[str]:

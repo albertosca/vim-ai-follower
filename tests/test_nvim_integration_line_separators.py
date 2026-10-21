@@ -99,14 +99,25 @@ def test_a_crlf_file_an_edit_makes_mixed_saves_claudes_bytes(
     nvim = _follower(headless_nvim, tmp_path, monkeypatch, adopted)
     target = (tmp_path / "a.py").resolve()
     before, after = b"a\r\nb\r\n", b"a\r\nX\nb\r\n"
-    target.write_bytes(before)
-    nvim.command(f"edit {target}")
+    if adopted:
+        target.write_bytes(before)
+        nvim.command(f"edit {target}")
+    else:
+        assert hooks.cmd_hook_pre(_ENV, _payload("Write", target)) == 0
+        target.write_bytes(before)
+        assert hooks.cmd_hook_post(_ENV, _payload("Write", target)) == 0
     assert _buffer(nvim, "a.py").options["fileformat"] == "dos"
 
+    probes, scripts = _spy(monkeypatch)
     assert hooks.cmd_hook_pre(_ENV, _payload("Edit", target)) == 0
     target.write_bytes(after)
     assert hooks.cmd_hook_post(_ENV, _payload("Edit", target)) == 0
 
+    # Typed in the dos buffer's own form, one insert: a line typed with its CR
+    # into a dos buffer is written with the CR doubled, and an interrupt
+    # mid-run handed that buffer over (residual of Task 24).
+    assert probes == ["holds"]
+    assert scripts == [[EditOp(kind="insert", start_line=2, end_line=1, new_lines=("X",))]]
     buffer = _buffer(nvim, "a.py")
     assert buffer[:] == ["a\r", "X", "b\r"]
     assert buffer.options["fileformat"] == "unix"
