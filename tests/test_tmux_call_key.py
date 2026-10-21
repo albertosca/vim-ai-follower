@@ -5,6 +5,7 @@ call, as before."""
 
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 import time
@@ -232,12 +233,14 @@ def test_an_unread_keyed_call_brings_the_define_back() -> None:
     long_ago = time.time() - 30
     os.utime(ready, (long_ago, long_ago))
     pane = MagicMock(pane_id="%5")
-    tmux_vim._send(pane, tmux_vim._call_line("goto", "p5-abcdef"))
-    (call_file,) = _call_files()
-    assert not _defined(tmux_vim.TmuxVimFollower(pane_id="%5")).send_line.called
-    unread_since = time.time() - tmux_vim._UNREAD_CALL_SECONDS - 1
-    os.utime(call_file, (unread_since, unread_since))
-    (sent,) = _defined(tmux_vim.TmuxVimFollower(pane_id="%5")).send_line.call_args_list
+    # The Vim started before its ready file (this test process may not have).
+    with patch.object(tmux_vim, "_process_started", return_value=long_ago - 1):
+        tmux_vim._send(pane, tmux_vim._call_line("goto", "p5-abcdef"))
+        (call_file,) = _call_files()
+        assert not _defined(tmux_vim.TmuxVimFollower(pane_id="%5")).send_line.called
+        unread_since = time.time() - tmux_vim._UNREAD_CALL_SECONDS - 1
+        os.utime(call_file, (unread_since, unread_since))
+        (sent,) = _defined(tmux_vim.TmuxVimFollower(pane_id="%5")).send_line.call_args_list
     assert sent.args[0].startswith(":if maparg(")
 
 
@@ -252,3 +255,39 @@ def test_an_unread_call_older_than_the_ready_file_is_not_a_lost_mapping() -> Non
     os.utime(call_file, (unread_since, unread_since))
     _ready_file(os.getpid())
     assert not _defined(tmux_vim.TmuxVimFollower(pane_id="%5")).send_line.called
+
+
+def test_the_script_is_built_once_per_cache_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Every call reads it (ready check, define line): hashing the whole
+    # script each time cost every call (final review of backlog-sweep-5, M3).
+    with patch.object(hashlib, "sha256", wraps=hashlib.sha256) as digest:
+        first = tmux_vim._vim_functions()
+        assert tmux_vim._vim_functions() == first
+        builds = digest.call_count
+        monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "other")
+        other = tmux_vim._vim_functions()
+    assert builds <= 1
+    assert other[0] != first[0]
+
+
+def test_a_ready_file_older_than_its_process_does_not_count() -> None:
+    """A Vim that crashed leaves its ready file (VimLeave never ran), and a
+    later process can get its pid: a file written before that process
+    started names a Vim that is gone, and keys sent for it would reach
+    whatever runs in the pane now (final review of backlog-sweep-5, M1)."""
+    path = _ready_file(os.getpid())
+    with patch.object(tmux_vim, "_process_started", return_value=time.time() - 60):
+        assert tmux_vim._vim_ready("%5")
+        before_the_process = time.time() - 600
+        os.utime(path, (before_the_process, before_the_process))
+        assert not tmux_vim._vim_ready("%5")
+    with patch.object(tmux_vim, "_process_started", return_value=None):
+        assert not tmux_vim._vim_ready("%5")  # ps could not say: typed, as for no file
+
+
+def test_the_start_of_a_process_is_read_from_ps() -> None:
+    started = tmux_vim._process_started(os.getpid())
+    assert started is not None and started <= time.time()
+    assert tmux_vim._process_started(_dead_pid()) is None

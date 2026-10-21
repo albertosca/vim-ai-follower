@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import hashlib
 import json
 import logging
@@ -1652,9 +1653,15 @@ def _vim_functions() -> tuple[str, str]:
     """(dispatcher name, script text) of _VIM_SCRIPT for the current cache
     directory. The name carries a hash of the text, so any change to the
     script, or another cache directory, is another name (see the comment at
-    the top)."""
-    helpers = dict.fromkeys(re.findall(r"^function! s:(\w+)", _VIM_SCRIPT, re.MULTILINE))
-    text = _VIM_SCRIPT.replace("@DIR@", _vim_string(f"{cache.CACHE_DIRECTORY}/")).replace(
+    the top). Built once per script text and cache directory: every call
+    reads it (final review of backlog-sweep-5, M3)."""
+    return _built_functions(_VIM_SCRIPT, str(cache.CACHE_DIRECTORY))
+
+
+@functools.cache
+def _built_functions(script: str, directory: str) -> tuple[str, str]:
+    helpers = dict.fromkeys(re.findall(r"^function! s:(\w+)", script, re.MULTILINE))
+    text = script.replace("@DIR@", _vim_string(f"{directory}/")).replace(
         "@HELPERS@",
         # s:dir is the preamble's last statement (review of T9, m1).
         " && ".join(["exists('s:dir')", *(f"exists('*s:{helper}')" for helper in helpers)]),
@@ -1945,9 +1952,47 @@ def _server_pid() -> int | None:
 
 def _vim_ready(pane_id: str) -> bool:
     """Whether this pane's Vim has the call key mapped: its ready file names
-    this script and a process that is alive."""
-    pid = _ready_pid(_ready_path(pane_id, _server_pid()))
-    return pid is not None and _process_alive(pid)
+    this script and a process that is alive and started before the file was
+    written (with the mode file's slack). A Vim that crashed leaves its file,
+    and a process that got its pid later is not that Vim (final review of
+    backlog-sweep-5, M1); a start ps cannot read counts as not ready, so the
+    calls are typed."""
+    path = _ready_path(pane_id, _server_pid())
+    pid = _ready_pid(path)
+    if pid is None or not _process_alive(pid):
+        return False
+    started = _process_started(pid)
+    try:
+        written = path.stat().st_mtime
+    except OSError:
+        return False
+    return started is not None and written >= started - _START_SLACK_SECONDS
+
+
+# Each process's start, read once per hook process: _vim_ready runs on every
+# call. Only an answer is kept, so a pid that is gone is asked again.
+_PROCESS_STARTS: dict[int, float] = {}
+
+
+def _process_started(pid: int) -> float | None:
+    """When `pid` started (now minus ps's `etime`), or None when ps cannot
+    say: gone, or ps failing."""
+    if pid not in _PROCESS_STARTS:
+        try:
+            result = subprocess.run(
+                ["ps", "-o", "etime=", "-p", str(pid)],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=_PS_TIMEOUT_SECONDS,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        elapsed = _elapsed_seconds(result.stdout.strip()) if result.returncode == 0 else None
+        if elapsed is None:
+            return None
+        _PROCESS_STARTS[pid] = time.time() - elapsed
+    return _PROCESS_STARTS[pid]
 
 
 def _send(pane: TmuxPane, line: str) -> None:
