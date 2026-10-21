@@ -12,6 +12,7 @@ which is why the assertion names `/dev/null` rather than "no user file")."""
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -41,13 +42,21 @@ def test_the_e2e_server_loads_no_config() -> None:
     assert loaded == "/dev/null"
 
 
-# tmux options that take a value, so the word after them is not the command.
-_OPTIONS_WITH_A_VALUE = {"-c", "-f", "-L", "-S", "-T"}
+# tmux's options that take a value (getopt "c:f:L:S:T:"), so the rest of
+# a clustered word, or the next word, is that value and not the command.
+_OPTIONS_WITH_A_VALUE = set("cfLST")
 # Commands that start a server when none runs (and so read a config):
 # measured on tmux 3.8 (T24b re-review m4 residual). tmux also takes any
 # unambiguous prefix of a command name, and `new`/`a` are aliases.
 _SERVER_STARTERS = ("new-session", "start-server", "attach-session", "list-commands")
 _STARTER_ALIASES = {"new", "start", "attach", "a", "lscm"}
+# The tmux binary as a script names it: a path ending in `tmux` (quotes
+# are gone after shlex), or a variable that holds it (`$TMUX_BIN`,
+# `${TMUX_BIN:-tmux}`), never `$TMUX`/`$TMUX_PANE`, which are not commands.
+_TMUX_BINARY = re.compile(r"^(?:\S*/)?tmux$|^\$\{?\w*TMUX\w*(?:_BIN|_CMD)\w*(?::-[^}]*)?\}?$")
+# tmux's own command separator, `\;`, kept apart from the shell's `;`.
+_TMUX_SEPARATOR = "\0tmux-separator"
+_SHELL_SEPARATORS = {";", ";;", "&", "&&", "|", "||", "(", ")"}
 
 
 def _starts_a_server(command: str) -> bool:
@@ -56,27 +65,64 @@ def _starts_a_server(command: str) -> bool:
     )
 
 
+def _words(line: str) -> list[str]:
+    lexer = shlex.shlex(
+        line.replace("\\;", f" {_TMUX_SEPARATOR} "), posix=True, punctuation_chars=";&|()"
+    )
+    lexer.whitespace_split = True
+    try:
+        return list(lexer)
+    except ValueError:  # a line of a multi-line string or heredoc
+        return line.split()
+
+
+def _invocations(words: list[str]) -> list[tuple[bool, list[str]]]:
+    """Each tmux invocation in `words`: whether it names a config with `-f`,
+    and every command it runs (one per `\\;`-separated part)."""
+    invocations = []
+    index = 0
+    while index < len(words):
+        if not _TMUX_BINARY.match(words[index]):
+            index += 1
+            continue
+        index += 1
+        named_config = False
+        while index < len(words) and len(words[index]) > 1 and words[index].startswith("-"):
+            flags = words[index][1:]
+            index += 1
+            for position, flag in enumerate(flags):
+                if flag in _OPTIONS_WITH_A_VALUE:
+                    named_config = named_config or flag == "f"
+                    index += 1 if position == len(flags) - 1 else 0
+                    break
+        commands: list[str] = []
+        awaiting_command = True
+        while index < len(words) and words[index] not in _SHELL_SEPARATORS:
+            if words[index] == _TMUX_SEPARATOR:
+                awaiting_command = True
+            elif awaiting_command:
+                commands.append(words[index])
+                awaiting_command = False
+            index += 1
+        invocations.append((named_config, commands))
+    return invocations
+
+
 def _unconfigured_server_starts(text: str) -> list[str]:
-    """Every `tmux …` invocation in a script's text that may start a server
-    and names no config with `-f`. Backslash continuations are joined first
+    """Every tmux invocation in a script's text that may start a server and
+    names no config with `-f`. Backslash continuations are joined first
     (T24b re-review m-B: `tmux \\` + newline + `new-session` slipped past a
-    per-line grep, as did the `new` alias)."""
+    per-line grep, as did the `new` alias), and each line is read as the
+    shell reads it (T24b re-review 2 m1): a quoted or variable binary, a
+    wrapper (`env`, `command`), clustered flags (`-uS`) and a `\\;` chain
+    inside one tmux no longer dodge it."""
     offenders = []
     joined = re.sub(r"\\\n", " ", text)
     for line in joined.splitlines():
         if line.lstrip().startswith("#"):
             continue
-        for match in re.finditer(r"\btmux\b", line):
-            words = line[match.end() :].split()
-            index = 0
-            named_config = False
-            while index < len(words) and words[index].startswith("-"):
-                named_config = named_config or words[index] == "-f"
-                index += 2 if words[index] in _OPTIONS_WITH_A_VALUE else 1
-            if index >= len(words):
-                continue
-            command = words[index].rstrip(";)\"'")
-            if _starts_a_server(command) and not named_config:
+        for named_config, commands in _invocations(_words(line)):
+            if not named_config and any(_starts_a_server(command) for command in commands):
                 offenders.append(line.strip())
     return offenders
 
@@ -110,6 +156,26 @@ def test_every_script_that_starts_a_private_server_passes_no_config() -> None:
         ("X=1 tmux attach -t a", ["X=1 tmux attach -t a"]),
         ("tmux new-window -t a; tmux kill-server", []),
         ("# tmux new-session", []),
+        # The aliases (T24b re-review 2 m2).
+        ("tmux a -t x", ["tmux a -t x"]),
+        ("tmux lscm", ["tmux lscm"]),
+        # The bypasses of a word-by-word scan (m1): a variable or a quoted
+        # name for the binary, a wrapper, a `\;` chain inside one tmux,
+        # clustered flags.
+        ('"$TMUX_BIN" new -d', ['"$TMUX_BIN" new -d']),
+        ("${TMUX_BIN:-tmux} new -d", ["${TMUX_BIN:-tmux} new -d"]),
+        ('"tmux" new -d', ['"tmux" new -d']),
+        ("env -u TMUX tmux new -d", ["env -u TMUX tmux new -d"]),
+        ("command tmux new -d", ["command tmux new -d"]),
+        (
+            "tmux -S /tmp/s new-window -t a \\; new-session -d",
+            ["tmux -S /tmp/s new-window -t a \\; new-session -d"],
+        ),
+        ("tmux -uS /tmp/s new -d", ["tmux -uS /tmp/s new -d"]),
+        ("tmux -uf /dev/null new -d", []),
+        ("tmux -f/dev/null new -d", []),
+        ("tmux -S /tmp/s -f /dev/null new-window \\; new -d", []),
+        ('echo "tmux new" | cat', []),
     ],
 )
 def test_the_script_check_finds_every_unconfigured_server_start(
