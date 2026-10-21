@@ -323,12 +323,16 @@ def test_an_interrupted_animation_reads_handoff_before_its_remainder_is_saved(
     assert seen == ["handoff"]
 
 
-def test_an_interrupted_replay_reads_handoff_before_its_remainder_is_saved(
+def test_an_interrupted_replay_reads_handoff_only_after_hand_over(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The same window inside the hand-off loop: a replay interrupted by S
-    returns with the marker "running" (its driver's), and the re-arm saves
-    the shorter remainder and hands the buffer over before the wait marks."""
+    """The same window inside the hand-off loop, ordered the other way (T20
+    re-review m5): a replay interrupted by S returns with the marker
+    "running" (its driver's), and the re-arm saves the shorter remainder and
+    sends hand_over's lines before it reads "handoff", since a user who took
+    "handoff" as theirs typed into those lines. An S meanwhile is still
+    consumed as the des-interrupt (test_hooks_catchup_partial's
+    `…keeps_an_s_sent_meanwhile`); only its popup says "Interrupted"."""
     target = tmp_path / "f.txt"
     target.write_text("l0\nl1\n")
     control.save_pending_show_fresh("@1", ("l1",), 0.0, continuation=True, file_path=str(target))
@@ -346,7 +350,8 @@ def test_an_interrupted_replay_reads_handoff_before_its_remainder_is_saved(
     assert pending is not None
     with patch("vim_ai_follower.tmux.subprocess.run", side_effect=make_mock_tmux_run()):
         hooks._rearm_handoff(follower, "@1", pending, "l0\n", 0)
-    assert seen == ["handoff"]
+    assert seen == ["running"]
+    assert control.animating_state("@1") == "handoff"
 
 
 @pytest.mark.parametrize(

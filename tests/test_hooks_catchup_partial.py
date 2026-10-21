@@ -327,6 +327,34 @@ def test_rearm_handoff_persists_the_grown_partial_for_ops(tmp_path: Path) -> Non
     assert saved.ops == [second]
 
 
+def test_rearm_handoff_reads_handoff_only_after_hand_over_and_keeps_an_s_sent_meanwhile(
+    tmp_path: Path,
+) -> None:
+    """T20 re-review m5: a user who takes "handoff" as "the buffer is mine"
+    types at once, and their keys landed inside hand_over's typed lines. So
+    the marker still reads the replay's "running" while hand_over sends, and
+    an S pressed then is addressed to this process all the same: the hand-off
+    wait consumes it as the next des-interrupt."""
+    control.mark_animating("@1", state="running")
+    follower = _fake_follower()
+    during: dict[str, object] = {}
+
+    def hand_over() -> None:
+        during["state"] = control.animating_state("@1")
+        during["signal written"] = control.request_interrupt("@1")
+
+    follower.hand_over.side_effect = hand_over
+    pending = control.PendingShowFresh(
+        lines=("b", "c"), pace_seconds=0.2, continuation=True, file_path="/tmp/f.py", partial="a\n"
+    )
+
+    hooks._rearm_handoff(follower, "@1", pending, "a\n", 1)
+
+    assert during == {"state": "running", "signal written": True}
+    assert control.animating_state("@1") == "handoff"
+    assert control.check_signal("@1") == "interrupt"
+
+
 def test_resaving_an_unusable_pending_keeps_its_partial(tmp_path: Path) -> None:
     # cmd_pause puts a loaded-but-unusable pending back on disk; dropping the
     # partial there would silently re-arm the old live-buffer behavior.
@@ -483,6 +511,11 @@ def test_s_during_a_catch_up_hands_the_buffer_over_as_it_is(
     resolved, payload = _orphaned_remainder_and_edit(tmp_path, adopted)
     follower = _fake_follower()
     follower.resume.return_value = resumed
+    # "handoff" only after hand_over's sends (T20 re-review m5).
+    states_during_hand_over: list[str | None] = []
+    follower.hand_over.side_effect = lambda: states_during_hand_over.append(
+        control.animating_state("@1")
+    )
     monkeypatch.setattr(hooks, "get_follower", lambda *arguments, **keyword_arguments: follower)
     monkeypatch.setattr(
         hooks, "status_surface_for", lambda *arguments, **keyword_arguments: MagicMock()
@@ -505,10 +538,15 @@ def test_s_during_a_catch_up_hands_the_buffer_over_as_it_is(
         seen["partial"] = partial_content
         seen["raw_after"] = raw_after
         seen["pending"] = control.has_pending_animation("@1")
+        states_at_the_wait.append(control.animating_state("@1"))
 
+    states_at_the_wait: list[str | None] = []
     monkeypatch.setattr(hooks, "_await_user_handoff", fake_wait)
 
     _run_post_hook(payload, None)
+
+    assert states_during_hand_over == ["running"]
+    assert states_at_the_wait == ["handoff"]
 
     assert seen == {
         "file_path": resolved,

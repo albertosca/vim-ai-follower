@@ -834,9 +834,6 @@ def _rearm_handoff(
     by whatever the replay did manage to show, and hand the buffer back to the
     user. Returns the new partial; the caller loops into another hand-off wait
     with it, so interrupt/des-interrupt can repeat as often as the user likes."""
-    # The replay's driver left "running"; from here on an S is the next
-    # des-interrupt, never an interrupt of a replay that already returned.
-    control.mark_animating(window_id, state="handoff")
     if isinstance(pending, control.PendingShowFresh):
         # A resumed show_fresh counts LINES of the remainder (both backends
         # index the `lines` tuple they were handed: animate.run_lines and
@@ -867,6 +864,12 @@ def _rearm_handoff(
             partial=partial_content,
         )
     follower.hand_over()
+    # "handoff" only once hand_over's lines are sent (T20 re-review m5): a
+    # user who takes it as "the buffer is mine" and types at once had their
+    # keys land in the middle of those lines (1 run in 20, E121). An S
+    # pressed meanwhile is addressed to this process all the same, and the
+    # hand-off wait consumes it as the next des-interrupt.
+    control.mark_animating(window_id, state="handoff")
     FollowerState.update_current_file(window_id, None)
     return partial_content
 
@@ -1726,9 +1729,10 @@ def _hand_over_interrupted_catch_up(
     hand_over re-asserts the unlock and turns CoC back on, as _rearm_handoff
     does after a replay's interrupt."""
     window_id = session.window_id
-    # The driver returned: an S from here on is the des-interrupt.
-    control.mark_animating(window_id, state="handoff")
     follower.hand_over()
+    # The driver returned: an S from here on is the des-interrupt. Marked
+    # after hand_over's sends, as in _rearm_handoff.
+    control.mark_animating(window_id, state="handoff")
     FollowerState.update_current_file(window_id, None)
     surface = status_surface_for(current)
     # As before an animation: an earlier leave-alone cue is not this hand-off's
