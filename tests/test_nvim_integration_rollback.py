@@ -184,3 +184,31 @@ def test_des_interrupt_after_a_rolled_back_wiping_op_lands_at_the_full_content(
     assert follower.resume(pending).outcome == "completed"
     nvim = pynvim.attach("socket", path=headless_nvim)
     assert nvim.current.buffer[:] == after.splitlines()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("interrupted", [False, True], ids=["completed", "interrupted"])
+def test_an_edit_from_an_empty_base_leaves_no_stray_blank_line(
+    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, interrupted: bool
+) -> None:
+    # An empty file's buffer is nvim's one implicit blank line, which is no
+    # content: an insert from "" used to push it past every typed line, and
+    # the buffer ended with a blank line the file does not have (sweep-5
+    # T28, found by the NFC/NFD new-file test).
+    follower = _follower(headless_nvim, tmp_path, monkeypatch, 0.01)
+    after = "XYZ\nPQ\n"
+    follower.show_fresh("/tmp/x.py", "")
+    ops = compute_edit_script("", after)
+    if interrupted:
+        # op boundary + line boundary + "X" -> 3 calls; the 4th (char 1) fires.
+        monkeypatch.setattr(control, "check_signal", _interrupt_at(4))
+
+    result = follower.apply_edit("/tmp/x.py", ops, before="")
+
+    nvim = pynvim.attach("socket", path=headless_nvim)
+    if interrupted:
+        assert result == AnimationResult("interrupted", 0)
+        assert nvim.current.buffer[:] == [""]
+    else:
+        assert result.outcome == "completed"
+        assert nvim.current.buffer[:] == ["XYZ", "PQ"]

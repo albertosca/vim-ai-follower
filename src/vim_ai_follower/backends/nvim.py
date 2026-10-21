@@ -1054,6 +1054,7 @@ class NvimFollower:
         ops: list[EditOp],
         pace_provider: Callable[[], float],
         file_path: str,
+        empty_base: bool = False,
     ) -> AnimationResult:
         """The shared op-loop behind both apply_edit and resume: each op
         deletes its old range (instant, via nvim_buf_set_lines) and animates
@@ -1066,7 +1067,14 @@ class NvimFollower:
         # base every persisted partial below is computed from. Read once:
         # mid-run the buffer may end on a half-typed line, which is precisely
         # the shape a crash-fallback consumer must not have to interpret.
-        initial = _terminated(nvim.api.buf_get_lines(buffer, 0, -1, True))
+        lines_at_start = nvim.api.buf_get_lines(buffer, 0, -1, True)
+        # An empty base (`empty_base`: the ops were computed from "", a new
+        # file the user had open empty) is held as nvim's one implicit blank
+        # line, which is no content: left in place, the insert pushed it past
+        # every typed line and the buffer ended with a blank line the file
+        # does not have (sweep-5 T28, measured).
+        implicit_blank = empty_base and lines_at_start == [""]
+        initial = "" if implicit_blank else _terminated(lines_at_start)
         # An adopted follower's own window is recorded ONCE, right after the
         # navigation and before any op can pause, and every op types with it:
         # recorded per op, a pause in op 1 let op 2 take the window the user
@@ -1121,7 +1129,7 @@ class NvimFollower:
             # held a single real line.
             wipes_buffer = (
                 operation.start_line == 1 and operation.end_line >= nvim.api.buf_line_count(buffer)
-            )
+            ) or (implicit_blank and operation.start_line == 1)
             # EditOp carries no old text, so keep the range we are about to
             # delete: an interrupt mid-op has to put it back (see below). Only
             # an op that animates new lines can stop mid-op — a delete-only op
@@ -1229,7 +1237,13 @@ class NvimFollower:
                 nvim,
                 buffer,
                 lambda: self._run_ops(
-                    nvim, buffer, namespace_id, ops, self._pace_provider, file_path
+                    nvim,
+                    buffer,
+                    namespace_id,
+                    ops,
+                    self._pace_provider,
+                    file_path,
+                    empty_base=before == "",
                 ),
                 None if before is None else _buffer_lines(apply_ops(before, ops)),
                 format_from=file_path,
