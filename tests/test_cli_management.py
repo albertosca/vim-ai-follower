@@ -2163,7 +2163,7 @@ def test_toggle_never_acts_on_a_state_no_server_proves_here(
         "vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run(pane_exists=False)
     ) as run:
         assert commands.cmd_toggle({"TMUX_PANE": "%1"}) == 0
-    assert "no follower to toggle" in capsys.readouterr().out
+    assert "predates this version: run claude-follow stop, then start" in (capsys.readouterr().out)
     assert not any(
         recorded_call.args[0][:2] == ["tmux", "resize-pane"] for recorded_call in run.call_args_list
     )

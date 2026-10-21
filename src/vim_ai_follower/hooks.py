@@ -108,6 +108,11 @@ def _get_active_follower(window_id: str) -> FollowerState | None:
     raw = FollowerState.read(window_id)
     if raw is None or raw.on_failure != "reopen" or not raw.origin:
         return None
+    if state_module.is_legacy(raw):
+        logger.info(
+            "not reopening the follower of %s: %s", window_id, state_module.LEGACY_STATE_MESSAGE
+        )
+        return None
     if state_module.unproven_here(raw):
         # Maybe left by a previous tmux server (a recorded pid that differs,
         # or none recorded): its origin may name a pane of this one that is

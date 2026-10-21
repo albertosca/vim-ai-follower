@@ -190,3 +190,28 @@ def test_dead_adopted_follower_reopens_fresh_not_adopted(tmp_path: Path) -> None
     assert recovered.target == "%9"
     assert recovered.adopted is False
     assert recovered.shown_any is False
+
+
+def test_a_legacy_state_is_not_reopened_and_says_why(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Sweep-4 N2: a `.pane` written before the server pid was recorded
+    proves nothing about the pane it names (after a tmux restart it may be
+    the user's own Vim), so it is never reopened from; the log says what to
+    do instead of nothing at all."""
+    target = tmp_path / "f.txt"
+    target.write_text("content\n")
+    with patch("vim_ai_follower.binding.tmux_server_pid", return_value=None):
+        state.FollowerState.set("@1", "tmux", "%2", origin="%1", on_failure="reopen")
+    payload: dict[str, object] = {"tool_name": "Write", "tool_input": {"file_path": str(target)}}
+    with (
+        patch("vim_ai_follower.tmux.subprocess.run", side_effect=_mock_tmux_run()) as run,
+        caplog.at_level("INFO", logger="vim_ai_follower"),
+    ):
+        assert hooks.cmd_hook_post({"TMUX_PANE": "%1"}, payload) == 0
+
+    assert _split_calls(run) == []
+    assert any(
+        "predates this version: run claude-follow stop, then start" in record.getMessage()
+        for record in caplog.records
+    )

@@ -1129,6 +1129,9 @@ def cmd_toggle(environment: dict[str, str]) -> int:
         print(_unresolvable_pane(environment), file=sys.stderr)
         return 1
     raw = FollowerState.read(session.window_id)
+    if raw is not None and state_module.is_legacy(raw):
+        print(f"claude-follow: {state_module.LEGACY_STATE_MESSAGE}")
+        return 0
     if raw is not None and state_module.unproven_here(raw):
         # Maybe left by a previous tmux server (a pid that differs, or none
         # recorded): its origin and target may name panes of this one that

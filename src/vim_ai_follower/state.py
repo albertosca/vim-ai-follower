@@ -262,6 +262,20 @@ def unproven_here(state: FollowerState) -> bool:
     return _records_a_server(state.backend, state.origin) and not proven_here(state)
 
 
+LEGACY_STATE_MESSAGE = (
+    "the follower's state predates this version: run claude-follow stop, then start"
+)
+
+
+def is_legacy(state: FollowerState) -> bool:
+    """True for a state that lives in a tmux server but was written before
+    its server pid was recorded (sweep-4 N2). unproven_here refuses it, and
+    nothing it names can be re-proven: after a tmux restart its pane id may
+    run the user's own Vim, which the expected-editor check would accept.
+    Its callers say LEGACY_STATE_MESSAGE instead of acting on it."""
+    return _records_a_server(state.backend, state.origin) and state.server_pid is None
+
+
 def nvim_socket_path(window_id: str, base_directory: Path | None = None) -> Path:
     """Deterministic per-window RPC socket path. The Neovim side must call
     vim.fn.serverstart() at this exact path (the README documents no such integration).
