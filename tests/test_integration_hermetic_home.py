@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import uuid
 from collections.abc import Callable
@@ -89,6 +90,52 @@ def test_no_test_vim_or_shell_writes_viminfo_or_history(
     assert sorted(path.name for path in subject.iterdir()) == []
 
 
+@pytest.mark.skipif(
+    not os.environ.get("SHELL", "").endswith("zsh"), reason="the shell lever measured is zsh's"
+)
+def test_vim_typed_into_a_login_shell_pane_is_hermetic(
+    tmux_session: str, tmp_path: Path, wait_until: Callable[..., bool]
+) -> None:
+    # T24b re-review 2 m4: a login zsh runs /etc/zprofile, whose path_helper
+    # puts /usr/bin before the Homebrew directories that the user's own
+    # ~/.zprofile adds back, and the private ZDOTDIR has no .zprofile: a
+    # `vim` typed into a pane ran /usr/bin/vim, not the Vim the suite runs.
+    _prove_private()
+    home = tmp_path / "home"
+    home.mkdir()
+    _tmux("set-environment", "-g", "HOME", str(home))
+    origin = _tmux("list-panes", "-t", tmux_session, "-F", "#{pane_id}").splitlines()[0]
+    shell = _split(origin)
+    assert wait_until(_runs(shell, "zsh"), timeout=10.0), "zsh never started"
+    edited = tmp_path / "x.txt"
+    _tmux("send-keys", "-t", shell, "-l", "--", f"vim {edited}")
+    _tmux("send-keys", "-t", shell, "Enter")
+    assert wait_until(_runs(shell, "vim"), timeout=10.0), "vim never started"
+    tty = _tmux("display-message", "-p", "-t", shell, "#{pane_tty}")
+    processes = subprocess.run(
+        ["ps", "-t", tty.removeprefix("/dev/"), "-o", "pid=,comm="],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split("\n")
+    [vim_pid] = [line.split()[0] for line in processes if line.split()[1:] == ["vim"]]
+    # `comm` is argv[0] on macOS; the executable is the process's txt file.
+    executable = subprocess.run(
+        ["lsof", "-a", "-p", vim_pid, "-d", "txt", "-Fn"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.splitlines()
+    assert "n" + os.path.realpath(shutil.which("vim") or "vim") in executable, executable
+
+    _tmux("send-keys", "-t", shell, "Escape", ":qa!", "Enter")
+    assert wait_until(_runs(shell, "zsh"), timeout=10.0), "vim never quit"
+    _tmux("send-keys", "-t", shell, "-l", "--", "exit")
+    _tmux("send-keys", "-t", shell, "Enter")
+    subprocess.run(["tmux", "kill-server"], check=False)
+    assert sorted(path.name for path in home.iterdir()) == []
+
+
 def test_no_test_nvim_writes_its_state_into_home(
     tmux_session: str, tmp_path: Path, wait_until: Callable[..., bool]
 ) -> None:
@@ -137,18 +184,41 @@ def _vims_without_viminfo_off(text: str, pattern: str) -> list[str]:
     ]
 
 
+# A Vim the hermetic VIMINIT does not reach (T24b re-review 2 m3): any
+# vimrc of its own (`-u NONE`, `-u /dev/null`, `-u <file>`) skips VIMINIT;
+# `env -u VIMINIT` removes it; a VIMINIT spelled out on the line replaces
+# it, unless it turns viminfo off itself or names another variable
+# (`$V`, `{HERMETIC_VIMINIT}`), whose value this line cannot show.
+_SKIPS_THE_HERMETIC_VIMINIT = re.compile(
+    r"\bvim\b[^\"'\n]*?\s-u\s"
+    r"|-u\s+VIMINIT\b.*\bvim\b"
+    r"|\bVIMINIT=(?![\"']?[{$])(?!.*viminfofile=NONE).*\bvim\b"
+)
+
+
+def _unhermetic_vim_lines(text: str) -> list[str]:
+    """Every line that starts a Vim the hermetic VIMINIT does not reach and
+    says neither `-i NONE` nor a HOME of its own."""
+    return [
+        line.strip()
+        for line in text.splitlines()
+        if not line.lstrip().startswith("#")
+        and _SKIPS_THE_HERMETIC_VIMINIT.search(line)
+        and "-i NONE" not in line
+        and "HOME=" not in line
+    ]
+
+
 def test_every_vim_that_skips_the_hermetic_viminit_turns_viminfo_off() -> None:
     # `-u NONE` skips VIMINIT, so the fixture's viminfofile=NONE does not
     # reach that Vim (test_integration_typed_semicolon.py wrote ~/.viminfo
     # that way). The scripts on a private TMUX_TMPDIR start their Vims under
     # the developer's HOME with a VIMINIT of their own, so each says `-i NONE`.
     offenders = [
-        f"{path.name}: {command}"
+        f"{path.name}: {line}"
         for path in sorted((_ROOT / "tests").glob("*.py"))
         if path.name != Path(__file__).name  # its control writes on purpose
-        for command in _vims_without_viminfo_off(
-            path.read_text(), r"\bvim\b[^\"'\n]*?-u NONE[^\"'\n]*"
-        )
+        for line in _unhermetic_vim_lines(path.read_text())
     ] + [
         f"{path.name}: {command}"
         for path in sorted((_ROOT / "scripts").glob("*.sh"))
@@ -156,6 +226,32 @@ def test_every_vim_that_skips_the_hermetic_viminit_turns_viminfo_off() -> None:
         for command in _vims_without_viminfo_off(path.read_text(), r"[\"']vim\b[^\"'\n]*[\"']")
     ]
     assert offenders == []
+
+
+@pytest.mark.parametrize(
+    ("line", "offends"),
+    [
+        ("vim -u NONE x", True),
+        # T24b re-review 2 m3: any vimrc of its own skips VIMINIT, and so
+        # does a VIMINIT removed or replaced by one that keeps viminfo on.
+        ("vim -u /dev/null x", True),
+        ("vim -N -u ~/.vimrc.test x", True),
+        ("env -u VIMINIT vim x", True),
+        ("VIMINIT='set nocompatible' vim x", True),
+        ('env VIMINIT="set nocompatible" vim x', True),
+        ("vim -u NONE -i NONE x", False),
+        ("env HOME=/tmp/throwaway vim -u NONE x", False),
+        ("VIMINIT='set nocompatible viminfofile=NONE' vim x", False),
+        ('VIMINIT="$V" tmux -f /dev/null new -d "vim -i NONE f"', False),
+        ('f"VIMINIT={HERMETIC_VIMINIT} | set x" vim', False),
+        ("vim x", False),
+        ("# vim -u NONE x", False),
+    ],
+)
+def test_the_hermetic_check_finds_every_vim_that_skips_the_viminit(
+    line: str, offends: bool
+) -> None:
+    assert (_unhermetic_vim_lines(line) != []) is offends
 
 
 # A script that runs the follower's CLI under the developer's real HOME reads

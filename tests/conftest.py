@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -269,6 +271,12 @@ def tmux_session(monkeypatch: pytest.MonkeyPatch) -> Iterator[str]:
     shell_home = Path(socket_directory) / "zdotdir"
     shell_home.mkdir()
     (shell_home / ".zshrc").write_text("unset HISTFILE\n")
+    # A login zsh runs /etc/zprofile, whose path_helper puts /usr/bin ahead
+    # of the Homebrew directories the user's own ~/.zprofile adds back: a
+    # `vim` typed into a pane ran /usr/bin/vim, not the suite's Vim (T24b
+    # re-review 2 m4). The private .zprofile, read after it, keeps the PATH
+    # this process has.
+    (shell_home / ".zprofile").write_text(f"export PATH={shlex.quote(os.environ['PATH'])}\n")
     monkeypatch.setenv("ZDOTDIR", str(shell_home))
     monkeypatch.setenv("HISTFILE", "/dev/null")
     session_name = f"pytest-{uuid.uuid4().hex[:8]}"
