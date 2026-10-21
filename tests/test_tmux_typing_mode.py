@@ -36,10 +36,12 @@ def _world(
     capture_code: int = 0,
     screen: str = "a\n~",
     every_process: str = "",
+    status_row: str = "",
+    status_code: int = 0,
 ) -> MagicMock:
     """A subprocess.run stand-in for the pane %5: its tty, the processes on
     it (ps -t), every process's parent and tty (ps -A), its height and
-    cursor, and its bottom row."""
+    cursor, its bottom row and the row above it (a status line)."""
 
     def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         if argv[:2] == ["ps", "-A"]:
@@ -54,6 +56,8 @@ def _world(
         assert argv[1] == "capture-pane", argv
         if "-S" not in argv:
             return _completed(argv, screen + "\n")
+        if argv[-4:] == ["-S", "18", "-E", "18"]:
+            return _completed(argv, status_row + "\n", status_code)
         assert argv[-4:] == ["-S", "19", "-E", "19"], argv
         return _completed(argv, bottom_row + "\n", capture_code)
 
@@ -304,6 +308,68 @@ _COMPLETION = "in insert mode (completion)"
 def test_the_bottom_row_tells_a_typing_mode(bottom_row: str, reason: str | None) -> None:
     with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", _world(bottom_row=bottom_row)):
         assert tmux_vim._typing_on_screen("%5") == reason
+
+
+@pytest.mark.parametrize(
+    ("status_row", "reason"),
+    [
+        ("INSERT", "in insert mode"),
+        (" INSERT | a.txt                               1:8", "in insert mode"),
+        (" NORMAL | a.txt                               1:8", None),
+        (" REPLACE  a.txt", "in replace mode"),
+        (" V-REPLACE  a.txt", "in replace mode"),
+        (" VISUAL | a.txt", "in visual mode"),
+        (" V-LINE | a.txt", "in visual mode"),
+        (" V-BLOCK | a.txt", "in visual mode"),
+        (" SELECT  a.txt", "in select mode"),
+        (" S-LINE  a.txt", "in select mode"),
+        (" TERMINAL  !/bin/zsh", "in terminal mode"),
+        # A whole upper-case word only: a file named for one, or a
+        # lower-case mode word in buffer text, says nothing.
+        ("a.txt [+]  INSERTS.md", None),
+        ("insert into t values (1)", None),
+        ("PRE-INSERT hook", None),
+        ("", None),
+    ],
+)
+def test_the_status_line_tells_a_typing_mode_the_bottom_row_does_not(
+    status_row: str, reason: str | None
+) -> None:
+    # 'noshowmode' (lightline, airline): the bottom row holds no mode word,
+    # maybe a message.
+    for bottom_row in ("", '"a.txt" 1L, 4B'):
+        with patch(
+            "vim_ai_follower.backends.tmux_vim.subprocess.run",
+            _world(bottom_row=bottom_row, status_row=status_row),
+        ):
+            assert tmux_vim._typing_on_screen("%5") == reason
+
+
+def test_the_bottom_row_decides_before_the_status_line() -> None:
+    with patch(
+        "vim_ai_follower.backends.tmux_vim.subprocess.run",
+        _world(bottom_row="-- VISUAL --", status_row=" INSERT | a.txt"),
+    ):
+        assert tmux_vim._typing_on_screen("%5") == "in visual mode"
+
+
+def test_a_status_line_that_cannot_be_read_falls_back_to_the_cursor() -> None:
+    with patch(
+        "vim_ai_follower.backends.tmux_vim.subprocess.run",
+        _world(height_and_cursor="20 bar", status_row=" VISUAL", status_code=1),
+    ):
+        assert tmux_vim._typing_on_screen("%5") == "in insert mode (a bar cursor)"
+
+
+def test_a_one_row_pane_has_no_status_line_to_read() -> None:
+    def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        if argv[1] == "display-message":
+            return _completed(argv, "1 default\n")
+        assert argv[-4:] == ["-S", "0", "-E", "0"], argv
+        return _completed(argv, "a.txt\n")
+
+    with patch("vim_ai_follower.backends.tmux_vim.subprocess.run", MagicMock(side_effect=run)):
+        assert tmux_vim._typing_on_screen("%5") is None
 
 
 def _settling(rows: list[str]) -> MagicMock:

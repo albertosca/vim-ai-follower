@@ -43,14 +43,21 @@ def world() -> Iterator[E2EFollower]:
 
 
 def _users_vim(
-    world: E2EFollower, users_file: Path, claudes_file: Path, *, showmode: bool
+    world: E2EFollower,
+    users_file: Path,
+    claudes_file: Path,
+    *,
+    showmode: bool,
+    vimrc: str = "",
 ) -> tuple[str, Path]:
     """The user's own Vim, split beside the origin pane: (pane id, the file
-    its observer timer rewrites every 30 ms)."""
+    its observer timer rewrites every 30 ms). `vimrc` is more of the user's
+    configuration."""
     observed = world.workdir / "observed.txt"
     world.set_vimrc(
         "set nocompatible ttimeout ttimeoutlen=10 noswapfile\n"
         + ("set showmode\n" if showmode else "set noshowmode\n")
+        + vimrc
         + f"let g:claudes = '{os.path.realpath(claudes_file)}'\n"
         + f"let g:observed = '{observed}'\n"
         + "function! Observe(timer) abort\n"
@@ -283,6 +290,50 @@ def test_a_first_contact_with_showmode_reads_the_screen_and_asks(world: E2EFollo
         assert state.stale_files == (os.path.realpath(claudes_file),)
         # Nothing was typed, so the script was never sourced there.
         assert not list(world.cache_dir.glob("mode-*.txt"))
+    finally:
+        world.tmux("send-keys", "-t", pane_id, "Escape")
+
+
+@pytest.mark.parametrize(
+    "statusline",
+    [
+        "%{mode()==#'i'?'INSERT':'NORMAL'}",
+        "%#StatusLine#\\ %{mode()==#'i'?'INSERT':'NORMAL'}\\ \\|\\ %f%=%l:%c",
+    ],
+    ids=["mode-only", "lightline-like"],
+)
+def test_a_first_contact_in_insert_under_noshowmode_with_a_statusline_mode_is_typing(
+    world: E2EFollower, statusline: str
+) -> None:
+    # 'noshowmode' leaves the bottom row empty in insert mode; the user's
+    # status line (as lightline or airline draw it) shows the mode instead,
+    # and no hook has reached this Vim yet, so it has no mode file.
+    _question_seconds(world, 3)
+    users_file = world.workdir / "a.txt"
+    users_file.write_text("aaa\n")
+    claudes_file = world.workdir / "file.py"
+    claudes_file.write_text("one\ntwo\n")
+    pane_id, observed = _users_vim(
+        world,
+        users_file,
+        claudes_file,
+        showmode=False,
+        vimrc=f"set laststatus=2\nset statusline={statusline}\n",
+    )
+    _adopted_state(world, pane_id, claudes_file)
+    _type_half(world, pane_id, observed, users_file)
+    assert not list(world.cache_dir.glob("mode-*.txt"))
+    try:
+        _seconds, state = _edit_answered(world, claudes_file, "n")
+        log = _hook_log(world)
+        assert "Traceback" not in log, log
+        skipped = [line for line in log.splitlines() if "is waiting on its user" in line]
+        assert len(skipped) == 1, log
+        assert "(in insert mode), not taken over (answered no)" in skipped[0], skipped
+        report = _settled(world, observed)
+        assert report["mode"] == "i", report
+        assert report["lines"] == "aaahalf", report
+        assert state.stale_files == (os.path.realpath(claudes_file),)
     finally:
         world.tmux("send-keys", "-t", pane_id, "Escape")
 

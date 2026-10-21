@@ -2405,6 +2405,32 @@ _SHOWMODE_REASONS = {
 # a wrong key); `--No lines in buffer--` has no space, and a recording shows
 # `recording @a`.
 _NOT_TYPING_ROW = "-- More --"
+# Under 'noshowmode' (which lightline and airline set) the bottom row says
+# nothing of the mode (it may still hold a message, such as the file's
+# `"a.txt" 1L, 4B`), and the user's status line shows it instead (A5 = A): the
+# row just above the command line is the bottom window's status line with
+# 'laststatus' 2 (or with splits), and lightline, airline and a plain
+# `%{mode()}` statusline write the mode there as an upper-case word. Only
+# that row is read, upper case only, a whole word: a buffer line sits there
+# with 'laststatus' 0 or 1 and one window, so a status-line word in a
+# buffer's text (`INSERT INTO t`) asks once, which is the safe direction.
+_STATUSLINE_MODE = re.compile(
+    r"(?<![\w-])(INSERT|REPLACE|V-REPLACE|VREPLACE|VISUAL|V-LINE|V-BLOCK"
+    r"|SELECT|S-LINE|S-BLOCK|TERMINAL)(?![\w-])"
+)
+_STATUSLINE_REASONS = {
+    "INSERT": "in insert mode",
+    "REPLACE": "in replace mode",
+    "V-REPLACE": "in replace mode",
+    "VREPLACE": "in replace mode",
+    "VISUAL": "in visual mode",
+    "V-LINE": "in visual mode",
+    "V-BLOCK": "in visual mode",
+    "SELECT": "in select mode",
+    "S-LINE": "in select mode",
+    "S-BLOCK": "in select mode",
+    "TERMINAL": "in terminal mode",
+}
 _COMPLETION_REASON = "in insert mode (completion)"
 # Vim's bottom row is always its command line, never a `~` filler line: a
 # `~` there is a screen Vim drew for a taller pane. A Vim with a repeating
@@ -2513,7 +2539,26 @@ def _typing_on_screen(pane_id: str, *, vim_pid: int | None = None) -> str | None
             return _SHOWMODE_REASONS[match.group(2) or match.group(1)]
         if row.startswith("-- ") and not row.startswith(_NOT_TYPING_ROW):
             return _COMPLETION_REASON
+        if bottom > 0:
+            status = _statusline_mode(pane_id, bottom - 1)
+            if status is not None:
+                return status
     return _TYPING_CURSORS.get(cursor.strip())
+
+
+def _statusline_mode(pane_id: str, row_number: int) -> str | None:
+    """The typing mode the status line on row `row_number` names (see
+    _STATUSLINE_MODE), or None."""
+    result = subprocess.run(
+        ["tmux", "capture-pane", "-p", "-t", pane_id, "-S", str(row_number), "-E", str(row_number)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    match = _STATUSLINE_MODE.search(result.stdout)
+    return _STATUSLINE_REASONS[match.group(1)] if match is not None else None
 
 
 def _waiting_on_screen(pane_id: str, row: str) -> str | None:
