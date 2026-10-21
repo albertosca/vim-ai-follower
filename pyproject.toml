@@ -55,6 +55,7 @@ markers = [
     "pid_walk: opts out of conftest's no_pid_ancestry_walk neutraliser",
     "real_landing: opts out of conftest's vim_confirms_landing stand-in",
     "real_send_line: opts out of conftest's typed_lines_as_text_and_enter stand-in",
+    "real_call_key: opts out of conftest's calls_typed_without_a_vim stand-in",
 ]
 
 # The dev environment is uv-managed (.venv), resolved from uv.lock, so the

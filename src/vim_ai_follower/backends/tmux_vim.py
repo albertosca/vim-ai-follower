@@ -1306,6 +1306,81 @@ if exists('##ModeChanged') && !get(g:, 'vaf_dedicated', 0)
 endif
 """
 
+# How a call reaches the script without being typed (T30). The follower
+# writes the call, a Vim list `['op', arguments…]`, to a call file
+# `k<8 digits>` in the cache directory, and sends only a key sequence: the
+# termcode `<F37>` (ESC [ 9087 ~, which the script sets), the 8 digits, and
+# `<F37>` again. `<F37>` is a `<silent>` Normal-mode mapping, through `<Cmd>`
+# where Vim has it, so nothing reaches the command line: a typed call was
+# still visible for over 1 ms in 1 of 400 calls in an adopted Vim (measured
+# 2026-10-20 with scripts/measure_typed_echo.py). s:key reads the digits
+# with getchar(0), which takes the keys after the mapping's (measured on Vim
+# 9.2: the digits, then the closing `<F37>`, then nothing), up to 200 ms,
+# and gives up at any other key. A count before the key was rejected: digits
+# typed in Normal mode go through the user's own mappings (`nnoremap 1 …`
+# fired). It calls s:dispatch, not the global dispatcher, so a user's
+# `:delfunction` of the latter breaks nothing. The follower sends the key
+# only while the Vim's ready file (s:ready_path, written once the mapping
+# is set) names this script and a live process; otherwise it types the call
+# as before. A plain Ex line goes through the same key as the `ex` call.
+_VIM_KEY = r"""
+function! s:dispatch(op, arguments) abort
+  let g:vaf_setting = 1
+  try
+    let l:result = call('s:' . a:op, a:arguments)
+  finally
+    unlet! g:vaf_setting
+  endtry
+  redraw
+  echo ''
+  return l:result
+endfunction
+
+function! s:ex(command) abort
+  execute a:command
+endfunction
+
+function! s:key(name) abort
+  let digits = ''
+  let started = reltime()
+  while len(digits) <= 8
+    let typed = getchar(0)
+    if type(typed) == type(0) && typed >= 48 && typed <= 57
+      let digits .= nr2char(typed)
+    elseif type(typed) == type('') && typed ==# "\<F37>"
+      break
+    elseif type(typed) == type(0) && typed == 0 && reltimefloat(reltime(started)) < 0.2
+      sleep 1m
+    else
+      return
+    endif
+  endwhile
+  let path = s:dir . 'k' . digits
+  if len(digits) != 8 || !filereadable(path)
+    return
+  endif
+  let request = eval(join(readfile(path, 'b'), ''))
+  call delete(path)
+  call s:dispatch(request[0], request[1:])
+endfunction
+
+function! s:ready_path() abort
+  let pane = matchstr($TMUX_PANE, '^%\zs[0-9]\+$')
+  if pane ==# ''
+    return ''
+  endif
+  let server = matchstr($TMUX, '^[^,]*,\zs[0-9]\+\ze,')
+  return s:dir . 'ready-' . (server ==# '' ? '' : server . '-') . pane
+endfunction
+
+function! s:forget_ready() abort
+  let path = s:ready_path()
+  if path !=# '' && filereadable(path) && get(readfile(path), 0, '') =~# ' ' . getpid() . '$'
+    call delete(path)
+  endif
+endfunction
+"""
+
 # The whole script. `@DIR@` is the cache directory (a Vim string literal,
 # trailing slash included) and `@NAME@` the dispatcher's name, both filled in
 # by _vim_functions. The dispatcher is defined LAST, and only when every
@@ -1375,19 +1450,28 @@ _VIM_SCRIPT = (
     + _VIM_EVICT
     + _VIM_PROBE
     + _VIM_MODE
+    + _VIM_KEY
     + r"""
 if @HELPERS@
 function! @NAME@(op, ...) abort
-  let g:vaf_setting = 1
-  try
-    let l:result = call('s:' . a:op, a:000)
-  finally
-    unlet! g:vaf_setting
-  endtry
-  redraw
-  echo ''
-  return l:result
+  return s:dispatch(a:op, a:000)
 endfunction
+try
+  exe "set <F37>=\<Esc>[9087~"
+  if has('patch-8.2.1978')
+    nnoremap <silent> <F37> <Cmd>call <SID>key('@NAME@')<CR>
+  else
+    nnoremap <silent> <F37> :<C-u>call <SID>key('@NAME@')<CR>
+  endif
+  augroup vim_ai_follower_ready
+    autocmd! vim_ai_follower_ready
+    autocmd VimLeave * call s:forget_ready()
+  augroup END
+  if s:ready_path() !=# ''
+    call writefile(['@NAME@ ' . getpid()], s:ready_path())
+  endif
+catch
+endtry
 endif
 
 for s:name in getcompletion('VafFollower_', 'function')
@@ -1659,7 +1743,11 @@ def _sweep_scripts(current: Path) -> None:
             maximum_age = _SCRIPT_MAX_AGE_SECONDS
         elif _DEFINE_ROWS_NAME.fullmatch(entry.name):
             maximum_age = _DEFINE_ROWS_MAX_AGE_SECONDS
-        elif _SCRIPT_TEMPORARY_NAME.fullmatch(entry.name) or _UNANSWERED_NAME.fullmatch(entry.name):
+        elif (
+            _SCRIPT_TEMPORARY_NAME.fullmatch(entry.name)
+            or _UNANSWERED_NAME.fullmatch(entry.name)
+            or _KEYED_NAME.fullmatch(entry.name)
+        ):
             maximum_age = _PATH_HANDLE_MAX_AGE_SECONDS
         else:
             continue
@@ -1678,8 +1766,13 @@ _MODE_FILE_NAME = re.compile(
 )
 
 
+# A Vim's ready file (s:ready_path): `ready-[<server pid>-]<pane>`.
+_READY_FILE_NAME = re.compile(r"ready-(?:[0-9]+-)?[0-9]+")
+
+
 def _sweep_mode_files(entries: list[Path]) -> None:
-    """Delete the mode files and release marks of Vims that are gone:
+    """Delete the mode files, release marks and ready files of Vims that
+    are gone:
     VimLeave deletes the mode file, but a Vim killed with SIGKILL, or a
     crash, leaves it, and a mark lives until a contact consumes it. Never by
     age: a Vim left in insert mode overnight still needs its file to say so,
@@ -1689,9 +1782,20 @@ def _sweep_mode_files(entries: list[Path]) -> None:
     start."""
     for entry in entries:
         match = _MODE_FILE_NAME.fullmatch(entry.name)
-        if match is None:
+        if match is not None:
+            pid = int(match.group(1) or match.group(2))
+        elif _READY_FILE_NAME.fullmatch(entry.name):
+            # A ready file names its Vim in its text (s:ready_path is named
+            # after the pane), whatever plugin version wrote it.
+            try:
+                words = entry.read_text().split()
+            except (OSError, UnicodeDecodeError):
+                continue
+            if len(words) != 2 or not words[1].isdigit():
+                continue
+            pid = int(words[1])
+        else:
             continue
-        pid = int(match.group(1) or match.group(2))
         if pid <= 0:
             # Never a Vim's; kill(0) would signal our own process group.
             continue
@@ -1703,6 +1807,171 @@ def _sweep_mode_files(entries: list[Path]) -> None:
         except OSError:
             # EPERM: alive, another user's.
             continue
+
+
+class VimCall(str):
+    """A follower call: its typed line (the str itself, what a Vim not
+    ready for the key is typed, and what unit tests read) and the same call
+    as a Vim list (`expression`), what the call file holds (_VIM_KEY)."""
+
+    expression: str = ""
+
+
+def _vim_call(line: str, expression: str) -> VimCall:
+    call = VimCall(line)
+    call.expression = expression
+    return call
+
+
+def _call_expression(line: str) -> str:
+    """The Vim list a call file holds for `line`: a call's own, or a plain
+    `:` Ex line as the `ex` call (s:ex)."""
+    if isinstance(line, VimCall):
+        return line.expression
+    return f"['ex',{_vim_string(line.removeprefix(':'))}]"
+
+
+# <F37> as the script sets it (_VIM_KEY): ESC [ 9 0 8 7 ~. The final `~`:
+# with `|` Vim left a stray `|` in the buffer (measured 2026-10-20).
+_CALL_KEY = ("1b", "5b", "39", "30", "38", "37", "7e")
+# A call file's name: `k` and the 8 digits the key carries.
+_CALL_FILE_NAME = re.compile(r"k[0-9]{8}")
+# How long _define waits for a Vim's ready file after the define line; a
+# Vim that has not written it by then is typed its calls, as before.
+_READY_WAIT_SECONDS = 1.0
+_READY_POLL_SECONDS = 0.01
+# A keyed call whose file is still unread this long after it was sent, and
+# was sent after the Vim last wrote its ready file, says the key's mapping
+# may be gone (a user's `:mapclear`): the next contact types the define.
+_UNREAD_CALL_SECONDS = 1.0
+# The per-pane record of the last keyed call's digits (_send), and the
+# temporary it is written through (left only by a rename that failed).
+_KEYED_NAME = re.compile(r"\.?keyed-(?:[0-9]+-)?[0-9]+(?:\.[0-9a-f]{8})?")
+
+
+def _call_file(expression: str) -> str:
+    """Write `expression` to a new call file and return its 8 digits.
+    Created exclusively, like a path handle, so two calls never share one;
+    files no Vim read are swept after _PATH_HANDLE_MAX_AGE_SECONDS."""
+    directory = cache.CACHE_DIRECTORY
+    directory.mkdir(parents=True, exist_ok=True)
+    now = time.time()
+    for old in directory.glob("k*"):
+        if not _CALL_FILE_NAME.fullmatch(old.name):
+            continue
+        with contextlib.suppress(FileNotFoundError):
+            if now - old.stat().st_mtime > _PATH_HANDLE_MAX_AGE_SECONDS:
+                old.unlink()
+    while True:
+        digits = f"{secrets.randbelow(10**8):08d}"
+        try:
+            with (directory / f"k{digits}").open("xb") as stream:
+                stream.write(expression.encode())
+        except FileExistsError:
+            continue
+        return digits
+
+
+def _ready_path(pane_id: str, server_pid: int | None) -> Path:
+    """The ready file s:ready_path writes for this pane: named after the
+    tmux server too, as the backoff mark is (pane ids repeat across
+    servers, which share the cache)."""
+    pane_number = pane_id.lstrip("%")
+    if server_pid is None:
+        return cache.CACHE_DIRECTORY / f"ready-{pane_number}"
+    return cache.CACHE_DIRECTORY / f"ready-{server_pid}-{pane_number}"
+
+
+def _keyed_path(pane_id: str, server_pid: int | None) -> Path:
+    """Where _send records the digits of the last call it keyed to this
+    pane, named like the ready file."""
+    ready = _ready_path(pane_id, server_pid)
+    return ready.with_name(ready.name.replace("ready-", "keyed-", 1))
+
+
+def _keyed_call_unread(pane_id: str) -> bool:
+    """Whether the last call keyed to this pane has gone unread for
+    _UNREAD_CALL_SECONDS since after the Vim wrote its ready file: the
+    mapping it goes through may be gone. A Vim that was only busy reads it
+    once it is not, and a define that re-sourced the script writes the
+    ready file again, so either way the sign ends."""
+    server_pid = _server_pid()
+    try:
+        digits = _keyed_path(pane_id, server_pid).read_text().strip()
+        sent_at = (cache.CACHE_DIRECTORY / f"k{digits}").stat().st_mtime
+        ready_at = _ready_path(pane_id, server_pid).stat().st_mtime
+    except (OSError, UnicodeDecodeError):
+        return False
+    return sent_at > ready_at and time.time() - sent_at > _UNREAD_CALL_SECONDS
+
+
+def _ready_pid(path: Path) -> int | None:
+    """The pid in a ready file that names this script's dispatcher, or None."""
+    name, _text = _vim_functions()
+    try:
+        words = path.read_text().split()
+    except (OSError, UnicodeDecodeError):
+        return None
+    if len(words) != 2 or words[0] != name or not words[1].isdigit():
+        return None
+    return int(words[1])
+
+
+def _process_alive(pid: int) -> bool:
+    if pid <= 0:
+        # kill(0) would signal our own process group.
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # EPERM: alive, another user's.
+        return True
+    return True
+
+
+# The tmux server's pid per environment (TMUX, TMUX_TMPDIR), asked once per
+# process: a call would otherwise spawn a tmux client for its ready check.
+_SERVER_PIDS: dict[tuple[str | None, str | None], int | None] = {}
+
+
+def _server_pid() -> int | None:
+    key = (os.environ.get("TMUX"), os.environ.get("TMUX_TMPDIR"))
+    if key not in _SERVER_PIDS:
+        _SERVER_PIDS[key] = binding.tmux_server_pid()
+    return _SERVER_PIDS[key]
+
+
+def _vim_ready(pane_id: str) -> bool:
+    """Whether this pane's Vim has the call key mapped: its ready file names
+    this script and a process that is alive."""
+    pid = _ready_pid(_ready_path(pane_id, _server_pid()))
+    return pid is not None and _process_alive(pid)
+
+
+def _send(pane: TmuxPane, line: str) -> None:
+    """Send a follower line: through the call key (_VIM_KEY) to a Vim that
+    is ready for it, so nothing is typed on its command line; typed, as
+    before, to any other."""
+    if not _vim_ready(pane.pane_id):
+        pane.send_line(line)
+        return
+    digits = _call_file(_call_expression(line))
+    record = _keyed_path(pane.pane_id, _server_pid())
+    temporary = record.with_name(f".{record.name}.{secrets.token_hex(4)}")
+    with contextlib.suppress(OSError):
+        temporary.write_text(digits)
+        temporary.replace(record)
+    pane.send_hex(*_CALL_KEY, *(f"{ord(digit):02x}" for digit in digits), *_CALL_KEY)
+
+
+def _await_ready(pane_id: str) -> None:
+    """Wait, up to _READY_WAIT_SECONDS, for the define line just sent to
+    leave a ready file: until then the calls are typed."""
+    deadline = time.monotonic() + _READY_WAIT_SECONDS
+    while not _vim_ready(pane_id) and time.monotonic() < deadline:
+        time.sleep(_READY_POLL_SECONDS)
 
 
 def _call_line(operation: str, *arguments: str | int) -> str:
@@ -1720,7 +1989,7 @@ def _call_line(operation: str, *arguments: str | int) -> str:
         _vim_string(argument) if isinstance(argument, str) else str(argument)
         for argument in (operation, *arguments)
     )
-    return f":if exists('*{name}')|call {name}({rendered})|endif"
+    return _vim_call(f":if exists('*{name}')|call {name}({rendered})|endif", f"[{rendered}]")
 
 
 def _define_line(pane_id: str) -> str:
@@ -1741,7 +2010,13 @@ def _define_line(pane_id: str) -> str:
     38 ms, measured 2026-10-06 on Vim 9.2 in a 49-column tmux pane, no
     vimrc, load 9). When even that passes two
     rows, the guard stays, so at least only a Vim that lacks the functions
-    reads the file, and the pane's first such line says so in the log."""
+    reads the file, and the pane's first such line says so in the log.
+
+    The guard asks for what the calls that follow need (T30): a Vim ready
+    for the call key (_vim_ready) is sent its calls through the key, so the
+    guard is the key's mapping (`maparg()`, gone after a user's `:mapclear`);
+    any other is typed them, so the guard is the dispatcher (gone after a
+    `:delfunction`, or never there)."""
     name, text = _vim_functions()
     path = _script_file(name, text)
     target = _home_relative(pane_id, path)
@@ -1751,7 +2026,13 @@ def _define_line(pane_id: str) -> str:
         source = f"exe 'sil! so ' . fnameescape({_vim_string(str(path))})"
     else:
         source = f"sil! so {target}"
-    guarded = f":if !exists('*{name}')|{source}|endif"
+    if _vim_ready(pane_id):
+        # Its calls go through the key, which a `:mapclear` takes away.
+        missing = f"maparg('<F37>')!~#'{name.removeprefix('VafFollower_')}'"
+    else:
+        # Its calls are typed, and a `:delfunction` takes the dispatcher.
+        missing = f"!exists('*{name}')"
+    guarded = f":if {missing}|{source}|endif"
     if len(guarded) <= _MAXIMUM_TYPED_LINE:
         return guarded
     if len(f":{source}") <= _MAXIMUM_TYPED_LINE:
@@ -1987,7 +2268,7 @@ def _confirm_landing(pane: TmuxPane, file_path: str, handle: Path) -> None:
     # Clears a prompt the acting call can leave (see s:landed).
     pane.send_key("Escape")
     pane.send_key("Escape")
-    pane.send_line(_call_line("landed", handle.name))
+    _send(pane, _call_line("landed", handle.name))
     _await_landing(pane.pane_id, answer, handle.name, file_path, handle)
 
 
@@ -2748,16 +3029,25 @@ class TmuxVimFollower:
         so it also gives back what a `stop` left pending in this Vim
         (s:release_all, mark_release_pending) before anything else is sent:
         the release concerns an earlier follower's claims, and the calls that
-        follow make this one's. True when it sent that release."""
-        pane.send_line(_define_line(self.pane_id))
+        follow make this one's. True when it sent that release.
+
+        A Vim ready for the call key is typed no define at all (T30): the
+        define is the one line still typed, and sent on every entry point it
+        stayed the line on the command line (115 echoes in 23 rounds). It
+        comes back only when a keyed call went unread (_keyed_call_unread),
+        and its maparg() guard then re-sources the script only if the
+        mapping is really gone."""
+        if not _vim_ready(self.pane_id) or _keyed_call_unread(self.pane_id):
+            pane.send_line(_define_line(self.pane_id))
+            _await_ready(self.pane_id)
         released = _take_release_mark(self.pane_id)
         if released:
-            pane.send_line(_call_line("release_all"))
+            _send(pane, _call_line("release_all"))
             logger.info("gave back the locks a stop left pending in Vim %s", self.pane_id)
         for file_path, dedicated in _take_pending_evictions(self.pane_id):
             handle = _path_handle(self.pane_id, file_path)
             operation = "wipe" if dedicated else "evict"
-            pane.send_line(_call_line(operation, handle.name, _case_folds(file_path)))
+            _send(pane, _call_line(operation, handle.name, _case_folds(file_path)))
             logger.info(
                 "closed %s, deferred during the backoff, in Vim %s", file_path, self.pane_id
             )
@@ -2777,7 +3067,7 @@ class TmuxVimFollower:
         pane = TmuxPane(pane_id=self.pane_id)
         self._normal_mode(pane)
         if not self._define(pane):
-            pane.send_line(_call_line("release_all"))
+            _send(pane, _call_line("release_all"))
 
     def _release_if_stopped(self, pane: TmuxPane) -> None:
         """Give back what this hook just claimed when a `claude-follow stop`
@@ -2792,7 +3082,7 @@ class TmuxVimFollower:
         if not self.window_id or owned_state(self.window_id, "tmux", self.pane_id) is not None:
             return
         _take_release_mark(self.pane_id)
-        pane.send_line(_call_line("release_all"))
+        _send(pane, _call_line("release_all"))
         logger.info("gave back the locks sent to Vim %s after a stop", self.pane_id)
 
     def _send_reload_and_lock(self, pane: TmuxPane, *, discard: bool) -> None:
@@ -2801,13 +3091,13 @@ class TmuxVimFollower:
         noted first and the lock claims the option (see
         s:note_user_readonly)."""
         adopted = self._is_adopted()
-        pane.send_line(_call_line("reload", int(discard), int(adopted)))
+        _send(pane, _call_line("reload", int(discard), int(adopted)))
         self._send_lock(pane, adopted=adopted)
 
     def _send_lock(self, pane: TmuxPane, *, adopted: bool) -> None:
         """The follower's readonly lock after a re-read (adopted: the claim,
         s:lock, a call so the user's readonly is noted first)."""
-        pane.send_line(_call_line("lock") if adopted else _cleared(_LOCK_READONLY))
+        _send(pane, _call_line("lock") if adopted else _cleared(_LOCK_READONLY))
 
     def goto_file(self, file_path: str) -> None:
         """The defensive preamble: land on the tab showing file_path (by
@@ -2846,7 +3136,7 @@ class TmuxVimFollower:
         self._normal_mode(pane)
         self._define(pane)
         handle = _path_handle(self.pane_id, file_path)
-        pane.send_line(_call_line(operation, handle.name, _case_folds(file_path), *extra))
+        _send(pane, _call_line(operation, handle.name, _case_folds(file_path), *extra))
         _confirm_landing(pane, file_path, handle)
         return pane
 
@@ -2883,14 +3173,14 @@ class TmuxVimFollower:
         answer.unlink(missing_ok=True)
         token = _readonly_token()
         number = int(self.pane_id.lstrip("%"))
-        pane.send_line(_call_line("reground", number, token, int(adopted)))
+        _send(pane, _call_line("reground", number, token, int(adopted)))
         verdict = _await_answer(answer, str(token), _PROBE_TIMEOUT_SECONDS)
         answer.unlink(missing_ok=True)
         if verdict == ["moved"]:
             return False
         if verdict != ["reloaded"]:
             logger.warning("no reload verdict from the follower's Vim about %s", file_path)
-        pane.send_line(_call_line("lock") if adopted else _cleared(_LOCK_READONLY))
+        _send(pane, _call_line("lock") if adopted else _cleared(_LOCK_READONLY))
         return True
 
     def rewrite_buffer(self, file_path: str, content: str) -> AnimationResult:
@@ -2907,8 +3197,8 @@ class TmuxVimFollower:
         that stub (Task 20 review, I1)."""
         self.goto_file(file_path)
         pane = TmuxPane(pane_id=self.pane_id)
-        pane.send_line(self._unlock_line())
-        pane.send_line(":%d")
+        _send(pane, self._unlock_line())
+        _send(pane, ":%d")
         lines = tuple(text_lines(content))
         if not lines:
             return AnimationResult("completed", 0)
@@ -2978,7 +3268,7 @@ class TmuxVimFollower:
         answer.parent.mkdir(parents=True, exist_ok=True)
         answer.unlink(missing_ok=True)
         handle = _path_handle(self.pane_id, file_path)
-        pane.send_line(_call_line("evict", handle.name, _case_folds(file_path)))
+        _send(pane, _call_line("evict", handle.name, _case_folds(file_path)))
         lines = _await_answer(answer, handle.name, _PROBE_TIMEOUT_SECONDS)
         answer.unlink(missing_ok=True)
         if lines is None and _distrust_home(self.pane_id):
@@ -2987,7 +3277,7 @@ class TmuxVimFollower:
 
     def _send_wipe(self, pane: TmuxPane, file_path: str) -> None:
         handle = _path_handle(self.pane_id, file_path)
-        pane.send_line(_call_line("wipe", handle.name, _case_folds(file_path)))
+        _send(pane, _call_line("wipe", handle.name, _case_folds(file_path)))
 
     def ensure_showing(self, file_path: str) -> None:
         """The Read/binary entry point: show the file as it is ON DISK. It
@@ -3021,7 +3311,7 @@ class TmuxVimFollower:
         self._define(pane)
         # The handle's name is also the answer's nonce (see s:probe).
         handle = _path_handle(self.pane_id, file_path)
-        pane.send_line(_call_line("probe", handle.name, _case_folds(file_path)))
+        _send(pane, _call_line("probe", handle.name, _case_folds(file_path)))
         lines = _await_answer(probe, handle.name, _PROBE_TIMEOUT_SECONDS)
         if lines is None:
             logger.warning(
@@ -3097,7 +3387,7 @@ class TmuxVimFollower:
             logger.warning("could not prepare the readonly answer for %s: %s", self.pane_id, error)
         token = _readonly_token()
         _SENT_READONLY_TOKENS[self.pane_id] = token
-        pane.send_line(_call_line("restore_readonly", int(self.pane_id.lstrip("%")), token))
+        _send(pane, _call_line("restore_readonly", int(self.pane_id.lstrip("%")), token))
         return token
 
     def _with_unlocked(
@@ -3127,16 +3417,16 @@ class TmuxVimFollower:
         on disk (animate._resume) and the error goes on to the caller."""
         adopted = self._is_adopted()
         pane = TmuxPane(pane_id=self.pane_id)
-        pane.send_line(_COC_DISABLE)
-        pane.send_line(_call_line("unlock") if adopted else _UNLOCK_FOR_ANIMATION)
+        _send(pane, _COC_DISABLE)
+        _send(pane, _call_line("unlock") if adopted else _UNLOCK_FOR_ANIMATION)
         try:
             result = run(pane)
         except NavigationFailed:
             self._normal_mode(pane)
-            pane.send_line(_cleared(_RESTORE_PASTE))
+            _send(pane, _cleared(_RESTORE_PASTE))
             if adopted and file_path:
                 handle = _path_handle(self.pane_id, file_path)
-                pane.send_line(_call_line("give_back", handle.name, _case_folds(file_path)))
+                _send(pane, _call_line("give_back", handle.name, _case_folds(file_path)))
             if self.window_id and owned_state(self.window_id, "tmux", self.pane_id) is None:
                 # A `claude-follow stop` ran while the goto waited: the
                 # remainder animate._resume just saved belongs to no follower
@@ -3150,10 +3440,10 @@ class TmuxVimFollower:
             # nothing more is sent (final review C1).
             return result
         if result.outcome != "interrupted":
-            pane.send_line(relock.line(adopted))
+            _send(pane, relock.line(adopted))
         else:
             # No relock to turn 'paste' off: give the user's back.
-            pane.send_line(_cleared(_RESTORE_PASTE))
+            _send(pane, _cleared(_RESTORE_PASTE))
         if adopted:
             # After the relock, whose `:e!` resets 'readonly' (and on an
             # interrupt, which hands over the buffer without one).
@@ -3216,8 +3506,11 @@ class TmuxVimFollower:
         # legacy `.pane` (read as adopted, `shown_any` unset) asked for the
         # rename there, turning the user's buffer into Claude's file.
         in_new_tab = in_new_tab or adopted
-        pane.send_line(
-            _call_line("rename", handle.name, _case_folds(file_path), int(in_new_tab), int(adopted))
+        _send(
+            pane,
+            _call_line(
+                "rename", handle.name, _case_folds(file_path), int(in_new_tab), int(adopted)
+            ),
         )
         _confirm_landing(pane, file_path, handle)
         # An ADOPTED Vim is the user's own editor: its buffer gets swap back
@@ -3225,18 +3518,18 @@ class TmuxVimFollower:
         # that one step (see _VIM_SWAP_BACK_ON). A dedicated follower's stays
         # off.
         if adopted:
-            pane.send_line(_call_line("swap_back_on"))
+            _send(pane, _call_line("swap_back_on"))
         # `:filetype detect` must run BEFORE 'paste' is enabled below: it
         # loads the filetype's indent/ftplugin scripts, which can turn
         # cindent/smartindent/indentexpr back on — 'paste' only suppresses
         # whatever was active at the moment it's set, not anything enabled
         # afterwards.
-        pane.send_line(":filetype detect")
+        _send(pane, ":filetype detect")
         lines = tuple(text_lines(content))
 
         def run(inner: TmuxPane) -> AnimationResult:
             # Wipe down to a single blank line — Vim can't have zero lines.
-            inner.send_line(":%d")
+            _send(inner, ":%d")
             return run_lines(
                 inner,
                 self.window_id,
@@ -3332,11 +3625,11 @@ class TmuxVimFollower:
         actually gets to type into the buffer themselves and wants real
         completion/hints (see _COC_DISABLE for why it's off otherwise)."""
         pane = TmuxPane(pane_id=self.pane_id)
-        pane.send_line(_COC_ENABLE)
+        _send(pane, _COC_ENABLE)
         adopted = self._is_adopted()
         self._define(pane)
         # Gives back only what a record still holds (see s:hand_over).
-        pane.send_line(_call_line("hand_over", int(adopted)))
+        _send(pane, _call_line("hand_over", int(adopted)))
         # An adopted Vim's user gets their readonly back here when a record
         # of it is left (see s:note_user_readonly).
         if adopted:
@@ -3345,7 +3638,7 @@ class TmuxVimFollower:
     def goto_line(self, offset: int) -> None:
         pane = TmuxPane(pane_id=self.pane_id)
         # `:exe N`, not `:N|…`: a range before a bar prints that line.
-        pane.send_line(_cleared(f":exe {offset}"))
+        _send(pane, _cleared(f":exe {offset}"))
 
     def stop(self, dedicated: bool | None = None) -> None:
         # The follower's own pane, killed; an adopted Vim's pane is the

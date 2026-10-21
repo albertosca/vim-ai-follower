@@ -177,6 +177,24 @@ def typed_lines_as_text_and_enter(
 
 
 @pytest.fixture(autouse=True)
+def calls_typed_without_a_vim(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A follower call goes through the call key only to a Vim whose ready
+    file says it has the key mapped (tmux_vim._vim_ready), and the define
+    line waits for that file. A unit test has no Vim: its calls are typed,
+    as before the key, with no wait and no tmux client asked for the
+    server's pid. The key itself is pinned by the tests marked
+    @pytest.mark.real_call_key; integration tests always run the real one."""
+    if request.node.get_closest_marker("integration") or request.node.get_closest_marker(
+        "real_call_key"
+    ):
+        return
+    monkeypatch.setattr(tmux_vim, "_vim_ready", lambda _pane_id: False)
+    monkeypatch.setattr(tmux_vim, "_READY_WAIT_SECONDS", 0.0)
+
+
+@pytest.fixture(autouse=True)
 def format_reads_under_tmp_path(
     request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

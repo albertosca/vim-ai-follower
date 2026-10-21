@@ -63,6 +63,7 @@ from vim_ai_follower.backends.tmux_vim import TmuxVimFollower, _vim_functions
 
 _GROUP = "vim_ai_follower_swap"
 _MODE_GROUP = "vim_ai_follower_mode"
+_READY_GROUP = "vim_ai_follower_ready"
 
 
 def _sent_text(run_mock: MagicMock) -> list[str]:
@@ -114,8 +115,8 @@ def test_the_script_contains_no_bare_autocmd_bang() -> None:
     autocommand the user has. Nothing needs it, because `finally` clears
     the group on every pass."""
     script = _vim_functions()[1]
-    named = script.count(f"autocmd! {_GROUP}") + script.count(f"autocmd! {_MODE_GROUP}")
-    assert script.count("autocmd!") == named == 2
+    named = sum(script.count(f"autocmd! {group}") for group in (_GROUP, _MODE_GROUP, _READY_GROUP))
+    assert script.count("autocmd!") == named == 3
     assert script.count(f"autocmd! {_GROUP}") == 1
     teardown = vim_function("swap_answer_close")
     assert teardown.index(f"autocmd! {_GROUP}") < teardown.index(f"augroup! {_GROUP}")

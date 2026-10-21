@@ -5,12 +5,15 @@ Usage: uv run python scripts/measure_typed_echo.py <adopted|dedicated> [calls]
 Runs a private tmux server (TMUX unset, a private TMUX_TMPDIR, `-f
 /dev/null`, a throwaway HOME), a Vim in a 49-column pane, and the real
 TmuxVimFollower against it (show_fresh, probe, apply_edit, ensure_showing,
-close_tab per round) until at least `calls` (default 400) follower lines have
-been echoed. `tmux pipe-pane` copies Vim's raw terminal output into a
+close_tab per round) until at least `calls` (default 400) follower calls have
+been sent, through the call key or typed (T30: a Vim ready for the key echoes
+none of them). `tmux pipe-pane` copies Vim's raw terminal output into a
 recorder (this script again, `--record <file>`) that stamps every read with
 time.monotonic(). A typed line is EXPOSED when its echo reaches the terminal
 in one chunk and the CR that ends it only in a later one; the report gives
-the count, the median/p95/max exposure and how many lasted over 1 ms.
+the count, the median/p95/max exposure and how many lasted over 1 ms, for the
+calls and, apart, for the define lines (typed, once per Vim, since the key's
+mapping does not exist before them).
 
 `adopted` runs a plain Vim with an adopted state, so the script installs its
 mode-file group (ModeChanged); `dedicated` launches the Vim the way `start`
@@ -30,7 +33,10 @@ import time
 from pathlib import Path
 
 _RECORD = struct.Struct("<dI")
-_ECHO = re.compile(rb":(?:if !?exists\('\*VafFollower_|filetype detect|%d|setlocal|sil! )")
+_ECHO = re.compile(
+    rb":(?:if !?exists\('\*VafFollower_|if maparg\(|filetype detect|%d|setlocal|sil! |exe )"
+)
+_DEFINE = re.compile(rb":(?:if !exists|if maparg|sil! so)")
 
 
 def record(output_path: str) -> None:
@@ -56,8 +62,9 @@ def _chunks(path: Path) -> list[tuple[float, bytes]]:
     return found
 
 
-def exposures(path: Path) -> tuple[int, list[float]]:
-    """(echoed follower lines, exposure in ms of each exposed one)."""
+def exposures(path: Path, *, define: bool = False) -> tuple[int, list[float]]:
+    """(echoed follower lines, exposure in ms of each exposed one): the
+    calls, or with `define` the define lines."""
     stream = b""
     starts: list[tuple[int, float]] = []
     for stamp, data in _chunks(path):
@@ -75,8 +82,10 @@ def exposures(path: Path) -> tuple[int, list[float]]:
     echoes = 0
     exposed: list[float] = []
     for match in _ECHO.finditer(stream):
+        if bool(_DEFINE.match(stream, match.start())) != define:
+            continue
         line_end = match.end()
-        if b"VafFollower_" in match.group():
+        if b"VafFollower_" in match.group() or b"maparg" in match.group():
             line_end = stream.find(b"endif", match.end())
             if line_end < 0:
                 continue
@@ -109,6 +118,7 @@ def measure(variant: str, calls: int) -> None:
     os.environ["HOME"] = str(home)
 
     from vim_ai_follower import cache
+    from vim_ai_follower.backends import tmux_vim
     from vim_ai_follower.backends.tmux_vim import TmuxVimFollower
     from vim_ai_follower.diff import compute_edit_script
     from vim_ai_follower.state import FollowerState
@@ -140,9 +150,17 @@ def measure(variant: str, calls: int) -> None:
             window_id, "tmux", pane, adopted=variant == "adopted", shown_any=True, speed="instant"
         )
         follower = TmuxVimFollower(pane_id=pane, pace_seconds=0.0, window_id=window_id)
+        sent = {"keyed": 0, "typed": 0}
+        real_send = tmux_vim._send
+
+        def counted_send(target_pane: object, line: str) -> None:
+            sent["keyed" if tmux_vim._vim_ready(pane) else "typed"] += 1
+            real_send(target_pane, line)  # type: ignore[arg-type]
+
+        tmux_vim._send = counted_send  # type: ignore[assignment]
         before_text, after_text = "x = 1\ny = 2\n", "x = 1\nz = 3\ny = 2\n"
         round_index = 0
-        while (exposures(chunks_path)[0] if chunks_path.exists() else 0) < calls:
+        while sent["keyed"] + sent["typed"] < calls:
             target = project / f"file_{round_index}.py"
             target.write_text(before_text)
             follower.show_fresh(str(target), before_text, in_new_tab=True)
@@ -157,15 +175,20 @@ def measure(variant: str, calls: int) -> None:
         time.sleep(1.0)
         _tmux("pipe-pane", "-t", pane)
         time.sleep(0.3)
-        echoes, exposed = exposures(chunks_path)
-        print(f"variant={variant} width={width} rounds={round_index} echoes={echoes}")
-        print(f"exposed={len(exposed)} over_1ms={sum(1 for value in exposed if value > 1.0)}")
-        if exposed:
-            p95 = exposed[min(len(exposed) - 1, int(len(exposed) * 0.95))]
-            print(
-                f"exposure ms: median {exposed[len(exposed) // 2]:.2f}"
-                f" p95 {p95:.2f} max {exposed[-1]:.2f}"
-            )
+        print(
+            f"variant={variant} width={width} rounds={round_index}"
+            f" calls keyed={sent['keyed']} typed={sent['typed']}"
+        )
+        for label, define in (("calls", False), ("define", True)):
+            echoes, exposed = exposures(chunks_path, define=define)
+            over = sum(1 for value in exposed if value > 1.0)
+            print(f"{label}: echoes={echoes} exposed={len(exposed)} over_1ms={over}")
+            if exposed:
+                p95 = exposed[min(len(exposed) - 1, int(len(exposed) * 0.95))]
+                print(
+                    f"  exposure ms: median {exposed[len(exposed) // 2]:.2f}"
+                    f" p95 {p95:.2f} max {exposed[-1]:.2f}"
+                )
         print(f"load={os.getloadavg()[0]:.1f}")
     finally:
         subprocess.run(["tmux", "kill-server"], check=False, capture_output=True)

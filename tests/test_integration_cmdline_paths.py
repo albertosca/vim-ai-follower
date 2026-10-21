@@ -20,6 +20,7 @@ on the same line (a `:file` rename prints the file's name there).
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -240,16 +241,12 @@ def test_no_absolute_path_ever_reaches_the_command_line(
 
     # The instrument saw the follower's commands at all (a broken logger
     # would pass the absence checks below).
-    assert typed.count("ENTER") >= 20, typed
-    assert any("call VafFollower_" in line for line in typed), typed
-    hand_off = [
-        f"'hand_over',{int(adopted)})",
-        "let &paste = get(g:, 'vaf_user_paste', 0)|unlet! g:vaf_user_paste",
-    ]
-    if adopted:
-        hand_off += ["'restore_readonly',", "'give_back','p"]
-    for fragment in hand_off:
-        assert any(fragment in line for line in typed), (fragment, typed)
+    # The calls themselves go through the call key (T30) and are never
+    # typed, and the define once per Vim; every call the key was sent was
+    # read.
+    assert typed.count("ENTER") >= 1, typed
+    assert any("sil! so " in line for line in typed), typed
+    assert _call_files() == []
     # No absolute spelling of the targets' directories, ever.
     for base in {root, tmp_path}:
         for directory in (base / "proj", base / "outside"):
@@ -398,7 +395,68 @@ def test_a_vim_that_lost_the_functions_gets_them_again_on_the_next_call(
     assert follower.probe_buffer(str(target), BEFORE) == "holds"
 
 
+def test_a_vim_whose_call_key_mapping_was_cleared_gets_it_again(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+) -> None:
+    """A Vim ready for the call key is typed no define line (T30), so a
+    user's `:mapclear` leaves the key going nowhere. The call that finds it
+    gone is lost — its navigation fails, as for a Vim that does not answer,
+    and the pane backs off — and the next contact after the backoff sees the
+    unread call, types the define, whose maparg() guard re-sources the
+    script, and lands."""
+    from vim_ai_follower.backends import tmux_vim
+
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    root = Path(os.path.realpath(tmp_path))
+    home, proj = root / "home", root / "proj"
+    home.mkdir()
+    proj.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", home / ".cache" / "claude-vim-follower")
+    monkeypatch.setattr(tmux_vim, "_LANDING_TIMEOUT_SECONDS", 2.0)
+    target = proj / "target.py"
+    target.write_text(BEFORE)
+    # TMUX and TMUX_PANE kept: the Vim writes its ready file under them.
+    pane = _tmux(
+        "split-window", "-h", "-t", tmux_session, "-c", str(proj), "-P", "-F", "#{pane_id}",
+        "sh", "-c",
+        f"exec env -i HOME={home} PATH=\"$PATH\" TERM=xterm-256color TMUX=\"$TMUX\""
+        " TMUX_PANE=\"$TMUX_PANE\" vim -N -u NONE -i NONE",
+    )  # fmt: skip
+    assert wait_until(
+        lambda: _tmux("display-message", "-p", "-t", pane, "#{pane_current_command}") == "vim",
+        timeout=10.0,
+    )
+    window_id = _tmux("display-message", "-p", "-t", pane, "#{window_id}")
+    FollowerState.set(window_id, backend="tmux", target=pane, adopted=True, speed="instant")
+    follower = TmuxVimFollower(pane_id=pane, pace_seconds=0.0, window_id=window_id)
+    follower.goto_file(str(target))
+    assert tmux_vim._vim_ready(pane)
+
+    _keys(pane, "-l", "--", ":mapclear")
+    _keys(pane, "Enter")
+    with pytest.raises(NavigationFailed):
+        follower.ensure_showing(str(target))
+    monkeypatch.setattr(tmux_vim, "_UNANSWERED_BACKOFF_SECONDS", 0.0)
+    follower.ensure_showing(str(target))  # raises NavigationFailed if it did not land
+    assert _buffer_state(pane, tmp_path / "s.txt", wait_until)[0] == "BUF=target.py"
+    follower.ensure_showing(str(target))
+    assert not tmux_vim._keyed_call_unread(pane)
+
+
 SIX_DIGIT_PANE = "%123456"
+
+
+def _call_files() -> list[str]:
+    """The call files (`k<8 digits>`) no Vim has read."""
+    return sorted(
+        path.name
+        for path in cache.CACHE_DIRECTORY.glob("k*")
+        if re.fullmatch(r"k[0-9]{8}", path.name)
+    )
 
 
 @pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
@@ -462,3 +520,70 @@ def test_a_six_digit_pane_id_fits_every_typed_call(
         assert any("'restore_readonly',123456," in line for line in typed), typed
     too_long = [line for line in _whole_lines(typed) if len(line) > MAXIMUM_LINE_LENGTH]
     assert too_long == [], [(len(line), line) for line in too_long]
+
+
+# What may still be TYPED once the script is sourced: the HOME question,
+# animate's paced `:N`/`:Nd` (the visible animation), and this test's own
+# `:tabclose`. Every follower call goes through the silent mapping, and the
+# define line is typed once per Vim, before it (it must run before the
+# mapping exists).
+_STILL_TYPED = re.compile(r"silent! call writefile\(\[\], expand\(.*|[0-9]+d?|tabclose")
+
+
+@pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
+def test_no_call_reaches_the_command_line(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+    adopted: bool,
+    request: pytest.FixtureRequest,
+) -> None:
+    """Every entry point, run against a real Vim that logs each command-line
+    change: after the define line no follower call is typed at all, so none
+    can be seen on the command line for any length of time (T30: a typed
+    call was still visible for over 1 ms in 1-4 of 400 runs)."""
+    root = Path(os.path.realpath(tmp_path))
+    (root / "proj").mkdir()
+    home_parent = Path(tempfile.mkdtemp(prefix="vafh-", dir="/tmp"))
+    request.addfinalizer(lambda: shutil.rmtree(home_parent, ignore_errors=True))
+    home = home_parent / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(cache, "CACHE_DIRECTORY", home / ".cache" / "claude-vim-follower")
+    pane = _logged_vim(tmux_session, monkeypatch, tmp_path, home)
+    window_id = _tmux("display-message", "-p", "-t", pane, "#{window_id}")
+    FollowerState.set(window_id, backend="tmux", target=pane, adopted=adopted, speed="instant")
+    follower = TmuxVimFollower(pane_id=pane, pace_seconds=0.0, window_id=window_id)
+    target = root / "proj" / "a.py"
+    other = root / "proj" / "b.py"
+    other.write_text(BEFORE)
+    target.write_text(BEFORE)
+
+    follower.show_fresh(str(target), BEFORE, in_new_tab=True)
+    assert follower.probe_buffer(str(target), BEFORE) == "holds"
+    target.write_text(AFTER)
+    follower.apply_edit(str(target), compute_edit_script(BEFORE, AFTER), BEFORE)
+    follower.goto_file(str(target))
+    follower.ensure_showing(str(target))
+    follower.ensure_showing(str(other))
+    follower.goto_line(2)
+    assert follower.probe_buffer(str(target), AFTER) == "holds"
+    follower.hand_over()
+    follower._with_unlocked(
+        _RELOCK_SYNCED, str(target), lambda _pane: AnimationResult("interrupted", 0)
+    )
+    follower.close_tab(str(target))
+    assert follower.probe_buffer(str(target), AFTER) == "absent"
+    if adopted:
+        follower.release_claims()
+
+    typed, _messages = _dump(pane, tmp_path / "dump.txt", wait_until)
+    lines = _whole_lines(typed)
+    defines = [line for line in lines if "sil! so " in line]
+    assert len(defines) == 1, defines
+    after_define = lines[lines.index(defines[0]) + 1 :]
+    reached = [line for line in after_define if not _STILL_TYPED.fullmatch(line)]
+    assert reached == [], reached
+    # Every call the mapping was sent was read: none is left on disk.
+    assert _call_files() == []
