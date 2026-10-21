@@ -8,7 +8,7 @@ Live "follower" editor for Claude Code: `PreToolUse`/`PostToolUse` hooks (`claud
 uv sync --extra dev --extra nvim            # a bare `uv sync` leaves pytest/mypy/pynvim missing
 uv run ruff check src tests && uv run ruff format --check src tests
 uv run mypy                                  # bare — pyproject's files = src + tests; CI runs the same
-bash scripts/full_suite.sh   # runs scripts/validate_plugin.sh first; full suite, real tmux+vim+nvim, 100% gate; 1468 tests took 27–28 min at load 7–22 (2026-10-05) — wait for load < 10, false timeouts above
+bash scripts/full_suite.sh   # runs scripts/validate_plugin.sh first; full suite, real tmux+vim+nvim, 100% gate; ~3170 tests (2322 unit + 848 integration, v0.5.0); 1468 took 27–28 min at load 7–22 (2026-10-05), not re-timed since — wait for load < 10, false timeouts above
 uv run pytest -q -m "not integration"        # what CI runs (~1 min); coverage floor there is 98 (unit-only is ~99%)
 uv run pytest -q -m "not integration" --junitxml=/tmp/u.xml && uv run python scripts/check_readme_facts.py --junit /tmp/u.xml   # facts check needs the unit JUnit; a "1100+"-style claim must be ≤ the real count and within 100
 bash scripts/build_docs.sh && uv run python scripts/preview_docs.py 8000   # docs site at http://localhost:8000/vim-ai-follower/ (prod URLs rewritten to the working copy)
@@ -20,7 +20,8 @@ The project's bar is 100% branch coverage on the full suite; the coverage gate l
 
 - `src/vim_ai_follower/cli.py` — subcommands `start stop status hook pause interrupt speed-up speed-down toggle`; `commands.py` implements them, `keybindings.py` the tmux prefix keys.
 - `hooks.py` — the hook orchestration (animate, interrupt hand-off loop, crash-fallback catch-up); `control.py` — signals + persisted pending animations (with `partial`); `binding.py` — the `session_id → (window, tmux server pid)` store that carries a session through a mid-run loss of `TMUX_PANE`; `state.py` — per-window follower state in `~/.cache/claude-vim-follower/`; `snapshot.py`/`diff.py` — before/after and the edit script; `animate.py` — tmux keystroke drivers.
-- `backends/tmux_vim.py` (Vim via send-keys) and `backends/nvim.py` (Neovim via RPC) implement the `Follower` protocol in `backends/__init__.py`.
+- `backends/tmux_vim.py` (Vim via send-keys) and `backends/nvim.py` (Neovim via RPC) implement the `Follower` protocol in `backends/__init__.py`; `backends/nvim_connect.py` resolves the socket (adopt or split-launch) and bounds every connect/probe/RPC; `backends/nvim_prompt.py` keeps a plugin's hit-enter prompt from freezing an nvim follower.
+- `take_over.py` — the tmux popup that asks an adopted editor's typing user before acting; `status_surface.py` — the per-backend cue surface (writer colour, hand-off/paused cue, restore), fed by `writer_cue.py`; `session.py` — tmux window identity or a standalone per-terminal id; `cache.py` — the one cache dir; `config.py` — config loading, speed/pace tables.
 - Config: `~/.config/claude-vim-follower/config.json`; hook log: `~/.cache/claude-vim-follower/hook.log` (hooks never fail the tool call — problems go there).
 - `qa/visual-battery.md` + `scripts/qa-check-N-*.sh` + `/qa-visual` — the manual visual QA battery (19 checks). `docs/superpowers/` is gitignored (private planning docs).
 
