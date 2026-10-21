@@ -84,3 +84,39 @@ def test_an_adopted_nvims_buffer_under_the_other_normalization_is_the_hooks_file
     assert nvim.api.get_current_buf() == users_buffer
     assert len(nvim.api.list_tabpages()) == 1
     nvim.close()
+
+
+@pytest.mark.parametrize("users_typing", ["", "mine"], ids=["empty", "typed"])
+def test_a_buffer_named_in_nfc_for_a_new_file_is_found_by_the_nfd_hook_path(
+    headless_nvim: str, tmp_path: Path, users_typing: str
+) -> None:
+    # The user `:e Café.py` (NFC) before the file exists; Claude's Write
+    # names it NFD. Only the post hook asks nvim anything, and by then the
+    # file exists, so both realpaths answer the on-disk spelling.
+    probe = Path(os.path.realpath(tmp_path)) / "probe"
+    probe.mkdir()
+    (probe / unicodedata.normalize("NFC", NAME)).write_text("")
+    if not (probe / unicodedata.normalize("NFD", NAME)).exists():
+        pytest.skip("a normalization-sensitive filesystem: the spellings are two files")
+    users_spelling, hooks_spelling = _spellings(tmp_path, "NFC", "NFD")
+    nvim, follower = _adopted(headless_nvim, users_spelling)
+    users_buffer = nvim.api.get_current_buf()
+    if users_typing:
+        nvim.api.buf_set_lines(users_buffer, 0, -1, True, [users_typing])
+    # Before the file exists there is no realpath to match: "absent", and
+    # no hook asks at that point.
+    assert follower.probe_buffer(str(hooks_spelling), "") == "absent"
+
+    hooks_spelling.write_text(AFTER)
+
+    if users_typing:
+        assert follower.probe_buffer(str(hooks_spelling), "") == "differs"
+        assert nvim.api.buf_get_lines(users_buffer, 0, -1, True) == [users_typing]
+        nvim.close()
+        return
+    assert follower.probe_buffer(str(hooks_spelling), "") == "holds"
+    follower.apply_edit(str(hooks_spelling), compute_edit_script("", AFTER), "")
+    assert nvim.api.get_current_buf() == users_buffer
+    assert nvim.api.buf_get_lines(users_buffer, 0, -1, True) == AFTER.splitlines()
+    assert len(nvim.api.list_tabpages()) == 1
+    nvim.close()

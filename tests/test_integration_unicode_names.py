@@ -132,3 +132,59 @@ def test_two_spellings_that_are_two_files_stay_apart(
     shown = _state(pane, tmp_path / "s1.txt", wait_until)
     assert shown["LINES"] == ["decomposed"], shown
     assert shown["TABS"] == "2", shown
+
+
+def _one_file_under_both_spellings(root: Path) -> bool:
+    """Whether this filesystem takes the two spellings of NAME for one file,
+    asked with a throwaway file beside the one the test needs missing."""
+    probe = root / "probe"
+    probe.mkdir()
+    (probe / unicodedata.normalize("NFC", NAME)).write_text("")
+    decomposed = probe / unicodedata.normalize("NFD", NAME)
+    return decomposed.exists() and decomposed.samefile(probe / unicodedata.normalize("NFC", NAME))
+
+
+@pytest.mark.parametrize("users_typing", ["", "mine"], ids=["empty", "typed"])
+def test_a_buffer_named_in_nfc_for_a_new_file_is_found_by_the_nfd_hook_path(
+    tmux_session: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    wait_until: Callable[..., bool],
+    users_typing: str,
+) -> None:
+    # The user `:e Café.py` (NFC) before the file exists; Claude's Write
+    # names it NFD. Only the post hook asks Vim anything (the pre hook reads
+    # the disk alone), and by then the file exists, so the other spelling is
+    # handed over and the user's buffer is the hook's file.
+    root = Path(os.path.realpath(tmp_path))
+    if not _one_file_under_both_spellings(root):
+        pytest.skip("a normalization-sensitive filesystem: the spellings are two files")
+    users_spelling = root / unicodedata.normalize("NFC", NAME)
+    hooks_spelling = root / unicodedata.normalize("NFD", NAME)
+    pane = _user_vim(tmux_session, monkeypatch, root, _open_script(root, users_spelling))
+    if users_typing:
+        _tmux("send-keys", "-t", pane, "-l", "--", f"i{users_typing}")
+        _tmux("send-keys", "-t", pane, "Escape")
+    window_id = _tmux("display-message", "-p", "-t", pane, "#{window_id}")
+    FollowerState.set(window_id, backend="tmux", target=pane, adopted=True, speed="instant")
+    follower = TmuxVimFollower(pane_id=pane, pace_seconds=0.0, window_id=window_id)
+    opened = _state(pane, tmp_path / "s0.txt", wait_until)
+    assert os.fsencode(str(opened["BUF"])) == os.fsencode(str(users_spelling)), opened
+    # Before the file exists nothing can say the spellings are one file:
+    # "absent", and no hook asks at that point.
+    assert _quick(lambda: follower.probe_buffer(str(hooks_spelling), "")) == "absent"
+
+    hooks_spelling.write_text(AFTER)
+
+    if users_typing:
+        # The hook leaves a buffer that is not the base alone (never wiped).
+        assert _quick(lambda: follower.probe_buffer(str(hooks_spelling), "")) == "differs"
+        kept = _state(pane, tmp_path / "s1.txt", wait_until)
+        assert kept["LINES"] == [users_typing], kept
+        return
+    assert _quick(lambda: follower.probe_buffer(str(hooks_spelling), "")) == "holds"
+    _quick(lambda: follower.apply_edit(str(hooks_spelling), compute_edit_script("", AFTER), ""))
+    edited = _state(pane, tmp_path / "s1.txt", wait_until)
+    assert os.fsencode(str(edited["BUF"])) == os.fsencode(str(users_spelling)), edited
+    assert edited["LINES"] == AFTER.splitlines(), edited
+    assert edited["TABS"] == "1", edited
