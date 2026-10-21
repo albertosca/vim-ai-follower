@@ -747,7 +747,12 @@ class NvimFollower:
         nvim answers get_mode even at a hit-enter prompt, so a follower stuck
         on a plugin's message reads as alive and answering — the entry point
         that follows sweeps the prompt (see nvim_prompt)."""
-        return probe_nvim(self.socket_path) in ("answers", "silent")
+        state = owned_state(self.window_id, "nvim", self.socket_path)
+        if state is None or state.adopted is not False or not state.origin:
+            return probe_nvim(self.socket_path) in ("answers", "silent")
+        # A dedicated split: a failed process scan asks tmux for its pane.
+        with nvim_connect.asking_tmux_in(state.origin):
+            return probe_nvim(self.socket_path) in ("answers", "silent")
 
     @contextlib.contextmanager
     def _guarded(self, nvim: pynvim.Nvim, label: str) -> Iterator[None]:

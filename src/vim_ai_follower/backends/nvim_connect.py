@@ -30,6 +30,7 @@ import contextlib
 import contextvars
 import os
 import re
+import shlex
 import shutil
 import signal
 import socket
@@ -220,14 +221,15 @@ def resolve_nvim_target(
         if found is not None:
             return found, False
     sock = str(_socket_path_in_existing_dir(window_id))
-    if nvim_ready(sock):
-        # A split whose nvim came up after its caller stopped waiting (its
-        # pane was left open): attach. A second split's nvim would die on
-        # "address already in use" next to it.
-        return sock, True
-    if last_probe_verdict(sock) == "answers":
-        raise SplitNvimNotStarted(sock)
-    _remove_dead_socket(sock)
+    with asking_tmux_in(origin_pane):
+        if nvim_ready(sock):
+            # A split whose nvim came up after its caller stopped waiting
+            # (its pane was left open): attach. A second split's nvim would
+            # die on "address already in use" next to it.
+            return sock, True
+        if last_probe_verdict(sock) == "answers":
+            raise SplitNvimNotStarted(sock)
+        _remove_dead_socket(sock)
     split = subprocess.run(
         [
             "tmux", "split-window", "-h", "-P", "-F", "#{pane_id}", "-t", origin_pane,
@@ -239,7 +241,7 @@ def resolve_nvim_target(
     )  # fmt: skip
     pane_id = split.stdout.strip()
     deadline = time.monotonic() + wait_seconds
-    with _one_scan_until(deadline):
+    with _one_scan_until(deadline), asking_tmux_in(origin_pane):
         while True:
             left = deadline - time.monotonic()
             if left <= 0:
@@ -707,6 +709,55 @@ def _one_scan_until(deadline: float) -> Iterator[None]:
         _scan_scope.reset(token)
 
 
+# The tmux pane a failed process scan may ask about instead (asking_tmux_in).
+_split_origin: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_split_origin", default=None
+)
+
+
+@contextlib.contextmanager
+def asking_tmux_in(origin_pane: str) -> Iterator[None]:
+    """For a socket that is a dedicated SPLIT's, launched beside
+    origin_pane: a process scan that fails inside the body asks tmux
+    instead (T19 rm3, Alberto's A2). With `ps` failing for good, a dead
+    split follower read alive forever: never reopened, and `start` refused
+    to clear its socket. tmux knows the pane: none in the origin's window
+    running `nvim --listen <sock>`, or only a dead one, is no listener.
+    Never used for an adopted or standalone nvim, whose pane (if any) the
+    follower did not start."""
+    token = _split_origin.set(origin_pane)
+    try:
+        yield
+    finally:
+        _split_origin.reset(token)
+
+
+def _split_pane_lives(origin_pane: str, sock: str, timeout: float) -> bool:
+    """Whether a live pane in origin_pane's window was started as
+    `nvim --listen <sock>`; True (fail closed) when tmux does not answer."""
+    try:
+        listing = subprocess.run(
+            ["tmux", "list-panes", "-t", origin_pane, "-F", "#{pane_dead}\t#{pane_start_command}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    if listing.returncode != 0:
+        return True
+    for line in listing.stdout.splitlines():
+        dead, _tab, command = line.partition("\t")
+        try:
+            words = shlex.split(command)
+        except ValueError:
+            continue
+        if dead == "0" and words == ["nvim", "--listen", sock]:
+            return True
+    return False
+
+
 def is_listened_on_by_a_live_process(sock: str) -> bool:
     """True when a live process's command line has `--listen <sock>`, the
     path a whole argument (an nvim launched to listen there, or the `--embed`
@@ -737,9 +788,9 @@ def _scan_for_listener(sock: str, timeout: float) -> bool:
             timeout=timeout,
         )
     except (OSError, subprocess.SubprocessError):
-        return True
+        return _when_the_scan_failed(sock, timeout)
     if listing.returncode != 0:
-        return True
+        return _when_the_scan_failed(sock, timeout)
     markers = {f" --listen {sock}", f" --listen {os.path.realpath(sock)}"}
     for command_line in listing.stdout.splitlines():
         for marker in markers:
@@ -750,6 +801,15 @@ def _scan_for_listener(sock: str, timeout: float) -> bool:
                     return True
                 start = command_line.find(marker, start + 1)
     return False
+
+
+def _when_the_scan_failed(sock: str, timeout: float) -> bool:
+    """A failed scan fails closed, unless asking_tmux_in names the split's
+    origin: then tmux decides."""
+    origin_pane = _split_origin.get()
+    if origin_pane is None:
+        return True
+    return _split_pane_lives(origin_pane, sock, timeout)
 
 
 def _accepts(sock: str) -> bool:

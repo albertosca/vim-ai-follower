@@ -1383,6 +1383,108 @@ def test_a_process_scan_that_fails_keeps_the_socket_silent(outcome: object) -> N
             assert nvim_connect.probe_nvim(str(sock)) == "silent"
 
 
+def _failing_ps_and_panes(*panes: str, tmux_fails: bool = False) -> MagicMock:
+    """subprocess.run where `ps` fails and `tmux list-panes` lists these
+    `<pane_dead>\t<pane_start_command>` lines (or fails)."""
+
+    def _run(command: list[str], **_keyword_arguments: object) -> object:
+        if command[0] == "ps":
+            return subprocess.CompletedProcess(args=command, returncode=1, stdout="")
+        assert command[:4] == ["tmux", "list-panes", "-t", "%1"], command
+        if tmux_fails:
+            return subprocess.CompletedProcess(args=command, returncode=1, stdout="")
+        return subprocess.CompletedProcess(
+            args=command, returncode=0, stdout="".join(f"{pane}\n" for pane in panes)
+        )
+
+    return MagicMock(side_effect=_run)
+
+
+@pytest.mark.parametrize(
+    ("panes", "tmux_fails", "verdict"),
+    [
+        (("0\tzsh",), False, "absent"),
+        (("0\tzsh", "1\tnvim --listen {sock}"), False, "absent"),
+        (("0\tzsh", "0\tnvim --listen {sock}"), False, "silent"),
+        ((), True, "silent"),
+    ],
+    ids=["pane-gone", "pane-dead", "pane-runs-it", "tmux-fails"],
+)
+def test_a_failed_scan_asks_tmux_for_the_split_pane(
+    panes: tuple[str, ...], tmux_fails: bool, verdict: str
+) -> None:
+    """T19 rm3 (A2): with `ps` failing for good a dead split follower read
+    alive forever (never reopened, `start` refused "cannot clear"). Inside
+    asking_tmux_in(origin) a failed scan asks tmux for the pane that runs
+    `nvim --listen <sock>` in the origin's window: none, or a dead one, is
+    no listener; tmux failing too still fails closed."""
+    with _short_socket_dir() as directory:
+        sock = directory / "nvim-@1.sock"
+        _dead_nvims_socket(sock)
+        run = _failing_ps_and_panes(
+            *(pane.format(sock=sock) for pane in panes), tmux_fails=tmux_fails
+        )
+        with (
+            patch("vim_ai_follower.backends.nvim_connect.subprocess.run", run),
+            nvim_connect.asking_tmux_in("%1"),
+        ):
+            assert nvim_connect.probe_nvim(str(sock)) == verdict
+
+
+def test_a_failed_scan_outside_a_split_never_asks_tmux() -> None:
+    with _short_socket_dir() as directory:
+        sock = directory / "nvim-@1.sock"
+        _dead_nvims_socket(sock)
+        run = _failing_ps_and_panes("0\tzsh")
+        with patch("vim_ai_follower.backends.nvim_connect.subprocess.run", run):
+            assert nvim_connect.probe_nvim(str(sock)) == "silent"
+        assert [recorded.args[0][0] for recorded in run.call_args_list] == ["ps"]
+
+
+@pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
+def test_a_dead_split_follower_reads_dead_when_ps_fails(
+    adopted: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from vim_ai_follower.backends.nvim import NvimFollower
+
+    with _short_socket_dir() as directory:
+        monkeypatch.setattr(cache, "CACHE_DIRECTORY", directory)
+        sock = directory / "nvim-@1.sock"
+        _dead_nvims_socket(sock)
+        FollowerState.set("@1", "nvim", str(sock), origin="%1", adopted=adopted)
+        run = _failing_ps_and_panes("0\tzsh")
+        with patch("vim_ai_follower.backends.nvim_connect.subprocess.run", run):
+            # An adopted nvim is the user's: its pane is not the follower's
+            # to look for, so it keeps failing closed.
+            assert NvimFollower(str(sock), window_id="@1").is_alive() is adopted
+
+
+def test_a_dead_split_socket_is_cleared_for_a_new_split_when_ps_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """rm3: `start` refused "cannot clear" over a dead split's socket for as
+    long as `ps` failed. tmux showing no pane that runs it, it is cleared and
+    the new split goes ahead."""
+    with _short_socket_dir() as directory:
+        monkeypatch.setattr(cache, "CACHE_DIRECTORY", directory)
+        sock = nvim_connect.launch_socket_path("@1")
+        sock.parent.mkdir(parents=True, exist_ok=True)
+        _dead_nvims_socket(sock)
+        listing = _failing_ps_and_panes("0\tzsh")
+
+        def _run(command: list[str], **keyword_arguments: object) -> object:
+            if command[:2] == ["tmux", "split-window"]:
+                raise subprocess.CalledProcessError(1, command)  # far enough
+            return listing(command, **keyword_arguments)
+
+        with (
+            patch("vim_ai_follower.backends.nvim_connect.subprocess.run", side_effect=_run),
+            pytest.raises(subprocess.CalledProcessError),
+        ):
+            nvim_connect.resolve_nvim_target("%1", "@1", adopt=False)
+        assert not sock.exists()
+
+
 def test_a_missing_socket_file_is_absent_without_a_process_scan() -> None:
     with _short_socket_dir() as directory:
         with patch("vim_ai_follower.backends.nvim_connect.subprocess.run") as run:
