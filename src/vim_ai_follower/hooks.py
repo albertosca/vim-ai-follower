@@ -35,7 +35,7 @@ from vim_ai_follower.backends import (
     nvim_connect,
     nvim_prompt,
     tmux_vim,
-    without_bom,
+    typed_text,
 )
 from vim_ai_follower.backends.nvim_connect import (
     StandaloneLaunchFailed,
@@ -608,7 +608,7 @@ def _touch_and_evict(
 
 def _terminated(lines: Sequence[str]) -> str:
     # Terminate every line with "\n" instead of joining with it: the returned
-    # string is later `.splitlines()`'d again (by rewrite_buffer, and shown in
+    # string is later split again (diff.text_lines: by rewrite_buffer, and shown in
     # the interrupt notification), and a "\n".join round-trip is LOSSY for
     # trailing blank lines — ['a','',''] -> "a\n\n" -> ['a',''] drops one. The
     # terminating form is lossless: ['a','',''] -> "a\n\n\n" -> ['a','',''].
@@ -616,7 +616,7 @@ def _terminated(lines: Sequence[str]) -> str:
 
 
 def _reconstruct_partial_fresh(content: str, completed_count: int) -> str:
-    return _terminated(content.splitlines()[:completed_count])
+    return _terminated(diff_module.text_lines(content)[:completed_count])
 
 
 def _print_hook_context(context: str) -> None:
@@ -2126,13 +2126,13 @@ def _animate_edit(
         return 0
 
     after = raw_after.decode("utf-8", errors="replace")
-    # What is TYPED (and what a partial is built from) leaves out a leading
-    # UTF-8 BOM, which the editors keep in 'bomb' instead of the buffer; the
-    # hand-off wait still compares disk with `after` itself (see without_bom).
-    # A CRLF file's CRs need no stripping here: every consumer of the typed
-    # text splits it with str.splitlines(), which drops them (BACKLOG "CRLF
-    # files"; the editors keep them in 'fileformat').
-    typed_after = without_bom(after)
+    # What is TYPED (and what a partial is built from) is the file as the
+    # editor holds it (typed_text): no leading UTF-8 BOM, which the editors
+    # keep in 'bomb', no CRs of a pure CRLF file, which they keep in
+    # 'fileformat' (BACKLOG "CRLF files"), but a mixed file's CRs and every
+    # form feed or U+2028 inside its line (BACKLOG "Mixed line endings").
+    # The hand-off wait still compares disk with `after` itself.
+    typed_after = typed_text(after)
 
     # After the catch-up above, never before it: the replay is what brings
     # the buffer to this edit's base, and probing first would see its
@@ -2171,7 +2171,7 @@ def _animate_edit(
                 _clear_stale(session.window_id, file_path)
             else:
                 retype_reason = f"stale, base {stale_probe}"
-    typed_before = without_bom(before)
+    typed_before = typed_text(before)
     if not stale_base_held and (not is_fresh or current.adopted):
         probe = _probe_base(follower, file_path, before)
         if not retype_reason:
@@ -2243,7 +2243,7 @@ def _animate_edit(
             # the interrupt point instead of flashing the finished file.
             control.save_pending_show_fresh(
                 session.window_id,
-                tuple(typed_after.splitlines())[result.completed_count :],
+                tuple(diff_module.text_lines(typed_after))[result.completed_count :],
                 config.pace_seconds_for(current.speed),
                 continuation=result.completed_count > 0,
                 file_path=file_path,

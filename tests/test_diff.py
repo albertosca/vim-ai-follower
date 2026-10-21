@@ -1,6 +1,16 @@
 from __future__ import annotations
 
-from vim_ai_follower.diff import EditOp, apply_ops, compute_edit_script, is_binary
+import pytest
+
+from vim_ai_follower.backends import typed_text
+from vim_ai_follower.diff import (
+    EditOp,
+    apply_ops,
+    compute_edit_script,
+    file_lines,
+    is_binary,
+    text_lines,
+)
 
 
 def test_no_changes_returns_empty_list() -> None:
@@ -95,3 +105,51 @@ def test_apply_ops_reconstructs_partial_prefix_of_a_multi_op_diff() -> None:
     ops = compute_edit_script(before, after)
     assert apply_ops(before, ops[:1]) == "a\nb\nc\nd\nY\n"
     assert apply_ops(before, ops[:0]) == before + "\n"
+
+
+@pytest.mark.parametrize(
+    ("text", "lines"),
+    [
+        ("", []),
+        ("\n", [""]),
+        ("a", ["a"]),
+        ("a\n", ["a"]),
+        ("a\n\n", ["a", ""]),
+        (
+            "a\x0cb\x0bc\x1cd\x1de\x1ef\x85g\u2028h\u2029i\n",
+            ["a\x0cb\x0bc\x1cd\x1de\x1ef\x85g\u2028h\u2029i"],
+        ),
+        ("a\r\nb\n", ["a\r", "b"]),
+        ("a\rb\n", ["a\rb"]),
+    ],
+)
+def test_text_lines_splits_on_lf_only(text: str, lines: list[str]) -> None:
+    assert text_lines(text) == lines
+
+
+@pytest.mark.parametrize(
+    ("content", "lines"),
+    [
+        ("", []),
+        ("a\r\nb\r\n", ["a", "b"]),  # all CRLF: fileformat=dos keeps the CRs
+        ("a\r\nb\n", ["a\r", "b"]),  # mixed: unix, each CR kept in its line
+        ("a\r\nb", ["a\r", "b"]),
+        ("a\nb\n", ["a", "b"]),
+    ],
+)
+def test_file_lines_drops_the_crs_only_of_an_all_crlf_file(content: str, lines: list[str]) -> None:
+    assert file_lines(content) == lines
+
+
+def test_typed_text_is_the_buffer_s_lines_each_newline_terminated() -> None:
+    assert typed_text("\ufeffa\r\nb\r\n") == "a\nb\n"
+    assert typed_text("a\r\nb\n") == "a\r\nb\n"
+    assert typed_text("a\x0cb") == "a\x0cb\n"
+    assert typed_text("") == ""
+
+
+def test_an_edit_script_keeps_a_form_feed_inside_its_line() -> None:
+    assert compute_edit_script("a\x0cb\n", "a\x0cb\nc\n") == [
+        EditOp(kind="insert", start_line=2, end_line=1, new_lines=("c",))
+    ]
+    assert apply_ops("a\x0cb\n", [EditOp("insert", 2, 1, ("c",))]) == "a\x0cb\nc\n"

@@ -51,6 +51,39 @@ def test_send_text_reaches_tmux_as_exactly_the_text(text: str) -> None:
     assert _tmux_argument(argv[6]) == (text, False)
 
 
+def test_send_text_types_a_control_character_after_a_ctrl_v() -> None:
+    # A CR inside a mixed-endings line broke the line in insert mode, a
+    # CTRL-K started a digraph (backlog-sweep-5 T24): each control goes as
+    # its raw byte after CTRL-V (0x16), in the same tmux process, chained by
+    # a lone `;`. A tab stays literal, and so does a `;` before the chain.
+    pane = TmuxPane("%3")
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        pane.send_text("a;\r\tb\x0c")
+    run.assert_called_once_with(
+        [
+            "tmux",
+            *("send-keys", "-t", "%3", "-l", "--", "a\\;"),
+            ";",
+            *("send-keys", "-t", "%3", "-H", "16", "0d"),
+            ";",
+            *("send-keys", "-t", "%3", "-l", "--", "\tb"),
+            ";",
+            *("send-keys", "-t", "%3", "-H", "16", "0c"),
+        ],
+        check=True,
+    )
+
+
+@pytest.mark.parametrize("control", ["\x00", "\x08", "\x0b", "\x1b", "\x1f", "\x7f"])
+def test_send_text_sends_every_control_but_tab_and_newline_as_a_byte(control: str) -> None:
+    with patch("vim_ai_follower.tmux.subprocess.run") as run:
+        TmuxPane("%3").send_text(control)
+    assert run.call_args.args[0] == [
+        "tmux",
+        *("send-keys", "-t", "%3", "-H", "16", f"{ord(control):02x}"),
+    ]
+
+
 @pytest.mark.parametrize("title", ["vim x;", "a;;", ";", "x \\;", "plain", "é;"])
 def test_set_title_reaches_tmux_as_exactly_the_title(title: str) -> None:
     # `select-pane -T 'vim x;'` set the title `vim x` (measured, tmux 3.8):

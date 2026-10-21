@@ -5,7 +5,7 @@ from typing import Literal, Protocol
 
 from vim_ai_follower.animate import DEFAULT_PACE_SECONDS, AnimationResult
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
-from vim_ai_follower.diff import EditOp
+from vim_ai_follower.diff import EditOp, file_lines
 
 # The answer to "is this buffer the edit's base?", in the four shapes the hook
 # acts on differently:
@@ -163,13 +163,12 @@ def buffer_forms(content: str) -> list[list[str]]:
     the CRs from the buffer. A file with MIXED endings is not: the editors
     load it with fileformat=unix and keep each CR in its line, so a buffer
     without them is one somebody changed (a user's `:%s/\\r$//`; T12+T13
-    review I1), or the follower's own splitlines() retype, which only the
-    nvim backend can tell apart (typed_form). A file starting with a UTF-8
-    BOM (U+FEFF) is also accepted without it, because both editors load it
-    into 'bomb' and leave it out of the buffer, while the hook's snapshot
-    keeps it (final review of backlog-sweep-3, I2: every BOM file probed
-    "differs"). Splits on "\n" only, never str.splitlines(), which would also
-    break on form feeds and U+2028 that stay inside an editor's line."""
+    review I1). A file starting with a UTF-8 BOM (U+FEFF) is also accepted
+    without it, because both editors load it into 'bomb' and leave it out of
+    the buffer, while the hook's snapshot keeps it (final review of
+    backlog-sweep-3, I2: every BOM file probed "differs"). Splits on "\n"
+    only, never str.splitlines(), which would also break on form feeds and
+    U+2028 that stay inside an editor's line."""
     text = content[:-1] if content.endswith("\n") else content
     lines = text.split("\n")
     forms = [lines]
@@ -187,16 +186,22 @@ def without_bom(content: str) -> str:
     return content.removeprefix(BOM)
 
 
+def typed_text(content: str) -> str:
+    """The file `content` as the follower types it, every line terminated:
+    without_bom, and the lines an editor holds (diff.file_lines: LF only,
+    a pure CRLF file's CRs left to 'fileformat', a mixed file's kept). What
+    the hooks hand to show_fresh and the diff, and what every partial is
+    built from, so each consumer splits it with diff.text_lines."""
+    return "".join(line + "\n" for line in file_lines(without_bom(content)))
+
+
 def typed_form(content: str) -> list[str]:
-    """The lines the follower's own typing leaves for the file `content`:
-    without_bom, split with str.splitlines() like every driver and the diff
-    (an empty file is the one empty line). It differs from buffer_forms on a
-    file the editors load another way: MIXED line endings (each CR kept in
-    its line on a load, dropped by the follower), and form feeds or U+2028
-    inside a line. A buffer in this form is the base only when the follower
-    produced it, which backend state must tell (the nvim backend's
-    probe_buffer)."""
-    return without_bom(content).splitlines() or [""]
+    """The lines the follower's own typing leaves for the file `content`
+    (typed_text; an empty file is the one empty line). Since the typing
+    splits on LF only and keeps a mixed file's CRs, it is one of
+    buffer_forms; the nvim backend's probe_buffer still asks it for a
+    buffer the follower produced."""
+    return file_lines(without_bom(content)) or [""]
 
 
 def classify_buffer(lines: list[str], content: str) -> BufferProbe:

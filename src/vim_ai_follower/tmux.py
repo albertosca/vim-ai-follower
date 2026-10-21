@@ -9,6 +9,10 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+# A run of ordinary characters, or one control character insert mode would
+# act on (every C0 byte but the tab, and DEL); a line never holds a LF.
+_CONTROL_CHARACTER = re.compile(r"([^\x00-\x08\x0b-\x1f\x7f]+)|([\x00-\x08\x0b-\x1f\x7f])")
+
 
 def literal_argument(text: str) -> str:
     """`text` as one tmux argv argument that reaches the command whole. tmux
@@ -57,11 +61,21 @@ class TmuxPane:
         """Type `text` byte-exact, through literal_argument: a final `;`
         typed as nothing made an interrupted Write's `:w` save the damaged
         lines (measured in Vim on tmux 3.8, 2026-10-17: `-H` hex was exact
-        too, but costs one argument per byte)."""
-        subprocess.run(
-            ["tmux", "send-keys", "-t", self.pane_id, "-l", "--", literal_argument(text)],
-            check=True,
-        )
+        too, but costs one argument per byte). A control character (a CR
+        inside a mixed-endings line, a form feed, CTRL-K, ESC, DEL; never a
+        tab, which insert mode takes as it is) goes as raw bytes after a
+        CTRL-V, so insert mode inserts it instead of acting on it (a CR broke
+        the line, a CTRL-K started a digraph). Still one tmux process: the
+        pieces are commands chained by a lone `;` argument."""
+        argv = ["tmux"]
+        for literal, control in _CONTROL_CHARACTER.findall(text) or [("", "")]:
+            if argv[-1] != "tmux":
+                argv.append(";")
+            if control:
+                argv += ["send-keys", "-t", self.pane_id, "-H", "16", f"{ord(control):02x}"]
+            else:
+                argv += ["send-keys", "-t", self.pane_id, "-l", "--", literal_argument(literal)]
+        subprocess.run(argv, check=True)
 
     def send_hex(self, *byte_values: str) -> None:
         """Send raw bytes, each a two-digit hex string (`send-keys -H`): no

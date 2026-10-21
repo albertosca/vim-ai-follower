@@ -110,7 +110,11 @@ def _states(log: Path, name: str) -> list[list[str]]:
     if len(after_mark) < 2:
         return []
     states: list[list[str]] = []
-    for raw in after_mark[1].splitlines():
+    # LF only: a logged line may hold U+2028 or U+0085, which json_encode
+    # leaves unescaped and splitlines() would break at.
+    for raw in after_mark[1].split("\n"):
+        if not raw:
+            continue
         entry = json.loads(raw)
         if entry["name"] == name:
             states.append(entry["lines"])
@@ -120,8 +124,8 @@ def _states(log: Path, name: str) -> list[list[str]]:
 def _last_state(log: Path, name: str) -> list[str] | None:
     if not log.exists():
         return None
-    for raw in reversed(log.read_text().splitlines()):
-        if raw == _MARK:
+    for raw in reversed(log.read_text().split("\n")):
+        if raw in ("", _MARK):
             continue
         entry = json.loads(raw)
         if entry["name"] == name:

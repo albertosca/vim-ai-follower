@@ -247,7 +247,8 @@ def test_a_mixed_ending_file_holds_its_base(
     fileformat=unix and keeps each CR in its line (shown as ^M). The
     snapshot now keeps those CRs too, so the probe says "holds" (at
     bbc4668 the snapshot dropped them and an adopted Vim left every Edit of
-    such a file alone) and the Edit is the one insert."""
+    such a file alone) and the Edit is the one insert, its CR typed too
+    (backlog-sweep-5 T24: splitlines() used to drop it)."""
     log, pane, window_id = _observed_follower(tmux_session, monkeypatch, tmp_path, wait_until)
     target = tmp_path / "a.py"
     if adopted:
@@ -269,7 +270,7 @@ def test_a_mixed_ending_file_holds_its_base(
     _hook(monkeypatch, "post", "Edit", target)
 
     assert probes == ["holds"]
-    assert scripts == [[EditOp(kind="insert", start_line=2, end_line=1, new_lines=("X",))]]
+    assert scripts == [[EditOp(kind="insert", start_line=2, end_line=1, new_lines=("X\r",))]]
     assert target.read_bytes() == MIXED_AFTER
 
 

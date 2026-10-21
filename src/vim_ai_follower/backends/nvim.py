@@ -33,7 +33,7 @@ from vim_ai_follower.backends import (
 from vim_ai_follower.backends.nvim_connect import bounded_attach, probe_nvim
 from vim_ai_follower.backends.nvim_prompt import dismiss_prompt, exec_logged, prompt_guard
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
-from vim_ai_follower.diff import EditOp, apply_ops
+from vim_ai_follower.diff import EditOp, apply_ops, text_lines
 from vim_ai_follower.state import FollowerState, owned_state
 
 logger = logging.getLogger("vim_ai_follower")
@@ -385,15 +385,16 @@ def _format_from_disk(nvim: pynvim.Nvim, buffer: int, file_path: str) -> None:
 
     Both editors keep a leading BOM in 'bomb' and a CRLF file's line breaks
     in 'fileformat', not in the buffer, and the follower types neither
-    (backends.without_bom; splitlines() drops the CRs). So an Edit that
+    (backends.typed_text leaves both out). So an Edit that
     adds or drops a BOM, or changes the line endings, changed nothing on
     screen and left the option at its
     pre-edit value, and the user's next `:w` (or the hand-off's) undid that
     part of Claude's change (final review of backlog-sweep-3, N1; Task 12 of
     backlog-sweep-4 for 'fileformat'). Read from disk, which holds Claude's
     finished file whenever a completed animation runs from the post hook.
-    A file that cannot be read leaves both alone; mixed endings leave
-    'fileformat' alone (_fileformat_of). 'fileformat' is set only when it
+    A file that cannot be read leaves both alone; mixed endings set
+    'fileformat' to unix only when the buffer holds the file's lines with
+    their CRs (as the follower types them), else leave it alone. 'fileformat' is set only when it
     changes, and before the caller's relock: nvim refuses it (E21) on a
     nomodifiable buffer.
 
@@ -411,6 +412,13 @@ def _format_from_disk(nvim: pynvim.Nvim, buffer: int, file_path: str) -> None:
     was_modified = nvim.api.buf_get_option(buffer, "modified")
     nvim.api.buf_set_option(buffer, "bomb", data[:3] == b"\xef\xbb\xbf")
     fileformat = _fileformat_of(data)
+    if fileformat is None and nvim.api.buf_get_lines(buffer, 0, -1, False) == text_lines(
+        data.decode("utf-8", errors="surrogateescape").removeprefix("\ufeff")
+    ):
+        # Mixed endings: the follower typed each CR into its line (as nvim
+        # loads such a file), so only 'unix' writes the file back; a CRLF
+        # buffer an Edit made mixed stayed 'dos' and doubled every typed CR.
+        fileformat = "unix"
     if fileformat is not None and nvim.api.buf_get_option(buffer, "fileformat") != fileformat:
         nvim.api.buf_set_option(buffer, "fileformat", fileformat)
     if not was_modified:
@@ -421,9 +429,9 @@ def _format_from_disk(nvim: pynvim.Nvim, buffer: int, file_path: str) -> None:
 
 def _buffer_lines(content: str) -> list[str]:
     """The lines a buffer holding `content` shows, as the follower types it
-    (splitlines, like show_fresh and apply_ops); an empty content is the one
-    empty line nvim never goes below."""
-    return content.splitlines() or [""]
+    (diff.text_lines, like show_fresh and apply_ops); an empty content is
+    the one empty line nvim never goes below."""
+    return text_lines(content) or [""]
 
 
 # The marks an ADOPTED nvim's eviction and `claude-follow stop` go by (see the
@@ -875,7 +883,7 @@ class NvimFollower:
             self._restore_swap_if_adopted(nvim)
             self._exec(nvim, "filetype detect")
             nvim.command("setlocal buftype=")
-            lines = tuple(content.splitlines())
+            lines = tuple(text_lines(content))
 
             def run() -> AnimationResult:
                 nvim.api.buf_set_lines(buffer, 0, -1, True, [""])
@@ -1234,7 +1242,7 @@ class NvimFollower:
             self.goto_file(file_path)
             buffer = nvim.api.get_current_buf().handle
             nvim.api.buf_set_option(buffer, "modifiable", True)
-            lines = content.splitlines()
+            lines = text_lines(content)
             nvim.api.buf_set_lines(buffer, 0, -1, True, lines or [""])
             return AnimationResult("completed", len(lines))
 

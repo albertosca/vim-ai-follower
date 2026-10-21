@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Literal
 
 from vim_ai_follower import control
-from vim_ai_follower.diff import EditOp, apply_ops
+from vim_ai_follower.diff import EditOp, apply_ops, text_lines
 from vim_ai_follower.tmux import TmuxPane
 
 DEFAULT_PACE_SECONDS = 0.05
@@ -444,7 +444,7 @@ def run_lines(
                     partial=(
                         None
                         if base_content is None
-                        else _terminated([*base_content.splitlines(), *lines[:index]])
+                        else _terminated([*text_lines(base_content), *lines[:index]])
                     ),
                 )
 

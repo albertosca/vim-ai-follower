@@ -26,7 +26,7 @@ from vim_ai_follower.backends import (
     log_state_gone,
 )
 from vim_ai_follower.control import PendingApplyEdit, PendingShowFresh
-from vim_ai_follower.diff import EditOp
+from vim_ai_follower.diff import EditOp, text_lines
 from vim_ai_follower.state import FollowerState, owned_state
 from vim_ai_follower.tmux import TmuxPane
 
@@ -2833,7 +2833,7 @@ class TmuxVimFollower:
         pane = TmuxPane(pane_id=self.pane_id)
         pane.send_line(self._unlock_line())
         pane.send_line(":%d")
-        lines = tuple(content.splitlines())
+        lines = tuple(text_lines(content))
         if not lines:
             return AnimationResult("completed", 0)
         # `:%d` above wiped the buffer, so this rebuild starts from nothing.
@@ -3156,7 +3156,7 @@ class TmuxVimFollower:
         # whatever was active at the moment it's set, not anything enabled
         # afterwards.
         pane.send_line(":filetype detect")
-        lines = tuple(content.splitlines())
+        lines = tuple(text_lines(content))
 
         def run(inner: TmuxPane) -> AnimationResult:
             # Wipe down to a single blank line — Vim can't have zero lines.

@@ -167,9 +167,9 @@ def test_a_mixed_ending_file_holds_its_base(
 ) -> None:
     """Task 12 fix round 1. nvim loads a file mixing CRLF and LF with
     fileformat=unix and keeps each CR in its line, so an adopted buffer holds
-    ["a\\r", "b"]. A dedicated follower's own retype splits lines with
-    splitlines() and holds ["a", "b"]: buffer_forms accepts that form too,
-    or every Edit of the file would wipe and retype it."""
+    ["a\\r", "b"]. A dedicated follower's own retype splits on LF only
+    (diff.text_lines, backlog-sweep-5 T24) and types the same lines, CR
+    included, so the Edit is the one insert of "X\\r"."""
     monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     FollowerState.set(_WINDOW, "nvim", headless_nvim, origin="", shown_any=False, adopted=adopted)
     nvim = pynvim.attach("socket", path=headless_nvim)
@@ -182,7 +182,7 @@ def test_a_mixed_ending_file_holds_its_base(
         assert hooks.cmd_hook_pre(_ENV, _payload("Write", target)) == 0
         target.write_bytes(MIXED)
         assert hooks.cmd_hook_post(_ENV, _payload("Write", target)) == 0
-        loaded = ["a", "b"]
+        loaded = ["a\r", "b"]
     assert _buffer(nvim, "a.py")[:] == loaded
     assert _buffer(nvim, "a.py").options["fileformat"] == "unix"
     handle = _buffer(nvim, "a.py").number
@@ -193,7 +193,7 @@ def test_a_mixed_ending_file_holds_its_base(
     assert hooks.cmd_hook_post(_ENV, _payload("Edit", target)) == 0
 
     assert probes == ["holds"]
-    assert scripts == [[EditOp(kind="insert", start_line=2, end_line=1, new_lines=("X",))]]
+    assert scripts == [[EditOp(kind="insert", start_line=2, end_line=1, new_lines=("X\r",))]]
     assert _buffer(nvim, "a.py").number == handle  # a diff, not a retype
     assert target.read_bytes() == MIXED_AFTER
 
@@ -228,9 +228,10 @@ def test_an_adopted_buffer_the_follower_retyped_still_holds_its_base(
     headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The other side of I1: a mixed-ending file the follower itself typed
-    into an adopted nvim (nothing held it, so a Write retypes it) carries no
-    CR, and is stamped clean at the end of that animation; the next Edit is
-    a diff onto it, not a buffer left alone forever."""
+    into an adopted nvim (nothing held it, so a Write retypes it) carries its
+    CRs since T24 (it used to carry none), and is stamped clean at the end of
+    that animation; the next Edit is a diff onto it, not a buffer left alone
+    forever."""
     monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     FollowerState.set(_WINDOW, "nvim", headless_nvim, origin="", shown_any=False, adopted=True)
     nvim = pynvim.attach("socket", path=headless_nvim)
@@ -238,7 +239,7 @@ def test_an_adopted_buffer_the_follower_retyped_still_holds_its_base(
     assert hooks.cmd_hook_pre(_ENV, _payload("Write", target)) == 0
     target.write_bytes(MIXED)
     assert hooks.cmd_hook_post(_ENV, _payload("Write", target)) == 0
-    assert _buffer(nvim, "a.py")[:] == ["a", "b"]
+    assert _buffer(nvim, "a.py")[:] == ["a\r", "b"]
     handle = _buffer(nvim, "a.py").number
 
     probes, scripts = _spy(monkeypatch)
@@ -247,9 +248,9 @@ def test_an_adopted_buffer_the_follower_retyped_still_holds_its_base(
     assert hooks.cmd_hook_post(_ENV, _payload("Edit", target)) == 0
 
     assert probes == ["holds"]
-    assert scripts == [[EditOp(kind="insert", start_line=2, end_line=1, new_lines=("X",))]]
+    assert scripts == [[EditOp(kind="insert", start_line=2, end_line=1, new_lines=("X\r",))]]
     assert _buffer(nvim, "a.py").number == handle
-    assert _buffer(nvim, "a.py")[:] == ["a", "X", "b"]
+    assert _buffer(nvim, "a.py")[:] == ["a\r", "X\r", "b"]
 
 
 @pytest.mark.parametrize("change", ["endings-only", "lf-to-crlf"])

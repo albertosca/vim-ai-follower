@@ -197,9 +197,9 @@ def test_buffer_forms(content: str, forms: list[list[str]]) -> None:
     [
         ("", [""]),
         ("a\n", ["a"]),
-        ("a\r\nb\n", ["a", "b"]),
+        ("a\r\nb\n", ["a\r", "b"]),  # mixed: each CR kept, as typed since T24
         ("﻿a\r\nb\r\n", ["a", "b"]),
-        ("a\x0cb\n", ["a", "b"]),
+        ("a\x0cb\n", ["a\x0cb"]),  # LF only (diff.text_lines)
     ],
 )
 def test_typed_form(content: str, lines: list[str]) -> None:
