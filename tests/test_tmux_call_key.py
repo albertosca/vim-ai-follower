@@ -201,7 +201,15 @@ def test_the_sweep_deletes_only_the_ready_files_of_gone_vims() -> None:
 
 def _defined(follower: tmux_vim.TmuxVimFollower) -> MagicMock:
     pane = MagicMock(pane_id="%5")
+    # The Vim shares the hook's HOME, so the define types `~/.cache/…`: typed
+    # as the test's absolute tmp path, the line's form followed that path's
+    # length (a CI path of 80-88 characters dropped the guard, by design).
     with (
+        patch.object(
+            tmux_vim,
+            "_home_relative",
+            side_effect=lambda pane_id, path: f"~/.cache/claude-vim-follower/{path.name}",
+        ),
         patch.object(tmux_vim, "_take_release_mark", return_value=False),
         patch.object(tmux_vim, "_take_pending_evictions", return_value=[]),
         patch.object(tmux_vim, "_READY_WAIT_SECONDS", 0.0),
