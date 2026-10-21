@@ -158,9 +158,10 @@ def buffer_forms(content: str) -> list[list[str]]:
 
     One trailing newline is the last line's terminator, not an extra empty
     line (an editor's buffer of "a\nb\n" is ["a", "b"]), and an empty file is
-    a single empty line. A file whose every line ends in CR is also accepted
-    without them, because Vim and nvim load it with fileformat=dos and strip
-    the CRs from the buffer. A file with MIXED endings is not: the editors
+    a single empty line. A file whose every LF ends a CRLF is also accepted
+    without those CRs (diff.file_lines: an unterminated last line keeps
+    its own), because Vim and nvim load it with fileformat=dos and strip
+    them from the buffer. A file with MIXED endings is not: the editors
     load it with fileformat=unix and keep each CR in its line, so a buffer
     without them is one somebody changed (a user's `:%s/\\r$//`; T12+T13
     review I1). A file starting with a UTF-8 BOM (U+FEFF) is also accepted
@@ -172,8 +173,9 @@ def buffer_forms(content: str) -> list[list[str]]:
     text = content[:-1] if content.endswith("\n") else content
     lines = text.split("\n")
     forms = [lines]
-    if all(line.endswith("\r") for line in lines):
-        forms.append([line[:-1] for line in lines])
+    dos = file_lines(content) or [""]
+    if dos != lines:
+        forms.append(dos)
     if lines[0].startswith(BOM):
         forms += [[form[0].removeprefix(BOM), *form[1:]] for form in forms]
     return forms
@@ -189,7 +191,8 @@ def without_bom(content: str) -> str:
 def typed_text(content: str) -> str:
     """The file `content` as the follower types it, every line terminated:
     without_bom, and the lines an editor holds (diff.file_lines: LF only,
-    a pure CRLF file's CRs left to 'fileformat', a mixed file's kept). What
+    a CRLF file's CRs left to 'fileformat', with or without a final EOL,
+    a mixed file's kept). What
     the hooks hand to show_fresh and the diff, and what every partial is
     built from, so each consumer splits it with diff.text_lines."""
     return "".join(line + "\n" for line in file_lines(without_bom(content)))

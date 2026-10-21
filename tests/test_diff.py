@@ -133,7 +133,15 @@ def test_text_lines_splits_on_lf_only(text: str, lines: list[str]) -> None:
         ("", []),
         ("a\r\nb\r\n", ["a", "b"]),  # all CRLF: fileformat=dos keeps the CRs
         ("a\r\nb\n", ["a\r", "b"]),  # mixed: unix, each CR kept in its line
-        ("a\r\nb", ["a\r", "b"]),
+        # No final line break: still dos when every BROKEN line ends in CR,
+        # the unterminated last line kept as is (measured on Vim 9.2 and
+        # nvim 0.12; final review of backlog-sweep-5, C1).
+        ("a\r\nb", ["a", "b"]),
+        ("a\r\nX\r\nb", ["a", "X", "b"]),
+        ("a\r\nb\r", ["a", "b\r"]),
+        ("\r\nb", ["", "b"]),
+        ("a\nX\r\nb", ["a", "X\r", "b"]),
+        ("a\r", ["a\r"]),
         ("a\nb\n", ["a", "b"]),
     ],
 )
@@ -144,6 +152,7 @@ def test_file_lines_drops_the_crs_only_of_an_all_crlf_file(content: str, lines: 
 def test_typed_text_is_the_buffer_s_lines_each_newline_terminated() -> None:
     assert typed_text("\ufeffa\r\nb\r\n") == "a\nb\n"
     assert typed_text("a\r\nb\n") == "a\r\nb\n"
+    assert typed_text("a\r\nb") == "a\nb\n"
     assert typed_text("a\x0cb") == "a\x0cb\n"
     assert typed_text("") == ""
 

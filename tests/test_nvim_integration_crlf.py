@@ -14,8 +14,7 @@ import pytest
 pynvim = pytest.importorskip("pynvim")
 
 from test_integration_crlf import (  # noqa: E402
-    AFTER,
-    BEFORE,
+    ENDINGS,
     FORMAT_CHANGES,
     MIXED,
     MIXED_AFTER,
@@ -41,10 +40,16 @@ def _buffer(nvim: Any, name: str) -> Any:
     return next(buffer for buffer in nvim.buffers if buffer.name.endswith("/" + name))
 
 
+@pytest.mark.parametrize("ending", list(ENDINGS))
 @pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
 def test_an_edit_of_a_crlf_file_is_one_typed_insert(
-    headless_nvim: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, adopted: bool
+    headless_nvim: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    adopted: bool,
+    ending: str,
 ) -> None:
+    before, after = ENDINGS[ending]
     monkeypatch.setattr(cache, "CACHE_DIRECTORY", tmp_path / "cache")
     FollowerState.set(_WINDOW, "nvim", headless_nvim, origin="", shown_any=False, adopted=adopted)
     log = tmp_path / "observer.log"
@@ -52,11 +57,11 @@ def test_an_edit_of_a_crlf_file_is_one_typed_insert(
     nvim.exec_lua(_OBSERVER_LUA, str(log))
     target = (tmp_path / "a.py").resolve()
     if adopted:
-        target.write_bytes(BEFORE)
+        target.write_bytes(before)
         nvim.command(f"edit {target}")
     else:
         assert hooks.cmd_hook_pre(_ENV, _payload("Write", target)) == 0
-        target.write_bytes(BEFORE)
+        target.write_bytes(before)
         assert hooks.cmd_hook_post(_ENV, _payload("Write", target)) == 0
     assert _buffer(nvim, "a.py")[:] == ["a", "b"]
     assert _buffer(nvim, "a.py").options["fileformat"] == "dos"
@@ -66,7 +71,7 @@ def test_an_edit_of_a_crlf_file_is_one_typed_insert(
     with log.open("a") as out:
         out.write(_MARK + "\n")
     assert hooks.cmd_hook_pre(_ENV, _payload("Edit", target)) == 0
-    target.write_bytes(AFTER)
+    target.write_bytes(after)
     written = target.stat().st_mtime_ns
     assert hooks.cmd_hook_post(_ENV, _payload("Edit", target)) == 0
 
@@ -80,7 +85,7 @@ def test_an_edit_of_a_crlf_file_is_one_typed_insert(
     assert buffer.number == handle  # a diff, not a retype
     assert buffer[:] == ["a", "X", "b"]
     assert buffer.options["fileformat"] == "dos"
-    assert target.read_bytes() == AFTER
+    assert target.read_bytes() == after
     assert target.stat().st_mtime_ns == written
 
     # What a hand-off save writes: the dos buffer goes back as CRLF, so a
@@ -92,7 +97,11 @@ def test_an_edit_of_a_crlf_file_is_one_typed_insert(
         buffer.number,
         str(copy),
     )
-    assert copy.read_bytes() == AFTER
+    # A buffer loaded without a final line break gets one back at a save
+    # ('fixendofline'), Claude's or not: compare what comes before it.
+    saved = copy.read_bytes()
+    assert b"\r\r" not in saved
+    assert saved.removesuffix(b"\r\n") == after.removesuffix(b"\r\n")
 
 
 def _saved(nvim: Any, buffer: Any, copy: Path) -> bytes:

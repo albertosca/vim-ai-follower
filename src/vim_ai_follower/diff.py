@@ -32,14 +32,19 @@ def text_lines(text: str) -> list[str]:
 
 def file_lines(content: str) -> list[str]:
     """The lines an editor's buffer holds for a file whose text is `content`
-    (text_lines), except that a file whose every line ends in CRLF loses its
+    (text_lines), except that a file whose every LF ends a CRLF loses those
     CRs: Vim and nvim load it with fileformat=dos and keep the endings in the
-    option. A file with MIXED endings loads with fileformat=unix and each CR
-    kept in its line, and so it is typed (backends.buffer_forms reads a
-    buffer the same way)."""
+    option. A last line with no LF is not a terminated one and keeps what it
+    has (`a\r\nb` loads as dos ['a', 'b'], `a\r\nb\r` as dos ['a', 'b\r'],
+    a lone `a\r` as unix; measured on Vim 9.2 and nvim 0.12, final review of
+    backlog-sweep-5, C1: a CRLF file with no final EOL was typed with its CRs
+    into a dos buffer, and the save doubled them). A file with MIXED endings
+    loads with fileformat=unix and each CR kept in its line, and so it is
+    typed (backends.buffer_forms reads a buffer the same way)."""
     lines = text_lines(content)
-    if lines and all(line.endswith("\r") for line in lines):
-        return [line[:-1] for line in lines]
+    terminated = content.split("\n")[:-1]
+    if terminated and all(line.endswith("\r") for line in terminated):
+        return [line[:-1] if index < len(terminated) else line for index, line in enumerate(lines)]
     return lines
 
 

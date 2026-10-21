@@ -178,6 +178,10 @@ def test_the_probe_file_is_removed_after_reading() -> None:
         ("a\n", [["a"]]),
         ("a\n\n", [["a", ""]]),
         ("a\r\nb\r\n", [["a\r", "b\r"], ["a", "b"]]),
+        # No final EOL: still dos, the last line unterminated and kept as is
+        # (final review of backlog-sweep-5, C1).
+        ("a\r\nb", [["a\r", "b"], ["a", "b"]]),
+        ("a\r\nb\r", [["a\r", "b\r"], ["a", "b\r"]]),
         # Mixed endings: the editors' own load keeps the CR (fileformat=unix);
         # a buffer without it is not the file's (T12+T13 review I1).
         ("a\r\nb\n", [["a\r", "b"]]),

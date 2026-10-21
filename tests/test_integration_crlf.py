@@ -29,6 +29,14 @@ pytestmark = pytest.mark.integration
 
 BEFORE = b"a\r\nb\r\n"
 AFTER = b"a\r\nX\r\nb\r\n"
+# A CRLF file whose last line has no line break still loads as
+# fileformat=dos in both editors (measured on Vim 9.2 and nvim 0.12): typed
+# with its CRs kept, it wrote every CR doubled at the next `:w` (final
+# review of backlog-sweep-5, C1).
+ENDINGS = {
+    "final-eol": (BEFORE, AFTER),
+    "no-final-eol": (b"a\r\nb", b"a\r\nX\r\nb"),
+}
 
 
 def _keys(pane: str, *commands: str) -> None:
@@ -89,6 +97,7 @@ def _spy(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], list[list[EditOp]]
     return probes, scripts
 
 
+@pytest.mark.parametrize("ending", list(ENDINGS))
 @pytest.mark.parametrize("adopted", [False, True], ids=["dedicated", "adopted"])
 def test_an_edit_of_a_crlf_file_is_one_typed_insert(
     tmux_session: str,
@@ -96,16 +105,18 @@ def test_an_edit_of_a_crlf_file_is_one_typed_insert(
     tmp_path: Path,
     wait_until: Callable[..., bool],
     adopted: bool,
+    ending: str,
 ) -> None:
+    before, after = ENDINGS[ending]
     log, pane, window_id = _observed_follower(tmux_session, monkeypatch, tmp_path, wait_until)
     target = tmp_path / "a.py"
     if adopted:
         FollowerState.update(window_id, adopted=True)
-        target.write_bytes(BEFORE)
+        target.write_bytes(before)
         _keys(pane, f":tabedit {target}")
     else:
         _hook(monkeypatch, "pre", "Write", target)
-        target.write_bytes(BEFORE)
+        target.write_bytes(before)
         _hook(monkeypatch, "post", "Write", target)
     assert wait_until(lambda: _last_state(log, "a.py") == ["a", "b"], timeout=15.0)
     assert _dump(pane, target, tmp_path, wait_until) == ("dos", ["a", "b"])
@@ -114,7 +125,7 @@ def test_an_edit_of_a_crlf_file_is_one_typed_insert(
     with log.open("a") as handle:
         handle.write(_MARK + "\n")
     _hook(monkeypatch, "pre", "Edit", target)
-    target.write_bytes(AFTER)
+    target.write_bytes(after)
     written = target.stat().st_mtime_ns
     _hook(monkeypatch, "post", "Edit", target)
 
@@ -127,7 +138,7 @@ def test_an_edit_of_a_crlf_file_is_one_typed_insert(
     assert all(state[0] == "a" and state[-1] == "b" for state in states), states
     assert not any("\r" in line for state in states for line in state), states
     assert _dump(pane, target, tmp_path, wait_until) == ("dos", ["a", "X", "b"])
-    assert target.read_bytes() == AFTER
+    assert target.read_bytes() == after
     assert target.stat().st_mtime_ns == written
 
 
