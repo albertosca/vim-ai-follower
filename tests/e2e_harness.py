@@ -917,10 +917,20 @@ def attached_client(
     import termios
     import threading
 
-    pid, terminal = pty.fork()
-    if pid == 0:  # pragma: no cover - the child execs
-        os.execvpe("tmux", ["tmux", "attach-session", "-t", session or world.session], world.env)
-    fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
+    # Never pty.fork(): a fork() in this threaded process may deadlock the
+    # child (Python 3.14 warns), so the client goes through subprocess.
+    terminal, client_side = pty.openpty()
+    fcntl.ioctl(client_side, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
+    client = subprocess.Popen(
+        ["tmux", "attach-session", "-t", session or world.session],
+        stdin=client_side,
+        stdout=client_side,
+        stderr=client_side,
+        env=world.env,
+        start_new_session=True,
+    )
+    os.close(client_side)
+    pid = client.pid
     stopping = threading.Event()
 
     def drain() -> None:
@@ -945,10 +955,8 @@ def attached_client(
         yield AttachedClient(pid=pid, terminal=terminal)
     finally:
         stopping.set()
-        with suppress(ProcessLookupError):
-            os.kill(pid, signal.SIGKILL)
-        with suppress(ChildProcessError):
-            os.waitpid(pid, 0)
+        client.kill()
+        client.wait()
         reader.join(timeout=2.0)
         os.close(terminal)
 
