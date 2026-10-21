@@ -127,23 +127,36 @@ def _client_for(target_pane: str) -> str | None:
     session, and #{client_activity} moves when a client is typed into.
     Without `-c`, a popup went to whichever client tmux picked: with two
     clients a `y` in the watched one timed out, and with the only client on
-    an unrelated session the question was shown there (review m7)."""
+    an unrelated session the question was shown there (review m7).
+
+    #{client_activity} has 1 s resolution, so two clients can tie (T24a
+    re-review 2 m13): the tie goes to a client tmux marks `focused` in
+    #{client_flags} (with 'focus-events' on, only the client whose terminal
+    reported focus-in), and still tied, to the first one listed. Measured on
+    tmux 3.8: the clients of one session share its current window, so a
+    client's window cannot tell them apart; before any focus report every
+    client reads focused."""
     result = subprocess.run(
-        ["tmux", "list-clients", "-t", target_pane, "-F", "#{client_activity} #{client_name}"],
+        [
+            "tmux", "list-clients", "-t", target_pane,
+            "-F", "#{client_activity} #{client_flags} #{client_name}",
+        ],
         capture_output=True,
         text=True,
         check=False,
-    )
+    )  # fmt: skip
     if result.returncode != 0:
         return None
-    latest: tuple[int, str] | None = None
+    clients: list[tuple[int, bool, str]] = []
     for line in result.stdout.splitlines():
-        activity, _, name = line.partition(" ")
-        if not activity.isdigit() or not name:
-            continue
-        if latest is None or int(activity) > latest[0]:
-            latest = (int(activity), name)
-    return latest[1] if latest is not None else None
+        activity, flags, name = [*line.split(" ", 2), "", ""][:3]
+        if activity.isdigit() and flags and name:
+            clients.append((int(activity), "focused" in flags.split(","), name))
+    if not clients:
+        return None
+    latest = max(activity for activity, _focused, _name in clients)
+    tied = [(focused, name) for activity, focused, name in clients if activity == latest]
+    return next((name for focused, name in tied if focused), tied[0][1])
 
 
 def ask(target_pane: str, editor: str, seconds: float) -> str:

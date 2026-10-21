@@ -137,7 +137,7 @@ def test_the_take_over_popup_ignores_modules_in_its_cwd_and_starts_in_the_cache_
 
     def tmux(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         if argv[1] == "list-clients":
-            return subprocess.CompletedProcess(argv, 0, "1 /dev/ttys001\n", "")
+            return subprocess.CompletedProcess(argv, 0, "1 attached /dev/ttys001\n", "")
         ran.append(
             real_run(
                 ["sh", "-c", argv[-1]],

@@ -128,14 +128,14 @@ _Popup = Callable[[list[str]], "subprocess.CompletedProcess[str] | None"]
 
 
 def _tmux(
-    clients: str = "1792249862 /dev/ttys001\n",
+    clients: str = "1792249862 attached,focused /dev/ttys001\n",
     popup: _Popup | None = None,
     *,
     clients_code: int = 0,
 ) -> MagicMock:
     """A subprocess.run stand-in: list-clients of the target's session
-    answers `clients` (`<activity> <name>` lines); the popup call runs
-    `popup(argv)` (writing an answer, raising, failing)."""
+    answers `clients` (`<activity> <flags> <name>` lines); the popup call
+    runs `popup(argv)` (writing an answer, raising, failing)."""
 
     def run(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         if argv[1] == "list-clients":
@@ -145,7 +145,7 @@ def _tmux(
                 "-t",
                 "%3",
                 "-F",
-                "#{client_activity} #{client_name}",
+                "#{client_activity} #{client_flags} #{client_name}",
             ], argv
             return subprocess.CompletedProcess(argv, clients_code, clients, "")
         assert argv[1] == "display-popup"
@@ -215,8 +215,8 @@ def test_ask_shows_the_question_on_the_most_recently_active_client_of_the_target
     # Measured on tmux 3.8: `list-clients -t <pane>` lists only the clients
     # of that pane's session, and #{client_activity} moves when a client is
     # typed into; a popup with no -c went to another client (review m7).
-    clients = "1792249861 /dev/ttys041\n1792249865 /dev/ttys042\nnot-a-number /dev/x\n\n"
-    clients += "1792249863 /dev/ttys043\n"
+    clients = "1792249861 attached /dev/ttys041\n1792249865 attached /dev/ttys042\n"
+    clients += "not-a-number attached /dev/x\n\n1792249863 attached,focused /dev/ttys043\n"
     with patch(
         "vim_ai_follower.take_over.subprocess.run", _tmux(clients, _answering("yes"))
     ) as run:
@@ -224,7 +224,46 @@ def test_ask_shows_the_question_on_the_most_recently_active_client_of_the_target
     assert run.call_args_list[1].args[0][2:4] == ["-c", "/dev/ttys042"]
 
 
-@pytest.mark.parametrize(("clients", "code"), [("", 0), ("1 /dev/ttys001\n", 1), ("x y\n", 0)])
+@pytest.mark.parametrize(
+    ("clients", "chosen"),
+    [
+        (
+            "1792249865 attached /dev/ttys041\n1792249865 attached,focused /dev/ttys042\n",
+            "/dev/ttys042",
+        ),
+        (
+            "1792249865 attached,focused /dev/ttys041\n1792249865 focused /dev/ttys042\n",
+            "/dev/ttys041",
+        ),
+        ("1792249865 attached /dev/ttys041\n1792249865 attached /dev/ttys042\n", "/dev/ttys041"),
+        (
+            "1792249864 attached,focused /dev/ttys041\n1792249865 attached /dev/ttys042\n",
+            "/dev/ttys042",
+        ),
+        (
+            "1792249865 attached /dev/ttys041\n1792249865 attached,unfocused /dev/ttys042\n",
+            "/dev/ttys041",
+        ),
+    ],
+    ids=["the-second-is-focused", "both-focused", "neither-focused", "no-tie", "not-a-substring"],
+)
+def test_a_tie_prefers_the_focused_client(clients: str, chosen: str) -> None:
+    """T24a re-review 2 m13: #{client_activity} has 1 s resolution, and a
+    tie picked the first client listed, so the question could show on the
+    client the user was not watching and time out. On a tie the client
+    tmux marks focused wins (with 'focus-events' on, the one whose terminal
+    has focus); still tied, the first. Focus never outranks activity."""
+    run = _tmux(clients, _answering("yes"))
+    with patch("vim_ai_follower.take_over.subprocess.run", run):
+        assert take_over.ask("%3", "Vim", 10) == take_over.YES
+    popups = [call.args[0] for call in run.call_args_list if call.args[0][1] == "display-popup"]
+    assert popups[0][2:4] == ["-c", chosen]
+
+
+@pytest.mark.parametrize(
+    ("clients", "code"),
+    [("", 0), ("1 attached /dev/ttys001\n", 1), ("x attached y\n", 0), ("1 attached\n", 0)],
+)
 def test_ask_with_no_client_on_the_targets_session_asks_nothing(clients: str, code: int) -> None:
     # A client attached only to an unrelated session lists nothing here.
     with patch(
