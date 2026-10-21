@@ -290,6 +290,20 @@ def test_a_brace_beside_a_blank_tmux_does_not_skip_is_never_sourced(
     assert server.sourced == []
 
 
+@pytest.mark.parametrize("blank", [" ", "\t"], ids=["space", "tab"])
+def test_a_block_between_tmux_blanks_is_sourced(blank: str) -> None:
+    # A space and a TAB are tmux's only blanks (T24b re-review 2 m2): a
+    # block they delimit is a real one, and the `;` inside it separates the
+    # binding's own commands.
+    block = f"{{{blank}send-keys a ;{blank}send-keys b{blank}}}"
+    previous = f"bind-key -T prefix P if-shell true{blank}{block}"
+    _saved(P=previous)
+    server = _FakeBindingServer({"P": previous})
+    with patch("vim_ai_follower.tmux.subprocess.run", side_effect=server):
+        keybindings.unregister()
+    assert server.sourced == [previous + "\n"]
+
+
 @pytest.mark.parametrize("content", ["", "{not json", "[]", '{"executable": "/x"}'])
 def test_a_malformed_owner_record_reads_as_absent(content: str) -> None:
     path = keybindings._owner_path()
