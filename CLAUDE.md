@@ -28,6 +28,7 @@ The project's bar is 100% branch coverage on the full suite; the coverage gate l
 ## Gotchas (each one cost a real bug)
 
 Each line keeps the rule; the full record (measurements, residuals, the tests that pin it) is in `docs/superpowers/gotchas.md`, private to the maintainer's checkout. Read the section before changing the code a line names.
+A new gotcha is one line here ending `→ docs/superpowers/gotchas.md#<slug>` plus a `<a id="<slug>"></a>` section there; `tests/scripts/test_claude_md_gotchas.py` pins pointer↔anchor (skipped without the private file, so CI never sees a broken pointer) and the 24,000-byte budget.
 
 - **nvim API columns are BYTE offsets**: anything typing per character must carry `col += len(ch.encode())`; compare bytes in tests. The typing moves the follower's window found by handle (`_FOLLOWER_WINDOW_LUA`), never window 0; an adopted Edit records its window once, in `_run_ops` (`follower_window`). → docs/superpowers/gotchas.md#nvim-byte-columns
 - **nvim follower buffers are never written to disk**: navigation is pure API, never `:edit`/`:drop`/`:buffer`; `ensure_showing` is the only entry point that shows disk content, `goto_file` never does; every new tab goes through `_show_in_new_tab` (by handle, never window 0 after `:tabnew`; failures undone by `_undo_new_tab`); only a follower `_is_dedicated()` proves dedicated types a first file in the current window; a Read re-reads only a CLEAN buffer (`b:vaf_synced_tick`). → docs/superpowers/gotchas.md#nvim-never-written
